@@ -1,0 +1,23 @@
+{
+    "configurations": [
+        {
+            "name": "Wii",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${env:DEVKITPRO}/libogc/include",
+                "${env:DEVKITPPC}/powerpc-eabi/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "windowsSdkVersion": "10.0.26100.0",
+            "compilerPath": "${env:DEVKITPPC}/bin/powerpc-eabi-gcc.exe",
+            "cStandard": "c17",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64" // windows-msvc-x64
+        }
+    ],
+    "version": 4
+}

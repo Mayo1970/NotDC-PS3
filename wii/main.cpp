@@ -1,0 +1,4661 @@
+#include "types.h"
+#include <unistd.h>
+#include "iso.h"
+#include <fat.h>
+#include <dirent.h>
+#include <wiiuse/wpad.h>
+#include <stdio.h>
+#include <stdarg.h>   // va_list for wii_boot_log()
+#include <stdlib.h>
+#include <malloc.h>   // memalign() — used by Detect_WiiU_IOS58Version()
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <gccore.h>
+#include <ogc/lwp_watchdog.h>	// gettime() / ticks_to_microsecs() for os_GetSeconds()
+#include <asndlib.h>
+#include <mp3player.h> // Was for testing playing an MP3 on menu. 
+#include "wii/wii_audio.h"
+#include "wii/wii_exit.h"   // ordered shutdown for the in-game exit combo
+#include <sdcard/wiisd_io.h>
+#include <ogc/usbstorage.h>
+#include "stdclass.h"   // for GetEmuPath() for bios check
+
+// *** WII U GAMEPAD (DRC) SUPPORT (vWii mode) ***
+#include "plugs/libwiidrc/wiidrc.h"
+
+// *** SIXAXIS / DUALSHOCK3 (USB) SUPPORT ***
+// Implemented in plugs/drkMapleDevices/drkMapleDevices.cpp, next to the
+// in-game controller mapping it feeds. SS_Init() reloads IOS58 and must run
+// before WPAD_Init(); the rest are thin menu-navigation helpers, same role
+// as the WiiDRC_* calls above.
+void SS_Init(void);
+void SS_PollConnections(void);
+u32 SS_GetClassicButtonsHeld(void);
+int SS_ConnectedCount(void);
+int SS_IsEnabled(void);
+
+// *** GAME PRESETS ***
+#include "wii/game_presets.h"
+#include "wii/user_controls.h"
+
+// *** ARM7DI CORE SELF-TEST ***
+#include "plugs/vbaARM/arm7.h"
+
+// ============================================================================
+// GLOBAL EMULATOR PRESETS
+// ============================================================================
+
+int g_accuracy_preset = 0;     // 0=Fast, 1=Balanced, 2=Accurate (default)
+
+extern "C" {
+  int get_accuracy_preset() { return g_accuracy_preset; }
+}
+
+int g_graphism_preset = 1;     // 0=Low (GX_NEAR), 1=Normal (GX_LINEAR). The old
+                               // HIGH/EXTRA levels were nothing but a fixed
+                               // (lod_bias, bias clamp/edge LOD, aniso) bundle
+                               // glued onto NORMAL's GX_LINEAR; those three now
+                               // live as their own presets below, so GRAPHICS is
+                               // just the texture filter it always really was.
+
+extern "C" {
+  int get_graphism_preset() { return g_graphism_preset; }
+}
+
+// GX texture-LOD extras: the biasclamp + edgelod pair of GX_InitTexObjLOD(),
+// the only two GX_DISABLE/GX_ENABLE arguments that call takes. biasclamp stops
+// the LOD bias below from pushing a minified texel past the point where the
+// footprint no longer covers a pixel (blur/shimmer on steep surfaces); edgelod
+// computes the LOD from the polygon edge instead of the quad center. libogc
+// requires edgelod whenever biasclamp is on OR aniso > 1, so ApplyGraphismPreset
+// forces it on for aniso even when this is off. 0=GX_DISABLE (default), 1=GX_ENABLE.
+int g_gx_preset = 0;
+
+extern "C" {
+  int get_gx_preset() { return g_gx_preset; }
+}
+
+// Texture LOD bias, index into { -1.0, -0.75, -0.5, 0.0, +0.5 }. Added to the
+// computed LOD before the mip/filter decision: negative sharpens (samples a
+// larger level than the footprint asks for), positive blurs. 3 = 0.0 = the
+// hardware default, a real no-op.
+int g_lod_bias_preset = 3;
+
+extern "C" {
+  int get_lod_bias_preset() { return g_lod_bias_preset; }
+}
+
+// Anisotropic filtering, index into { 0X, 2X, 4X }. Hollywood's TX unit only
+// implements GX_ANISO_1/2/4 (one filter cycle per level of aniso)
+// NOTE: the TX unit only iterates anisotropy when the min filter is
+// GX_LIN_MIP_LIN, so this does nothing at all unless MIPMAPS (page 6) is set to
+// FAST or TRILINEAR - see SetTextureParams() in gxRend.cpp.
+int g_aniso_preset = 0; // 0 = off (default).
+
+extern "C" {
+  int get_aniso_preset() { return g_aniso_preset; }
+}
+
+int g_ratio_preset = 1;        // 0=Original (4/3 pillarbox), 1=Fullscreen (default), 2=Auto (picks by CONF_GetAspectRatio: 4:3 console->full width, 16:9 console->pillarbox)
+
+extern "C" {
+  int get_ratio_preset() { return g_ratio_preset; }
+}
+
+int g_advanced_alpha_preset = 1;
+
+extern "C" {
+  int get_advanced_alpha_preset() { return g_advanced_alpha_preset; }
+}
+
+int g_decal_alpha_preset = 0; // 0=legacy GX_MODULATE (faster, wrong transparency) 1=correct DecalAlpha shading (GX_DECAL)
+
+extern "C" {
+  int get_decal_alpha_preset() { return g_decal_alpha_preset; }
+}
+
+int g_frameskip_preset = 0;
+
+extern "C" {
+  int get_frameskip_preset() { return g_frameskip_preset; }
+}
+
+int g_4bpp_preset = 1;
+// 0=I4 Stub, 1=4BPP Optimized, 2=CI4 fast, 3=CI4 normal, 4=RGB565
+
+extern "C" {
+  int get_4bpp_preset() { return g_4bpp_preset; }
+}
+
+int g_8bpp_preset = 1;
+// 0=I8 Stub, 1=8BPP Optimized, 2=CI8 fast, 3=CI8 normal, 4=RGB565
+
+extern "C" {
+  int get_8bpp_preset() { return g_8bpp_preset; }
+}
+
+int g_layer_sort_preset = 0;
+// 0=off (legacy: painter order), 1=on (layer-tiered translucent sort for 2D games that submit their whole scene at one depth
+
+extern "C" {
+  int get_layer_sort_preset() { return g_layer_sort_preset; }
+}
+
+int g_hokuto_hack_preset = 0;
+// 0=off, 1=on (Hokuto no Ken's hardcoded stage 1/2 debris VRAM addresses (refining the layer_sort tier-2 order — does nothing unless layer_sort is))
+
+extern "C" {
+  int get_hokuto_hack_preset() { return g_hokuto_hack_preset; }
+}
+
+int g_isp_depth_func_preset = 0;
+// Per-polygon isp.DepthMode -> GX depth compare. 0=off (legacy: every poly
+// GEQUAL), 1=honor DepthMode on the opaque/PT lists only, 2=all lists
+// (see gxRend.cpp ISP_DEPTH_FUNC()).
+
+extern "C" {
+  int get_isp_depth_func_preset() { return g_isp_depth_func_preset; }
+}
+
+int g_isp_cull_preset = 0;
+// Per-polygon isp.CullMode -> GX backface culling. 0=off (legacy: never cull),
+// 1=on, 2=on with the two cullable windings swapped (see gxRend.cpp ISP_CULL())
+
+extern "C" {
+  int get_isp_cull_preset() { return g_isp_cull_preset; }
+}
+
+int g_texture_cache_preset = 2;
+// 0 = VERY FAST (skmp algorythm)
+// 1 = FAST
+// 2 = NORMAL
+// 3 = QUALITY
+// 4 = EXTRA (debug)
+// 5 = EXTRA_DEBUG (debug)
+// 6 = VERY FAST+ (NORMAL, plus three fixes: stride-selected textures are sized
+//     for the 512-wide decode they actually perform instead of overrunning
+//     their slot, they are validated by a content hash rather than by format,
+//     and the cache sentinel is written at the un-mipped address so mipmapped
+//     textures really do cache.
+//     See the CACHE_VERY_FAST_PLUS block in plugs/drkPvr/gxRend.cpp)
+
+// Menu cycle order for OPT_TEX_CACHE. Not 0..N-1: VERY FAST+ is preset value 6
+// (4/5 are the debug-only EXTRA modes, unreachable from the menu) but belongs
+// between VERY FAST and FAST in the UI, where it sits on the speed/safety
+// ladder. Saved configs keep working because the stored value is the preset
+// number, not an index into this table.
+static const int kTexCacheCycle[] = { 0, 6, 1, 2, 3 };
+#define TEX_CACHE_CYCLE_N ((int)(sizeof(kTexCacheCycle)/sizeof(kTexCacheCycle[0])))
+
+// Step the tex-cache preset by +1 / -1 along kTexCacheCycle. A value not in the
+// table (an EXTRA debug mode set from a game preset) restarts the walk at 0.
+static int tex_cache_step(int cur, int dir)
+{
+  int i = 0;
+  for (int k = 0; k < TEX_CACHE_CYCLE_N; k++)
+    if (kTexCacheCycle[k] == cur) { i = k; break; }
+  i = (i + dir + TEX_CACHE_CYCLE_N) % TEX_CACHE_CYCLE_N;
+  return kTexCacheCycle[i];
+}
+
+extern "C" {
+  int get_texture_cache_preset() { return g_texture_cache_preset; }
+}
+
+int g_ppz_write_preset = 1; // 1 for Test Drive / Demolition Racer
+
+extern "C" {
+  int get_ppz_write_preset() { return g_ppz_write_preset; }
+}
+
+// DEBUG ONLY  Translucent-list depth WRITE: 1 = on (legacy) 0 = off 
+int g_trans_zwrite_preset = 1;
+
+// Sprite Base Colour // Needed in most game (game menu and other)
+int g_sprite_color_preset = 1; // 0 = off  - legacy, appears white // 1 = on   - sprite header's own BaseCol
+
+// Vertex alpha on ARGB1555 surfaces (see VTX_ALPHA_HONOR in gxRend.cpp).
+// 0 = legacy, force opaque on every ARGB1555 poly (Test Drive 6's cutout
+// font needs it); 1 = honour TSP.UseAlpha, so vertex-alpha fades work.
+int g_vtx_alpha_preset = 0;
+
+// PVR list-type render order (see LIST_ORDER in gxRend.cpp).
+int g_list_order_preset = 0; // 1 for Puyo 4 Only
+
+extern "C" {
+  int get_sprite_color_preset() { return g_sprite_color_preset; }
+  int get_vtx_alpha_preset()    { return g_vtx_alpha_preset; }
+  int get_list_order_preset()   { return g_list_order_preset; }
+}
+
+extern "C" {
+  int get_trans_zwrite_preset() { return g_trans_zwrite_preset; }
+  // For the [LOGO] probe: "" means no per-game section matched the ROM
+  // filename, i.e. every preset is at its built-in default.
+  const char* get_matched_preset_name() { return g_matched_preset_name; }
+}
+
+int g_x_scaler_preset = 1; // 0=off (legacy), 1=PVR SCALER_CTL.hscale support (Omicron / Wacky Races render 1280 wide, scaler halves 2:1)
+
+extern "C" {
+  int get_x_scaler_preset() { return g_x_scaler_preset; }
+}
+
+int g_canvas_width_preset = 640 ; // 0=off (legacy 640 canvas); else forced canvas width in 240p modes (SF3 Double Impact: 384, the CPS3 arcade width)
+
+extern "C" {
+  int get_canvas_width_preset() { return g_canvas_width_preset; }
+}
+
+// PVR vertical (Y) scaler
+int g_y_scaler_preset = 0;
+
+extern "C" {
+  int get_y_scaler_preset() { return g_y_scaler_preset; }
+}
+
+// PVR horizontal (H) scaler
+int g_h_scaler_preset = 0;
+
+extern "C" {
+  int get_h_scaler_preset() { return g_h_scaler_preset; }
+}
+
+// Dino Crisis's inventory preview 
+int g_dino_crisis_inventory_hack_preset = 0; // icon slot, 0x242000) // Off by default: hardcoded to one address, meaningless for any other game.
+
+extern "C" {
+  int get_dino_crisis_inventory_hack_preset() { return g_dino_crisis_inventory_hack_preset; }
+}
+
+int g_framebuffer_2d = 0; // 1 to activate 2D Framebuffer
+
+extern "C" {
+  int get_framebuffer_2d() { return g_framebuffer_2d; }
+}
+
+int g_fmv_format_preset = 2; // 0=CMPR (DXT1), 1=RGBA8, 2=RGB565, 3=TEV (GPU YUV->RGB: the YUV422 source is uploaded raw as an I8 luma plane + an IA8 chroma plane and the BT.601 matrix runs in the TEV combiner, so the PPC does no colour math per FMV pixel at all)
+
+extern "C" {
+  int get_fmv_format_preset() { return g_fmv_format_preset; }
+}
+
+int g_yuv_twiddle_fix_preset = 1; // 0=off (legacy extraction), 1=on. TWIDDLED YUV422 textures only (planar/FMV is untouched): the legacy decoder took the two u16 halves of each source u32 the wrong way round AND read luma from the low byte / chroma from the high byte, so every luma slot received a chroma sample (~128, near-constant) and both chroma slots received luma. The picture keeps its shape but collapses onto the green<->magenta axis - Virtua Fighter 3tb's "FIRST MATCH" loading screen.
+
+extern "C" {
+  int get_yuv_twiddle_fix_preset() { return g_yuv_twiddle_fix_preset; }
+}
+
+int g_yuv_stride_preset = 3;  // 0=off, 1=auto (converter-gated), 2=always (legacy), 3=texctl 
+
+extern "C" {
+  int get_yuv_stride_preset() { return g_yuv_stride_preset; }
+}
+
+int g_vq_cmpr_preset = 0; // 0=off (VQ decodes to 16bpp), 1=on (VQ -> GX CMPR)
+// Only meaningful with tex_cache=very_fast_plus: at 4 bits/texel a VQ texture
+// fits its address-derived cache slot, so it stops overrunning its neighbour
+// and stops needing the overflow arena. Costs a second lossy pass (DXT1 on top
+// of VQ), so gradients band. 565 VQ source only.
+extern "C" {
+  int get_vq_cmpr_preset() { return g_vq_cmpr_preset; }
+}
+
+int g_jojo_fix_preset = 0; // 0=off (pre-fix behavior), 1 = On
+
+extern "C" {
+  int get_jojo_fix_preset() { return g_jojo_fix_preset; }
+}
+
+int g_vertex_color_preset = 1; // 0 = Greyscale , 1 = On
+
+extern "C" {
+  int get_vertex_color_preset() { return g_vertex_color_preset; }
+}
+
+int g_blend_mode_preset = 1; // 0=off 1=on (per-polygon TSP blend, correct for RE3)
+
+extern "C" {
+  int get_blend_mode_preset() { return g_blend_mode_preset; }
+}
+
+int g_rgb565_opaque_alpha_preset = 0; // 1=force opaque for fmt0(ARGB1555)+fmt1(RGB565), 0=only fmt0 (Fixes POD 2)
+
+extern "C" {
+  int get_rgb565_opaque_alpha_preset() { return g_rgb565_opaque_alpha_preset; }
+}
+
+int g_blend_fps_boost_preset = 0; // 0=off (correct alpha), 1=on (few extra FPS, e.g. Castlevania, wrong alpha)
+
+extern "C" {
+  int get_blend_fps_boost_preset() { return g_blend_fps_boost_preset; }
+}
+
+int g_punch_through_preset = 0; // 0=legacy (PT polys drawn last in TR blend state), 1=OP->PT->TR order + PT_ALPHA_REF alpha test
+
+extern "C" {
+  int get_punch_through_preset() { return g_punch_through_preset; }
+}
+
+int g_offset_color_preset = 0; // 0=off (offset/specular color dropped, legacy), 1=on (PIX = base*tex + offset via 2nd TEV stage)
+
+extern "C" {
+  int get_offset_color_preset() { return g_offset_color_preset; }
+}
+
+int g_trans_sort_preset = 0; // 0=off (TR strips drawn in TA submission order, legacy), 1=on (per-strip back-to-front depth sort)
+
+extern "C" {
+  int get_trans_sort_preset() { return g_trans_sort_preset; }
+}
+
+int g_autosort_preset = 0; // 0=off (legacy); 1..4 = REAL per-pixel PVR autosort via GX depth peeling, value = max translucent depth layers per pixel (see gxRend.cpp AUTOSORT()). Very GPU-heavy (~2 extra TR walks + 2 EFB Z copies per layer) — per-game only.
+
+extern "C" {
+  int get_autosort_preset() { return g_autosort_preset; }
+}
+
+int g_render_to_texture_preset = 0; // 0=off (RTT frames dropped, legacy: the pass's geometry is left in the buffers and leaks into the next display frame), 1=on (EFB copied back into VRAM at FB_W_SOF1), 3=on + keep list (RTT render that does NOT consume the TA list, so the following display render draws the whole accumulated list -- Silent Scope's sniper scope; see RTT_KEEP_LIST() in gxRend.cpp), 2=overlay (pass not rendered to a texture, but its geometry is carried into the next display frame and drawn last, flat, on top — see RTT_CARRY_OVERLAY() in gxRend.cpp; for scope/mirror passes we cannot resolve as a texture, e.g. Silent Scope's sniper crosshair)
+
+extern "C" {
+  int get_render_to_texture_preset() { return g_render_to_texture_preset; }
+}
+
+int g_split_screen_preset = 0; // 0=off (legacy), 1=tile clip (both viewports in ONE pass, confined per polygon by the PVR User Tile Clip — Daytona USA), 2=multi-pass (ONE PASS PER VIEWPORT, each scissored into its band of the EFB and the assembled frame presented once — fixes the "shows player 1 then player 2 then player 1" flicker in Le Mans 24 Hours / Demolition Racer / Magical Racing Tour), 3=both. See gxRend.cpp SPLIT_SCREEN() / SPLIT_COMPOSE()
+
+extern "C" {
+  int get_split_screen_preset() { return g_split_screen_preset; }
+}
+
+// Special controller layouts remap the Dreamcast pad away from its normal
+// per-device buttons for games that play better with a fixed physical
+// layout (e.g. ChuChu Rocket, steered entirely by the D-Pad/D-Pad-like
+// input; DDR Club Mix/2nd Mix, which read the analog stick pushed down as
+// a "Select" input), or hand the whole mapping to a user-edited file
+// (USER CFG, see user_controls.cfg / wii/user_controls.cpp). Consumed by
+// drkMapleDevices.cpp MapButtons() / UpdateInputState(). 0=off (legacy
+// per-button mapping), 1=CHUCHU, 2=DDR SELECT, 3=USER CFG (see
+// kSpecialLayoutNames below).
+enum { SPECIAL_LAYOUT_OFF = 0, SPECIAL_LAYOUT_CHUCHU = 1, SPECIAL_LAYOUT_DDR_SELECT = 2, SPECIAL_LAYOUT_USER_CFG = 3, SPECIAL_LAYOUT_COUNT };
+static const char *kSpecialLayoutNames[SPECIAL_LAYOUT_COUNT] = { "OFF", "CHUCHU ROCKET", "DDR SELECT", "USER CFG" };
+int g_special_layout_preset = SPECIAL_LAYOUT_OFF;
+
+extern "C" {
+  int get_special_layout_preset() { return g_special_layout_preset; }
+}
+
+int g_mipmap_preset = 0; // 0=off (legacy base-level-only, fastest), 1=fast (generated GX mip chain + nearest-mip bilinear), 2=trilinear (best quality, halves texture fill rate — e.g. -40% in Test Drive 6)
+
+extern "C" {
+  int get_mipmap_preset() { return g_mipmap_preset; }
+}
+
+int g_seam_fix_preset = 0; // 0=off (legacy); 1=on. Half-texel UV inset via a per-texture GX matrix so GX_LINEAR filtering stops sampling past a sprite's own texels — kills the thin black "seam" line between 2D tiles/sprites without dropping to GX_NEAR. Keeps wrap/tiling intact (sub-texel shift only).
+
+extern "C" {
+  int get_seam_fix_preset() { return g_seam_fix_preset; }
+}
+
+int g_fog_preset = 0; // 0=off (legacy: TSP.FogCtrl decoded but never applied, so nothing is ever fogged), 1=on (per-polygon PVR2 fog — LUT / per-vertex / LUT mode 2 — evaluated per vertex on the CPU and blended by an extra TEV stage; see gxRend.cpp FOG()). Costs 4 bytes/vertex and one TEV stage on fogged polys only, and it recolours every fogged polygon in the scene, so it stays per-game.
+
+extern "C" {
+  int get_fog_preset() { return g_fog_preset; }
+}
+
+int g_fixed_depth_preset = 0; // 0=off (per-vertex min/max W tracking, legacy), 1=wide fixed planes [0.0001..100000] (safe, coarse Z), 2=tight fixed planes [0.1..25000] (finer Z, extreme near/far geometry clips)
+
+int g_legacy_depth_preset = 0; // 0=off, 1=reproduce the 1bb8c27 depth pipeline verbatim: fixed planes NEAR=0.001/FAR=10000*1.001, vert_base 1/W clamp at 0.001 (not 0.0001), and no per-vertex tracking or margin/HUD vertex fixups. Overrides fixed_depth. Buggy Heat: logo + VMU screen + gameplay were all correct there.
+
+extern "C" {
+  int get_legacy_depth_preset() { return g_legacy_depth_preset; }
+  int get_fixed_depth_preset() { return g_fixed_depth_preset; }
+}
+
+int g_depth_clip_preset = 1; // 0=off (legacy: XF Z-clipping on, no near margin), 1=near margin (pad vtx_min_Z 0.1% so the nearest 2D layer can't land exactly on the near clip plane), 2=no clip (GX_SetClipMode(GX_CLIP_DISABLE), matches Dolphin which never Z-clips: out-of-range depth clamps instead of the poly vanishing)
+
+extern "C" {
+  int get_depth_clip_preset() { return g_depth_clip_preset; }
+}
+
+int g_hud_pass_preset = 0; // 0=off (legacy), 1=overlay (re-park HUD strips nearer than the projection near plane onto the plane, draw GX_ALWAYS + no Z-write — may be overdrawn by later geometry), 2=protect (same, Z-write ON at the near plane so later scene polys fail GEQUAL and the HUD stays on top; avoid on games with a large near-clipped quad drawn early). Companion to fixed_depth=tight, whose near plane clips the 2D HUD; no-op under dynamic/wide depth
+
+extern "C" {
+  int get_hud_pass_preset() { return g_hud_pass_preset; }
+}
+
+int g_subpass_zclear_preset = 0; // 0=off (legacy: single shared depth pass, current scene's Z carries into the next pass), 1=on (re-park the whole Z buffer at a known W via a full-canvas GX_ALWAYS quad before a later geometry group — e.g. HUD_PASS() PROTECT-mode overlays — starts from a clean depth baseline; see gxRend.cpp SUBPASS_ZCLEAR())
+
+extern "C" {
+  int get_subpass_zclear_preset() { return g_subpass_zclear_preset; }
+}
+
+int g_poly_offset_preset = 0; // 0=off (legacy, no bias), 1..3=native polygon offset tier applied to the Punch-Through list: real hardware has no glPolygonOffset-style register, so this uses a Z-texture in ADD mode (GX_SetZTexture) to add a constant, slope-independent depth bias to every fragment drawn while it's bound — the GX equivalent for co-planar decals/shadows/road-markings (see gxRend.cpp POLY_OFFSET() / s_poly_offset_frac[])
+
+extern "C" {
+  int get_poly_offset_preset() { return g_poly_offset_preset; }
+}
+
+int g_async_render_preset = 1; // 0=off (CPU blocks in GX_DrawDone until the GPU finishes each frame, legacy), 1=on (frame queued, presented one vblank later; SH4 emulates while the GPU draws)
+
+extern "C" {
+  int get_async_render_preset() { return g_async_render_preset; }
+}
+
+int g_tmem_cache_preset = 1; // 0=off (full GPU texture cache invalidate every frame, legacy), 1=on (invalidate only on texture re-decode; unchanged textures stay cached in TMEM across frames)
+
+extern "C" {
+  int get_tmem_cache_preset() { return g_tmem_cache_preset; }
+}
+
+int g_cdda_preset = 1; // 0=off (CD audio tracks silent, legacy), 1=on (GD-ROM Red Book audio fed to the AICA EXTS0 mixer input — CDDA music in games; costs ~75 disc-image sector reads/s while a track plays)
+
+extern "C" {
+  int get_cdda_preset() { return g_cdda_preset; }
+}
+
+int g_mute_pcm16_preset = 0; // 0=off (all AICA sample formats audible, legacy), 1=on (16-bit PCM channels (PCMS==0) are silenced at KEY_ON — workaround for ChuChu Rocket's echoey 16-bit SFX; also mutes any 16-bit music/voices, so game-specific)
+
+extern "C" {
+  int get_mute_pcm16_preset() { return g_mute_pcm16_preset; }
+}
+
+// 0=off (legacy mixer), 1=on (same samples, less work per sample: only playing
+// channels are visited, no empty filter-envelope call, no DSP send while the
+// DSP is off, cached master volume, silent CD-audio skipped). Read directly as
+// a global by plugs/nullAICA/sgc_if.cpp and aica.cpp — it is tested 44,100x/s.
+// Wii-CONFIRMED (Castlevania, 2026-09-13): aica% 10.0->7.7, speed +2.6%, no
+// audible change. Default ON.
+int g_aica_fast_preset = 1;
+
+int g_speed_limiter_preset = 0; // 0=off (uncapped, may run >100%), 1=on (capped at real-hardware speed)
+
+extern "C" {
+  int get_speed_limiter_preset() { return g_speed_limiter_preset; }
+}
+
+int g_render_delay_preset = 0; // 0=off (legacy: instant list-complete IRQs, render-done after VtxCnt*15 min 50k cycles, all 3 at once), 1=on (hardware-like: list-complete +200 cycles, render-done ISP/TSP/Video staggered at 800k/850k/900k cycles — MvC2 "130% speed but 7 FPS")
+
+extern "C" {
+  int get_render_delay_preset() { return g_render_delay_preset; }
+}
+
+// ARM7 sound-CPU speed divider stage
+// 0=off (bias 20, ~10 MHz — legacy), 1=half (bias 40), 2=quarter (bias 80).
+int g_arm7_speed_preset = 0;
+
+extern "C" {
+  int get_arm7_speed_preset() { return g_arm7_speed_preset; }
+}
+
+// ARM7 JIT (plugs/vbaARM/arm7_jit.cpp): 0=off (cached interpreter),
+// 1=on (ARM7 recompiled to PPC; same results and timing as the interpreter),
+// 2=on + static exits patched into direct block-to-block branches (default;
+// both levels Wii-confirmed 2026-09-14),
+// 3=2 + dispatch done in emitted code + per-site cache for return targets
+// (MOV pc,lr / LDMFD ..pc); Wii-measured 2026-09-15: arm: 8.49% -> 8.29%
+// in the same Castlevania scene (about 1.5% of the ARM cost),
+// 4=3 + LDM/STM (push/pop) inline instead of a C loop; Wii-measured
+// 2026-09-15: arm: ~7.9% (ARM cost -7% vs level 2, speed unchanged within noise),
+// 5=4 + one-branch budget test per instruction and N/Z conditions read from
+// the previous instruction's result (default since 2026-09-17: Wii-measured
+// 118.0% / arm 7.4% vs level 2's 117.5% / 8.49% in the same Castlevania scene,
+// sound unaffected; every level keeps the interpreter's exact timing).
+// Latched at every ARM reset. When on, the arm7di conformance tests run once
+// at ARM init and a failure falls back to the interpreter for the session.
+int g_arm7_jit_preset = 5;
+
+extern "C" {
+  int get_arm7_jit_preset() { return g_arm7_jit_preset; }
+}
+
+// ARM7 slice batching (plugs/vbaARM/arm_aica.cpp): run the sound CPU once every
+// N AICA updates with the cycles of all N. Same ARM clock and same audio sample
+// stepping, fewer switches between SH4 and ARM code. 1 = every update (default),
+// 2 / 4 / 8 / 16. Wii-measured 2026-09-17 (Castlevania, arm7_jit=5): batch 4 gave
+// 119.5% / arm 6.2% vs 118.0% / 7.4% at batch 1, sound unaffected, and Sega
+// Tetris agreed -> default 4. UNLIKE the JIT levels this changes emulated
+// timing: batch 8 and 16 make Castlevania's music wobble loud/quiet (the same
+// symptom as arm7_speed=1), so a game that sounds off wants arm7_batch=1.
+int g_arm7_batch_preset = 4;
+
+extern "C" {
+  int get_arm7_batch_preset() { return g_arm7_batch_preset; }
+}
+
+// SH4 underclock — effective SH4 core clock in MHz (150..200, step 5 in the
+// menu). 200 = full speed (nominal Dreamcast). Lower values feed fewer emulated
+// SH4 cycles into the audio/video/RTC/DMA pacing anchors per frame (see
+// plugins/plugin_types.h SH4_CLOCK_EFF), giving the Wii host more headroom, at
+// the cost of the emulated machine behaving like a slower Dreamcast (CPU-heavy
+// games drop internal frames). Read by the timing code via get_sh4_clock_preset.
+int g_sh4_clock_preset = 200; // MHz
+
+extern "C" {
+  int get_sh4_clock_preset() { return g_sh4_clock_preset; }
+}
+
+// DYNAREC — SH4 core back-end select. 1=Dynarec (JIT recompiler, default,
+// fast), 0=Interpreter (slow, reference-correct — useful for isolating a
+// JIT-only bug). Read by nullDC.cpp LoadSettings() via get_dynarec_preset(),
+// which sets settings.dynarec.Enable; RunDC() (nullDC.cpp) picks the SH4
+// back-end from that flag once at boot.
+int g_dynarec_preset = 1;
+
+extern "C" {
+  int get_dynarec_preset() { return g_dynarec_preset; }
+}
+
+// JIT_SBP — JIT Stale Block Protection. One preset gates all three defenses
+// against executing stale/self-modified translations (see
+// dc/sh4/rec_v2/driver.cpp): the boot-entry cache flush at 0x..08300 /
+// 0x..10000, the runtime block-check guard emitted at each guarded block's
+// entry (a source-byte compare; a mismatch drops the stale translation and
+// recompiles via rdv_BlockCheckFail), and the full cache clear on a guard
+// failure. 0=off (legacy, zero protection), 1=known self-modifying addresses
+// (default), 2=every RAM block (slow — diagnosis only).
+int g_jit_sbp_preset = 1;
+
+extern "C" {
+  int get_jit_sbp_preset() { return g_jit_sbp_preset; }
+}
+
+// DMA_FIX — bundles the ch2/PVR/Sort/AICA-G2 DMA correctness fixes found by
+// diffing against the verified-working NullDC PSP port (see dc/sh4/dmac.cpp,
+// dc/pvr/pvr_sb_regs.cpp, dc/aica/aica_if.cpp): correct CHCR TE/DE writeback
+// (real SH4 sets TE and leaves DE alone; never clears DE), no SB_C2DSTAT
+// clobber, no bogus PVR-DMA alignment check, the Sort-DMA link sentinel fix
+// (WinCE games), and deferred (non-instant) AICA G2-DMA completion + SB_E2ST.
+// 0=off (legacy, pre-fix behavior for A/B comparison), 1=on (default).
+int g_dma_fix_preset = 1;
+
+extern "C" {
+  int get_dma_fix_preset() { return g_dma_fix_preset; }
+}
+
+// SCHED — unified cycle-deadline scheduler (dc/sh4/sh4_sched.cpp). When on,
+// the completion/IRQ events whose RELATIVE ordering matters (GD-ROM read-done,
+// ch2/PVR/AICA-DMA completion, render-done, TA list-end) fire through a single
+// deadline queue instead of at their own tier of the Medium/Slow/VerySlow
+// timeslice cascade — so they arrive in true hardware order. Driven by
+// sh4_sched_tick(s_timeslice) from UpdateSystem; no JIT/context changes.
+// Leading suspect for the cross-game post-logo stall (Rez). 0=off (legacy
+// cascade ordering, default), 1=on. EXPERIMENTAL — A/B against off.
+int g_sched_preset = 0;
+// 0 = off (legacy: the persistent texture arena resets to offset 0 whenever a
+// decode does not fit, including mid-frame, over textures the GP is still
+// sampling). 1 = on: drain the GP once before such a mid-frame reset. See
+// fast_bump_alloc() in gxRend.cpp.
+int g_tex_wrap_guard_preset = 0;
+// 0 = off (legacy: a cached texture keeps the clamp/flip wrap mode of the first
+// polygon that decoded it). 1 = on: every bind applies its own polygon's TSP
+// wrap mode. See SetTextureParams() in gxRend.cpp.
+int g_tex_clamp_fix_preset = 0;
+
+extern "C" {
+  int get_sched_preset() { return g_sched_preset; }
+  int get_tex_wrap_guard_preset() { return g_tex_wrap_guard_preset; }
+  int get_tex_clamp_fix_preset() { return g_tex_clamp_fix_preset; }
+}
+
+// FASTMEM — PPC-MMU fastmem for the SH4 dynarec (wii/wii_fastmem.cpp +
+// rec_fastmem_* in wii_driver.cpp). Maps the DC 29-bit address space at
+// EA 0x00000000-0x1FFFFFFF through SR0/SR1 + a hand-built hashed page table
+// so JIT loads/stores become branchless (rlwinm + load/store, no compares);
+// MMIO/SQ/BIOS accesses fault once and are back-patched to slow-path
+// trampolines. 0=off (legacy inline-table paths, default), 1=on.
+int g_fastmem_preset = 1;
+
+extern "C" {
+  int get_fastmem_preset() { return g_fastmem_preset; }
+}
+
+// BCACHE — flat dynamic-branch dispatch cache for the SH4 dynarec
+// (dc/sh4/rec_v2/blockmanager.cpp bm_bcache[] + the BET_Dynamic* emission in
+// wii/dc/sh4/rec_v2/wii_driver.cpp). Every dynamic SH4 branch (jmp/rts/bsrf)
+// dispatches through an inline cache; the legacy path chases
+// cache[] -> DynarecBlock across two data cache lines and read-modify-writes
+// a lookups counter. The preset reads a flat value-mirrored {addr, code}
+// table instead: one cache line touched, no store, 10 instructions vs 16.
+// 0=off (legacy two-line path, default), 1=on.
+int g_bcache_preset = 0;
+
+extern "C" {
+  int get_bcache_preset() { return g_bcache_preset; }
+}
+
+// DYN_IC — per-site monomorphic inline cache on SH4 dynamic branch exits
+// (the BET_Dynamic* emission in wii/dc/sh4/rec_v2/wii_driver.cpp).
+// BCACHE above still ends every dynamic exit in an unpredictable `bctr`
+// through a table entry. Most of those exits never change target — `JSR @Rn`
+// to a fixed callee, and the JSR->RTS;NOP trampoline idiom that dominates SH4
+// 3D inner loops — so the lookup re-derives a constant on every traversal.
+// This puts a 4-instruction guard in front of it (xoris/cmplwi/bne/b), self-
+// patched on first execution with the target that site actually took: a hit is
+// two ALU ops and a statically-predicted direct branch, no loads, no bctr.
+// Stacks with BCACHE, which stays as the miss path.
+// Wii-measured 2026-09-07: mode 1 (JSR/JMP only) was a wash (+0.3%); the win
+// is almost entirely RTS sites (JSR->RTS;NOP trampolines) — mode 2 measured
+// +0.98% steady-state SPEED% on a CPU-bound scene. See dyn-ic-preset memory.
+// 0=off, 1=JSR/JMP sites only, 2=also RTS (default — the mode that measured).
+int g_dyn_ic_preset = 2;
+
+extern "C" {
+  int get_dyn_ic_preset() { return g_dyn_ic_preset; }
+}
+
+// FPU_PIN — pins the SH4 fr[0..15] register file to PPC f14..f29 for the
+// whole session (dc/sh4/rec_v2/wii_driver.cpp ppc_sh_load_f32/store_f32/
+// fvec_load/fvec_store + the memory-bounce fix in ppc_sh_load/ppc_sh_store),
+// the same scheme int GPRs already use permanently. Every fadd/fsub/fmul/
+// fdiv/fmac/fipr/ftrv/fsca/cvt_* op stops round-tripping through Sh4Context
+// memory. xf[] (the FTRV matrix bank) stays memory-resident — there aren't
+// enough spare non-volatile PPC FPRs to pin both banks. New/unproven, so
+// runtime-gated like fastmem/bcache rather than a compile-time switch.
+// 0=off (legacy, default), 1=on.
+int g_fpu_pin_preset = 0;
+
+extern "C" {
+  int get_fpu_pin_preset() { return g_fpu_pin_preset; }
+}
+
+// JIT_ALIGN — pad every SH4-dynarec block entry to a 32-byte L1 cache line
+// (dc/sh4/rec_v2/wii_driver.cpp ngen_Compile). Broadway's L1 line is 32 B, so
+// a block that starts mid-line can split its first fetch across two lines;
+// aligning entries makes every branch/link target begin on a clean boundary.
+// Cheap (<=7 nops/block against a 6 MB cache) and cache-hygiene only — no
+// logic change. Marginal by nature; A/B per game. 0=off (default), 1=on.
+int g_jit_align_preset = 1;
+
+extern "C" {
+  int get_jit_align_preset() { return g_jit_align_preset; }
+}
+
+// IFB_FLUSH — narrow the register bracket around shop_ifb interpreter call-outs
+// (dc/sh4/rec_v2/wii_driver.cpp ifb_bracket/reg_flush_mask). Every opcode that
+// falls back to the interpreter has always been wrapped in a FULL register-file
+// spill — 15 stw + 15 lwz, plus 16 stfs + 16 lfs when FPU PIN is on — because
+// the handler could in principle touch any guest register. In practice it
+// touches two. Only 28 opcodes reach this path, but they include div1, addc,
+// subc, addv, subv, negc, rotcl, rotcr, cmp/str, xtrct, swap.b, mac.l, mac.w
+// and tas.b. div1 is the costly one: the SH4 has no divide instruction, so a
+// single 32-bit software division is ~32 div1 and pays the bracket every time.
+// Same shape as the fschg/sync_fpscr call-out that was worth +12-13% on Wii.
+// The GPR set and the float file are decided INDEPENDENTLY, because they do
+// not correlate: `lds Rn,FPSCR` needs only Rn but must spill fr[] (ChangeFP
+// swaps the banks), `ldc Rn,SR` needs every GPR (UpdateSR bank-swaps r0..r7)
+// but no float at all, and fcnvds/fcnvsd need float only. A probe run measured
+// `lds Rn,FPSCR` at 265k/s during BIOS boot paying a 30-op GPR spill for a
+// handler that writes no GPR.
+// Closed allow-list — anything not explicitly listed (trapa, sleep, illegal,
+// double-precision FPU fallbacks) keeps the full everything-spill, so an
+// unlisted opcode is slow, never wrong.
+// Read at CODEGEN time: set it before launching, not mid-game.
+// 0=off (default, legacy full spill), 1=on (selective).
+int g_ifb_flush_preset = 1;
+
+extern "C" {
+  int get_ifb_flush_preset() { return g_ifb_flush_preset; }
+}
+
+// IFB_PROBE — count shop_ifb executions per opcode and print a [IFB] breakdown
+// to /ndclog.txt once a second (dc/sh4/rec_v2/wii_driver.cpp ifb_probe_dump,
+// called from plugs/drkPvr/SPG.cpp's stats block). Measures whether IFB_FLUSH
+// above is worth anything on a given game BEFORE doing the A/B: it reports
+// total ifb/sec, the share that is narrowable, and the bracket memory-op rate
+// with and without narrowing. Costs 4 instructions per ifb site, so leave it
+// off for timing runs. Read at CODEGEN time: set it before launching.
+// 0=off (default), 1=on.
+int g_ifb_probe_preset = 0;
+
+extern "C" {
+  int get_ifb_probe_preset() { return g_ifb_probe_preset; }
+}
+
+// JIT_NEWOPS — dynarec nine opcodes that had always fallen back to the
+// interpreter (dc/sh4/rec_v2/decoder.cpp dec_is_newop): stc SR, stc.l SR,
+// ldc.l SR, ldc SR, lds FPSCR, lds.l FPSCR, rotcl, rotcr and tas.b. In every
+// case the code to compile them already existed and simply was not reachable —
+// eight had hand-written decoder handlers never referenced from the opcode
+// table, and stc SR,<REG_N> had dec_generic's DM_ReadSRF mode with no table row
+// pointing at it — so each execution paid a shop_ifb call-out plus the register
+// bracket IFB_FLUSH narrows. stc SR is the one that measured: it is the top
+// fallback in several ChuChu Rocket scenes at up to 96k/s (~0.4% there, ~0 in
+// that game's slow vertex-bound scenes). Changes SH4 core codegen, so it is off
+// by default — A/B per game, and use IFB_PROBE to see whether a given game
+// issues enough of these to care. 0=off (legacy, default), 1=on.
+int g_jit_newops_preset = 1;
+
+extern "C" {
+  int get_jit_newops_preset() { return g_jit_newops_preset; }
+}
+
+// JIT_HOTBLOCKS — count executions per compiled SH4 block and print the hottest
+// ones once a second to /ndclog.txt (dc/sh4/rec_v2/wii_driver.cpp
+// hotblocks_dump, called from plugs/drkPvr/SPG.cpp's stats block), with the
+// codegen density of each — PPC bytes emitted per SH4 opcode — plus a full SH4
+// + PPC dump of the top block twice per session. This is the tool for asking
+// "where is the dynarec actually spending the frame, and is the code it emitted
+// any good", instead of guessing from opcode-frequency counts. IFB_PROBE
+// answers the same question for the interpreter-fallback path; this one covers
+// everything else, which is the ~99% of it.
+// Costs 4 instructions at every block entry, so turn it OFF for timing runs.
+// The block table (48 KB) is allocated lazily, so it costs no MEM1 while off.
+// Read at CODEGEN time: set it before launching. 0=off (default), 1=on.
+int g_hotblocks_preset = 0;
+
+extern "C" {
+  int get_hotblocks_preset() { return g_hotblocks_preset; }
+}
+
+// JIT_TFWD — forward the SH4 T bit from the register it was just computed in
+// straight to the branch that consumes it, instead of storing it to the context
+// and immediately loading it back (dc/sh4/rec_v2/wii_driver.cpp, compile_state
+// t_in_rarg0). sr_T is not pinned — GetIntReg only covers r0..r15 minus r11 —
+// so the commonest shape on SH4, a compare followed by bt/bf, was emitting
+//     stw r3,0x118(r30)   ;  lwz r3,0x118(r30)
+// back to back: same address, same register, a load-hit-store stall on Broadway
+// to recover a value that never left. Found with JIT_HOTBLOCKS on the #1 block
+// of a ChuChu Rocket scene. The store stays (sr_T is architectural state a
+// later block may read); only the reload goes. Applies to the block-end
+// conditional and to the shop_jcond of a delay-slot branch, and only when the
+// producer is the immediately preceding op — anything in between invalidates
+// it automatically. 0=off (legacy, default), 1=on.
+int g_jit_tfwd_preset = 1;
+
+extern "C" {
+  int get_jit_tfwd_preset() { return g_jit_tfwd_preset; }
+}
+
+// JIT_FMOV — extend FPU_PIN's "Phase B" direct float memory access to the
+// FASTMEM shapes (dc/sh4/rec_v2/wii_driver.cpp shop_readm/shop_writem).
+//
+// With FPU_PIN on, fr[0..15] live in PPC f14..f29, but shop_readm/writem move
+// raw bit patterns through the generic integer helpers, so every fmov.s/fmov.d
+// against a pinned FR was emitting a memory bounce:
+//     lwz r3,0(r4) ; stw r3,ofs(r30) ; lfs f18,ofs(r30)     (load)
+//     stfs f18,ofs(r30) ; lwz r4,ofs(r30) ; stw r4,0(r5)    (store)
+// The store is immediately followed by a load of the SAME address — the same
+// load-hit-store stall JIT_TFWD removed for sr_T, on the FPU path. Phase B
+// already fixes this by using lfs/stfs directly, but it was scoped to the
+// LEGACY memory path only, because the fastmem fault sites are decoded by
+// rec_fastmem_patch() at DSI time and it only knew the integer shapes. This
+// preset teaches that decoder the four float shapes and turns Phase B on for
+// fastmem, which is the configuration actually played.
+//
+// Found with JIT_HOTBLOCKS: block 8C1074E6 in ChuChu Rocket (three fmov.s
+// @Rm+,DRn plus an fschg, ~8-9% of all block entries in the heavy scene) was
+// compiling 4 SH4 opcodes into 288 bytes, each fmov.s costing 9 PPC
+// instructions with two of these bounces in it.
+//
+// Requires FPU PIN and FASTMEM to be on; a no-op otherwise.
+// 0=off (legacy GPR bounce, default), 1=on.
+int g_jit_fmov_preset = 1;
+
+extern "C" {
+  int get_jit_fmov_preset() { return g_jit_fmov_preset; }
+}
+
+// JIT_CARRY - dynarec the SH4's carry/overflow arithmetic instead of calling
+// the interpreter for it: addc, subc, negc, addv, subv, div1, plus cmp/str,
+// xtrct, swap.b and clrmac. All ten took the shop_ifb path because SHIL had no
+// opcode that could produce a value AND the new T bit in one go; the shil ops
+// now exist (shop_adc/sbc/negc/addv/subv/div1/cmpstr/swaplb) with native PPC
+// codegen behind them that maps the T bit onto XER[CA]/XER[OV] the way the
+// hardware intends -- the approach Evoca uses in seta-gx's SH2 recompiler.
+//
+// SIZE OF THE PRIZE, honestly: with IFB_FLUSH on, one fallback costs ~35-45
+// PPC cycles, and Castlevania's steady state runs ~49.5k of them a second =
+// ~0.3% of a 729 MHz frame. cmp/str spikes to 72k/s on string-heavy loading
+// screens, addc to 21k/s in ChuChu Rocket. So this is a low-single-digit-
+// tenths-of-a-percent speedup, not a breakthrough. Use IFB_PROBE first to see
+// whether a given game issues enough of these to bother measuring.
+//
+// It is ALSO a correctness fix. The interpreter's div1 never applied the
+// `q ^ M ^ carry` step, so its Q -- and therefore T -- was wrong whenever the
+// bit shifted out of Rn was set, or whenever M was 1 (signed division). The
+// new shop_div1 implements the architectural sequence. This stayed invisible
+// because MatchDiv32 pattern-matches the 32-step rotcl/div1 idiom away; only
+// the unmatchable prologue/epilogue div1s ever execute.
+//
+// Read at CODEGEN time: set it before launching, not mid-game.
+// 0=off (legacy interpreter fallback, default), 1=on.
+int g_jit_carry_preset = 1;
+
+extern "C" {
+  int get_jit_carry_preset() { return g_jit_carry_preset; }
+}
+
+// JIT_MAC - dynarec mac.l and mac.w, the last two SH4 opcodes with no dynarec
+// path at all. Separate from JIT_CARRY on purpose: these are the only ones in
+// that batch that touch MEMORY, so a hardware problem can be bisected to them.
+//
+// The decoder now issues the two @Rm+/@Rn+ accesses as ordinary shop_readm ops
+// (DM_MAC in dc/sh4/rec_v2/decoder.cpp), so they pick up FASTMEM and pinned-
+// register addressing; on the old shop_ifb path they went through the
+// interpreter's ReadMem and re-did the full address decode every time. The
+// 64-bit accumulate that is left compiles to mullw/mulhw + addc/adde inline.
+//
+// It also makes saturation mode work. SR.S=1 used to be fatal-or-silent: mac.l
+// did `verify(sr.S == 0)` and DIED, mac.w printed a line and skipped the whole
+// instruction including both register post-increments, so the guest's pointers
+// stopped advancing. Neither has been seen in a real game, which is exactly why
+// nobody noticed. sh4_mac_l/sh4_mac_w in dc/sh4/rec_v2/shil.cpp now implement
+// the SH-4 manual pseudocode, and the JIT calls them on the rare S=1 path.
+//
+// Expect nothing for most games - the SH4 has a real FPU, so MAC is far rarer
+// on it than on the SH2 this idea came from. Run IFB_PROBE first and only
+// bother if mac.l/mac.w actually show up.
+//
+// Read at CODEGEN time: set it before launching, not mid-game.
+// 0=off (legacy interpreter fallback, default), 1=on.
+int g_jit_mac_preset = 1;
+
+extern "C" {
+  int get_jit_mac_preset() { return g_jit_mac_preset; }
+}
+
+// JIT_FSCHG - skip UpdateFPSCR() on `fschg`.
+//
+// fschg toggles FPSCR.SZ (bit 20) and nothing else. Walk what UpdateFPSCR()
+// (dc/sh4/sh4_registers.cpp) then has left to do:
+//   * ChangeFP() runs only when fpscr.FR != old_fpscr.FR -- FR is bit 21, and
+//     fschg cannot touch it, so an FP bank swap is impossible.
+//   * SetFloatStatusReg() reacts only to RM/DN, which fschg does not touch;
+//     on Wii its whole body is #if HOST_ARCH==ARCH_X86 anyway, so it is empty.
+//   * old_fpscr = fpscr -- the only thing that actually has to happen.
+// So the fast path is one load and one store, in place of a C call bracketed
+// by reg_flush_all_fpu()/reg_reload_all_fpu().
+//
+// That bracket is why this is worth a preset rather than a footnote. With
+// FPU_PIN on it is 16 stfs + call + 16 lfs, and Dreamcast T&L brackets its
+// vertex loop with fschg to get pair-width fmov -- so it fires roughly twice
+// per transformed vertex. Measured on this hardware in ChuChu mouse mania:
+// ~1.3 MILLION sync_fpscr/s of which ~650/s (0.05%) actually changed a bank,
+// i.e. ~43 M floating-point memory operations per second spent doing nothing.
+//
+// Only `fschg` is affected. frchg (toggles FR) and ldc/ldc.l to FPSCR (writes
+// an arbitrary value) do not set SYNC_FPSCR_SZ_ONLY and keep the full call.
+//
+// Originally measured at +12-13% on branch chuchu_frameskip_speed (commit
+// 6f29688) against a 550-580K vertices/s baseline. Main has since gained
+// jit_fmov/ifb_flush/jit_tfwd/dyn_ic and sits near 610K/s, so the percentage
+// may land lower now -- the mechanism it removes is unchanged either way.
+//
+// Wii-CONFIRMED 2026-09-11, ~+10% in ChuChu mouse mania at matched load
+// (89.70->97.72% at 10.8K vertices/emulated frame, 68.63->76.80% at 16.4K,
+// 58.49->64.12% at 20.6K; peak throughput 603-614K -> 628-660K vertices/s).
+// Null in Castlevania, whose loop simply does not execute fschg hot — that is
+// the wrong game to measure this in, not a failure of the fix.
+//
+// Read at CODEGEN time: set it before launching, not mid-game.
+// 0=off (legacy full UpdateFPSCR call), 1=on (default).
+int g_jit_fschg_preset = 1;
+
+extern "C" {
+  int get_jit_fschg_preset() { return g_jit_fschg_preset; }
+}
+
+// JIT_CR0 - branch straight on CR0 at a conditional block exit.
+//
+// The SH4's commonest shape by a wide margin is "flag producer, then a
+// conditional branch on that flag" -- cmp/eq + bt, tst + bf, dt + bf.s. The
+// compare has already set PowerPC CR0 correctly. The legacy path then spends
+//
+//     mfcr   rarg0              ; read CR back out
+//     rlwinm rarg0,rarg0,k+1,31,31
+//     xori   rarg0,rarg0,1      ; only for the inverted forms (cmp/ge, cmp/hs)
+//     stw    rarg0,sr_T(ctx)
+//     cmpi   cr0,rarg0,0/1      ; ...and compare it back into CR0
+//     bc
+//
+// rebuilding a bit the processor already had. With this on the exit does:
+//
+//     bc     <the CR0 bit itself>
+//     li     rarg0,<0 or 1> ; stw rarg0,sr_T(ctx)   (on each path)
+//
+// The sr_T write is still there -- a later block may legitimately read T -- but
+// it becomes a CONSTANT, because on the path that takes BranchBlock the T value
+// is (BlockType&1) by definition and on the other path it is the complement.
+// That is what makes this safe without any cross-block liveness analysis: we
+// are not assuming T is dead, we are writing the value it provably has.
+//
+// Applies ONLY when the flag producer is the block's LAST shil op. That is the
+// entire safety argument: nothing can then run between the compare and the
+// branch, so no other emitter can clobber CR0. Blocks where a store or a
+// delay-slot add sits between the producer and the exit (the classic
+// "dt Rn / mov.l Rm,@Rn / bf.s" copy loop) keep the legacy path -- covering
+// those needs every CR0 writer in the backend to invalidate a liveness flag,
+// and missing one is a silent wrong-branch, so it is deliberately left out.
+//
+// Measured on ChuChu 2026-09-11: the top hot blocks were 13-18 executed PPC
+// instructions of which 5-6 were this sequence. Expect single digits overall,
+// not the 25%+ the per-block figure suggests -- only blocks ending in a
+// conditional branch are affected, and only when the producer is last.
+//
+// Wii-measured 2026-09-11: +2.8% on the DC BIOS boot phase (281.5 -> 294.9%
+// combined with jit_fschg, implied baseline 273.8 matching an independent run
+// to 0.02%), null in Castlevania gameplay. NOT yet exercised in ChuChu, which
+// is where the remaining question is — the Castlevania null only shows this
+// shape is absent there, not that the change is worthless.
+//
+// Read at CODEGEN time: set it before launching, not mid-game.
+// 0=off (legacy materialise-then-compare), 1=on (default).
+int g_jit_cr0_preset = 1;
+
+extern "C" {
+  int get_jit_cr0_preset() { return g_jit_cr0_preset; }
+}
+
+// JIT_CCALLS - census of every C function the dynarec still calls out to.
+//
+// "Check the number of C/helper function call-outs per frame, and reduce the
+// heck outta those too." -- dave. This answers that directly: counters live
+// inside the callees (dc/sh4/rec_v2/ccall_census.h) and a [CC] block prints
+// per-second and per-FRAME rates once a second, next to [IFB] and [HOT].
+//
+// Counted: the per-timeslice scheduler tick, interrupt dispatch, bm_GetCode,
+// do_sqw (the store-queue -> TA path), UpdateSR, UpdateFPSCR, rec_fsqrt,
+// rec_fsrra, _vmem_ReadMem*/WriteMem* (i.e. the inline+fastmem fast path was
+// missed), and the mac.l/mac.w saturation path.
+//
+// Why this rather than another guess at the emitter: the only JIT change here
+// that ever moved a game (jit_fschg, +10% in ChuChu) was found by a counter
+// showing 1.3M sync_fpscr/s. Every change argued from static instruction
+// counts -- superblocks, bcache, jit_align, clustering, dyn_ic, jit_cr0 --
+// has come in between 0% and 3%. Measure the traffic, then aim.
+//
+// Cheap: one global load and a predicted-not-taken branch inside a function
+// that is already paying a call, so unlike JIT_HOTBLOCKS (measured 12.6%)
+// the rates can be trusted. Still re-measure SPEED% with it off.
+//
+// Writes g_jit_ccalls_preset, which lives in dc/sh4/rec_v2/shil.cpp so the
+// dc/ tree links without depending on a symbol from wii/main.cpp.
+// 0=off (default), 1=on.
+extern "C" int g_jit_ccalls_preset;
+
+// BLOCKCOPY - store-queue and DMA block transfers used to run the memory
+// dispatcher once per 32-bit word. do_sqw() alone did EIGHT dispatcher calls
+// per non-TA store-queue flush. The [CC] caller split measured 1,104,636
+// system-RAM writes/s in Crazy Taxi, 95.6% of them from plain C code rather
+// than JIT code -- so this was never a dynarec problem. Lives in
+// dc/mem/sh4_mem.cpp. 0=off (default), 1=on.
+extern "C" int g_blockcopy_preset;
+
+// JIT_FSQRT - inline fsqrt as frsqrte + Newton-Raphson instead of calling libm.
+//
+// newlib's sqrtf is a 25-iteration shift-and-subtract bit loop wrapped in two
+// load-hit-store stack round-trips: roughly 300 cycles. The [CC] census counted
+// 167,906 fsqrt/s in Crazy Taxi, several percent of the whole CPU.
+//
+// Broadway's frsqrte is only a 5-bit ESTIMATE -- emitting it bare is what
+// distorted the BIOS swirl in an earlier attempt -- so it is used as a seed and
+// refined: three Newton-Raphson steps to ~36 bits, then one exact-residual step
+// (fnmsub is fused) to a double ulp. Rounding that to single is provably the
+// correctly-rounded result, and simulating the exact sequence over 2.07 M cases
+// with adversarial seeds at the full spec error limit reproduced sqrtf
+// bit-for-bit every time.
+//
+// Zero, negative, Inf and NaN inputs fall through one compare to the same libm
+// call as before, so their semantics are untouched. 0=off, 1=on (default).
+// Wii-confirmed +3.5-4.3% on Crazy Taxi (95.3% of fsqrt calls eliminated).
+int g_jit_fsqrt_preset = 1;
+
+extern "C" {
+  int get_jit_fsqrt_preset() { return g_jit_fsqrt_preset; }
+}
+
+int g_bg_poly_preset = 0; // 0=off (legacy: v0 color used for EFB clear only, no background quad drawn), 1=on (barycentric-extrapolated background quad drawn, e.g. Who Wants to Be a Millionaire)
+
+extern "C" {
+  int get_bg_poly_preset() { return g_bg_poly_preset; }
+}
+
+int g_audio_buffers_preset = -1; // -1=off (leave settings.emulator.AudioBuffers at its cfg/UI value), 0..3=force the audio queue depth (see nullDC.cpp LoadSettings(): 0=never block/drop on overrun, 1..3=block until below N queued buffers)
+
+extern "C" {
+  int get_audio_buffers_preset() { return g_audio_buffers_preset; }
+}
+
+int g_player_count = 4;
+
+extern "C" {
+  int  get_player_count()      { return g_player_count; }
+  void set_player_count(int n) { g_player_count = (n >= 1 && n <= 4) ? n : 1; }
+}
+
+// Gameplay FPS display toggle.
+int g_show_fps_overlay = 0; // 0=off, 1=on
+
+extern "C" {
+  int get_show_fps_overlay() { return g_show_fps_overlay; }
+}
+
+// ============================================================================
+// CONTROLLER TYPE
+// ============================================================================
+//   0 = STANDARD    Standard Dreamcast controller
+//   1 = LIGHT_GUN   Light gun / Stunner
+//   2 = MARACAS     Samba de Amigo maracas
+//   3 = KEYBOARD    Typing of the Dead USB keyboard
+//   4 = FISHING_ROD Sega Bass Fishing rod
+
+int g_controller_type = 0;
+
+extern "C" {
+  int get_controller_type() { return g_controller_type; }
+}
+
+static const char* kControllerTypeNames[] = {
+  "STANDARD",
+  "LIGHT GUN",
+  "MARACAS (Samba de Amigo)",
+  "KEYBOARD (Typing of the Dead)",
+  "FISHING ROD (Bass Fishing)",
+};
+static const int kControllerTypeCount = 5;
+
+// ============================================================================
+// DEBUG MODE
+// ============================================================================
+//
+// Every flag here is OFF by default, sits at the end of options page 6 and is
+// also settable per game from game_presets.cfg (keys: debug_message,
+// debug_loop, debug_gdrom, debug_log_framebuffer2d), so a diagnostic can be
+// armed for one disc without touching the menu. Remember that printf is
+// redirected to /ndclog.txt on the SD card: leaving one of these on costs card
+// writes every frame, so turn it back off once it has answered its question.
+
+int g_debug_loop = 0;
+extern "C" { int get_debug_loop()    { return g_debug_loop;    } }
+
+int g_debug_message = 0;
+extern "C" { int get_debug_message() { return g_debug_message; } }
+
+int g_debug_gdrom = 0;
+extern "C" { int get_debug_gdrom()   { return g_debug_gdrom;   } }
+
+// debug_skip_tex (see DEBUG_SKIP_TEX in gxRend.cpp): VRAM byte address of one
+// texture whose strips are dropped, 0 = off. Set from the cfg (hex accepted,
+// e.g. debug_skip_tex=0x52C000) with an address read off a [SCN] census line;
+// the menu row toggles it against g_debug_skip_tex_saved so a scene can be A/B'd
+// in place. Pure diagnostic: it REMOVES geometry, it never fixes anything.
+int g_debug_skip_tex = 0;
+int g_debug_skip_tex_saved = 0; // last non-zero value, so the toggle can restore it
+extern "C" { int get_debug_skip_tex() { return g_debug_skip_tex; } }
+
+// layer_back_tex (see LAYER_BACK_TEX in gxRend.cpp): VRAM byte address of a
+// texture that is a BACKDROP — its translucent strips sort behind every other
+// one at the same depth instead of painting over them. 0 = off. Unlike
+// debug_skip_tex this is a real fix, not a diagnostic: set it per game in the
+// cfg as a comma list of up to 4 addresses, e.g. layer_back_tex=0x118000.
+// General/cfg-driven mechanism only — a per-game hack with its own hardcoded
+// addresses (like Puyo Puyo 4's) does NOT live in this array or in this file:
+// see PUYO_HACK() below, whose addresses live in gxRend.cpp and get merged
+// into this same list at read time instead.
+#define LAYER_BACK_TEX_MAX 4
+int g_layer_back_tex[LAYER_BACK_TEX_MAX] = { 0, 0, 0, 0 };
+extern "C" {
+  // Slot 0 is what the boot dump and gxRend's "is this preset on at all" gate
+  // read; get_layer_back_tex_n() is what the strip walk actually compares
+  // against, all 4 slots.
+  int get_layer_back_tex()        { return g_layer_back_tex[0]; }
+  int get_layer_back_tex_n(int i) { return (i >= 0 && i < LAYER_BACK_TEX_MAX)
+                                           ? g_layer_back_tex[i] : 0; }
+}
+
+// layer_front_tex (see LAYER_FRONT_TEX in gxRend.cpp): the mirror of the
+// array above -- VRAM byte addresses of textures that are OVERLAYS, drawn
+// after every other translucent strip and with the depth test defeated, for
+// the HUD/panel/frame a game submits early and then paints its sprites over.
+// 0 = off. Same cfg shape, a comma list of up to 4 addresses. Cfg-driven
+// mechanism only, exactly like layer_back_tex: no per-game hardcoded address
+// belongs in this array.
+#define LAYER_FRONT_TEX_MAX 4
+int g_layer_front_tex[LAYER_FRONT_TEX_MAX] = { 0, 0, 0, 0 };
+extern "C" {
+  int get_layer_front_tex()        { return g_layer_front_tex[0]; }
+  int get_layer_front_tex_n(int i) { return (i >= 0 && i < LAYER_FRONT_TEX_MAX)
+                                            ? g_layer_front_tex[i] : 0; }
+}
+
+// EXIT FIX (wii/wii_exit.cpp): how the in-game exit combo leaves the
+// emulator.
+//   0 = OFF     bare exit(0), exactly as before (legacy, for A/B)
+//   1 = SAFE    stop USB pads / ASND voice + DSP / the queued GX frame, let
+//               the Serial Interface drain, flush the log, drop Bluetooth,
+//               THEN exit(0)
+//   2 = SAFE + WATCHDOG  same, plus a 6-second alarm that jumps straight to
+//               the Homebrew Channel return stub if exit() still wedges
+//   3 = + HOST POLL  same, plus the combo is also tested ~once a frame off
+//               the emulated scanline counter (SPG.cpp), so a game that has
+//               stopped polling Maple entirely can still be exited. Costs
+//               one extra PAD/WPAD_ScanPads() per frame.
+// Fixes the "screen goes black on exit and the Wii just sits there" hang:
+// libogc's SYS_ResetSystem unwinds the DSP, the GP, the pads and Bluetooth
+// with several UNBOUNDED waits, and the old path handed it a machine that
+// was still running flat out. See wii/wii_exit.cpp for the disassembly notes.
+int g_exit_fix_preset = 1;
+extern "C" {
+  int get_exit_fix_preset() { return g_exit_fix_preset; }
+}
+
+int g_puyo_hack_preset = 0;
+// 0=off, 1=on (Puyo Puyo 4's two hardcoded backdrop VRAM addresses — the
+//   gameplay playfields AND the intro/main screen background, both submitted
+//   AFTER the content standing in them. The addresses themselves live in
+//   gxRend.cpp right next to PUYO_HACK(), not here: a hack's RAM addresses
+//   belong with the renderer that reads them, this is just the page-6 on/off
+//   switch, same shape as hokuto_hack — see gxRend.cpp PUYO_HACK())
+extern "C" {
+  int get_puyo_hack_preset() { return g_puyo_hack_preset; }
+}
+
+// wince=yes in game_presets.cfg (see game_presets.cpp): the game is built on
+// Sega's Windows CE devkit rather than the plain Katana SDK. Nothing needs to
+// be HLE'd for these — the CE kernel ships on the game disc and runs as
+// ordinary SH4 code. What they need is the SH4 MMU: they run with MMUCR.AT=1
+// and drive their own page tables off the TLB-miss exception. dc/mem/mmu.cpp
+// only implements the store-queue remap, ReadMem*/WriteMem* never translate
+// (see the aliased defines in dc/mem/sh4_mem.h), and the dynarec cannot take
+// a mid-block exception at all (next_pc lives in a PPC register, GPRs stay
+// pinned across blocks), so they are not expected to boot or run correctly.
+// No menu row —
+// this is cfg-only and, unlike every other preset field, NOT sticky across
+// game selections (see preset_apply_fields in game_presets.cpp): it is
+// re-derived fresh on every launch so a WinCE game can never leave the flag
+// set for the next (non-WinCE) game picked from the file list. Consumed once,
+// right after the options menu, by displayWinCEWarning() below.
+int g_wince_preset = 0;
+
+// FRAMEBUFFER_2D candidate detector (gxRend.cpp, StartRender's bit-24 branch).
+// The [PATH] 2D-blit / 2D-after-3D lines only ever printed from INSIDE the
+// FRAMEBUFFER_2D() branch, i.e. only once the preset was already on — so the
+// log could never tell you the preset was worth trying. This flag logs the
+// same passes from OUTSIDE the branch: with the preset off it names the path
+// the pass WOULD have taken and says so. Self-quieting (see FB2D_LOG_BURST).
+int g_debug_fb2d = 0;
+extern "C" { int get_debug_fb2d()    { return g_debug_fb2d;    } }
+
+// ============================================================================
+// FILE BROWSER STATE
+// ============================================================================
+
+struct FileEntry
+{
+  char name[256];
+  char fullPath[512];
+  bool isDirectory;
+};
+
+typedef enum {
+  STORAGE_SD  = 0,
+  STORAGE_USB = 1
+} StorageSource;
+
+StorageSource g_storage_source = STORAGE_SD;
+bool g_usb_mounted = false;
+
+// Set once at boot from Detect_IsWiiU() (see below): true when ANY of the
+// combined vWii detection signals fired, which real Wii hardware never
+// triggers — independent of whether a physical GamePad is actually paired.
+// Consumed by game_presets.cpp for <wii u> section conditions.
+bool g_is_wiiu = false;
+
+// Carved from the MEM2 arena on first listFilesInDirectory() call instead of
+// sitting in MEM1 BSS (~197 KB) — MEM1 is nearly exhausted, MEM2 has headroom.
+#define MAX_FILE_LIST 256
+FileEntry* fileList = NULL;
+int fileCount = 0;
+char selectedFilePath[512] = "";
+char currentPath[512] = "sd:/discs/";
+const int ITEMS_PER_PAGE = 10;
+int currentPage = 0;
+
+// Double-buffer globals
+static void *xfb[2];
+static GXRModeObj *rmode = NULL;
+static int fb = 0;
+
+// ============================================================================
+// FILE HELPERS
+// ============================================================================
+
+bool hasValidExtension(const char *filename)
+{
+  size_t len = strlen(filename);
+  if (len < 4) return false;
+
+  const char *ext = &filename[len - 4];
+  char extLower[5];
+  for (int i = 0; i < 4; i++)
+    extLower[i] = tolower(ext[i]);
+  extLower[4] = '\0';
+
+  return (strcmp(extLower, ".gdi") == 0 ||
+          strcmp(extLower, ".cdi") == 0 ||
+          strcmp(extLower, ".iso") == 0 ||
+          strcmp(extLower, ".bin") == 0 ||
+          strcmp(extLower, ".cue") == 0 ||
+          strcmp(extLower, ".nrg") == 0 ||
+          strcmp(extLower, ".mds") == 0 ||
+          strcmp(extLower, ".elf") == 0 ||
+          strcmp(extLower, ".chd") == 0);
+}
+
+// ============================================================================
+// LAUNCH DEVICE / APPLICATION PATH
+// ============================================================================
+//
+// The app used to work only when installed on the SD card. Two independent
+// reasons, both fixed here:
+//
+//   1) Nothing ever called SetApplicationPath(), so GetEmuPath() returned bare
+//      relative paths ("data/dc_boot.bin") that resolve against the cwd.
+//      libfat sets that cwd from argv[0], but only if the launch device is
+//      already mounted when fatInitDefault() runs - otherwise it silently
+//      falls back to the first device it did mount, i.e. "sd:/", and the BIOS
+//      lookup went to sd:/data/ instead of <device>:/apps/nulldc4wii/data/.
+//   2) SS_Init() may call IOS_ReloadIOS(58) early in main() - only when the
+//      Sixaxis/DS3 gate button is held at boot, but when it does it tears the
+//      USB stack down, so for a USB install the drive is NOT mounted when
+//      fatInitDefault() runs and case (1) is guaranteed to fire. USB has to
+//      be brought back up explicitly, with time to re-enumerate. The retry
+//      loop below covers both worlds: with no reload the drive is still
+//      mounted from the loader and the first attempt simply succeeds.
+//
+// argv[0] survives the IOS reload (it lives in main memory, not in IOS), so it
+// stays a reliable answer to "which device am I installed on".
+// ============================================================================
+
+// "sd" / "usb" (or "usb1"... for a later partition) - empty when the loader
+// passed no argv block, as some forwarders do.
+static char g_launch_device[16] = "";
+// Directory holding boot.dol, with a trailing '/': "usb:/apps/nulldc4wii/".
+static char g_app_dir[512] = "";
+
+// USB volume the browser uses. libfat names the first FAT partition of a USB
+// drive "usb" and any further one "usb1", "usb2"... - so when we were launched
+// off a later partition, that is the volume to talk to, not "usb".
+static char g_usb_device[16] = "usb";
+// "usb:/", built from g_usb_device.
+static char g_usb_root[24] = "usb:/";
+
+// Games folders, resolved once at boot (see resolveGamesRoot). The defaults
+// are the historical layout, so an existing SD install behaves identically.
+static char g_sd_games_root[64]  = "sd:/discs/";
+static char g_usb_games_root[64] = "usb:/dreamcast/";
+
+// stat() on a FAT volume root is not reliable across libfat versions, so a
+// failed stat() falls through to opendir() before giving up.
+static bool dirExists(const char* path)
+{
+  if (!path || !path[0]) return false;
+
+  char tmp[520];
+  snprintf(tmp, sizeof(tmp), "%s", path);
+  size_t len = strlen(tmp);
+  // Strip a trailing '/', but never the one that makes "sd:/" a valid root.
+  if (len > 1 && tmp[len - 1] == '/' && tmp[len - 2] != ':')
+    tmp[len - 1] = '\0';
+
+  struct stat st;
+  if (stat(tmp, &st) == 0)
+    return S_ISDIR(st.st_mode);
+
+  DIR* d = opendir(path);
+  if (d)
+  {
+    closedir(d);
+    return true;
+  }
+  return false;
+}
+
+// Brings the USB mass-storage stack up and mounts g_usb_device. Idempotent.
+// timeout_ms budgets the drive's spin-up/enumeration, which after the IOS58
+// reload can take several seconds on a real hard disk.
+static bool mountUSB(int timeout_ms)
+{
+  if (g_usb_mounted)
+    return true;
+
+  // Already mounted by fatInitDefault() - re-mounting the same name would
+  // only fail, or churn a volume that is working fine.
+  if (dirExists(g_usb_root))
+  {
+    g_usb_mounted = true;
+    return true;
+  }
+
+  for (int waited = 0; waited < timeout_ms; waited += 100)
+  {
+    if (USBStorage_Initialize() == 0)
+    {
+      if (fatMountSimple(g_usb_device, &__io_usbstorage) || dirExists(g_usb_root))
+      {
+        g_usb_mounted = true;
+        return true;
+      }
+
+      // fatMountSimple() only ever claims the first partition. When the volume
+      // we want is a later one ("usb1", "usb2"), fatInitDefault() re-probes the
+      // whole disc and mounts them all.
+      if (g_usb_device[3] != '\0')
+      {
+        fatInitDefault();
+        if (dirExists(g_usb_root))
+        {
+          g_usb_mounted = true;
+          return true;
+        }
+      }
+    }
+    usleep(100 * 1000);
+  }
+  return false;
+}
+
+// Splits argv[0] ("usb:/apps/nulldc4wii/boot.dol") into g_launch_device
+// ("usb") and g_app_dir ("usb:/apps/nulldc4wii/"). Returns false when the
+// loader gave us nothing usable, leaving both empty.
+static bool parseLaunchPath()
+{
+  if (!__system_argv || __system_argv->argvMagic != ARGV_MAGIC)
+    return false;
+  if (__system_argv->argc < 1 || !__system_argv->argv || !__system_argv->argv[0])
+    return false;
+
+  const char* a0    = __system_argv->argv[0];
+  const char* colon = strchr(a0, ':');
+  const char* slash = strrchr(a0, '/');
+  if (!colon || !slash || slash < colon)
+    return false;
+
+  size_t devLen = (size_t)(colon - a0);
+  if (devLen == 0 || devLen >= sizeof(g_launch_device))
+    return false;
+
+  size_t dirLen = (size_t)(slash - a0) + 1;   // keep the trailing '/'
+  if (dirLen >= sizeof(g_app_dir))
+    return false;
+
+  memcpy(g_launch_device, a0, devLen);
+  g_launch_device[devLen] = '\0';
+  memcpy(g_app_dir, a0, dirLen);
+  g_app_dir[dirLen] = '\0';
+  return true;
+}
+
+// Picks the first candidate folder that actually exists, so the games folder
+// can be named either way round on either device. When none exist we keep
+// candidates[0] (the historical default) and the browser just shows
+// "<<NO COMPATIBLE FILE FOUND>>", exactly as before.
+static void resolveGamesRoot(char* out, size_t outSize,
+                             const char* const* candidates, int count)
+{
+  for (int i = 0; i < count; i++)
+  {
+    if (dirExists(candidates[i]))
+    {
+      snprintf(out, outSize, "%s", candidates[i]);
+      return;
+    }
+  }
+  snprintf(out, outSize, "%s", candidates[0]);
+}
+
+// ============================================================================
+// BOOT LOG
+// ============================================================================
+//
+// Until InitRenderer() redirects stdout, printf IS the on-screen UI here - the
+// file browser and the options menu draw themselves with it. So everything
+// printed during boot, including the reason a boot FAILED, went to the screen
+// and nowhere else, and InitRenderer then opened /ndclog.txt with "w" and wiped
+// whatever the previous run had left. Between the two, a user who never reached
+// the renderer had a screen that flashed past on the way back to the Homebrew
+// Channel and a log file still holding the last SUCCESSFUL run - the single
+// most misleading thing we could hand someone reporting a boot failure.
+//
+// wii_boot_log() writes both ways: to the console so the user sees it, and
+// appended to the log so it can be sent in. wii_boot_log_reset() truncates the
+// file once per run, and InitRenderer opens it with "a" now, so the boot
+// section survives into the renderer's log instead of being overwritten.
+// ============================================================================
+
+#define NDC_LOG_PATH "/ndclog.txt"
+
+// Cleared by wii_boot_log_stop() once stdout itself becomes the log file:
+// appending through a second handle while that one is open would interleave
+// two write positions in the same file.
+static bool s_boot_log_to_file = true;
+
+// Truncate the log for this run. Called from initStorage() as soon as a device
+// is mounted - before that there is nowhere to write. If it fails (no card, or
+// a read-only one) the appends below simply fail too and the console still has
+// everything; the only cost is a log that keeps growing across runs.
+extern "C" void wii_boot_log_reset(void)
+{
+  FILE* f = fopen(NDC_LOG_PATH, "w");
+  if (f)
+    fclose(f);
+}
+
+extern "C" void wii_boot_log_stop(void)
+{
+  s_boot_log_to_file = false;
+}
+
+extern "C" void wii_boot_log(const char* fmt, ...)
+{
+  char buf[1024];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+
+  fputs(buf, stdout);   // still the on-screen console at boot time
+
+  if (s_boot_log_to_file)
+  {
+    FILE* f = fopen(NDC_LOG_PATH, "a");
+    if (f)
+    {
+      fputs(buf, f);
+      fclose(f);        // flushed per call: the next thing to happen may be a crash
+    }
+  }
+}
+
+// Mounts both devices, pins GetEmuPath()/cwd to the folder the DOL lives in,
+// and points the browser at the launch device. Called once from main(), after
+// SS_Init()'s IOS reload.
+static void initStorage()
+{
+  // Give the hardware a brief moment to stabilize after the HBC handoff and
+  // the IOS58 reload.
+  usleep(500000);
+
+  // Mounts every device it can see and, when the loader passed an argv block,
+  // chdir()s into the launching app's folder. Both of those can come up short
+  // for a USB install, which is what the rest of this function repairs.
+  fatInitDefault();
+
+  parseLaunchPath();
+  const bool launchedFromUSB = (strncmp(g_launch_device, "usb", 3) == 0);
+
+  // Talk to the volume we were actually launched from ("usb1" on a
+  // multi-partition drive), not just whichever one happens to be first.
+  if (launchedFromUSB)
+    snprintf(g_usb_device, sizeof(g_usb_device), "%s", g_launch_device);
+  snprintf(g_usb_root, sizeof(g_usb_root), "%s:/", g_usb_device);
+
+  if (launchedFromUSB)
+  {
+    // We are running off this drive, so it is worth waiting for.
+    if (!mountUSB(10000))
+      printf("WARNING: launched from USB but the drive did not come back\n"
+             "         after the IOS reload. BIOS/games may not be found.\n");
+  }
+  else
+  {
+    // Not urgent - just record whether fatInitDefault() already got it, so
+    // "press 2" does not try to mount an already-mounted volume.
+    g_usb_mounted = dirExists(g_usb_root);
+  }
+
+  // Last resort: the volume holding the app still is not there. Re-probing
+  // every disc costs a moment and rescues the cases neither fatInitDefault()'s
+  // first pass nor mountUSB() managed to name.
+  if (g_app_dir[0] && !dirExists(g_app_dir))
+  {
+    fatInitDefault();
+    if (dirExists(g_usb_root))
+      g_usb_mounted = true;
+  }
+
+  const bool sdOK = dirExists("sd:/");
+
+  printf("Storage: SD %s, USB %s\n",
+         sdOK ? "mounted" : "not found",
+         g_usb_mounted ? "mounted" : "not found");
+
+  // ---- Application path. data/dc_boot.bin, data/fsca-table.bin and
+  // nullDC.cfg go through GetEmuPath(); the VMU saves are a relative fopen()
+  // and follow the cwd. Both are pinned to the folder the DOL lives in.
+  if (g_app_dir[0] && dirExists(g_app_dir))
+  {
+    SetApplicationPath(g_app_dir);
+    chdir(g_app_dir);
+    printf("App folder: %s\n", g_app_dir);
+  }
+  else
+  {
+    // No argv, or its folder is unreachable: keep whatever cwd libfat chose
+    // and let GetEmuPath() stay relative to it - the pre-existing behaviour.
+    printf("App folder: unknown (no argv from loader), using current dir\n");
+    g_app_dir[0] = '\0';
+  }
+
+  // Start this run's log. Deliberately AFTER the chdir above: "/ndclog.txt" is
+  // resolved against libfat's default device, and the chdir is what settles
+  // which device that is. Repeating the device summary here rather than routing
+  // the printfs above through the logger keeps their order on screen unchanged
+  // - and this is the line a USB bug report actually needs.
+  wii_boot_log_reset();
+  wii_boot_log("[boot] SD %s, USB %s (%s), app folder: %s\n",
+               sdOK ? "mounted" : "not found",
+               g_usb_mounted ? "mounted" : "not found", g_usb_root,
+               g_app_dir[0] ? g_app_dir : "unknown (no argv from loader)");
+
+  // Why this line exists: libfat's sector cache is
+  // g_dvmDefaultCachePages(4) x g_dvmDefaultSectorsPerPage(64) x bytesPerSector,
+  // malloc'd from the MEM1 heap PER MOUNTED VOLUME. That is 128 KB for a drive
+  // reporting 512-byte sectors and 1 MB for one reporting 4096 - an 8x swing in
+  // MEM1 that depends entirely on the drive, not on us. Drives over 2 TB
+  // partitioned as MBR have to use 4096-byte logical sectors (MBR's LBA count is
+  // 32-bit: 2^32 x 512 = 2 TiB), so a 4 TB MBR volume is exactly the case that
+  // costs the extra ~900 KB. That is the leading explanation for why fastmem
+  // boots fine with one USB drive and not another - see wii/wii_fastmem.cpp.
+  if (g_usb_mounted)
+  {
+    const u32 ss = __io_usbstorage_sector_size;
+    wii_boot_log("[boot] USB sector size %u bytes -> libfat cache %u KB"
+                 " (SD cache 128 KB), MEM1 free %d KB\n",
+                 ss, (ss ? (4u * 64u * ss) : 0u) / 1024u,
+                 (s32)((u8*)SYS_GetArena1Hi() - (u8*)SYS_GetArena1Lo()) / 1024);
+  }
+
+  // ---- Games folders. Both names are accepted on both devices now, so a USB
+  // install is not forced into "dreamcast" nor an SD one into "discs".
+  static const char* const kSdRoots[] = { "sd:/discs/", "sd:/dreamcast/", "sd:/" };
+  resolveGamesRoot(g_sd_games_root, sizeof(g_sd_games_root), kSdRoots, 3);
+
+  char usbCand[3][64];
+  snprintf(usbCand[0], sizeof(usbCand[0]), "%sdreamcast/", g_usb_root);
+  snprintf(usbCand[1], sizeof(usbCand[1]), "%sdiscs/",     g_usb_root);
+  snprintf(usbCand[2], sizeof(usbCand[2]), "%s",           g_usb_root);
+  const char* const kUsbRoots[] = { usbCand[0], usbCand[1], usbCand[2] };
+  resolveGamesRoot(g_usb_games_root, sizeof(g_usb_games_root), kUsbRoots, 3);
+
+  // ---- Where the browser opens: the device we were launched from, so a USB
+  // install does not open on an SD card that may not even be inserted.
+  if (launchedFromUSB && g_usb_mounted)
+  {
+    g_storage_source = STORAGE_USB;
+    strcpy(currentPath, g_usb_games_root);
+  }
+  else if (sdOK)
+  {
+    g_storage_source = STORAGE_SD;
+    strcpy(currentPath, g_sd_games_root);
+  }
+  else if (g_usb_mounted)
+  {
+    g_storage_source = STORAGE_USB;
+    strcpy(currentPath, g_usb_games_root);
+  }
+  else
+  {
+    printf("WARNING: no SD card and no USB device could be mounted.\n");
+    usleep(2000000);
+  }
+}
+
+// game_presets.cfg used to be hardcoded to sd:/discs/. Look next to the DOL
+// first (works wherever the app is installed), then in the games folder of
+// each device, so the historical sd:/discs/game_presets.cfg still wins for an
+// existing SD install.
+static void loadGamePresets()
+{
+  const char* dirs[4];
+  int n = 0;
+
+  if (g_app_dir[0])
+    dirs[n++] = g_app_dir;
+  dirs[n++] = (g_storage_source == STORAGE_USB) ? g_usb_games_root : g_sd_games_root;
+  dirs[n++] = g_sd_games_root;
+  dirs[n++] = g_usb_games_root;
+
+  char path[640];
+  for (int i = 0; i < n; i++)
+  {
+    snprintf(path, sizeof(path), "%sgame_presets.cfg", dirs[i]);
+
+    FILE* f = fopen(path, "r");
+    if (!f)
+      continue;
+    fclose(f);
+
+    game_presets_load(path);
+    printf("Game presets: %s\n", path);
+    return;
+  }
+
+  printf("Game presets: none found\n");
+}
+
+// user_controls.cfg: same lookup order as game_presets.cfg above (next to
+// the DOL first, then each device's games folder), so an existing SD
+// install picks it up without extra setup.
+static void loadUserControls()
+{
+  const char* dirs[4];
+  int n = 0;
+
+  if (g_app_dir[0])
+    dirs[n++] = g_app_dir;
+  dirs[n++] = (g_storage_source == STORAGE_USB) ? g_usb_games_root : g_sd_games_root;
+  dirs[n++] = g_sd_games_root;
+  dirs[n++] = g_usb_games_root;
+
+  char path[640];
+  for (int i = 0; i < n; i++)
+  {
+    snprintf(path, sizeof(path), "%suser_controls.cfg", dirs[i]);
+
+    FILE* f = fopen(path, "r");
+    if (!f)
+      continue;
+    fclose(f);
+
+    user_controls_load(path);
+    return;
+  }
+
+  printf("[user_controls] No file found in any known folder\n");
+}
+
+// ============================================================================
+// STORAGE SWITCHING
+// ============================================================================
+
+bool switchToUSB()
+{
+  // Shorter budget than the boot path: the user is waiting in front of the
+  // menu, and a drive that is present has normally settled by now.
+  if (!mountUSB(3000))
+    return false;
+
+  g_storage_source = STORAGE_USB;
+  strcpy(currentPath, g_usb_games_root);
+  return true;
+}
+
+bool switchToSD()
+{
+  if (!dirExists("sd:/"))
+    return false;
+
+  g_storage_source = STORAGE_SD;
+  strcpy(currentPath, g_sd_games_root);
+  return true;
+}
+
+// ============================================================================
+// DIRECTORY LISTING
+// ============================================================================
+
+void listFilesInDirectory(const char *dirPath)
+{
+  DIR *dir;
+  struct dirent *entry;
+  struct stat statbuf;
+
+  // Allocate the browser list from MEM2 once (kept for the whole session).
+  // fileCount stays 0 on failure, so the menu never dereferences NULL.
+  if (!fileList)
+  {
+    u32 need = (u32)sizeof(FileEntry) * MAX_FILE_LIST;
+    u8* lo   = (u8*)(((u32)SYS_GetArena2Lo() + 31) & ~31); // 32-byte align
+    if ((u8*)SYS_GetArena2Hi() - lo < (s32)need)
+    {
+      printf("Not enough MEM2 for file browser list (%u KB)\n", need / 1024);
+      fileCount = 0;
+      return;
+    }
+    SYS_SetArena2Lo(lo + need);
+    fileList = (FileEntry*)lo;
+    memset(fileList, 0, need);
+  }
+
+  if ((dir = opendir(dirPath)) != NULL)
+  {
+    fileCount = 0;
+
+    while ((entry = readdir(dir)) != NULL && fileCount < MAX_FILE_LIST)
+    {
+      if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+        continue;
+
+      char fullPath[512];
+      int pathLen = snprintf(fullPath, sizeof(fullPath), "%s/%s", dirPath, entry->d_name);
+
+      if ((size_t)pathLen >= sizeof(fullPath))
+      {
+        printf("Warning: Path too long, skipping: %s/%s\n", dirPath, entry->d_name);
+        continue;
+      }
+
+      if (stat(fullPath, &statbuf) == 0)
+      {
+        if (S_ISDIR(statbuf.st_mode))
+        {
+          size_t maxName = sizeof(fileList[fileCount].name) - 3;
+          snprintf(fileList[fileCount].name, sizeof(fileList[fileCount].name),
+                   "[%.*s]", (int)maxName, entry->d_name);
+          strcpy(fileList[fileCount].fullPath, fullPath);
+          fileList[fileCount].isDirectory = true;
+          fileCount++;
+        }
+        else if (hasValidExtension(entry->d_name))
+        {
+          strcpy(fileList[fileCount].name, entry->d_name);
+          strcpy(fileList[fileCount].fullPath, fullPath);
+          fileList[fileCount].isDirectory = false;
+          fileCount++;
+        }
+      }
+    }
+
+    closedir(dir);
+
+    // Sort: folders first, then alphabetically within each group
+    for (int i = 0; i < fileCount - 1; i++)
+    {
+      for (int j = i + 1; j < fileCount; j++)
+      {
+        bool shouldSwap = false;
+        if (!fileList[i].isDirectory && fileList[j].isDirectory)
+          shouldSwap = true;
+        else if (fileList[i].isDirectory == fileList[j].isDirectory)
+          if (strcmp(fileList[i].name, fileList[j].name) > 0)
+            shouldSwap = true;
+
+        if (shouldSwap)
+        {
+          FileEntry temp = fileList[i];
+          fileList[i] = fileList[j];
+          fileList[j] = temp;
+        }
+      }
+    }
+
+    if (fileCount == 0)
+    {
+      strncpy(fileList[0].name, "<<NO COMPATIBLE FILE FOUND>>",
+              sizeof(fileList[0].name) - 1);
+      fileList[0].name[sizeof(fileList[0].name) - 1] = '\0';
+      strcpy(fileList[0].fullPath, "");
+      fileList[0].isDirectory = false;
+      fileCount = 1;
+    }
+  }
+  else
+  {
+    printf("Could not open directory: %s\n", dirPath);
+    strncpy(fileList[0].name, "<<NO COMPATIBLE FILE FOUND>>",
+            sizeof(fileList[0].name) - 1);
+    fileList[0].name[sizeof(fileList[0].name) - 1] = '\0';
+    strcpy(fileList[0].fullPath, "");
+    fileList[0].isDirectory = false;
+    fileCount = 1;
+  }
+}
+
+// ============================================================================
+// WII U GAMEPAD (DRC) MENU INPUT
+// ============================================================================
+//
+// When running on a Wii U in vWii mode (via a forwarder), the GamePad is
+// readable through libwiidrc. These helpers translate its buttons to the
+// WPAD_BUTTON_* convention already used by every menu loop, following the
+// same mapping as the GameCube pad merge (Y=button1, X=button2).
+// On a real Wii, WiiDRC_Init() fails and both helpers return 0.
+// ============================================================================
+
+static u32 DRC_ToWPAD(u32 drc)
+{
+  u32 w = 0;
+  if (drc & WIIDRC_BUTTON_UP)    w |= WPAD_BUTTON_UP;
+  if (drc & WIIDRC_BUTTON_DOWN)  w |= WPAD_BUTTON_DOWN;
+  if (drc & WIIDRC_BUTTON_LEFT)  w |= WPAD_BUTTON_LEFT;
+  if (drc & WIIDRC_BUTTON_RIGHT) w |= WPAD_BUTTON_RIGHT;
+  if (drc & WIIDRC_BUTTON_A)     w |= WPAD_BUTTON_A;
+  if (drc & WIIDRC_BUTTON_B)     w |= WPAD_BUTTON_B;
+  if (drc & WIIDRC_BUTTON_Y)     w |= WPAD_BUTTON_1;
+  if (drc & WIIDRC_BUTTON_X)     w |= WPAD_BUTTON_2;
+  if (drc & WIIDRC_BUTTON_MINUS) w |= WPAD_BUTTON_MINUS;
+  if (drc & WIIDRC_BUTTON_PLUS)  w |= WPAD_BUTTON_PLUS;
+  if (drc & WIIDRC_BUTTON_HOME)  w |= WPAD_BUTTON_HOME;
+  return w;
+}
+
+// Scans the GamePad and returns freshly pressed buttons as WPAD bits.
+// Call exactly once per menu loop iteration (alongside WPAD_ScanPads).
+static u32 DRC_ButtonsDownWPAD()
+{
+  if (!WiiDRC_Inited())
+    return 0;
+  WiiDRC_ScanPads();
+  if (WiiDRC_ShutdownRequested())
+    WiiExitToLoader();
+  return DRC_ToWPAD(WiiDRC_ButtonsDown());
+}
+
+// Held buttons from the most recent scan (does not scan again).
+static u32 DRC_ButtonsHeldWPAD()
+{
+  if (!WiiDRC_Inited())
+    return 0;
+  return DRC_ToWPAD(WiiDRC_ButtonsHeld());
+}
+
+// ============================================================================
+// WII U / vWII DETECTION
+// ============================================================================
+//
+// There is no single official "am I on a Wii U" flag, so this combines every
+// independent signal the Wii homebrew scene has found for it and ORs them
+// together in Detect_IsWiiU(): if ANY one of them says "yes", we call it a
+// Wii U. Each method below has its own known blind spot, which is exactly
+// why none of them is used alone.
+//
+// Credit: memory-signature method by Crediar (as used in USB Loader GX /
+// WiiFlow); IOS58 revision numbers and the AHBPROT caveat from the
+// #gc-wii community (GBAtemp / Discord).
+// ============================================================================
+
+// HW_AHBPROT: reads 0xFFFFFFFF only if this app currently has full,
+// unmediated hardware access (granted by the loader/forwarder's TMD, e.g.
+// Homebrew Channel, as long as IOS hasn't been reloaded since). This is
+// NOT a Wii-U detector by itself — real Wii and Wii U can both have it, or
+// not — it's only a gate that tells us whether Method 2 below can be
+// trusted this run.
+#define HW_AHBPROT_REG (*(vu32*)0xCD800064)
+
+// Latte (Wii U) memory-mapped register. Reported by the community as:
+//   top 16 bits == 0xCAFE  -> Wii U running vWii
+//   top 16 bits == 0x0000  -> real Wii
+//   top 16 bits == 0xFFFF  -> unmapped read (e.g. Dolphin emulator)
+#define WIIU_SIG_REG (*(vu32*)0xCD8005A0)
+
+// --- Method 1: Wii U GamePad (DRC) presence -----------------------------
+// WiiDRC_Init() only succeeds where the DRC IOS module exists, which is
+// vWii-only, so it's harmless to call on a real Wii (it just fails).
+// Doesn't require AHBPROT. NOTE: libwiidrc always brings DRC output up
+// from scratch here — it does not inherit whatever state the Wii U menu
+// left the GamePad in — so a failure here doesn't necessarily mean "not a
+// Wii U", which is why it's only one vote rather than the whole answer.
+static bool Detect_WiiU_DRC(void)
+{
+  WiiDRC_Init();
+  return WiiDRC_Inited();
+}
+
+// --- Method 2: direct-hardware register signature -----------------------
+// Bypasses IOS and reads real hardware directly, so it only works if the
+// app currently holds HW_AHBPROT (see above) — without it, this silently
+// reads back 0 on a Wii U too (false negative), which is the "may or may
+// not work depending on ahbprot" behavior reported on #gc-wii. Most
+// forwarders/HBC grant AHBPROT by default, so this works most of the time
+// for free, but must never be the only check.
+static bool Detect_WiiU_MMIO(void)
+{
+  return (HW_AHBPROT_REG == 0xFFFFFFFF) && ((WIIU_SIG_REG >> 16) == 0xCAFE);
+}
+
+// --- Method 3: installed IOS58 title version ----------------------------
+// Asks ES (over IOS, no direct hardware access / no AHBPROT needed) what
+// version of IOS58 is installed on the NAND, without loading it:
+//   6432               -> Wii U (vWii)
+//   5918 / 6175 / 6176 -> real Wii
+// Downside: needs IOS58 to actually be installed, and if Nintendo ever
+// ships another vWii IOS58 revision this table goes stale — another reason
+// this is only one vote among several instead of the final word.
+static bool Detect_WiiU_IOS58Version(void)
+{
+  const u64 IOS58_TITLE_ID = 0x0000000100000000ULL | 58;
+
+  u32 view_size = 0;
+  if (ES_GetTMDViewSize(IOS58_TITLE_ID, &view_size) < 0 || view_size == 0)
+    return false;
+
+  tmd_view* view = (tmd_view*)memalign(32, view_size);
+  if (!view)
+    return false;
+
+  bool is_wiiu = false;
+  if (ES_GetTMDView(IOS58_TITLE_ID, view, view_size) >= 0)
+    is_wiiu = (view->title_version == 6432);
+
+  free(view);
+  return is_wiiu;
+}
+
+// --- Combined check, call once at boot -----------------------------------
+static bool Detect_IsWiiU(void)
+{
+  bool drc   = Detect_WiiU_DRC();
+  bool mmio  = Detect_WiiU_MMIO();
+  bool ios58 = Detect_WiiU_IOS58Version();
+
+  return drc || mmio || ios58;
+}
+
+// ============================================================================
+// WII CLASSIC CONTROLLER MENU INPUT
+// ============================================================================
+//
+// WPAD_ButtonsDown/Held already carry the Classic Controller buttons in the
+// upper bits (WPAD_CLASSIC_BUTTON_*) of the same word, but the menu loops
+// only test the Wiimote core WPAD_BUTTON_* bits. This translates the classic
+// bits to that convention, following the same mapping as the GameCube pad
+// and DRC merges (Y=button1, X=button2). Pass it the raw WPAD word and OR
+// the result back in.
+// ============================================================================
+
+static u32 CLASSIC_ToWPAD(u32 wpad)
+{
+  u32 w = 0;
+  if (wpad & WPAD_CLASSIC_BUTTON_UP)    w |= WPAD_BUTTON_UP;
+  if (wpad & WPAD_CLASSIC_BUTTON_DOWN)  w |= WPAD_BUTTON_DOWN;
+  if (wpad & WPAD_CLASSIC_BUTTON_LEFT)  w |= WPAD_BUTTON_LEFT;
+  if (wpad & WPAD_CLASSIC_BUTTON_RIGHT) w |= WPAD_BUTTON_RIGHT;
+  if (wpad & WPAD_CLASSIC_BUTTON_A)     w |= WPAD_BUTTON_A;
+  if (wpad & WPAD_CLASSIC_BUTTON_B)     w |= WPAD_BUTTON_B;
+  if (wpad & WPAD_CLASSIC_BUTTON_Y)     w |= WPAD_BUTTON_1;
+  if (wpad & WPAD_CLASSIC_BUTTON_X)     w |= WPAD_BUTTON_2;
+  if (wpad & WPAD_CLASSIC_BUTTON_MINUS) w |= WPAD_BUTTON_MINUS;
+  if (wpad & WPAD_CLASSIC_BUTTON_PLUS)  w |= WPAD_BUTTON_PLUS;
+  if (wpad & WPAD_CLASSIC_BUTTON_HOME)  w |= WPAD_BUTTON_HOME;
+  return w;
+}
+
+// ============================================================================
+// SIXAXIS / DUALSHOCK3 (USB) MENU INPUT
+// ============================================================================
+//
+// Every connected pad is OR'd together for menu navigation (menus are
+// single-player). CLASSIC_ToWPAD() above finishes the translation to the
+// WPAD_BUTTON_* convention, same as it does for a real Classic Controller.
+// ============================================================================
+
+static u32 s_ssMenuPrevClassic = 0;
+
+// Scans for newly-connected pads and returns freshly pressed buttons as
+// WPAD bits. Call exactly once per menu loop iteration.
+static u32 SS_ButtonsDownWPAD()
+{
+  SS_PollConnections();
+  u32 classicNow = SS_GetClassicButtonsHeld();
+  u32 classicDown = classicNow & ~s_ssMenuPrevClassic;
+  s_ssMenuPrevClassic = classicNow;
+  return CLASSIC_ToWPAD(classicDown);
+}
+
+// Held buttons from the most recent report (does not poll for connections).
+static u32 SS_ButtonsHeldWPAD()
+{
+  return CLASSIC_ToWPAD(SS_GetClassicButtonsHeld());
+}
+
+// ============================================================================
+// BIOS PRESENCE CHECK
+// ============================================================================
+//
+// Checks for the presence of dc_boot.bin and dc_flash.bin in the data/
+// folder (same location used by GetEmuPath()/LoadBiosFiles() in dc.cpp),
+// which initStorage() has pinned to the folder boot.dol was launched from -
+// on SD or on USB. Prints "missing BIOS file <name>" for each missing file,
+// then pauses and waits for a button press so the message is actually seen
+// before the file browser clears the screen.
+// ============================================================================
+
+void checkBiosFiles()
+{
+  const char* kBiosFiles[] = { "dc_boot.bin", "dc_flash.bin" };
+  const int kBiosFileCount = 2;
+  bool anyMissing = false;
+
+  printf("\033[2J\033[H");
+
+  for (int i = 0; i < kBiosFileCount; i++)
+  {
+    char subpath[64];
+    snprintf(subpath, sizeof(subpath), "data/%s", kBiosFiles[i]);
+
+    char* fullPath = GetEmuPath(subpath);
+    if (!fullPath)
+      continue;
+
+    FILE* f = fopen(fullPath, "rb");
+    if (!f)
+    {
+      printf("missing BIOS file %s\n", kBiosFiles[i]);
+      anyMissing = true;
+    }
+    else
+    {
+      fclose(f);
+    }
+
+    free(fullPath);
+  }
+
+  if (anyMissing)
+  {
+    // Spell the folder out: on a USB install this is the single most useful
+    // line on screen, because it says exactly where the app looked.
+    char* dataDir = GetEmuPath("data/");
+    printf("\nPlace the missing file(s) in:\n  %s\n",
+           dataDir ? dataDir : "data/");
+    if (dataDir)
+      free(dataDir);
+    printf("Press any button to continue...\n");
+
+    VIDEO_SetNextFramebuffer(xfb[fb]);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    fb ^= 1;
+    console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                 rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+
+    while (true)
+    {
+      WPAD_ScanPads();
+      if (WPAD_ButtonsDown(0) != 0 || DRC_ButtonsDownWPAD() != 0 || SS_ButtonsDownWPAD() != 0)
+        break;
+      VIDEO_WaitVSync();
+    }
+  }
+}
+
+// ============================================================================
+// OPTIONS MENU
+// ============================================================================
+
+#define OPT_LAUNCH      0
+// row 1 = game name (display only, not selectable)
+// row 2 = preset banner (display only, not selectable)
+// row 3 = blank separator
+// Numbering below follows the order rows are actually printed on screen.
+
+// --- Page 1: everyday / performance presets ---
+#define OPT_RATIO       4
+#define OPT_AUDIO_BUFFERS 5
+#define OPT_SPEED_LIMIT 6
+#define OPT_GRAPHICS    7
+#define OPT_TEX_CACHE   8
+#define OPT_TMEM_CACHE  9
+#define OPT_4BPP        10    // now shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_8BPP        11    // now shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_ASYNC_RENDER 12
+#define OPT_FRAMESKIP   13
+#define OPT_FRAMEBUFFER_2D 14
+#define OPT_ADV_ALPHA   15
+#define OPT_BLEND_MODE  16
+#define OPT_BLEND_FPS_BOOST 17
+#define OPT_PUNCH_THROUGH 18
+#define OPT_OFFSET_COLOR 19
+#define OPT_TRANS_SORT  20
+#define OPT_RENDER_TO_TEXTURE 21
+#define OPT_SPLIT_SCREEN 22
+
+// --- Page 2: rendering / compatibility fixes ---
+#define OPT_FMV_FORMAT  23
+#define OPT_VERTEX_COLOR 24
+#define OPT_DECAL_ALPHA 25
+#define OPT_MIPMAP      26
+#define OPT_SEAM_FIX    27
+#define OPT_FIXED_DEPTH 28
+#define OPT_DEPTH_CLIP  29
+#define OPT_BG_POLY     30
+#define OPT_X_SCALER    31
+#define OPT_CANVAS_WIDTH 32
+
+// --- Page 3: accuracy / experimental presets ---
+#define OPT_ACCURACY    33
+#define OPT_HOKUTO_HACK 34 // now shown on Page 6 (EXPERIMENTAL), see OPT_PAGE5_ROWS
+#define OPT_JOJO_FIX    35
+#define OPT_VQ_CMPR     67    // now shown on Page 1 (GENERAL), under TEXTURE CACHE, see OPT_PAGE0_ROWS
+#define OPT_RGB565_OPAQUE_ALPHA 36
+#define OPT_PPZ_WRITE   37
+#define OPT_ISP_DEPTH_FUNC 38 // now shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_ISP_CULL    39    // now shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_AUTOSORT    40    // now shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_RENDER_DELAY 41
+#define OPT_SHOW_FPS    42
+#define OPT_ARM7_SPEED  43    // now shown on Page 4 (AUDIO), see OPT_PAGE3_ROWS
+#define OPT_SH4_CLOCK   44
+#define OPT_JIT_SBP     45
+#define OPT_DMA_FIX     46
+#define OPT_FASTMEM     47
+#define OPT_BCACHE      48
+#define OPT_FPU_PIN     49
+#define OPT_JIT_ALIGN   50
+#define OPT_CDDA        51
+#define OPT_MUTE_PCM16  52
+#define OPT_HUD_PASS    53
+#define OPT_SCHED       54
+#define OPT_TEX_WRAP_GUARD 96 // Page 6 (EXPERIMENTAL), see OPT_PAGE5_ROWS
+#define OPT_TEX_CLAMP_FIX 97  // Page 6 (EXPERIMENTAL), under TEX WRAP GUARD
+#define OPT_AICA_FAST   98    // Page 4 (AUDIO), under MUTE 16BIT PCM
+#define OPT_ARM7_JIT    99    // now shown on Page 4 (AUDIO), under ARM7 SPEED, see OPT_PAGE3_ROWS
+#define OPT_ARM7_BATCH  100   // Page 4 (AUDIO), under ARM7 JIT
+#define OPT_DYNAREC     55
+#define OPT_SUBPASS_ZCLEAR 56 // shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_POLY_OFFSET 57    // shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_LEGACY_DEPTH 58   // shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_YUV_TWIDDLE_FIX 59 // shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_FOG         60     // shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_Y_SCALER    61     // shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_H_SCALER    62     // shown on Page 3 (DEPTH & WIDTH), see OPT_PAGE2_ROWS
+#define OPT_GX          63     // shown on Page 1 (GENERAL) under GRAPHICS, see OPT_PAGE0_ROWS
+#define OPT_LOD_BIAS    64     // shown on Page 1 (GENERAL) under GRAPHICS, see OPT_PAGE0_ROWS
+#define OPT_ANISO       65     // shown on Page 1 (GENERAL) under GRAPHICS, see OPT_PAGE0_ROWS
+#define OPT_TRANS_ZWRITE 68    // shown on Page 6 (EXPERIMENTAL), see OPT_PAGE5_ROWS
+#define OPT_SPRITE_COLOR 69    // shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_VTX_ALPHA    70    // shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_YUV_STRIDE   71    // shown on Page 2 (GRAPHICS), see OPT_PAGE1_ROWS
+#define OPT_LAYER_SORT  73    // shown on Page 3 (DEPTH & WIDTH), above HOKUTO HACK
+#define OPT_DEBUG_FB2D   74   // shown on Page 6 (EXPERIMENTAL), under SH4 CORE
+#define OPT_DEBUG_MESSAGE 75  // shown on Page 6 (EXPERIMENTAL), debug block at the end
+#define OPT_DEBUG_LOOP   76   // shown on Page 6 (EXPERIMENTAL), debug block at the end
+#define OPT_DEBUG_GDROM  77   // shown on Page 6 (EXPERIMENTAL), debug block at the end
+#define OPT_LIST_ORDER   78   // shown on Page 3 (DEPTH & WIDTH), under LAYER SORT
+#define OPT_DEBUG_SKIP_TEX 79 // shown on Page 6 (EXPERIMENTAL), debug block at the end
+#define OPT_PUYO_HACK    80   // shown on Page 6 (EXPERIMENTAL), with the other per-game hacks
+#define OPT_DINO_CRISIS_INVENTORY_HACK 72 // shown on Page 5 (EXPERIMENTAL), see OPT_PAGE5_ROWS
+#define OPT_DYN_IC      81   // shown on Page 6 (JIT/DYNAREC), under JIT BCACHE
+#define OPT_IFB_FLUSH   82   // shown on Page 6 (JIT/DYNAREC), under JIT ALIGN
+#define OPT_IFB_PROBE   83   // shown on Page 6 (JIT/DYNAREC), under JIT IFB FLUSH
+#define OPT_JIT_NEWOPS  84   // shown on Page 6 (JIT/DYNAREC), under JIT IFB PROBE
+#define OPT_JIT_HOTBLOCKS 85 // shown on Page 6 (JIT/DYNAREC), under JIT NEW OPS
+#define OPT_JIT_TFWD    86   // shown on Page 6 (JIT/DYNAREC), under JIT HOTBLOCKS
+#define OPT_JIT_FMOV    87   // shown on Page 6 (JIT/DYNAREC), under JIT T-FORWARD
+#define OPT_JIT_CARRY   88   // shown on Page 6 (JIT/DYNAREC), under JIT FMOV DIRECT
+#define OPT_JIT_MAC     89   // shown on Page 6 (JIT/DYNAREC), under JIT CARRY OPS
+#define OPT_JIT_FSCHG   91   // shown on Page 6 (JIT/DYNAREC), under JIT MAC OPS
+#define OPT_JIT_CR0     92   // shown on Page 6 (JIT/DYNAREC), under JIT FSCHG FAST
+#define OPT_JIT_CCALLS  93   // shown on Page 6 (JIT/DYNAREC), under JIT CR0 BRANCH
+#define OPT_BLOCKCOPY   94   // shown on Page 6 (JIT/DYNAREC), under JIT CCALL CENSUS
+#define OPT_JIT_FSQRT   95   // shown on Page 6 (JIT/DYNAREC), under JIT RAM TRAMP
+#define OPT_EXIT_FIX    90   // shown on Page 6 (EXPERIMENTAL), first row
+#define OPT_ROW_COUNT   66
+
+// Options are split across seven themed pages so no single page scrolls off
+// screen and related settings are grouped together.
+#define OPT_PAGE_COUNT 7
+
+// Explicit, ordered list of selectable rows for each page — in the SAME
+// order they are printf'd below. Cursor navigation (UP/DOWN) walks these
+// arrays directly instead of scanning raw OPT_* numeric IDs, so a row's
+// #define number no longer has to be numerically sandwiched between its
+// on-screen neighbors' numbers. (Previously e.g. OPT_SHOW_FPS=42 sat on
+// page 0 between OPT_SPEED_LIMIT and OPT_GRAPHICS on screen, but its ID put
+// it after OPT_SPLIT_SCREEN in ID order, so pressing DOWN skipped straight
+// past it and pressing DOWN again from the last row on the page would jump
+// back up to it — the "jumps to another option, then comes back" bug.)
+// OPT_LAUNCH is included on every page so A/B/1 keep working everywhere.
+// Page 0 - GENERAL
+static const int OPT_PAGE0_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_RATIO,
+  OPT_SPEED_LIMIT,
+  OPT_SHOW_FPS,
+  OPT_GRAPHICS,
+  OPT_GX,
+  OPT_LOD_BIAS,
+  OPT_ANISO,
+  OPT_TEX_CACHE,
+  OPT_VQ_CMPR,
+  OPT_FRAMESKIP,
+  OPT_FRAMEBUFFER_2D,
+  OPT_ADV_ALPHA,
+  OPT_BLEND_MODE,
+  OPT_BLEND_FPS_BOOST,
+  OPT_PUNCH_THROUGH,
+  OPT_TRANS_SORT,
+  OPT_RENDER_TO_TEXTURE,
+  OPT_SPLIT_SCREEN
+};
+
+// Page 1 - GRAPHICS
+static const int OPT_PAGE1_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_FMV_FORMAT,
+  OPT_YUV_STRIDE,
+  OPT_YUV_TWIDDLE_FIX,
+  OPT_VERTEX_COLOR,
+  OPT_SPRITE_COLOR,
+  OPT_VTX_ALPHA,
+  OPT_DECAL_ALPHA,
+  OPT_SEAM_FIX,
+  OPT_FOG,
+  OPT_BG_POLY,
+  OPT_RGB565_OPAQUE_ALPHA,
+  OPT_JOJO_FIX,
+  OPT_OFFSET_COLOR,
+  OPT_4BPP,
+  OPT_8BPP
+};
+
+// Page 2 - DEPTH & WIDTH
+static const int OPT_PAGE2_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_LEGACY_DEPTH,
+  OPT_DEPTH_CLIP,
+  OPT_FIXED_DEPTH,
+  OPT_HUD_PASS,
+  OPT_SUBPASS_ZCLEAR,
+  OPT_PPZ_WRITE,
+  OPT_ISP_DEPTH_FUNC,
+  OPT_ISP_CULL,
+  OPT_AUTOSORT,
+  OPT_LAYER_SORT,
+  OPT_LIST_ORDER,
+  OPT_X_SCALER,
+  OPT_Y_SCALER,
+  OPT_H_SCALER,
+  OPT_CANVAS_WIDTH,
+  OPT_POLY_OFFSET
+};
+
+// Page 3 - AUDIO
+static const int OPT_PAGE3_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_AUDIO_BUFFERS,
+  OPT_CDDA,
+  OPT_MUTE_PCM16,
+  OPT_AICA_FAST,
+  OPT_ARM7_SPEED,
+  OPT_ARM7_JIT,
+  OPT_ARM7_BATCH
+};
+
+// Page 4 - CORE
+static const int OPT_PAGE4_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_ACCURACY,
+  OPT_ASYNC_RENDER,
+  OPT_RENDER_DELAY,
+  OPT_TMEM_CACHE,
+  OPT_SH4_CLOCK
+};
+
+// Page 5 - EXPERIMENTAL STUFF & DEBUG
+static const int OPT_PAGE5_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_MIPMAP,
+  OPT_TEX_WRAP_GUARD,
+  OPT_TEX_CLAMP_FIX,
+  OPT_DMA_FIX,
+  OPT_SCHED,
+  OPT_EXIT_FIX,
+  OPT_TRANS_ZWRITE,
+  OPT_HOKUTO_HACK,
+  OPT_PUYO_HACK,
+  OPT_DINO_CRISIS_INVENTORY_HACK,
+  OPT_DYNAREC,
+  OPT_DEBUG_FB2D,
+  // --- debug log block, always last on this page ---
+  OPT_DEBUG_MESSAGE,
+  OPT_DEBUG_LOOP,
+  OPT_DEBUG_GDROM,
+  OPT_DEBUG_SKIP_TEX
+};
+
+// Page 6 - JIT/DYNAREC
+static const int OPT_PAGE6_ROWS[] = {
+  OPT_LAUNCH,
+  OPT_JIT_SBP,
+  OPT_FASTMEM,
+  OPT_BCACHE,
+  OPT_DYN_IC,
+  OPT_FPU_PIN,
+  OPT_JIT_ALIGN,
+  OPT_IFB_FLUSH,
+  OPT_IFB_PROBE,
+  OPT_JIT_NEWOPS,
+  OPT_JIT_HOTBLOCKS,
+  OPT_JIT_TFWD,
+  OPT_JIT_FMOV,
+  OPT_JIT_CARRY,
+  OPT_JIT_MAC,
+  OPT_JIT_FSCHG,
+  OPT_JIT_CR0,
+  OPT_JIT_CCALLS,
+  OPT_BLOCKCOPY,
+  OPT_JIT_FSQRT
+};
+
+static const int *opt_page_rows(int page, int *count)
+{
+  switch (page) {
+    case 0: *count = sizeof(OPT_PAGE0_ROWS) / sizeof(int); return OPT_PAGE0_ROWS;
+    case 1: *count = sizeof(OPT_PAGE1_ROWS) / sizeof(int); return OPT_PAGE1_ROWS;
+    case 2: *count = sizeof(OPT_PAGE2_ROWS) / sizeof(int); return OPT_PAGE2_ROWS;
+    case 3: *count = sizeof(OPT_PAGE3_ROWS) / sizeof(int); return OPT_PAGE3_ROWS;
+    case 4: *count = sizeof(OPT_PAGE4_ROWS) / sizeof(int); return OPT_PAGE4_ROWS;
+    case 5: *count = sizeof(OPT_PAGE5_ROWS) / sizeof(int); return OPT_PAGE5_ROWS;
+    case 6: *count = sizeof(OPT_PAGE6_ROWS) / sizeof(int); return OPT_PAGE6_ROWS;
+    default: *count = 1; return OPT_PAGE0_ROWS; // OPT_LAUNCH only, defensive fallback
+  }
+}
+
+// Moves selectedRow to the previous/next row within the CURRENT page's
+// ordered list, wrapping around at either end. dir: -1 = up, +1 = down.
+static int opt_step_row(int selectedRow, int page, int dir)
+{
+  int count;
+  const int *rows = opt_page_rows(page, &count);
+  int idx = 0;
+  for (int i = 0; i < count; i++) {
+    if (rows[i] == selectedRow) { idx = i; break; }
+  }
+  idx = (idx + dir + count) % count;
+  return rows[idx];
+}
+
+// Short titles shown in the page banner ("-- TITLE (PAGE n/6) --").
+static const char *opt_page_title(int page)
+{
+  switch (page) {
+    case 0: return "GENERAL";
+    case 1: return "GRAPHICS";
+    case 2: return "DEPTH & WIDTH";
+    case 3: return "AUDIO";
+    case 4: return "CORE";
+    case 5: return "EXPERIMENTAL STUFF & DEBUG";
+    case 6: return "JIT/DYNAREC";
+    default: return "";
+  }
+}
+
+// Prints the "1-Y: Previous | ..." hint pinned to the LAST row of the
+// console, no matter how many option rows a given page printed above it.
+// Without this, the footer would land on a different line on every page
+// (each page has a different row count) instead of always sitting at the
+// bottom of the screen.
+static void printOptionsFooter(void)
+{
+  int cols, rows;
+  CON_GetMetrics(&cols, &rows);
+  printf("\033[%d;1H1-Y: Previous | 2+X: Next | alpha 0.75", rows);
+}
+
+bool displayOptionsMenu()
+{
+  int selectedRow = OPT_LAUNCH;
+  int optionsPage = 0;
+
+  // Debounce: the A press used to select the file in the browser can
+  // otherwise bleed through as a fresh "A down" event on the very first
+  // scan here (seen with the GameCube pad), instantly triggering LAUNCH
+  // before the menu is even shown. Wait for A to be released first.
+  while ((WPAD_ButtonsHeld(0) & (WPAD_BUTTON_A | WPAD_CLASSIC_BUTTON_A))
+         || (PAD_ButtonsHeld(0) & PAD_BUTTON_A)
+         || (DRC_ButtonsHeldWPAD() & WPAD_BUTTON_A)
+         || (SS_ButtonsHeldWPAD() & WPAD_BUTTON_A))
+  {
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    if (WiiDRC_Inited())
+      WiiDRC_ScanPads();
+    SS_PollConnections();
+    VIDEO_WaitVSync();
+  }
+
+  while (true)
+  {
+    printf("\033[2J\033[H");
+
+    // --- Row 0: Launch ---
+    printf("%s LAUNCH GAME\n",
+           (selectedRow == OPT_LAUNCH) ? ">" : " ");
+
+    // --- Row 1: Game name (display only) ---
+    {
+      const char *gameName = strrchr(selectedFilePath, '/');
+      gameName = (gameName != NULL) ? gameName + 1 : selectedFilePath;
+      printf("    %.60s\n", gameName);
+    }
+
+    // --- Row 2: Preset banner (display only) ---
+    if (g_matched_preset_name[0] != '\0')
+      printf("    * Preset %c%s%c applied\n",
+             g_matched_preset_is_wiiu ? '<' : '[', g_matched_preset_name,
+             g_matched_preset_is_wiiu ? '>' : ']');
+    else
+      printf("    (no game preset matched)\n");
+
+    printf("\n");
+
+    printf("    -- %s (PAGE %d/%d) --\n\n", opt_page_title(optionsPage), optionsPage + 1, OPT_PAGE_COUNT);
+
+    if (optionsPage == 0) {
+    // --- Row: Ratio ---
+    printf("%s RATIO          : ", (selectedRow == OPT_RATIO) ? ">" : " ");
+    switch (g_ratio_preset) {
+      case 0: printf("[< ORIGINAL          >]"); break;
+      case 1: printf("[< FULLSCREEN        >]"); break;
+      case 2: printf("[< AUTO              >]"); break;
+    }
+    printf("\n");
+
+    // --- Row: Speed Limiter ---
+    printf("%s SPEED LIMITER  : ", (selectedRow == OPT_SPEED_LIMIT) ? ">" : " ");
+    switch (g_speed_limiter_preset) {
+      case 0: printf("[< OFF (UNCAPPED)    >]"); break;
+      case 1: printf("[< ON (CAP 100%%)     >]"); break;
+    }
+    printf(" Stops speed exceeding 100%%");
+    printf("\n");
+
+    // --- Row: Gameplay FPS overlay ---
+    printf("%s SHOW FPS       : ", (selectedRow == OPT_SHOW_FPS) ? ">" : " ");
+    switch (g_show_fps_overlay) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON                >]"); break;
+    }
+    printf(" gameplay FPS and speed overlay");
+    printf("\n");
+
+    // --- Row: Graphics ---
+    printf("%s GRAPHICS       : ", (selectedRow == OPT_GRAPHICS) ? ">" : " ");
+    switch (g_graphism_preset) {
+      case 0: printf("[< LOW (GX_NEAR)     >]"); break;
+      case 1: printf("[< NORMAL (GX_LINEAR)>]"); break;
+    }
+    printf(" 240p Games should use LOW");
+    printf("\n");
+
+    // --- Row: GX texture-LOD extras (biasclamp + edgelod) ---
+    printf("%s GX             : ", (selectedRow == OPT_GX) ? ">" : " ");
+    switch (g_gx_preset) {
+      case 0: printf("[< GX_DISABLE        >]"); break;
+      case 1: printf("[< GX_ENABLE         >]"); break;
+    }
+    printf(" LOD bias clamp + edge LOD");
+    printf("\n");
+
+    // --- Row: Texture LOD bias ---
+    printf("%s LOD BIAS       : ", (selectedRow == OPT_LOD_BIAS) ? ">" : " ");
+    switch (g_lod_bias_preset) {
+      case 0: printf("[< -1.00             >]"); break;
+      case 1: printf("[< -0.75             >]"); break;
+      case 2: printf("[< -0.50             >]"); break;
+      case 3: printf("[< 0.00 (DEFAULT)    >]"); break;
+      case 4: printf("[< +0.50             >]"); break;
+    }
+    printf(" minus = sharper, plus = blur");
+    printf("\n");
+
+    // --- Row: Anisotropic filtering ---
+    printf("%s ANISOTROPIC    : ", (selectedRow == OPT_ANISO) ? ">" : " ");
+    switch (g_aniso_preset) {
+      case 0: printf("[< 0X (OFF)          >]"); break;
+      case 1: printf("[< 2X                >]"); break;
+      case 2: printf("[< 4X                >]"); break;
+    }
+    printf(" 2X/4X needs MIPMAPS fast/trilinear");
+    printf("\n");
+
+    // --- Row: Texture Cache ---
+    printf("%s TEXTURE CACHE  : ", (selectedRow == OPT_TEX_CACHE) ? ">" : " ");
+    switch (g_texture_cache_preset) {
+      case 0: printf("[< VERY FAST         >]"); break;
+      case 6: printf("[< VERY FAST+        >]"); break;
+      case 1: printf("[< FAST              >]"); break;
+      case 2: printf("[< NORMAL (DEFAULT)  >]"); break;
+      case 3: printf("[< QUALITY (SLOW)    >]"); break;
+    }
+    printf(" Can have huge FPS impact");
+    printf("\n");
+
+    // --- Row: VQ as CMPR ---
+    printf("%s VQ AS CMPR     : ", (selectedRow == OPT_VQ_CMPR) ? ">" : " ");
+    switch (g_vq_cmpr_preset) {
+      case 0: printf("[< OFF (DEFAULT)     >]"); break;
+      case 1: printf("[< ON                >]"); break;
+    }
+    printf(" fixes VQ glitches on VERY FAST/+");
+    printf("\n");
+
+    // --- Row: Frameskipping ---
+    printf("%s FRAMESKIPPING  : ", (selectedRow == OPT_FRAMESKIP) ? ">" : " ");
+    switch (g_frameskip_preset) {
+      case 0: printf("[< 0 (DEFAULT)       >]"); break;
+      case 1: printf("[< 1                 >]"); break;
+      case 2: printf("[< 2                 >]"); break;
+      case 3: printf("[< AUTO              >]"); break;
+      case 4: printf("[< AUTO MAX          >]"); break;
+    }
+    printf("\n");
+
+    // --- Row: 2D Framebuffer ---
+    printf("%s 2D FRAMEBUFFER : ", (selectedRow == OPT_FRAMEBUFFER_2D) ? ">" : " ");
+    switch (g_framebuffer_2d) {
+      case 0: printf("[< NO                >]"); break;
+      case 1: printf("[< YES               >]"); break;
+    }
+    printf(" Can improve CACHE_VERY_FAST");
+    printf("\n");
+
+    // --- Row: Advanced Alpha ---
+    printf("%s ADVANCED ALPHA : ", (selectedRow == OPT_ADV_ALPHA) ? ">" : " ");
+    switch (g_advanced_alpha_preset) {
+      case 0: printf("[< NO                >]"); break;
+      case 1: printf("[< YES (DEFAULT)     >]"); break;
+    }
+    printf("\n");
+
+    // --- Row: Blend Mode ---
+    printf("%s > BLEND MODE   : ", (selectedRow == OPT_BLEND_MODE) ? ">" : " ");
+    switch (g_blend_mode_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" ON for Resident Evil 3");
+    printf("\n");
+
+    // --- Row: Blend FPS Boost ---
+    printf("%s >> FPS BOOST   : ", (selectedRow == OPT_BLEND_FPS_BOOST) ? ">" : " ");
+    switch (g_blend_fps_boost_preset) {
+      case 0: printf("[< OFF (CORRECT)     >]"); break;
+      case 1: printf("[< ON (FASTER)       >]"); break;
+    }
+    printf(" +2 FPS in BLEND MODE but bad alpha");
+    printf("\n");
+
+    // --- Row: Punch-Through ---
+    printf("%s PUNCH THROUGH  : ", (selectedRow == OPT_PUNCH_THROUGH) ? ">" : " ");
+    switch (g_punch_through_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" PT list alpha test");
+    printf("\n");
+
+    // --- Row: Translucent depth sort ---
+    printf("%s TRANS SORT     : ", (selectedRow == OPT_TRANS_SORT) ? ">" : " ");
+    switch (g_trans_sort_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" translucent polys / No flickers");
+    printf("\n");
+
+    // --- Row: Render to texture ---
+    printf("%s RENDER TO TEX  : ", (selectedRow == OPT_RENDER_TO_TEXTURE) ? ">" : " ");
+    switch (g_render_to_texture_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+      case 2: printf("[< OVERLAY (CARRY)   >]"); break;
+      case 3: printf("[< ON + KEEP LIST    >]"); break;
+    }
+    printf(" mirrors/TV screens/scope");
+    printf("\n");
+
+    // --- Row: Split-screen multiplayer ---
+    printf("%s SPLIT SCREEN   : ", (selectedRow == OPT_SPLIT_SCREEN) ? ">" : " ");
+    switch (g_split_screen_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< TILE CLIP (1 PASS)>]"); break;
+      case 2: printf("[< MULTI-PASS (2P)   >]"); break;
+      case 3: printf("[< BOTH              >]"); break;
+    }
+    printf(" 2P viewports, Racing Games");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 0
+
+    if (optionsPage == 1) {
+    // --- Row: FMV Format ---
+    printf("%s FMV FORMAT     : ", (selectedRow == OPT_FMV_FORMAT) ? ">" : " ");
+    switch (g_fmv_format_preset) {
+      case 0: printf("[< CMPR (DXT1)       >]"); break;
+      case 1: printf("[< RGBA8             >]"); break;
+      case 2: printf("[< RGB565 (FASTER)   >]"); break;
+      case 3: printf("[< TEV (GPU YUV)     >]"); break;
+    }
+    printf(" CMPR if some movie display white");
+    printf("\n");
+
+    // --- Row: YUV422 source pitch ---
+    printf("%s YUV STRIDE     : ", (selectedRow == OPT_YUV_STRIDE) ? ">" : " ");
+    switch (g_yuv_stride_preset) {
+      case 0: printf("[< OFF (DECLARED)    >]"); break;
+      case 1: printf("[< AUTO (FMV ONLY)   >]"); break;
+      case 2: printf("[< ALWAYS (LEGACY)   >]"); break;
+      case 3: printf("[< TEXCTL (HARDWARE) >]"); break;
+    }
+    printf(" TEXCTL if FMV still messy");
+    printf("\n");
+
+    // --- Row: Twiddled YUV422 texture decode fix ---
+    printf("%s YUV TWIDDLE FIX: ", (selectedRow == OPT_YUV_TWIDDLE_FIX) ? ">" : " ");
+    switch (g_yuv_twiddle_fix_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" green YUV art (VF3tb FIRST MATCH)");
+    printf("\n");
+
+    // --- Row: Intensity Color Fix ---
+    printf("%s VERTEX COLOR   : ", (selectedRow == OPT_VERTEX_COLOR) ? ">" : " ");
+    switch (g_vertex_color_preset) {
+      case 0: printf("[< OFF (GRAY SCALE)  >]"); break;
+      case 1: printf("[< ON                >]"); break;
+    }
+    printf(" Crazy Taxi's arrow or JSR logo");
+    printf("\n");
+
+    // --- Row: Sprite base colour ---
+    printf("%s SPRITE COLOR   : ", (selectedRow == OPT_SPRITE_COLOR) ? ">" : " ");
+    switch (g_sprite_color_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" sprite BaseCol; OFF = always white");
+    printf("\n");
+
+    // --- Row: Vertex alpha on ARGB1555 ---
+    printf("%s VTX ALPHA      : ", (selectedRow == OPT_VTX_ALPHA) ? ">" : " ");
+    switch (g_vtx_alpha_preset) {
+      case 0: printf("[< OFF (FORCE OPAQUE)>]"); break;
+      case 1: printf("[< ON (USE TSP.UseA) >]"); break;
+    }
+    printf(" ON fixes some transparency");
+    printf("\n");
+
+    // --- Row: Decal Alpha Fix ---
+    printf("%s DECAL ALPHA    : ", (selectedRow == OPT_DECAL_ALPHA) ? ">" : " ");
+    switch (g_decal_alpha_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" Fix Crazy Taxi's cars");
+    printf("\n");
+
+    // --- Row: 2D sprite seam fix (half-texel inset) ---
+    printf("%s SEAM FIX       : ", (selectedRow == OPT_SEAM_FIX) ? ">" : " ");
+    switch (g_seam_fix_preset) {
+      case 0: printf("[< OFF (A BIT FASTER)>]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" fix black lines between 2D tiles");
+    printf("\n");
+
+    // --- Row: PVR fog ---
+    printf("%s FOG            : ", (selectedRow == OPT_FOG) ? ">" : " ");
+    switch (g_fog_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (PER POLY)     >]"); break;
+    }
+    printf(" distance haze (racers/outdoors)");
+    printf("\n");
+
+    // --- Row: Background polygon rendering ---
+    printf("%s BG POLYGON     : ", (selectedRow == OPT_BG_POLY) ? ">" : " ");
+    switch (g_bg_poly_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" (bg gradient/texture)");
+    printf("\n");
+
+    // --- Row: RGB565 Opaque Alpha ---
+    printf("%s RGB565 ALPHA   : ", (selectedRow == OPT_RGB565_OPAQUE_ALPHA) ? ">" : " ");
+    switch (g_rgb565_opaque_alpha_preset) {
+      case 0: printf("[< OFF (FMT0 ONLY)   >]"); break;
+      case 1: printf("[< ON (FMT0+FMT1)    >]"); break;
+    }
+    printf(" OFF for POD2");
+    printf("\n");
+
+    // --- Row: Jojo Fix ---
+    printf("%s JOJO FIX       : ", (selectedRow == OPT_JOJO_FIX) ? ">" : " ");
+    switch (g_jojo_fix_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" for JoJo's Bizarre Adventure");
+    printf("\n");
+
+    // --- Row: Offset (specular) color ---
+    printf("%s OFFSET COLOR   : ", (selectedRow == OPT_OFFSET_COLOR) ? ">" : " ");
+    switch (g_offset_color_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (CORRECT)      >]"); break;
+    }
+    printf(" SPECULAR : OFF if all white");
+    printf("\n");
+
+    // --- Row: 4BPP ---
+    printf("%s 4BPP MODE      : ", (selectedRow == OPT_4BPP) ? ">" : " ");
+    switch (g_4bpp_preset) {
+      case 0: printf("[< I4 STUB           >]"); break;
+      case 1: printf("[< 4BPP OPTIMIZED    >]"); break;
+      case 2: printf("[< CI4 (FAST)        >]"); break;
+      case 3: printf("[< CI4 (NORMAL)      >]"); break;
+      case 4: printf("[< RGB565 (ACCURATE) >]"); break;
+    }
+    printf("\n");
+
+    // --- Row: 8BPP ---
+    printf("%s 8BPP MODE      : ", (selectedRow == OPT_8BPP) ? ">" : " ");
+    switch (g_8bpp_preset) {
+      case 0: printf("[< I8 STUB           >]"); break;
+      case 1: printf("[< 8BPP OPTIMIZED    >]"); break;
+      case 2: printf("[< CI8 (FAST)        >]"); break;
+      case 3: printf("[< CI8 (NORMAL)      >]"); break;
+      case 4: printf("[< RGB565 (ACCURATE) >]"); break;
+    }
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 1
+
+    if (optionsPage == 2) {
+    // --- Row: legacy (1bb8c27) depth pipeline ---
+    printf("%s LEGACY DEPTH   : ", (selectedRow == OPT_LEGACY_DEPTH) ? ">" : " ");
+    printf(g_legacy_depth_preset ? "[< ON                >]" : "[< OFF               >]");
+    printf(" Overrides FIXED DEPTH");
+    printf("\n");
+
+    // --- Row: Depth clip behaviour ---
+    printf("%s DEPTH CLIP     : ", (selectedRow == OPT_DEPTH_CLIP) ? ">" : " ");
+    switch (g_depth_clip_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< NEAR MARGIN (WII) >]"); break;
+      case 2: printf("[< NO CLIP (DOLPHIN) >]"); break;
+    }
+    printf(" 2D/menus invisible on real Wii");
+    printf("\n");
+
+    // --- Row: Fixed depth projection ---
+    printf("%s FIXED DEPTH    : ", (selectedRow == OPT_FIXED_DEPTH) ? ">" : " ");
+    switch (g_fixed_depth_preset) {
+      case 0: printf("[< OFF (DYNAMIC)     >]"); break;
+      case 1: printf("[< WIDE (BUGGY)      >]"); break;
+      case 2: printf("[< TIGHT (Fix Z-Fght)>]"); break;
+    }
+    printf(" fixed near/far planes. Z-Fighting");
+    printf("\n");
+
+    // --- Row: HUD pass (rescue HUD clipped by fixed_depth=tight) ---
+    printf("%s HUD PASS       : ", (selectedRow == OPT_HUD_PASS) ? ">" : " ");
+    switch (g_hud_pass_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< OVERLAY (NO ZW)   >]"); break;
+      case 2: printf("[< PROTECT (Z-WRITE) >]"); break;
+    }
+    printf(" HUD back w/ FIXED DEPTH=TIGHT");
+    printf("\n");
+
+    // --- Row: Sub-pass depth-only Z clear ---
+    printf("%s SUBPASS ZCLEAR : ", (selectedRow == OPT_SUBPASS_ZCLEAR) ? ">" : " ");
+    switch (g_subpass_zclear_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON                >]"); break;
+    }
+    printf(" re-park Z before HUD PASS");
+    printf("\n");
+
+    // --- Row: PPZ Write ---
+    printf("%s PPZ_WRITE      : ", (selectedRow == OPT_PPZ_WRITE) ? ">" : " ");
+    switch (g_ppz_write_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" OFF to fix black remanence");
+    printf("\n");
+
+    // --- Row: Per-poly ISP depth compare (isp.DepthMode) ---
+    printf("%s ISP DEPTH FUNC : ", (selectedRow == OPT_ISP_DEPTH_FUNC) ? ">" : " ");
+    switch (g_isp_depth_func_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (OPAQUE/PT)    >]"); break;
+      case 2: printf("[< ON (ALL LISTS)    >]"); break;
+    }
+    printf(" per-poly depth test (experimental)");
+    printf("\n");
+
+    // --- Row: Per-poly ISP backface cull (isp.CullMode) ---
+    printf("%s ISP CULL       : ", (selectedRow == OPT_ISP_CULL) ? ">" : " ");
+    switch (g_isp_cull_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON                >]"); break;
+      case 2: printf("[< ON (SWAP WINDING) >]"); break;
+    }
+    printf(" backface culling (experimental)");
+    printf("\n\n");
+
+    // --- Row: Per-pixel autosort (depth peeling) ---
+    printf("%s AUTOSORT       : ", (selectedRow == OPT_AUTOSORT) ? ">" : " ");
+    if (g_autosort_preset <= 0)
+      printf("[< OFF (LEGACY)      >]");
+    else
+      printf("[< %d LAYERS (SLOW)   >]", g_autosort_preset);
+    printf(" real per-pixel TR sort");
+    printf("\n");
+
+    // --- Row: Layer Sort (layer-tiered translucent sort) ---
+    printf("%s LAYER SORT     : ", (selectedRow == OPT_LAYER_SORT) ? ">" : " ");
+    switch (g_layer_sort_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (TR TIER SORT) >]"); break;
+    }
+    printf(" for 2D scenes drawn at ONE depth");
+    printf("\n");
+
+    // --- Row: PVR list-type render order (OP before TR, whatever the TA order) ---
+    printf("%s LIST ORDER     : ", (selectedRow == OPT_LIST_ORDER) ? ">" : " ");
+    switch (g_list_order_preset) {
+      case 0: printf("[< OFF (TA ORDER)    >]"); break;
+      case 1: printf("[< ON (OPAQUE FIRST) >]"); break;
+    }
+    printf(" if bg covers the game (Puyo Puyo)");
+    printf("\n");
+
+    printf("\n");
+
+    // --- Row: PVR horizontal X-Scaler ---
+    printf("%s X SCALER       : ", (selectedRow == OPT_X_SCALER) ? ">" : " ");
+    switch (g_x_scaler_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" ON for Omicron/Wacky Races");
+    printf("\n");
+
+    // --- Row: PVR vertical Y-Scaler (SCALER_CTL.vscalefactor) ---
+    printf("%s Y SCALER       : ", (selectedRow == OPT_Y_SCALER) ? ">" : " ");
+    switch (g_y_scaler_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (VSCALEFACTOR) >]"); break;
+    }
+    printf(" vertical SSAA / flicker filter");
+    printf("\n");
+
+    // --- Row: PVR horizontal H-Scaler (VO_CONTROL.pixel_double) ---
+    printf("%s H SCALER       : ", (selectedRow == OPT_H_SCALER) ? ">" : " ");
+    switch (g_h_scaler_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (PIXEL DOUBLE) >]"); break;
+    }
+    printf(" 320-wide (pixel-doubled) modes");
+    printf("\n");
+
+    // --- Row: Forced canvas width (240p scenes) ---
+    printf("%s CANVAS WIDTH   : ", (selectedRow == OPT_CANVAS_WIDTH) ? ">" : " ");
+    if (g_canvas_width_preset <= 0)
+      printf("[< OFF (640, LEGACY) >]");
+    else
+      printf("[< %-4d              >]", g_canvas_width_preset);
+    printf(" SF3 double impact=384");
+    printf("\n\n");
+
+    // --- Row: Native polygon offset (Z-texture bias, PT list) ---
+    printf("%s POLY OFFSET    : ", (selectedRow == OPT_POLY_OFFSET) ? ">" : " ");
+    switch (g_poly_offset_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< TIER 1            >]"); break;
+      case 2: printf("[< TIER 2            >]"); break;
+      case 3: printf("[< TIER 3            >]"); break;
+    }
+    printf(" Z-bias for co-planar PT decals");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 2
+
+    if (optionsPage == 3) {
+    // --- Row: Audio queue pacing (settings.emulator.AudioBuffers) ---
+    printf("%s AUDIO BUFFERS  : ", (selectedRow == OPT_AUDIO_BUFFERS) ? ">" : " ");
+    switch (g_audio_buffers_preset) {
+      case -1: printf("[< DEFAULT (SAVED)   >]"); break;
+      case  0: printf("[< 0 (NEVER BLOCK)   >]"); break;
+      case  1: printf("[< 1                 >]"); break;
+      case  2: printf("[< 2                 >]"); break;
+      case  3: printf("[< 3 (MOST PACED)    >]"); break;
+    }
+    printf(" 1 fix most audio 1 but slower fps");
+    printf("\n");
+
+    // --- Row: CDDA music (GD-ROM CD audio tracks) ---
+    printf("%s CDDA MUSIC     : ", (selectedRow == OPT_CDDA) ? ">" : " ");
+    switch (g_cdda_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (CD MUSIC)     >]"); break;
+    }
+    printf(" (GD-ROM CD audio tracks)");
+    printf("\n");
+
+    // --- Row: Mute 16-bit PCM channels (ChuChu Rocket SFX workaround) ---
+    printf("%s MUTE 16BIT PCM : ", (selectedRow == OPT_MUTE_PCM16) ? ">" : " ");
+    switch (g_mute_pcm16_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (SILENCE 16B)  >]"); break;
+    }
+    printf(" ChuChu Rocket echoey SFX fix");
+    printf("\n");
+
+    // --- Row: AICA fast mixer (plugs/nullAICA/sgc_if.cpp GenerateAllFast) ---
+    printf("%s AICA FAST      : ", (selectedRow == OPT_AICA_FAST) ? ">" : " ");
+    switch (g_aica_fast_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FASTER)       >]"); break;
+    }
+    printf(" same sound, less CPU");
+    printf("\n");
+
+    // --- Row: ARM7 sound-CPU speed divider (plugs/vbaARM/arm_aica.cpp) ---
+    printf("%s ARM7 SPEED     : ", (selectedRow == OPT_ARM7_SPEED) ? ">" : " ");
+    switch (g_arm7_speed_preset) {
+      case 0: printf("[< 10MHZ (DEFAULT)   >]"); break;
+      case 1: printf("[< 5MHZ (FASTER)     >]"); break;
+      case 2: printf("[< 2.5MHZ (RISKY)    >]"); break;
+    }
+    printf(" sound CPU clock - check audio!");
+    printf("\n");
+
+    // --- Row: ARM7 JIT (plugs/vbaARM/arm7_jit.cpp) ---
+    printf("%s ARM7 JIT       : ", (selectedRow == OPT_ARM7_JIT) ? ">" : " ");
+    switch (g_arm7_jit_preset) {
+      case 0: printf("[< OFF (INTERPRETER) >]"); break;
+      case 1: printf("[< ON (BASIC)        >]"); break;
+      case 2: printf("[< ON (LINKED)       >]"); break;
+      case 3: printf("[< ON (RET CACHE)    >]"); break;
+      case 4: printf("[< ON (FAST STACK)   >]"); break;
+      case 5: printf("[< ON (LEAN CODE)    >]"); break;
+    }
+    printf(" sound CPU recompiler");
+    printf("\n");
+
+    // --- Row: ARM7 slice batching (plugs/vbaARM/arm_aica.cpp) ---
+    printf("%s ARM7 BATCH     : ", (selectedRow == OPT_ARM7_BATCH) ? ">" : " ");
+    switch (g_arm7_batch_preset) {
+      case 2:  printf("[< 2 (BATCHED)       >]"); break;
+      case 4:  printf("[< 4 (BATCHED)       >]"); break;
+      case 8:  printf("[< 8 (BATCHED)       >]"); break;
+      case 16: printf("[< 16 (BATCHED)      >]"); break;
+      default: printf("[< 1 (DEFAULT)       >]"); break;
+    }
+    printf(" sound CPU runs per N updates");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 3
+
+    if (optionsPage == 4) {
+    // --- Row: Accuracy ---
+    printf("%s ACCURACY       : ", (selectedRow == OPT_ACCURACY) ? ">" : " ");
+    switch (g_accuracy_preset) {
+      case 0: printf("[< FAST (DEFAULT)    >]"); break;
+      case 1: printf("[< BALANCED          >]"); break;
+      case 2: printf("[< ACCURATE          >]"); break;
+    }
+    printf(" ACCURATE if strange AI behavior");
+    printf("\n");
+
+    // --- Row: Async render (CPU/GPU overlap) ---
+    printf("%s ASYNC RENDER   : ", (selectedRow == OPT_ASYNC_RENDER) ? ">" : " ");
+    switch (g_async_render_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FASTER)       >]"); break;
+    }
+    printf(" use GPU, cost 1 frame input-lag");
+    printf("\n");
+
+    // --- Row: Hardware-like render/list IRQ delays ---
+    printf("%s RENDER DELAY   : ", (selectedRow == OPT_RENDER_DELAY) ? ">" : " ");
+    switch (g_render_delay_preset) {
+      case 0: printf("[< OFF (FASTER)      >]"); break;
+      case 1: printf("[< ON (HW-LIKE)      >]"); break;
+    }
+    printf(" ON for MvC2 and CvSNK");
+    printf("\n");
+
+    // --- Row: TMEM texture cache ---
+    printf("%s TMEM CACHE     : ", (selectedRow == OPT_TMEM_CACHE) ? ">" : " ");
+    switch (g_tmem_cache_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FASTER?)      >]"); break;
+    }
+    printf(" keep GPU texture cache warm");
+    printf("\n");
+
+    // --- Row: SH4 underclock (effective CPU clock; see plugin_types.h) ---
+    printf("%s SH4 CLOCK      : ", (selectedRow == OPT_SH4_CLOCK) ? ">" : " ");
+    if (g_sh4_clock_preset >= 200)
+      printf("[< 200MHZ (FULL)     >]");
+    else
+      printf("[< %3dMHZ (UNDERCLK) >]", g_sh4_clock_preset);
+    printf(" lower=faster host,slower game");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 4
+
+    if (optionsPage == 5) {
+    // --- Row: Mipmap generation ---
+    printf("%s MIPMAPS        : ", (selectedRow == OPT_MIPMAP) ? ">" : " ");
+    switch (g_mipmap_preset) {
+      case 0: printf("[< OFF (FASTEST)     >]"); break;
+      case 1: printf("[< FAST              >]"); break;
+      case 2: printf("[< TRILINEAR (SLOW)  >]"); break;
+    }
+    printf(" less shimmer far away");
+    printf("\n");
+
+    // --- Row: TEX WRAP GUARD - no mid-frame recycling of live arena bytes ---
+    printf("%s TEX WRAP GUARD : ", (selectedRow == OPT_TEX_WRAP_GUARD) ? ">" : " ");
+    switch (g_tex_wrap_guard_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (SAFE WRAP)    >]"); break;
+    }
+    printf(" stop tex corruption in full cache");
+    printf("\n");
+
+    // --- Row: TEX CLAMP FIX - per-polygon wrap mode on cached textures ---
+    printf("%s TEX CLAMP FIX  : ", (selectedRow == OPT_TEX_CLAMP_FIX) ? ">" : " ");
+    switch (g_tex_clamp_fix_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (PER POLYGON)  >]"); break;
+    }
+    printf(" fix streaked/stretched textures");
+    printf("\n");
+
+    // --- Row: DMA_FIX - ch2/PVR/Sort/AICA-G2 DMA correctness fixes ---
+    printf("%s DMA FIX        : ", (selectedRow == OPT_DMA_FIX) ? ">" : " ");
+    switch (g_dma_fix_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" ch2/PVR/Sort/AICA DMA fixes");
+    printf("\n");
+
+    // --- Row: SCHED - unified cycle-deadline event scheduler ---
+    printf("%s SCHED (ORDER)  : ", (selectedRow == OPT_SCHED) ? ">" : " ");
+    switch (g_sched_preset) {
+      case 0: printf("[< OFF (CASCADE)     >]"); break;
+      case 1: printf("[< ON (DEADLINE)     >]"); break;
+    }
+    printf(" hw-order DMA/IRQ completions (exp)");
+    printf("\n");
+
+    // --- Row: exit-combo shutdown (wii/wii_exit.cpp) ---
+    // OFF reproduces the old bare exit(0); everything above it quiesces the
+    // DSP, the GP, the pads and Bluetooth first, which is what stops the
+    // intermittent black-screen hang on the way back to the loader.
+    // HOST POLL additionally tests the combo off the emulated scanline
+    // counter, so a game that stopped polling Maple can still be exited.
+    printf("%s EXIT FIX       : ", (selectedRow == OPT_EXIT_FIX) ? ">" : " ");
+    switch (g_exit_fix_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< SAFE SHUTDOWN     >]"); break;
+      case 2: printf("[< SAFE + WATCHDOG   >]"); break;
+      case 3: printf("[< + HOST POLL       >]"); break;
+    }
+    printf(" Fixes black screen on exit");
+    printf("\n");
+
+    // --- Row: Translucent-list depth write ---
+    printf("%s TRANS ZWRITE   : ", (selectedRow == OPT_TRANS_ZWRITE) ? ">" : " ");
+    switch (g_trans_zwrite_preset) {
+      case 0: printf("[< OFF (NO OCCLUDE)  >]"); break;
+      case 1: printf("[< ON (DEFAULT)      >]"); break;
+    }
+    printf(" DEBUG ONLY"); // OFF hides the BIOS logo
+    printf("\n");
+
+    // --- Row: Hokuto Hack (HnK debris VRAM addresses, needs LAYER SORT on page 3) ---
+    printf("%s HOKUTO HACK    : ", (selectedRow == OPT_HOKUTO_HACK) ? ">" : " ");
+    switch (g_hokuto_hack_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (RAM hack)     >]"); break;
+    }
+    printf(" Hokuto no Ken : specific hack");
+    printf("\n");
+
+    // --- Row: Puyo Puyo backdrops (PUYO_HACK() in gxRend.cpp; the two
+    // hardcoded addresses live there, not here) ---
+    // Two unrelated backdrops, both submitted AFTER the content standing in
+    // them: the gameplay playfields (puyos go dim behind the grid) and the
+    // intro/main screen background (fading UI/logo pieces get buried under
+    // it). This sorts both textures back behind everything else at their tier.
+    printf("%s PUYO HACK      : ", (selectedRow == OPT_PUYO_HACK) ? ">" : " ");
+    switch (g_puyo_hack_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (RAM hack)     >]"); break;
+    }
+    printf(" Puyo Puyo : Intro + Gameplay");
+    printf("\n");
+
+    // --- Row: Dino Crisis inventory preview icon redecode hack (gxRend.cpp DINO_CRISIS_INVENTORY_HACK) ---
+    printf("%s REGINA HACK    : ", (selectedRow == OPT_DINO_CRISIS_INVENTORY_HACK) ? ">" : " ");
+    switch (g_dino_crisis_inventory_hack_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (RAM hack)     >]"); break;
+    }
+    printf(" Dino Crisis : inventory fix");
+    printf("\n");
+
+    // --- Row: DYNAREC - SH4 core back-end (Dynarec vs Interpreter) ---
+    printf("%s SH4 CORE       : ", (selectedRow == OPT_DYNAREC) ? ">" : " ");
+    switch (g_dynarec_preset) {
+      case 0: printf("[< INTERPRETER       >]"); break;
+      case 1: printf("[< DYNAREC (DEFAULT) >]"); break;
+    }
+    printf(" INTERPRETER is slow, for debugging");
+    printf("\n");
+
+    // --- Row: 2D framebuffer path logger (gxRend.cpp DEBUG_FB2D) ---
+    // Answers "is 2D FRAMEBUFFER (page 1) worth turning on for this game?" —
+    // it logs the bit-24 render passes that preset would act on, WITHOUT
+    // needing the preset itself to be on. Nothing in the log = it can't help.
+    printf("%s DBG FB2D LOG   : ", (selectedRow == OPT_DEBUG_FB2D) ? ">" : " ");
+    switch (g_debug_fb2d) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (LOG PASSES)   >]"); break;
+    }
+    printf(" 2D FRAMEBUFFER candidate -> log");
+    printf("\n\n");
+
+    // --- Debug log block (all default OFF; output goes to /ndclog.txt) ---
+    printf("%s DEBUG MESSAGE  : ", (selectedRow == OPT_DEBUG_MESSAGE) ? ">" : " ");
+    switch (g_debug_message) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (VERBOSE)      >]"); break;
+    }
+    printf(" renderer trace ([PATH], [FB]...)");
+    printf("\n");
+
+    printf("%s DEBUG LOOP     : ", (selectedRow == OPT_DEBUG_LOOP) ? ">" : " ");
+    switch (g_debug_loop) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (VERY SLOW)    >]"); break;
+    }
+    printf(" per-loop CPU/GDROM/IO trace");
+    printf("\n");
+
+    printf("%s DEBUG GDROM    : ", (selectedRow == OPT_DEBUG_GDROM) ? ">" : " ");
+    switch (g_debug_gdrom) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (SPI CMDS)     >]"); break;
+    }
+    printf(" GD-ROM / CDDA command trace");
+    printf("\n");
+
+    // --- Row: skip one texture's strips (bisection aid, address from the cfg) ---
+    printf("%s SKIP TEXTURE   : ", (selectedRow == OPT_DEBUG_SKIP_TEX) ? ">" : " ");
+    if (g_debug_skip_tex)
+      printf("[< SKIP %06X      >]", (unsigned)g_debug_skip_tex);
+    else if (g_debug_skip_tex_saved)
+      printf("[< OFF (%06X)     >]", (unsigned)g_debug_skip_tex_saved);
+    else
+      printf("[< OFF (SET IN CFG)  >]");
+    printf(" hide one texture (debug)");
+    printf("\n");
+    printf("                  (logs are written to /ndclog.txt on the card)");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 5
+
+    if (optionsPage == 6) {
+    // --- Row: JIT_SBP - Stale Block Protection (dc/sh4/rec_v2/driver.cpp) ---
+    printf("%s JIT SBP        : ", (selectedRow == OPT_JIT_SBP) ? ">" : " ");
+    switch (g_jit_sbp_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< KNOWN (DEFAULT)   >]"); break;
+      case 2: printf("[< ALL RAM (SLOW)    >]"); break;
+    }
+    printf(" stale/self-modified block guard");
+    printf("\n");
+
+    // --- Row: FASTMEM - PPC-MMU branchless JIT memory access ---
+    printf("%s FASTMEM        : ", (selectedRow == OPT_FASTMEM) ? ">" : " ");
+    switch (g_fastmem_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FASTER)       >]"); break;
+    }
+    printf(" MMU-mapped JIT memory");
+    printf("\n");
+
+    // --- Row: BCACHE - flat dynamic-branch dispatch cache ---
+    printf("%s JIT BCACHE     : ", (selectedRow == OPT_BCACHE) ? ">" : " ");
+    switch (g_bcache_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FLAT)         >]"); break;
+    }
+    printf(" 1-cacheline dynamic jump dispatch");
+    printf("\n");
+
+    // --- Row: DYN_IC - per-site inline cache on dynamic exits ---
+    printf("%s JIT DYN IC     : ", (selectedRow == OPT_DYN_IC) ? ">" : " ");
+    switch (g_dyn_ic_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (JSR/JMP)      >]"); break;
+      case 2: printf("[< ON (+RTS)         >]"); break;
+    }
+    printf(" bake last target at branch site");
+    printf("\n");
+
+    // --- Row: FPU_PIN - pin fr[0..15] to PPC f14..f29 ---
+    printf("%s FPU PIN        : ", (selectedRow == OPT_FPU_PIN) ? ">" : " ");
+    switch (g_fpu_pin_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (EXPERIMENTAL) >]"); break;
+    }
+    printf(" pin fr0-15 to real FPU regs");
+    printf("\n");
+
+    // --- Row: JIT_ALIGN - 32-byte-align block entries ---
+    printf("%s JIT ALIGN      : ", (selectedRow == OPT_JIT_ALIGN) ? ">" : " ");
+    switch (g_jit_align_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (32B LINES)    >]"); break;
+    }
+    printf(" align JIT blocks to cache lines");
+    printf("\n");
+
+    // --- Row: IFB_FLUSH - narrow the shop_ifb register bracket ---
+    printf("%s JIT IFB FLUSH  : ", (selectedRow == OPT_IFB_FLUSH) ? ">" : " ");
+    switch (g_ifb_flush_preset) {
+      case 0: printf("[< OFF (FULL SPILL)  >]"); break;
+      case 1: printf("[< ON (SELECTIVE +1%%)>]"); break;
+    }
+    printf(" spill only regs the opcode touches");
+    printf("\n");
+
+    // --- Row: IFB_PROBE - count interpreter fallbacks per opcode ---
+    printf("%s JIT IFB PROBE  : ", (selectedRow == OPT_IFB_PROBE) ? ">" : " ");
+    switch (g_ifb_probe_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (LOGS [IFB])   >]"); break;
+    }
+    printf(" count ifb per opcode to ndclog");
+    printf("\n");
+
+    // --- Row: JIT_NEWOPS - dynarec 8 opcodes that always fell back ---
+    printf("%s JIT NEW OPS    : ", (selectedRow == OPT_JIT_NEWOPS) ? ">" : " ");
+    switch (g_jit_newops_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (9 OPS JITTED) >]"); break;
+    }
+    printf(" jit rotcl/rotcr/tas.b/sr/fpscr");
+    printf("\n");
+
+    // --- Row: JIT_HOTBLOCKS - per-block execution counts + codegen dump ---
+    printf("%s JIT HOTBLOCKS  : ", (selectedRow == OPT_JIT_HOTBLOCKS) ? ">" : " ");
+    switch (g_hotblocks_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (LOGS [HOT])   >]"); break;
+    }
+    printf(" hot blocks + ppc bytes per op");
+    printf("\n");
+
+    // --- Row: JIT_TFWD - forward T to its branch instead of reloading it ---
+    printf("%s JIT T-FORWARD  : ", (selectedRow == OPT_JIT_TFWD) ? ">" : " ");
+    switch (g_jit_tfwd_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (NO RELOAD +4%%)>]"); break;
+    }
+    printf(" skip the T store/reload on cmp+bt");
+    printf("\n");
+
+    // --- Row: JIT_FMOV - Phase B direct float access on the fastmem path ---
+    printf("%s JIT FMOV DIRECT: ", (selectedRow == OPT_JIT_FMOV) ? ">" : " ");
+    switch (g_jit_fmov_preset) {
+      case 0: printf("[< OFF (GPR BOUNCE)  >]"); break;
+      case 1: printf("[< ON (LFS/STFS +10%%)>]"); break;
+    }
+    printf(" needs fpu_pin & fast_mem"); // fmov straight to/from pinned FPR
+    printf("\n");
+
+    // --- Row: JIT_CARRY - dynarec the carry/overflow arithmetic ---
+    printf("%s JIT CARRY OPS  : ", (selectedRow == OPT_JIT_CARRY) ? ">" : " ");
+    switch (g_jit_carry_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (10 OPS JITTED)>]"); break;
+    }
+    printf(" jit addc/subc/div1/cmp-str");
+    printf("\n");
+
+    // --- Row: JIT_MAC - dynarec mac.l / mac.w ---
+    printf("%s JIT MAC OPS    : ", (selectedRow == OPT_JIT_MAC) ? ">" : " ");
+    switch (g_jit_mac_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (FASTMEM READS)>]"); break;
+    }
+    printf(" jit mac.l/mac.w + saturation");
+    printf("\n");
+
+    // --- Row: JIT_FSCHG - skip UpdateFPSCR() on the SZ-only fschg ---
+    printf("%s JIT FSCHG FAST : ", (selectedRow == OPT_JIT_FSCHG) ? ">" : " ");
+    switch (g_jit_fschg_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (SZ-ONLY PATH) >]"); break;
+    }
+    printf(" fschg: 1 stw, no FPU spill+call");
+    printf("\n");
+
+    // --- Row: JIT_CR0 - conditional exit branches on CR0 directly ---
+    printf("%s JIT CR0 BRANCH : ", (selectedRow == OPT_JIT_CR0) ? ">" : " ");
+    switch (g_jit_cr0_preset) {
+      case 0: printf("[< OFF (LEGACY)      >]"); break;
+      case 1: printf("[< ON (NO MFCR)      >]"); break;
+    }
+    printf(" cmp+bt: branch on CR0, skip mfcr");
+    printf("\n");
+
+    // --- Row: JIT_CCALLS - census of remaining C call-outs ---
+    printf("%s JIT CCALL      : ", (selectedRow == OPT_JIT_CCALLS) ? ">" : " ");
+    switch (g_jit_ccalls_preset) {
+      case 0: printf("[< OFF               >]"); break;
+      case 1: printf("[< ON (LOGS [CC])    >]"); break;
+    }
+    printf(" C call-outs/second and /frame");
+    printf("\n");
+
+    // --- Row: BLOCKCOPY - bulk block transfers instead of per-word ---
+    printf("%s BLOCK COPY     : ", (selectedRow == OPT_BLOCKCOPY) ? ">" : " ");
+    switch (g_blockcopy_preset) {
+      case 0: printf("[< OFF (PER-WORD)    >]"); break;
+      case 1: printf("[< ON (BULK COPY+2%%)>]"); break;
+    }
+    printf(" store queue+DMA, no per-word call");
+    printf("\n");
+
+    // --- Row: JIT_FSQRT - inline sqrt instead of the libm call ---
+    printf("%s JIT FSQRT      : ", (selectedRow == OPT_JIT_FSQRT) ? ">" : " ");
+    switch (g_jit_fsqrt_preset) {
+      case 0: printf("[< OFF (LIBM)        >]"); break;
+      case 1: printf("[< ON (INLINE NR+4%%?)>]"); break;
+    }
+    printf(" frsqrte+Newton, no C call");
+    printf("\n\n");
+
+    printOptionsFooter();
+    } // end page 6
+
+
+
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    u32 wmPressed = WPAD_ButtonsDown(0);
+    u32 pressed = wmPressed | CLASSIC_ToWPAD(wmPressed) | DRC_ButtonsDownWPAD() | SS_ButtonsDownWPAD();
+
+    // GameCube controller (Player 1) — same mapping convention as in-game
+    // input (see drkMapleDevices.cpp): Y=button1, X=button2.
+    u16 gcPressed = PAD_ButtonsDown(0);
+    if (gcPressed & PAD_BUTTON_UP)    pressed |= WPAD_BUTTON_UP;
+    if (gcPressed & PAD_BUTTON_DOWN)  pressed |= WPAD_BUTTON_DOWN;
+    if (gcPressed & PAD_BUTTON_LEFT)  pressed |= WPAD_BUTTON_LEFT;
+    if (gcPressed & PAD_BUTTON_RIGHT) pressed |= WPAD_BUTTON_RIGHT;
+    if (gcPressed & PAD_BUTTON_A)     pressed |= WPAD_BUTTON_A;
+    if (gcPressed & PAD_BUTTON_B)     pressed |= WPAD_BUTTON_B;
+    if (gcPressed & PAD_BUTTON_Y)     pressed |= WPAD_BUTTON_1;
+    if (gcPressed & PAD_BUTTON_X)     pressed |= WPAD_BUTTON_2;
+
+    // Page navigation: -/+ already arrive as WPAD_BUTTON_MINUS/PLUS from the
+    // Wiimote and (via CLASSIC_ToWPAD above) the Classic Controller. The
+    // Classic Controller's L/R shoulder buttons are page nav too, but are
+    // read straight off the raw word here rather than folded into the global
+    // CLASSIC_ToWPAD helper, so they don't collide with the MINUS+PLUS
+    // "exit" combo used elsewhere (e.g. the file browser).
+    bool classicPrevPage = (wmPressed & WPAD_CLASSIC_BUTTON_FULL_L) != 0;
+    bool classicNextPage = (wmPressed & WPAD_CLASSIC_BUTTON_FULL_R) != 0;
+
+    if (pressed & WPAD_BUTTON_UP)
+    {
+      selectedRow = opt_step_row(selectedRow, optionsPage, -1);
+    }
+    else if (pressed & WPAD_BUTTON_DOWN)
+    {
+      selectedRow = opt_step_row(selectedRow, optionsPage, +1);
+    }
+    else if (pressed & WPAD_BUTTON_LEFT)
+    {
+      switch (selectedRow) {
+        case OPT_GRAPHICS:  g_graphism_preset      = (g_graphism_preset      + 1) % 2; break;
+        case OPT_GX:        g_gx_preset            = (g_gx_preset            + 1) % 2; break;
+        case OPT_LOD_BIAS:  g_lod_bias_preset      = (g_lod_bias_preset      + 4) % 5; break;
+        case OPT_ANISO:     g_aniso_preset         = (g_aniso_preset         + 2) % 3; break;
+        case OPT_ACCURACY:  g_accuracy_preset       = (g_accuracy_preset       + 2) % 3; break;
+        case OPT_RATIO:     g_ratio_preset          = (g_ratio_preset          + 2) % 3; break;
+        case OPT_PPZ_WRITE: g_ppz_write_preset      = (g_ppz_write_preset      + 1) % 2; break;
+        case OPT_TRANS_ZWRITE: g_trans_zwrite_preset = (g_trans_zwrite_preset  + 1) % 2; break;
+        case OPT_SPRITE_COLOR: g_sprite_color_preset = (g_sprite_color_preset  + 1) % 2; break;
+        case OPT_VTX_ALPHA:    g_vtx_alpha_preset    = (g_vtx_alpha_preset     + 1) % 2; break;
+        case OPT_POLY_OFFSET: g_poly_offset_preset  = (g_poly_offset_preset    + 3) % 4; break;
+        case OPT_ADV_ALPHA: g_advanced_alpha_preset = (g_advanced_alpha_preset + 1) % 2; break;
+        case OPT_DECAL_ALPHA: g_decal_alpha_preset  = (g_decal_alpha_preset    + 1) % 2; break;
+        case OPT_FRAMEBUFFER_2D: g_framebuffer_2d   = (g_framebuffer_2d        + 1) % 2; break;
+        case OPT_FMV_FORMAT: g_fmv_format_preset    = (g_fmv_format_preset     + 3) % 4; break;
+        case OPT_FRAMESKIP: g_frameskip_preset      = (g_frameskip_preset      + 4) % 5; break;
+        case OPT_TEX_CACHE: g_texture_cache_preset  = tex_cache_step(g_texture_cache_preset, -1); break;
+        case OPT_4BPP:      g_4bpp_preset           = (g_4bpp_preset           + 4) % 5; break;
+        case OPT_8BPP:      g_8bpp_preset           = (g_8bpp_preset           + 4) % 5; break;
+        case OPT_JOJO_FIX:  g_jojo_fix_preset       = (g_jojo_fix_preset       + 1) % 2; break;
+        case OPT_VQ_CMPR:   g_vq_cmpr_preset        = (g_vq_cmpr_preset        + 1) % 2; break;
+        case OPT_SPEED_LIMIT: g_speed_limiter_preset = (g_speed_limiter_preset + 1) % 2; break;
+        case OPT_VERTEX_COLOR: g_vertex_color_preset = (g_vertex_color_preset + 1) % 2; break;
+        case OPT_BLEND_MODE: g_blend_mode_preset    = (g_blend_mode_preset    + 1) % 2; break;
+        case OPT_RGB565_OPAQUE_ALPHA: g_rgb565_opaque_alpha_preset = (g_rgb565_opaque_alpha_preset + 1) % 2; break;
+        case OPT_BLEND_FPS_BOOST: g_blend_fps_boost_preset = (g_blend_fps_boost_preset + 1) % 2; break;
+        case OPT_PUNCH_THROUGH: g_punch_through_preset = (g_punch_through_preset + 1) % 2; break;
+        case OPT_OFFSET_COLOR: g_offset_color_preset = (g_offset_color_preset + 1) % 2; break;
+        case OPT_TRANS_SORT: g_trans_sort_preset = (g_trans_sort_preset + 1) % 2; break;
+        case OPT_RENDER_TO_TEXTURE: g_render_to_texture_preset = (g_render_to_texture_preset + 3) % 4; break;
+        case OPT_SPLIT_SCREEN: g_split_screen_preset = (g_split_screen_preset + 3) % 4; break;
+        case OPT_MIPMAP:    g_mipmap_preset          = (g_mipmap_preset          + 2) % 3; break;
+        case OPT_SEAM_FIX:  g_seam_fix_preset        = (g_seam_fix_preset        + 1) % 2; break;
+        case OPT_FOG:       g_fog_preset             = (g_fog_preset             + 1) % 2; break;
+        case OPT_YUV_STRIDE: g_yuv_stride_preset = (g_yuv_stride_preset + 3) % 4; break;
+        case OPT_YUV_TWIDDLE_FIX: g_yuv_twiddle_fix_preset = (g_yuv_twiddle_fix_preset + 1) % 2; break;
+        case OPT_FIXED_DEPTH: g_fixed_depth_preset   = (g_fixed_depth_preset     + 2) % 3; break;
+        case OPT_LEGACY_DEPTH: g_legacy_depth_preset = (g_legacy_depth_preset    + 1) % 2; break;
+        case OPT_DEPTH_CLIP: g_depth_clip_preset     = (g_depth_clip_preset      + 2) % 3; break;
+        case OPT_ASYNC_RENDER: g_async_render_preset = (g_async_render_preset    + 1) % 2; break;
+        case OPT_TMEM_CACHE: g_tmem_cache_preset     = (g_tmem_cache_preset      + 1) % 2; break;
+        case OPT_BG_POLY:    g_bg_poly_preset        = (g_bg_poly_preset         + 1) % 2; break;
+        case OPT_X_SCALER:   g_x_scaler_preset       = (g_x_scaler_preset        + 1) % 2; break;
+        case OPT_Y_SCALER:   g_y_scaler_preset       = (g_y_scaler_preset        + 1) % 2; break;
+        case OPT_H_SCALER:   g_h_scaler_preset       = (g_h_scaler_preset        + 1) % 2; break;
+        case OPT_CANVAS_WIDTH:
+          if (g_canvas_width_preset <= 0)        g_canvas_width_preset = 1280;
+          else if (g_canvas_width_preset <= 320) g_canvas_width_preset = 0;
+          else                                   g_canvas_width_preset -= 16;
+          break;
+        case OPT_LAYER_SORT:  g_layer_sort_preset     = (g_layer_sort_preset       + 1) % 2; break;
+        case OPT_LIST_ORDER:  g_list_order_preset     = (g_list_order_preset       + 1) % 2; break;
+        case OPT_PUYO_HACK:    g_puyo_hack_preset      = (g_puyo_hack_preset       + 1) % 2; break;
+        case OPT_HOKUTO_HACK: g_hokuto_hack_preset    = (g_hokuto_hack_preset      + 1) % 2; break;
+        case OPT_EXIT_FIX:    g_exit_fix_preset       = (g_exit_fix_preset         + 3) % 4; break;
+        case OPT_ISP_DEPTH_FUNC: g_isp_depth_func_preset = (g_isp_depth_func_preset + 2) % 3; break;
+        case OPT_ISP_CULL:       g_isp_cull_preset       = (g_isp_cull_preset       + 2) % 3; break;
+        case OPT_AUTOSORT:       g_autosort_preset       = (g_autosort_preset       + 4) % 5; break;
+        case OPT_RENDER_DELAY:   g_render_delay_preset   = (g_render_delay_preset   + 1) % 2; break;
+        case OPT_SHOW_FPS:       g_show_fps_overlay       = (g_show_fps_overlay       + 1) % 2; break;
+        case OPT_ARM7_SPEED:     g_arm7_speed_preset      = (g_arm7_speed_preset      + 2) % 3; break;
+        case OPT_ARM7_JIT:       g_arm7_jit_preset        = (g_arm7_jit_preset        + 5) % 6; break;
+        case OPT_ARM7_BATCH:     g_arm7_batch_preset      = (g_arm7_batch_preset <= 1) ? 16 : g_arm7_batch_preset / 2; break;
+        case OPT_SH4_CLOCK:      g_sh4_clock_preset       = (g_sh4_clock_preset <= 150) ? 200 : g_sh4_clock_preset - 5; break;
+        case OPT_JIT_SBP:        g_jit_sbp_preset         = (g_jit_sbp_preset         + 2) % 3; break;
+        case OPT_DMA_FIX:        g_dma_fix_preset         = (g_dma_fix_preset         + 1) % 2; break;
+        case OPT_FASTMEM:        g_fastmem_preset         = (g_fastmem_preset         + 1) % 2; break;
+        case OPT_BCACHE:         g_bcache_preset          = (g_bcache_preset          + 1) % 2; break;
+        case OPT_DYN_IC:         g_dyn_ic_preset          = (g_dyn_ic_preset          + 2) % 3; break;
+        case OPT_FPU_PIN:        g_fpu_pin_preset         = (g_fpu_pin_preset         + 1) % 2; break;
+        case OPT_JIT_ALIGN:      g_jit_align_preset       = (g_jit_align_preset       + 1) % 2; break;
+        case OPT_IFB_FLUSH:      g_ifb_flush_preset       = (g_ifb_flush_preset       + 1) % 2; break;
+        case OPT_IFB_PROBE:      g_ifb_probe_preset       = (g_ifb_probe_preset       + 1) % 2; break;
+        case OPT_JIT_NEWOPS:     g_jit_newops_preset      = (g_jit_newops_preset      + 1) % 2; break;
+        case OPT_JIT_HOTBLOCKS:  g_hotblocks_preset       = (g_hotblocks_preset       + 1) % 2; break;
+        case OPT_JIT_TFWD:       g_jit_tfwd_preset        = (g_jit_tfwd_preset        + 1) % 2; break;
+        case OPT_JIT_FMOV:       g_jit_fmov_preset        = (g_jit_fmov_preset        + 1) % 2; break;
+        case OPT_JIT_CARRY:      g_jit_carry_preset       = (g_jit_carry_preset       + 1) % 2; break;
+        case OPT_JIT_MAC:        g_jit_mac_preset         = (g_jit_mac_preset         + 1) % 2; break;
+        case OPT_JIT_FSCHG:      g_jit_fschg_preset       = (g_jit_fschg_preset       + 1) % 2; break;
+        case OPT_JIT_CR0:        g_jit_cr0_preset         = (g_jit_cr0_preset         + 1) % 2; break;
+        case OPT_JIT_CCALLS:     g_jit_ccalls_preset      = (g_jit_ccalls_preset      + 1) % 2; break;
+        case OPT_BLOCKCOPY:      g_blockcopy_preset       = (g_blockcopy_preset       + 1) % 2; break;
+        case OPT_JIT_FSQRT:      g_jit_fsqrt_preset       = (g_jit_fsqrt_preset       + 1) % 2; break;
+        case OPT_CDDA:           g_cdda_preset            = (g_cdda_preset            + 1) % 2; break;
+        case OPT_MUTE_PCM16:     g_mute_pcm16_preset      = (g_mute_pcm16_preset      + 1) % 2; break;
+        case OPT_AICA_FAST:      g_aica_fast_preset       = (g_aica_fast_preset       + 1) % 2; break;
+        case OPT_HUD_PASS:       g_hud_pass_preset        = (g_hud_pass_preset        + 2) % 3; break;
+        case OPT_SUBPASS_ZCLEAR: g_subpass_zclear_preset  = (g_subpass_zclear_preset  + 1) % 2; break;
+        case OPT_SCHED:          g_sched_preset           = (g_sched_preset           + 1) % 2; break;
+        case OPT_TEX_WRAP_GUARD: g_tex_wrap_guard_preset  = (g_tex_wrap_guard_preset  + 1) % 2; break;
+        case OPT_TEX_CLAMP_FIX:  g_tex_clamp_fix_preset   = (g_tex_clamp_fix_preset   + 1) % 2; break;
+        case OPT_DINO_CRISIS_INVENTORY_HACK: g_dino_crisis_inventory_hack_preset = (g_dino_crisis_inventory_hack_preset + 1) % 2; break;
+        case OPT_DYNAREC:        g_dynarec_preset         = (g_dynarec_preset         + 1) % 2; break;
+        case OPT_DEBUG_FB2D:     g_debug_fb2d             = (g_debug_fb2d             + 1) % 2; break;
+        case OPT_DEBUG_MESSAGE:  g_debug_message          = (g_debug_message          + 1) % 2; break;
+        case OPT_DEBUG_LOOP:     g_debug_loop             = (g_debug_loop             + 1) % 2; break;
+        case OPT_DEBUG_GDROM:    g_debug_gdrom            = (g_debug_gdrom            + 1) % 2; break;
+        // Toggles against the cfg-supplied address, so the same scene can be
+        // compared with and without that texture without leaving the game.
+        case OPT_DEBUG_SKIP_TEX:
+          if (g_debug_skip_tex) { g_debug_skip_tex_saved = g_debug_skip_tex; g_debug_skip_tex = 0; }
+          else                  { g_debug_skip_tex = g_debug_skip_tex_saved; }
+          break;
+        case OPT_AUDIO_BUFFERS:  g_audio_buffers_preset  = ((g_audio_buffers_preset + 1 + 4) % 5) - 1; break;
+        default: break;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_RIGHT)
+    {
+      switch (selectedRow) {
+        case OPT_GRAPHICS:  g_graphism_preset      = (g_graphism_preset      + 1) % 2; break;
+        case OPT_GX:        g_gx_preset            = (g_gx_preset            + 1) % 2; break;
+        case OPT_LOD_BIAS:  g_lod_bias_preset      = (g_lod_bias_preset      + 1) % 5; break;
+        case OPT_ANISO:     g_aniso_preset         = (g_aniso_preset         + 1) % 3; break;
+        case OPT_ACCURACY:  g_accuracy_preset       = (g_accuracy_preset       + 1) % 3; break;
+        case OPT_RATIO:     g_ratio_preset          = (g_ratio_preset          + 1) % 3; break;
+        case OPT_PPZ_WRITE: g_ppz_write_preset      = (g_ppz_write_preset      + 1) % 2; break;
+        case OPT_TRANS_ZWRITE: g_trans_zwrite_preset = (g_trans_zwrite_preset  + 1) % 2; break;
+        case OPT_SPRITE_COLOR: g_sprite_color_preset = (g_sprite_color_preset  + 1) % 2; break;
+        case OPT_VTX_ALPHA:    g_vtx_alpha_preset    = (g_vtx_alpha_preset     + 1) % 2; break;
+        case OPT_POLY_OFFSET: g_poly_offset_preset  = (g_poly_offset_preset    + 1) % 4; break;
+        case OPT_ADV_ALPHA: g_advanced_alpha_preset = (g_advanced_alpha_preset + 1) % 2; break;
+        case OPT_DECAL_ALPHA: g_decal_alpha_preset  = (g_decal_alpha_preset    + 1) % 2; break;
+        case OPT_FRAMEBUFFER_2D: g_framebuffer_2d   = (g_framebuffer_2d        + 1) % 2; break;
+        case OPT_FMV_FORMAT: g_fmv_format_preset    = (g_fmv_format_preset     + 1) % 4; break;
+        case OPT_FRAMESKIP: g_frameskip_preset      = (g_frameskip_preset      + 1) % 5; break;
+        case OPT_TEX_CACHE: g_texture_cache_preset  = tex_cache_step(g_texture_cache_preset, +1); break;
+        case OPT_4BPP:      g_4bpp_preset           = (g_4bpp_preset           + 1) % 5; break;
+        case OPT_8BPP:      g_8bpp_preset           = (g_8bpp_preset           + 1) % 5; break;
+        case OPT_JOJO_FIX:  g_jojo_fix_preset       = (g_jojo_fix_preset       + 1) % 2; break;
+        case OPT_VQ_CMPR:   g_vq_cmpr_preset        = (g_vq_cmpr_preset        + 1) % 2; break;
+        case OPT_SPEED_LIMIT: g_speed_limiter_preset = (g_speed_limiter_preset + 1) % 2; break;
+        case OPT_VERTEX_COLOR: g_vertex_color_preset = (g_vertex_color_preset + 1) % 2; break;
+        case OPT_BLEND_MODE: g_blend_mode_preset    = (g_blend_mode_preset    + 1) % 2; break;
+        case OPT_RGB565_OPAQUE_ALPHA: g_rgb565_opaque_alpha_preset = (g_rgb565_opaque_alpha_preset + 1) % 2; break;
+        case OPT_BLEND_FPS_BOOST: g_blend_fps_boost_preset = (g_blend_fps_boost_preset + 1) % 2; break;
+        case OPT_PUNCH_THROUGH: g_punch_through_preset = (g_punch_through_preset + 1) % 2; break;
+        case OPT_OFFSET_COLOR: g_offset_color_preset = (g_offset_color_preset + 1) % 2; break;
+        case OPT_TRANS_SORT: g_trans_sort_preset = (g_trans_sort_preset + 1) % 2; break;
+        case OPT_RENDER_TO_TEXTURE: g_render_to_texture_preset = (g_render_to_texture_preset + 1) % 4; break;
+        case OPT_SPLIT_SCREEN: g_split_screen_preset = (g_split_screen_preset + 1) % 4; break;
+        case OPT_MIPMAP:    g_mipmap_preset          = (g_mipmap_preset          + 1) % 3; break;
+        case OPT_SEAM_FIX:  g_seam_fix_preset        = (g_seam_fix_preset        + 1) % 2; break;
+        case OPT_FOG:       g_fog_preset             = (g_fog_preset             + 1) % 2; break;
+        case OPT_YUV_STRIDE: g_yuv_stride_preset = (g_yuv_stride_preset + 1) % 4; break;
+        case OPT_YUV_TWIDDLE_FIX: g_yuv_twiddle_fix_preset = (g_yuv_twiddle_fix_preset + 1) % 2; break;
+        case OPT_FIXED_DEPTH: g_fixed_depth_preset   = (g_fixed_depth_preset     + 1) % 3; break;
+        case OPT_LEGACY_DEPTH: g_legacy_depth_preset = (g_legacy_depth_preset    + 1) % 2; break;
+        case OPT_DEPTH_CLIP: g_depth_clip_preset     = (g_depth_clip_preset      + 1) % 3; break;
+        case OPT_ASYNC_RENDER: g_async_render_preset = (g_async_render_preset    + 1) % 2; break;
+        case OPT_TMEM_CACHE: g_tmem_cache_preset     = (g_tmem_cache_preset      + 1) % 2; break;
+        case OPT_BG_POLY:    g_bg_poly_preset        = (g_bg_poly_preset         + 1) % 2; break;
+        case OPT_X_SCALER:   g_x_scaler_preset       = (g_x_scaler_preset        + 1) % 2; break;
+        case OPT_Y_SCALER:   g_y_scaler_preset       = (g_y_scaler_preset        + 1) % 2; break;
+        case OPT_H_SCALER:   g_h_scaler_preset       = (g_h_scaler_preset        + 1) % 2; break;
+        case OPT_CANVAS_WIDTH:
+          if (g_canvas_width_preset <= 0)         g_canvas_width_preset = 320;
+          else if (g_canvas_width_preset >= 1280) g_canvas_width_preset = 0;
+          else                                    g_canvas_width_preset += 16;
+          break;
+        case OPT_LAYER_SORT:  g_layer_sort_preset     = (g_layer_sort_preset       + 1) % 2; break;
+        case OPT_LIST_ORDER:  g_list_order_preset     = (g_list_order_preset       + 1) % 2; break;
+        case OPT_PUYO_HACK:    g_puyo_hack_preset      = (g_puyo_hack_preset       + 1) % 2; break;
+        case OPT_HOKUTO_HACK: g_hokuto_hack_preset    = (g_hokuto_hack_preset      + 1) % 2; break;
+        case OPT_EXIT_FIX:    g_exit_fix_preset       = (g_exit_fix_preset         + 1) % 4; break;
+        case OPT_ISP_DEPTH_FUNC: g_isp_depth_func_preset = (g_isp_depth_func_preset + 1) % 3; break;
+        case OPT_ISP_CULL:       g_isp_cull_preset       = (g_isp_cull_preset       + 1) % 3; break;
+        case OPT_AUTOSORT:       g_autosort_preset       = (g_autosort_preset       + 1) % 5; break;
+        case OPT_RENDER_DELAY:   g_render_delay_preset   = (g_render_delay_preset   + 1) % 2; break;
+        case OPT_SHOW_FPS:       g_show_fps_overlay       = (g_show_fps_overlay       + 1) % 2; break;
+        case OPT_ARM7_SPEED:     g_arm7_speed_preset      = (g_arm7_speed_preset      + 1) % 3; break;
+        case OPT_ARM7_JIT:       g_arm7_jit_preset        = (g_arm7_jit_preset        + 1) % 6; break;
+        case OPT_ARM7_BATCH:     g_arm7_batch_preset      = (g_arm7_batch_preset >= 16) ? 1 : g_arm7_batch_preset * 2; break;
+        case OPT_SH4_CLOCK:      g_sh4_clock_preset       = (g_sh4_clock_preset >= 200) ? 150 : g_sh4_clock_preset + 5; break;
+        case OPT_JIT_SBP:        g_jit_sbp_preset         = (g_jit_sbp_preset         + 1) % 3; break;
+        case OPT_DMA_FIX:        g_dma_fix_preset         = (g_dma_fix_preset         + 1) % 2; break;
+        case OPT_FASTMEM:        g_fastmem_preset         = (g_fastmem_preset         + 1) % 2; break;
+        case OPT_BCACHE:         g_bcache_preset          = (g_bcache_preset          + 1) % 2; break;
+        case OPT_DYN_IC:         g_dyn_ic_preset          = (g_dyn_ic_preset          + 1) % 3; break;
+        case OPT_FPU_PIN:        g_fpu_pin_preset         = (g_fpu_pin_preset         + 1) % 2; break;
+        case OPT_JIT_ALIGN:      g_jit_align_preset       = (g_jit_align_preset       + 1) % 2; break;
+        case OPT_IFB_FLUSH:      g_ifb_flush_preset       = (g_ifb_flush_preset       + 1) % 2; break;
+        case OPT_IFB_PROBE:      g_ifb_probe_preset       = (g_ifb_probe_preset       + 1) % 2; break;
+        case OPT_JIT_NEWOPS:     g_jit_newops_preset      = (g_jit_newops_preset      + 1) % 2; break;
+        case OPT_JIT_HOTBLOCKS:  g_hotblocks_preset       = (g_hotblocks_preset       + 1) % 2; break;
+        case OPT_JIT_TFWD:       g_jit_tfwd_preset        = (g_jit_tfwd_preset        + 1) % 2; break;
+        case OPT_JIT_FMOV:       g_jit_fmov_preset        = (g_jit_fmov_preset        + 1) % 2; break;
+        case OPT_JIT_CARRY:      g_jit_carry_preset       = (g_jit_carry_preset       + 1) % 2; break;
+        case OPT_JIT_MAC:        g_jit_mac_preset         = (g_jit_mac_preset         + 1) % 2; break;
+        case OPT_JIT_FSCHG:      g_jit_fschg_preset       = (g_jit_fschg_preset       + 1) % 2; break;
+        case OPT_JIT_CR0:        g_jit_cr0_preset         = (g_jit_cr0_preset         + 1) % 2; break;
+        case OPT_JIT_CCALLS:     g_jit_ccalls_preset      = (g_jit_ccalls_preset      + 1) % 2; break;
+        case OPT_BLOCKCOPY:      g_blockcopy_preset       = (g_blockcopy_preset       + 1) % 2; break;
+        case OPT_JIT_FSQRT:      g_jit_fsqrt_preset       = (g_jit_fsqrt_preset       + 1) % 2; break;
+        case OPT_CDDA:           g_cdda_preset            = (g_cdda_preset            + 1) % 2; break;
+        case OPT_MUTE_PCM16:     g_mute_pcm16_preset      = (g_mute_pcm16_preset      + 1) % 2; break;
+        case OPT_AICA_FAST:      g_aica_fast_preset       = (g_aica_fast_preset       + 1) % 2; break;
+        case OPT_HUD_PASS:       g_hud_pass_preset        = (g_hud_pass_preset        + 1) % 3; break;
+        case OPT_SUBPASS_ZCLEAR: g_subpass_zclear_preset  = (g_subpass_zclear_preset  + 1) % 2; break;
+        case OPT_SCHED:          g_sched_preset           = (g_sched_preset           + 1) % 2; break;
+        case OPT_TEX_WRAP_GUARD: g_tex_wrap_guard_preset  = (g_tex_wrap_guard_preset  + 1) % 2; break;
+        case OPT_TEX_CLAMP_FIX:  g_tex_clamp_fix_preset   = (g_tex_clamp_fix_preset   + 1) % 2; break;
+        case OPT_DINO_CRISIS_INVENTORY_HACK: g_dino_crisis_inventory_hack_preset = (g_dino_crisis_inventory_hack_preset + 1) % 2; break;
+        case OPT_DYNAREC:        g_dynarec_preset         = (g_dynarec_preset         + 1) % 2; break;
+        case OPT_DEBUG_FB2D:     g_debug_fb2d             = (g_debug_fb2d             + 1) % 2; break;
+        case OPT_DEBUG_MESSAGE:  g_debug_message          = (g_debug_message          + 1) % 2; break;
+        case OPT_DEBUG_LOOP:     g_debug_loop             = (g_debug_loop             + 1) % 2; break;
+        case OPT_DEBUG_GDROM:    g_debug_gdrom            = (g_debug_gdrom            + 1) % 2; break;
+        // Toggles against the cfg-supplied address, so the same scene can be
+        // compared with and without that texture without leaving the game.
+        case OPT_DEBUG_SKIP_TEX:
+          if (g_debug_skip_tex) { g_debug_skip_tex_saved = g_debug_skip_tex; g_debug_skip_tex = 0; }
+          else                  { g_debug_skip_tex = g_debug_skip_tex_saved; }
+          break;
+        case OPT_AUDIO_BUFFERS:  g_audio_buffers_preset  = ((g_audio_buffers_preset + 1 + 1) % 5) - 1; break;
+        default: break;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_A)
+    {
+      if (selectedRow == OPT_LAUNCH)
+        return true;
+    }
+    else if ((pressed & (WPAD_BUTTON_1 | WPAD_BUTTON_MINUS)) || classicPrevPage)
+    {
+      optionsPage = (optionsPage - 1 + OPT_PAGE_COUNT) % OPT_PAGE_COUNT;
+      selectedRow = OPT_LAUNCH;
+    }
+    else if ((pressed & (WPAD_BUTTON_2 | WPAD_BUTTON_PLUS)) || classicNextPage)
+    {
+      optionsPage = (optionsPage + 1) % OPT_PAGE_COUNT;
+      selectedRow = OPT_LAUNCH;
+    }
+    else if (pressed & WPAD_BUTTON_B)
+    {
+      return false;
+    }
+
+    VIDEO_SetNextFramebuffer(xfb[fb]);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    fb ^= 1;
+    console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                 rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+  }
+}
+
+// ============================================================================
+// WINCE WARNING
+// ============================================================================
+// Shown right after the options menu, only when the matched game_presets.cfg
+// section set wince=yes (g_wince_preset — see game_presets.cpp). These games
+// carry their own CE kernel on the disc, so there is no syscall layer to
+// emulate: what NullDC4Wii lacks is SH4 MMU address translation and the
+// TLB-miss exception path the CE kernel refills its page tables from, so
+// they are not expected to work. A launches anyway, B returns to the file
+// list (not just the options menu — there is nothing to retweak here, the
+// user needs a different game).
+bool displayWinCEWarning()
+{
+  // Debounce: don't let the A press that confirmed the options menu bleed
+  // through as an instant "launch anyway" here.
+  while ((WPAD_ButtonsHeld(0) & (WPAD_BUTTON_A | WPAD_CLASSIC_BUTTON_A))
+         || (PAD_ButtonsHeld(0) & PAD_BUTTON_A)
+         || (DRC_ButtonsHeldWPAD() & WPAD_BUTTON_A)
+         || (SS_ButtonsHeldWPAD() & WPAD_BUTTON_A))
+  {
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    if (WiiDRC_Inited())
+      WiiDRC_ScanPads();
+    SS_PollConnections();
+    VIDEO_WaitVSync();
+  }
+
+  while (true)
+  {
+    printf("\033[2J\033[H");
+
+    printf("    -- WINDOWS CE WARNING --\n\n");
+    {
+      const char *gameName = strrchr(selectedFilePath, '/');
+      gameName = (gameName != NULL) ? gameName + 1 : selectedFilePath;
+      printf("    %.60s\n\n", gameName);
+    }
+    printf("This is a WinCE game, it's not supported yet by NullDC4Wii\n");
+    printf("(and probably never will).\n\n");
+    printf("Press A to launch Anyway, B to return to file selection.\n");
+
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    u32 wmPressed = WPAD_ButtonsDown(0);
+    u32 pressed = wmPressed | CLASSIC_ToWPAD(wmPressed) | DRC_ButtonsDownWPAD() | SS_ButtonsDownWPAD();
+
+    // GameCube controller (Player 1) — same mapping convention as the other
+    // menus (see displayOptionsMenu).
+    u16 gcPressed = PAD_ButtonsDown(0);
+    if (gcPressed & PAD_BUTTON_A) pressed |= WPAD_BUTTON_A;
+    if (gcPressed & PAD_BUTTON_B) pressed |= WPAD_BUTTON_B;
+
+    if (pressed & WPAD_BUTTON_A)
+      return true;
+    else if (pressed & WPAD_BUTTON_B)
+      return false;
+
+    VIDEO_SetNextFramebuffer(xfb[fb]);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    fb ^= 1;
+    console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                 rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+  }
+}
+
+// ============================================================================
+// CONTROLS MENU
+// ============================================================================
+// Shown after the options menu, right before launch. Holds the
+// player-count / controller-type presets that used to live as two rows
+// inside the options menu — split out onto their own screen so they're
+// easy to find and don't scroll off the options page.
+
+#define CTRL_LAUNCH     0
+// row 1 = game name (display only, not selectable)
+#define CTRL_PLAYER1    2
+#define CTRL_PLAYER2    3
+#define CTRL_PLAYER3    4
+#define CTRL_PLAYER4    5
+#define CTRL_TYPE       6
+#define CTRL_SPECIAL_LAYOUT 7
+#define CTRL_ROW_COUNT  8
+
+static bool ctrl_row_is_display(int row)
+{
+  return (row == 1);
+}
+
+// Per-player controller mode:
+//   PLAYER_CTRL_OFF           OFF (bus not created; not available for Player 1)
+//   PLAYER_CTRL_WIIMOTE_GC    WIIMOTE/GAMECUBE   (bare Wiimote + Nunchuk + GameCube pad)
+//   PLAYER_CTRL_WIICLASSIC_GC WIICLASSIC/GAMECUBE (Wii Classic Controller + GameCube pad)
+//
+// Player 1 is always active. Enabling a player forces every lower-numbered
+// player on too, so slots 1..idx stay contiguous from player 1. Disabling a
+// player only affects that player's own slot — it does NOT cascade to
+// higher-numbered players, so e.g. player 3 OFF with player 4 still ON is a
+// valid "gap" configuration. g_player_count is derived as the highest
+// non-OFF player index + 1 (see ctrl_cycle_player_mode), so such a gap still
+// counts as N-player support as long as player N is on.
+enum { PLAYER_CTRL_OFF = 0, PLAYER_CTRL_WIIMOTE_GC = 1, PLAYER_CTRL_WIICLASSIC_GC = 2 };
+#define PLAYER_CTRL_MODE_COUNT 3
+
+static int g_player_mode[4] = { PLAYER_CTRL_WIIMOTE_GC, PLAYER_CTRL_WIIMOTE_GC,
+                                 PLAYER_CTRL_WIIMOTE_GC, PLAYER_CTRL_WIIMOTE_GC };
+
+static void ctrl_sync_player_mode_from_count()
+{
+  for (int i = 0; i < 4; i++)
+  {
+    bool shouldBeOn = (i < g_player_count);
+    bool isOn = (g_player_mode[i] != PLAYER_CTRL_OFF);
+    if (shouldBeOn && !isOn)
+      g_player_mode[i] = PLAYER_CTRL_WIIMOTE_GC;
+    else if (!shouldBeOn)
+      g_player_mode[i] = PLAYER_CTRL_OFF;
+  }
+}
+
+// dir: -1 to cycle left/back, +1 to cycle right/forward.
+static void ctrl_cycle_player_mode(int idx, int dir)
+{
+  if (idx == 0)
+  {
+    // Player 1 can't be turned off; just flip between the two device types.
+    g_player_mode[0] = (g_player_mode[0] == PLAYER_CTRL_WIIMOTE_GC)
+                          ? PLAYER_CTRL_WIICLASSIC_GC : PLAYER_CTRL_WIIMOTE_GC;
+    return;
+  }
+
+  bool wasOff = (g_player_mode[idx] == PLAYER_CTRL_OFF);
+  g_player_mode[idx] = (g_player_mode[idx] + dir + PLAYER_CTRL_MODE_COUNT) % PLAYER_CTRL_MODE_COUNT;
+  bool nowOff = (g_player_mode[idx] == PLAYER_CTRL_OFF);
+
+  if (wasOff && !nowOff)
+  {
+    // Enabling: force every lower-numbered player on too, so buses stay
+    // contiguous from player 1. Turning a player OFF only affects that
+    // player's own slot — it does NOT cascade to higher-numbered players,
+    // so e.g. player 3 OFF with player 4 still ON is a valid gap.
+    for (int i = 0; i < idx; i++)
+      if (g_player_mode[i] == PLAYER_CTRL_OFF)
+        g_player_mode[i] = PLAYER_CTRL_WIIMOTE_GC;
+  }
+
+  int count = 1;
+  for (int i = 1; i < 4; i++)
+    if (g_player_mode[i] != PLAYER_CTRL_OFF) count = i + 1;
+  g_player_count = count;
+}
+
+static const char* ctrl_player_mode_label(int mode)
+{
+  switch (mode) {
+    case PLAYER_CTRL_WIICLASSIC_GC: return "WIICLASSIC/GAMECUBE";
+    case PLAYER_CTRL_OFF:           return "OFF";
+    default:                        return "WIIMOTE/GAMECUBE";
+  }
+}
+
+bool displayControlsMenu()
+{
+  int selectedRow = CTRL_LAUNCH;
+  ctrl_sync_player_mode_from_count();
+
+  // Debounce: don't let the A press that confirmed the options menu
+  // bleed through as an instant LAUNCH here.
+  while ((WPAD_ButtonsHeld(0) & (WPAD_BUTTON_A | WPAD_CLASSIC_BUTTON_A))
+         || (PAD_ButtonsHeld(0) & PAD_BUTTON_A)
+         || (DRC_ButtonsHeldWPAD() & WPAD_BUTTON_A)
+         || (SS_ButtonsHeldWPAD() & WPAD_BUTTON_A))
+  {
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    if (WiiDRC_Inited())
+      WiiDRC_ScanPads();
+    SS_PollConnections();
+    VIDEO_WaitVSync();
+  }
+
+  while (true)
+  {
+    printf("\033[2J\033[H");
+
+    // --- Row 0: Launch ---
+    printf("%s LAUNCH GAME      (A: Launch | B: Back)\n",
+           (selectedRow == CTRL_LAUNCH) ? ">" : " ");
+
+    // --- Row 1: Game name (display only) ---
+    {
+      const char *gameName = strrchr(selectedFilePath, '/');
+      gameName = (gameName != NULL) ? gameName + 1 : selectedFilePath;
+      printf("    %.60s\n", gameName);
+    }
+
+    printf("\n    -- CONTROLS --\n\n");
+
+    // --- Rows 2-5: Players ---
+    for (int p = 0; p < 4; p++)
+    {
+      int row = CTRL_PLAYER1 + p;
+      const char *label = ctrl_player_mode_label(g_player_mode[p]);
+      printf("%s PLAYER %d        : [< %-20s >]\n",
+             (selectedRow == row) ? ">" : " ", p + 1, label);
+    }
+
+    // --- Row 6: Controller ---
+    printf("%s CONTROLLER      : ", (selectedRow == CTRL_TYPE) ? ">" : " ");
+    switch (g_controller_type) {
+      case 0: printf("[< STANDARD          >]"); break;
+      case 1: printf("[< LIGHT GUN         >]"); break;
+      case 2: printf("[< MARACAS           >]"); break;
+      case 3: printf("[< KEYBOARD          >]"); break;
+      case 4: printf("[< FISHING ROD       >]"); break;
+    }
+    switch (g_controller_type) {
+      case 1: printf(" (Needs Sensor Bar + IR)"); break;
+      case 2: printf(" (2 Wiimotes per player)"); break;
+      case 3: printf(" (USB keyboard or D-pad)"); break;
+      case 4: printf(" (Motion controls)");        break;
+      default: break;
+    }
+    printf("\n");
+
+    // --- Row 7: Special controller layout ---
+    printf("%s SPECIAL LAYOUT  : [< %-20s >]",
+           (selectedRow == CTRL_SPECIAL_LAYOUT) ? ">" : " ",
+           kSpecialLayoutNames[g_special_layout_preset]);
+    // USER CFG falls back to the normal mapping when user_controls.cfg was
+    // never found, which from the player's seat looks exactly like "the file
+    // is being ignored". Say which of the two it is here - loadUserControls()
+    // reports it only via printf, and printf goes to the SD log, not the
+    // screen.
+    if (g_special_layout_preset == SPECIAL_LAYOUT_USER_CFG)
+        printf("%s", user_controls_loaded() ? " (user_controls.cfg LOADED)"
+                                            : " (user_controls.cfg NOT FOUND)");
+    printf("\n");
+
+    // --- Row 8: Wii U GamePad status (display only) ---
+    printf("    WII U GAMEPAD    : %s\n",
+           WiiDRC_Inited() ? "[DETECTED]     (drives Player 1)" : "[NOT DETECTED]");
+
+    // --- Row 9: Sixaxis/DualShock3 (USB) status (display only) ---
+    {
+      int ssCount = SS_ConnectedCount();
+      if (!SS_IsEnabled())
+        printf("    SIXAXIS/DS3 (USB): [OFF]  (hold GameCube B at boot)\n");
+      else if (ssCount > 0)
+        printf("    SIXAXIS/DS3 (USB): [DETECTED x%d] (drives matching port)\n", ssCount);
+      else
+        printf("    SIXAXIS/DS3 (USB): [NOT DETECTED]\n");
+    }
+
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    u32 wmPressed = WPAD_ButtonsDown(0);
+    u32 pressed = wmPressed | CLASSIC_ToWPAD(wmPressed) | DRC_ButtonsDownWPAD() | SS_ButtonsDownWPAD();
+
+    // GameCube controller (Player 1) — same mapping convention as the
+    // other menus (see displayOptionsMenu).
+    u16 gcPressed = PAD_ButtonsDown(0);
+    if (gcPressed & PAD_BUTTON_UP)    pressed |= WPAD_BUTTON_UP;
+    if (gcPressed & PAD_BUTTON_DOWN)  pressed |= WPAD_BUTTON_DOWN;
+    if (gcPressed & PAD_BUTTON_LEFT)  pressed |= WPAD_BUTTON_LEFT;
+    if (gcPressed & PAD_BUTTON_RIGHT) pressed |= WPAD_BUTTON_RIGHT;
+    if (gcPressed & PAD_BUTTON_A)     pressed |= WPAD_BUTTON_A;
+    if (gcPressed & PAD_BUTTON_B)     pressed |= WPAD_BUTTON_B;
+
+    if (pressed & WPAD_BUTTON_UP)
+    {
+      do {
+        selectedRow = (selectedRow > 0) ? selectedRow - 1 : CTRL_ROW_COUNT - 1;
+      } while (ctrl_row_is_display(selectedRow));
+    }
+    else if (pressed & WPAD_BUTTON_DOWN)
+    {
+      do {
+        selectedRow = (selectedRow < CTRL_ROW_COUNT - 1) ? selectedRow + 1 : 0;
+      } while (ctrl_row_is_display(selectedRow));
+    }
+    else if (pressed & WPAD_BUTTON_LEFT)
+    {
+      switch (selectedRow) {
+        case CTRL_PLAYER1: ctrl_cycle_player_mode(0, -1); break;
+        case CTRL_PLAYER2: ctrl_cycle_player_mode(1, -1); break;
+        case CTRL_PLAYER3: ctrl_cycle_player_mode(2, -1); break;
+        case CTRL_PLAYER4: ctrl_cycle_player_mode(3, -1); break;
+        case CTRL_TYPE:    g_controller_type = (g_controller_type + kControllerTypeCount - 1) % kControllerTypeCount; break;
+        case CTRL_SPECIAL_LAYOUT: g_special_layout_preset = (g_special_layout_preset + SPECIAL_LAYOUT_COUNT - 1) % SPECIAL_LAYOUT_COUNT; break;
+        default: break;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_RIGHT)
+    {
+      switch (selectedRow) {
+        case CTRL_PLAYER1: ctrl_cycle_player_mode(0, 1); break;
+        case CTRL_PLAYER2: ctrl_cycle_player_mode(1, 1); break;
+        case CTRL_PLAYER3: ctrl_cycle_player_mode(2, 1); break;
+        case CTRL_PLAYER4: ctrl_cycle_player_mode(3, 1); break;
+        case CTRL_TYPE:    g_controller_type = (g_controller_type + 1) % kControllerTypeCount; break;
+        case CTRL_SPECIAL_LAYOUT: g_special_layout_preset = (g_special_layout_preset + 1) % SPECIAL_LAYOUT_COUNT; break;
+        default: break;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_A)
+    {
+      if (selectedRow == CTRL_LAUNCH)
+        return true;
+    }
+    else if (pressed & WPAD_BUTTON_B)
+    {
+      return false;
+    }
+
+    VIDEO_SetNextFramebuffer(xfb[fb]);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    fb ^= 1;
+    console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                 rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+  }
+}
+
+// ============================================================================
+// FILE BROWSER MENU
+// ============================================================================
+
+// Total number of lines this footer prints (used to pin it to the bottom).
+// Keep this in sync if lines are added/removed below.
+#define FILE_BROWSER_FOOTER_LINES 11
+
+// Prints the page counter / GitHub-contact / storage / controls footer
+// pinned to the bottom of the console, regardless of how many files are
+// listed above it (the last page can have fewer than ITEMS_PER_PAGE
+// entries, which would otherwise leave the footer floating mid-screen).
+static void printFileBrowserFooter(int page, int totalPages)
+{
+  int cols, rows;
+  CON_GetMetrics(&cols, &rows);
+  printf("\033[%d;1H", rows - FILE_BROWSER_FOOTER_LINES + 1);
+
+  printf("--- Page %02d/%02d ---\n\n", page + 1, totalPages);
+  printf("Console detected : %s\n", g_is_wiiu ? "Wii U" : "Wii");
+  printf("Contact : xalegamingchannel@gmail.com\n");
+  printf("HELP ME ON THE COMPATIBILITY LIST !!\n");
+  printf("Compatibility WIKI : https://wiibrew.org/wiki/NullDC4Wii/Compatibility\n\n");
+  printf("Storage: %s\n", (g_storage_source == STORAGE_SD)
+    ? "[SD CARD]  (2: Switch to USB)"
+    : "[USB]      (2: Switch to SD)");
+  printf("A: Select | B: Back | 1: BIOS | (-) + (+): Exit\n");
+  printf("INGAME: Press (-) and (+) simultaneously to Exit\n");
+}
+
+int displayMenuAndSelectFile()
+{
+  int selectedIndex = 0;
+  currentPage = 0;
+
+  while (true)
+  {
+    printf("\033[2J\033[H");
+    printf("\nNullDC4Wii - alpha 0.75   ");
+    printf("Current directory: %s\n", currentPath);
+
+    printf("Select a game file: (GDI/CDI/BIN/CUE works)\n\n");
+    
+
+    int totalPages = (fileCount + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+    if (totalPages < 1) totalPages = 1;
+    int startIndex = currentPage * ITEMS_PER_PAGE;
+    int endIndex = startIndex + ITEMS_PER_PAGE;
+    if (endIndex > fileCount) endIndex = fileCount;
+
+    for (int i = startIndex; i < endIndex; i++)
+      printf(i == selectedIndex ? "> %s\n" : "  %s\n", fileList[i].name);
+
+    printFileBrowserFooter(currentPage, totalPages);
+
+    WPAD_ScanPads();
+    PAD_ScanPads();
+    u32 wmPressed = WPAD_ButtonsDown(0);
+    u32 pressed = wmPressed | CLASSIC_ToWPAD(wmPressed) | DRC_ButtonsDownWPAD() | SS_ButtonsDownWPAD();
+
+    // GameCube controller (Player 1) — same mapping convention as in-game
+    // input (see drkMapleDevices.cpp): Y=button1, X=button2.
+    u16 gcPressed = PAD_ButtonsDown(0);
+    if (gcPressed & PAD_BUTTON_UP)    pressed |= WPAD_BUTTON_UP;
+    if (gcPressed & PAD_BUTTON_DOWN)  pressed |= WPAD_BUTTON_DOWN;
+    if (gcPressed & PAD_BUTTON_LEFT)  pressed |= WPAD_BUTTON_LEFT;
+    if (gcPressed & PAD_BUTTON_RIGHT) pressed |= WPAD_BUTTON_RIGHT;
+    if (gcPressed & PAD_BUTTON_A)     pressed |= WPAD_BUTTON_A;
+    if (gcPressed & PAD_BUTTON_B)     pressed |= WPAD_BUTTON_B;
+    if (gcPressed & PAD_BUTTON_Y)     pressed |= WPAD_BUTTON_1;
+    if (gcPressed & PAD_BUTTON_X)     pressed |= WPAD_BUTTON_2;
+
+    if (pressed & WPAD_BUTTON_1)
+      return -2; // Boot to BIOS
+
+    if (pressed & WPAD_BUTTON_2)
+    {
+      printf("\033[2J\033[H");
+      if (g_storage_source == STORAGE_SD)
+      {
+        printf("Switching to USB...\n");
+        VIDEO_SetNextFramebuffer(xfb[fb]);
+        VIDEO_Flush();
+        VIDEO_WaitVSync();
+        fb ^= 1;
+        console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                     rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+
+        if (switchToUSB())
+          printf("USB mounted! Loading %s ...\n", currentPath);
+        else
+        {
+          printf("ERROR: Could not mount USB device.\n");
+          usleep(2000000);
+        }
+      }
+      else
+      {
+        if (switchToSD())
+          printf("Switched back to SD card (%s).\n", currentPath);
+        else
+        {
+          printf("ERROR: No SD card mounted.\n");
+          usleep(2000000);
+        }
+      }
+      listFilesInDirectory(currentPath);
+      selectedIndex = 0;
+      currentPage = 0;
+      continue;
+    }
+
+    if (pressed & WPAD_BUTTON_UP)
+    {
+      if (selectedIndex > 0)
+      {
+        selectedIndex--;
+        if (selectedIndex < startIndex) currentPage--;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_DOWN)
+    {
+      if (selectedIndex < fileCount - 1)
+      {
+        selectedIndex++;
+        if (selectedIndex >= endIndex) currentPage++;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_LEFT)
+    {
+      if (currentPage > 0)
+      {
+        currentPage--;
+        selectedIndex = currentPage * ITEMS_PER_PAGE;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_RIGHT)
+    {
+      if (currentPage < totalPages - 1)
+      {
+        currentPage++;
+        selectedIndex = currentPage * ITEMS_PER_PAGE;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_A)
+    {
+      if (strlen(fileList[selectedIndex].fullPath) == 0 &&
+          !fileList[selectedIndex].isDirectory)
+      {
+        // Placeholder — nothing to do
+      }
+      else if (fileList[selectedIndex].isDirectory)
+      {
+        strcpy(currentPath, fileList[selectedIndex].fullPath);
+        listFilesInDirectory(currentPath);
+        selectedIndex = 0;
+        currentPage = 0;
+      }
+      else
+      {
+        return selectedIndex;
+      }
+    }
+    else if (pressed & WPAD_BUTTON_B)
+    {
+      const char *rootPath = (g_storage_source == STORAGE_SD)
+        ? g_sd_games_root : g_usb_games_root;
+      if (strcmp(currentPath, rootPath) != 0)
+      {
+        char *lastSlash = strrchr(currentPath, '/');
+        if (lastSlash != NULL && lastSlash != currentPath)
+          *lastSlash = '\0';
+        listFilesInDirectory(currentPath);
+        selectedIndex = 0;
+        currentPage = 0;
+      }
+    }
+    else if (((WPAD_ButtonsHeld(0) | CLASSIC_ToWPAD(WPAD_ButtonsHeld(0))
+               | DRC_ButtonsHeldWPAD() | SS_ButtonsHeldWPAD()) & WPAD_BUTTON_PLUS) &&
+             ((WPAD_ButtonsHeld(0) | CLASSIC_ToWPAD(WPAD_ButtonsHeld(0))
+               | DRC_ButtonsHeldWPAD() | SS_ButtonsHeldWPAD()) & WPAD_BUTTON_MINUS))
+    {
+      return -1; // Exit
+    }
+
+    VIDEO_SetNextFramebuffer(xfb[fb]);
+    VIDEO_Flush();
+    VIDEO_WaitVSync();
+    fb ^= 1;
+    console_init(xfb[fb], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+                 rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+  }
+
+  return selectedIndex;
+}
+
+// ============================================================================
+// BIOS BOOT HELPER
+// ============================================================================
+
+void handleBIOSBoot()
+{
+  strcpy(selectedFilePath, "");
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+int main(int argc, wchar *argv[])
+{
+  // VIDEO and PAD come first because neither goes through IOS: the VI
+  // registers and the Serial Interface the GameCube ports hang off are both
+  // PowerPC-side hardware, so an IOS reload cannot disturb them. PAD in
+  // particular MUST be up before SS_Init(), which reads the GameCube pad to
+  // decide whether to reload IOS at all.
+  VIDEO_Init();
+  PAD_Init();
+
+  // Sixaxis/DualShock3 (USB): opt-in, gated on a GameCube button held at
+  // boot (see SS_Init()). Raw USB HID access needs IOS58, and reloading IOS
+  // restarts the Bluetooth stack along with everything else, dropping every
+  // connected Wiimote right as WPAD_Init() below is coming up. With the gate
+  // button not held nothing here touches IOS, so that race never happens.
+  SS_Init();
+
+  ASND_Init();
+  wii_audio_init();
+
+  WPAD_Init();
+
+  // Wii U / vWii detection: ORs together every independent signal we have
+  // (Wii U GamePad presence, direct-hardware register signature, installed
+  // IOS58 revision) — see Detect_IsWiiU() above for details on each one.
+  g_is_wiiu = Detect_IsWiiU();
+
+  /*
+  printf("[Wii U] Is that a Wii U ? 0 = no, 1 = yes : %d\n", g_is_wiiu);
+  */
+
+  rmode = VIDEO_GetPreferredMode(NULL);
+
+  xfb[0] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+  xfb[1] = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
+  fb = 0;
+
+  console_init(xfb[0], 20, 20, rmode->fbWidth, rmode->xfbHeight,
+               rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+
+  VIDEO_Configure(rmode);
+  VIDEO_SetNextFramebuffer(xfb[fb]);
+  VIDEO_SetBlack(false);
+  VIDEO_Flush();
+  VIDEO_WaitVSync();
+  if (rmode->viTVMode & VI_NON_INTERLACE)
+    VIDEO_WaitVSync();
+
+  // ---------------------------------------------------------------------------
+  // ARM7DI core self-test — runs before anything else so a broken AICA ARM
+  // core is caught (and visible on screen) before we ever boot a game.
+  //
+  // Temporarily re-enabled (was disabled) to check ARM7 instruction
+  // correctness while investigating a suspected AICA sound-driver timing bug
+  // in ChuChu Rocket — the vendored arm7di-tests-dreamcast conformance suite
+  // is a much more rigorous check than manual code audit. Re-comment once
+  // done, or leave enabled if it proves useful as a standing boot check.
+  // ---------------------------------------------------------------------------
+  // Re-disabled: ChuChu Rocket echo investigation concluded (root cause not
+  // found in ARM7 core correctness); see memory. Re-enable if a similar
+  // ARM7 correctness question comes up again.
+#if 0
+  {
+    int arm7_failures = arm_RunSelfTests();
+    if (arm7_failures != 0)
+    {
+      printf("\nARM7DI SELF-TEST FAILED (%d). Press HOME to exit.\n", arm7_failures);
+      while (true)
+      {
+        WPAD_ScanPads();
+        if (WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME)
+          break;
+        VIDEO_WaitVSync();
+      }
+      return 1;
+    }
+  }
+#endif
+
+  // ---------------------------------------------------------------------------
+  // Mount storage
+  // ---------------------------------------------------------------------------
+  // Mounts SD and USB, works out which device this DOL was launched from and
+  // pins GetEmuPath()/cwd to its folder, then points the file browser at that
+  // same device. Must run after SS_Init(), whose IOS58 reload resets USB.
+  initStorage();
+
+  // ---------------------------------------------------------------------------
+  // Load game presets  (optional — missing file is silently ignored)
+  // ---------------------------------------------------------------------------
+  loadGamePresets();
+  loadUserControls();
+
+  // ---------------------------------------------------------------------------
+  // Check for required BIOS files before showing the file browser.
+  // ---------------------------------------------------------------------------
+  checkBiosFiles();
+
+  listFilesInDirectory(currentPath);
+
+  // ---------------------------------------------------------------------------
+  // Main menu loop
+  // ---------------------------------------------------------------------------
+  {
+    bool launchGame = false;
+
+    while (!launchGame)
+    {
+      int selectedIndex = displayMenuAndSelectFile();
+
+      if (selectedIndex == -1)
+      {
+        printf("Exiting...\n");
+        return 0;
+      }
+      else if (selectedIndex == -2)
+      {
+        // Boot to BIOS — clear preset name, no file selected
+        handleBIOSBoot();
+        g_matched_preset_name[0] = '\0';
+        g_matched_preset_is_wiiu = false;
+        launchGame = true;
+      }
+      else if (selectedIndex >= 0)
+      {
+        strcpy(selectedFilePath, fileList[selectedIndex].fullPath);
+
+        // Apply game preset BEFORE showing the options menu so the user
+        // sees the recommended values and can still tweak them manually.
+        game_presets_apply(selectedFilePath);
+
+        if (!displayOptionsMenu())
+          continue; // B pressed — back to file list
+
+        if (g_wince_preset && !displayWinCEWarning())
+          continue; // B pressed — back to file list
+
+        launchGame = displayControlsMenu();
+        if (!launchGame)
+          continue; // B pressed — back to options menu
+      }
+    }
+
+    // Print launch summary
+    printf("\x1b[2J\x1b[H");
+    if (strlen(selectedFilePath) > 0)
+      printf("Selected file  : %s\n", selectedFilePath);
+    else
+      printf("Booting to BIOS (no disc)...\n");
+
+    if (g_matched_preset_name[0] != '\0')
+      printf("Game preset    : %c%s%c applied\n",
+             g_matched_preset_is_wiiu ? '<' : '[', g_matched_preset_name,
+             g_matched_preset_is_wiiu ? '>' : ']');
+    else
+      printf("Game preset    : none\n");
+
+    printf("Graphics       : ");
+    switch(g_graphism_preset) {
+      case 0: printf("LOW (GX_NEAR)\n");     break;
+      case 1: printf("NORMAL (GX_LINEAR)\n"); break;
+    }
+    printf("GX LOD Extras  : %s\n", g_gx_preset ? "GX_ENABLE" : "GX_DISABLE (DEFAULT)");
+    printf("LOD Bias       : ");
+    switch(g_lod_bias_preset) {
+      case 0: printf("-1.00\n");           break;
+      case 1: printf("-0.75\n");           break;
+      case 2: printf("-0.50\n");           break;
+      case 3: printf("0.00 (DEFAULT)\n");  break;
+      case 4: printf("+0.50\n");           break;
+    }
+    printf("Anisotropic    : ");
+    switch(g_aniso_preset) {
+      case 0: printf("0X (OFF, DEFAULT)\n");   break;
+      case 1: printf("2X\n");                  break;
+      case 2: printf("4X\n");                  break;
+    }
+    // Anisotropy is only iterated with a GX_LIN_MIP_LIN min filter, which needs
+    // a generated mip chain - warn instead of letting the setting look active.
+    if (g_aniso_preset > 0 && g_mipmap_preset == 0)
+      printf("               (Anisotropic does nothing while Mipmaps is OFF)\n");
+    printf("Accuracy       : ");
+    switch(g_accuracy_preset) {
+      case 0: printf("FAST\n");     break;
+      case 1: printf("BALANCED\n"); break;
+      case 2: printf("ACCURATE\n"); break;
+    }
+    printf("Ratio          : ");
+    switch(g_ratio_preset) {
+      case 0: printf("ORIGINAL\n");   break;
+      case 1: printf("FULLSCREEN\n"); break;
+      case 2: printf("AUTO\n");       break;
+    }
+    printf("Advanced Alpha : %s\n", g_advanced_alpha_preset ? "YES (DEBUG)" : "NO");
+    printf("Decal Alpha Fix: %s\n", g_decal_alpha_preset ? "YES (DEFAULT)" : "NO");
+    printf("2D Framebuffer : %s\n", g_framebuffer_2d ? "YES" : "NO");
+    printf("PPZ_WRITE      : %s\n", g_ppz_write_preset ? "YES" : "NO");
+    printf("Sprite Color   : %s\n", g_sprite_color_preset ? "YES (BaseCol)" : "NO (white)");
+    printf("Vtx Alpha      : %s\n", g_vtx_alpha_preset ? "YES (TSP.UseAlpha)" : "NO (force opaque)");
+    printf("List Order     : %s\n", g_list_order_preset ? "ON (opaque list first)" : "OFF (TA order)");
+    printf("TRANS ZWRITE   : %s\n", g_trans_zwrite_preset ? "ON (default)" : "OFF (debug)");
+    printf("Poly Offset    : ");
+    switch (g_poly_offset_preset) {
+      case 0: printf("OFF (LEGACY)\n"); break;
+      default: printf("TIER %d\n", g_poly_offset_preset); break;
+    }
+    printf("FMV Format     : ");
+    switch(g_fmv_format_preset) {
+      case 0: printf("CMPR (DXT1)\n"); break;
+      case 1: printf("RGBA8\n");       break;
+      case 2: printf("RGB565\n");      break;
+      case 3: printf("TEV (GPU YUV)\n"); break;
+    }
+    printf("YUV Stride     : ");
+    switch(g_yuv_stride_preset) {
+      case 0: printf("OFF (DECLARED)\n");  break;
+      case 1: printf("AUTO (FMV ONLY)\n"); break;
+      case 2: printf("ALWAYS (LEGACY)\n"); break;
+      case 3: printf("TEXCTL (HARDWARE)\n"); break;
+    }
+    printf("Frameskipping  : ");
+    switch(g_frameskip_preset) {
+      case 0: printf("0\n");    break;
+      case 1: printf("1\n");    break;
+      case 2: printf("2\n");    break;
+      case 3: printf("AUTO\n");     break;
+      case 4: printf("AUTO MAX\n"); break;
+    }
+    printf("Texture Cache  : ");
+    switch(g_texture_cache_preset) {
+      case 0: printf("VERY FAST\n"); break;
+      case 6: printf("VERY FAST+\n"); break;
+      case 1: printf("FAST\n");      break;
+      case 2: printf("NORMAL (DEFAULT)\n");    break;
+      case 3: printf("QUALITY\n");   break;
+    }
+    printf("4BPP Mode      : ");
+    switch(g_4bpp_preset) {
+      case 0: printf("I4 STUB\n");        break;
+      case 1: printf("4BPP OPTIMIZED\n"); break;
+      case 2: printf("CI4 (FAST)\n");     break;
+      case 3: printf("CI4 (NORMAL)\n");   break;
+      case 4: printf("RGB565\n");         break;
+    }
+    printf("8BPP Mode      : ");
+    switch(g_8bpp_preset) {
+      case 0: printf("I8 STUB\n");        break;
+      case 1: printf("8BPP OPTIMIZED\n"); break;
+      case 2: printf("CI8 (FAST)\n");     break;
+      case 3: printf("CI8 (NORMAL)\n");   break;
+      case 4: printf("RGB565\n");         break;
+    }
+    printf("Jojo Fix       : %s\n", g_jojo_fix_preset ? "YES" : "NO");
+    printf("VQ as CMPR     : %s\n", g_vq_cmpr_preset ? "YES" : "NO");
+    printf("Speed Limiter  : %s\n", g_speed_limiter_preset ? "ON (cap 100%)" : "OFF (uncapped)");
+    printf("Render Delay   : %s\n", g_render_delay_preset ? "ON (HW-LIKE)" : "OFF (LEGACY)");
+    printf("Show FPS       : %s\n", g_show_fps_overlay ? "ON" : "OFF");
+    printf("ARM7 Speed     : ");
+    switch (g_arm7_speed_preset) {
+      case 0: printf("10MHZ (DEFAULT)\n"); break;
+      case 1: printf("5MHZ (FASTER)\n");   break;
+      case 2: printf("2.5MHZ (RISKY)\n");  break;
+    }
+    printf("ARM7 JIT       : %s\n", g_arm7_jit_preset == 5 ? "ON (LEAN CODE)" :
+                                    g_arm7_jit_preset == 4 ? "ON (FAST STACK)" :
+                                    g_arm7_jit_preset == 3 ? "ON (RET CACHE)" :
+                                    g_arm7_jit_preset == 2 ? "ON (LINKED)" :
+                                    g_arm7_jit_preset == 1 ? "ON (BASIC)"  : "OFF (INTERPRETER)");
+    printf("ARM7 Batch     : %d%s\n", g_arm7_batch_preset, g_arm7_batch_preset <= 1 ? " (DEFAULT)" : " (BATCHED)");
+    printf("SH4 Clock      : %dMHz%s\n", g_sh4_clock_preset,
+           g_sh4_clock_preset >= 200 ? " (FULL)" : " (UNDERCLOCK)");
+    printf("JIT SBP        : ");
+    switch (g_jit_sbp_preset) {
+      case 0: printf("OFF\n");             break;
+      case 1: printf("KNOWN (DEFAULT)\n"); break;
+      case 2: printf("ALL RAM (SLOW)\n");  break;
+    }
+    printf("DMA Fix        : %s\n", g_dma_fix_preset ? "ON (DEFAULT)" : "OFF (LEGACY)");
+    printf("Fastmem        : %s\n", g_fastmem_preset ? "ON (MMU)" : "OFF (LEGACY)");
+    printf("JIT BCache     : %s\n", g_bcache_preset ? "ON (FLAT)" : "OFF (LEGACY)");
+    printf("JIT Dyn IC     : %s\n", g_dyn_ic_preset == 2 ? "ON (+RTS)" :
+                                     g_dyn_ic_preset == 1 ? "ON (JSR/JMP)" : "OFF");
+    printf("FPU Pin        : %s\n", g_fpu_pin_preset ? "ON (EXPERIMENTAL)" : "OFF (LEGACY)");
+    printf("JIT Align      : %s\n", g_jit_align_preset ? "ON (32B LINES)" : "OFF (LEGACY)");
+    printf("JIT Ifb Flush  : %s\n", g_ifb_flush_preset ? "ON (SELECTIVE)" : "OFF (FULL SPILL)");
+    printf("JIT Ifb Probe  : %s\n", g_ifb_probe_preset ? "ON (LOGS [IFB])" : "OFF");
+    printf("JIT New Ops    : %s\n", g_jit_newops_preset ? "ON (9 OPS JITTED)" : "OFF (LEGACY)");
+    printf("JIT Hotblocks  : %s\n", g_hotblocks_preset ? "ON (LOGS [HOT])" : "OFF");
+    // Both of these are A/B subjects, so they belong in the log header: a
+    // before/after pair is only comparable if every other switch matched.
+    printf("JIT T-Forward  : %s\n", g_jit_tfwd_preset ? "ON (NO T RELOAD)" : "OFF (LEGACY)");
+    printf("JIT Fmov Direct: %s\n", g_jit_fmov_preset ? "ON (LFS/STFS)" : "OFF (GPR BOUNCE)");
+    printf("JIT Carry Ops  : %s\n", g_jit_carry_preset ? "ON (10 OPS JITTED)" : "OFF (LEGACY)");
+    printf("JIT Mac Ops    : %s\n", g_jit_mac_preset ? "ON (FASTMEM READS)" : "OFF (LEGACY)");
+    printf("Sched (order)  : %s\n", g_sched_preset ? "ON (DEADLINE)" : "OFF (CASCADE)");
+    printf("Tex wrap guard : %s\n", g_tex_wrap_guard_preset ? "ON (SAFE WRAP)" : "OFF (LEGACY)");
+    printf("Tex clamp fix  : %s\n", g_tex_clamp_fix_preset ? "ON (PER POLYGON)" : "OFF (LEGACY)");
+    printf("Dino Crisis Fix: %s\n", g_dino_crisis_inventory_hack_preset ? "ON (REDECODE)" : "OFF (LEGACY)");
+    printf("Audio Buffers  : ");
+    switch (g_audio_buffers_preset) {
+      case -1: printf("DEFAULT (SAVED)\n"); break;
+      default: printf("%d\n", g_audio_buffers_preset); break;
+    }
+    printf("Vertex Color Fix: %s\n", g_vertex_color_preset ? "ON" : "OFF");
+    printf("Blend Mode     : %s\n", g_blend_mode_preset ? "ON (CORRECT)" : "OFF (LEGACY)");
+    printf("RGB565 Opq Alpha: %s\n", g_rgb565_opaque_alpha_preset ? "ON (FMT0+FMT1)" : "OFF (FMT0 ONLY)");
+    printf("Blend FPS Boost: %s\n", g_blend_fps_boost_preset ? "ON (FASTER)" : "OFF (CORRECT)");
+    printf("Punch Through  : %s\n", g_punch_through_preset ? "ON (CORRECT)" : "OFF (FASTER?)");
+    printf("Offset Color   : %s\n", g_offset_color_preset ? "ON (SPECULAR)" : "OFF (LEGACY)");
+    printf("Trans Sort     : %s\n", g_trans_sort_preset ? "ON (SORTED)" : "OFF (LEGACY)");
+    if (g_autosort_preset > 0)
+      printf("Autosort       : ON (%d LAYERS, PER-PIXEL)\n", g_autosort_preset);
+    else
+      printf("Autosort       : OFF (LEGACY)\n");
+    printf("Render To Tex  : %s\n", g_render_to_texture_preset == 2 ? "OVERLAY (CARRY)" :
+                                    g_render_to_texture_preset == 1 ? "ON (CORRECT)" : "OFF (LEGACY)");
+    printf("Split Screen   : %s\n", g_split_screen_preset == 3 ? "BOTH" :
+                                    g_split_screen_preset == 2 ? "MULTI-PASS (2P)" :
+                                    g_split_screen_preset == 1 ? "TILE CLIP (2P)" : "OFF (LEGACY)");
+    printf("Special Layout : %s\n", kSpecialLayoutNames[g_special_layout_preset]);
+    printf("Mipmaps        : ");
+    switch (g_mipmap_preset) {
+      case 0: printf("OFF (FASTEST)\n");    break;
+      case 1: printf("FAST\n");             break;
+      case 2: printf("TRILINEAR (SLOW)\n"); break;
+    }
+    printf("Fixed Depth    : ");
+    switch (g_fixed_depth_preset) {
+      case 0: printf("OFF (DYNAMIC)\n"); break;
+      case 1: printf("WIDE\n");          break;
+      case 2: printf("TIGHT\n");         break;
+    }
+    printf("Legacy Depth   : %s\n", g_legacy_depth_preset ? "ON" : "OFF (Default)");
+    printf("Depth Clip     : ");
+    switch (g_depth_clip_preset) {
+      case 0: printf("OFF (LEGACY)\n");      break;
+      case 1: printf("NEAR MARGIN\n");       break;
+      case 2: printf("NO CLIP (DOLPHIN)\n"); break;
+    }
+    printf("HUD Pass       : ");
+    switch (g_hud_pass_preset) {
+      case 0: printf("OFF (LEGACY)\n");      break;
+      case 1: printf("OVERLAY (NO ZW)\n");   break;
+      case 2: printf("PROTECT (Z-WRITE)\n"); break;
+    }
+    printf("Subpass ZClear : %s\n", g_subpass_zclear_preset ? "ON" : "OFF (LEGACY)");
+    printf("Async Render   : %s\n", g_async_render_preset ? "ON (FASTER?)" : "OFF (LEGACY)");
+    printf("TMEM Cache     : %s\n", g_tmem_cache_preset ? "ON (FASTER?)" : "OFF (LEGACY)");
+    printf("CDDA Music     : %s\n", g_cdda_preset ? "ON (CD MUSIC)" : "OFF (LEGACY)");
+    printf("Mute 16bit PCM : %s\n", g_mute_pcm16_preset ? "ON (SILENCED)" : "OFF (LEGACY)");
+    printf("AICA Fast      : %s\n", g_aica_fast_preset ? "ON (FASTER)" : "OFF (LEGACY)");
+    printf("BG Polygon     : %s\n", g_bg_poly_preset ? "ON (CORRECT)" : "OFF (FASTER)");
+    printf("X Scaler       : %s\n", g_x_scaler_preset ? "ON (DEFAULT)" : "OFF (LEGACY)");
+    printf("Y Scaler       : %s\n", g_y_scaler_preset ? "ON (VSCALEFACTOR)" : "OFF (LEGACY)");
+    printf("H Scaler       : %s\n", g_h_scaler_preset ? "ON (PIXEL DOUBLE)" : "OFF (LEGACY)");
+    if (g_canvas_width_preset <= 0)
+      printf("Canvas Width   : OFF (640, LEGACY)\n");
+    else
+      printf("Canvas Width   : %d\n", g_canvas_width_preset);
+    printf("Hokuto Hack    : %s\n", g_hokuto_hack_preset ? "ON (TR TIER SORT)" : "OFF (LEGACY)");
+    printf("Puyo Hack      : %s\n", g_puyo_hack_preset ? "ON (RAM hack)" : "OFF (LEGACY)");
+    printf("Exit Fix       : %s\n", g_exit_fix_preset == 3 ? "SAFE + WATCHDOG + HOST POLL" :
+                                     g_exit_fix_preset == 2 ? "SAFE + WATCHDOG" :
+                                     g_exit_fix_preset == 1 ? "SAFE SHUTDOWN"   : "OFF (LEGACY)");
+    printf("ISP Depth Func : %s\n", g_isp_depth_func_preset == 0 ? "OFF (LEGACY)"
+                                  : (g_isp_depth_func_preset == 1 ? "ON (OPAQUE/PT)" : "ON (ALL LISTS)"));
+    printf("ISP Cull       : %s\n", g_isp_cull_preset == 0 ? "OFF (LEGACY)"
+                                  : (g_isp_cull_preset == 1 ? "ON" : "ON (SWAP WINDING)"));
+    printf("Dbg FB2D Log   : %s\n", g_debug_fb2d ? "ON (LOG PASSES)" : "OFF");
+    printf("Debug Message  : %s\n", g_debug_message ? "ON (VERBOSE)" : "OFF");
+    printf("Debug Loop     : %s\n", g_debug_loop ? "ON (VERY SLOW)" : "OFF");
+    printf("Debug GDROM    : %s\n", g_debug_gdrom ? "ON (SPI CMDS)" : "OFF");
+    printf("Players        : %d\n", g_player_count);
+    printf("Controller     : %s\n",
+      (g_controller_type >= 0 && g_controller_type < kControllerTypeCount)
+        ? kControllerTypeNames[g_controller_type] : "UNKNOWN");
+
+    if (g_controller_type == 1)
+      printf("               (Light gun: make sure Sensor Bar is on!)\n");
+    if (g_controller_type == 2 && g_player_count > 1)
+      printf("               (Maracas %dP: needs %d Wiimotes!)\n", g_player_count, g_player_count * 2);
+    if (g_controller_type == 3)
+      printf("               (Keyboard: connect USB keyboard for best experience)\n");
+  }
+
+  int rv = EmuMain(argc, argv);
+
+  // A non-zero return means EmuMain gave up during start-up (no MEM2, no BIOS,
+  // no plugins...). Everything it printed is still on screen -- stdout only
+  // becomes /ndclog.txt once InitRenderer freopens it, which is later than any
+  // of those failures -- so hold here. Returning straight to the loader would
+  // flash the diagnostic for one frame and drop the user back in the Homebrew
+  // Channel with nothing to report.
+  if (rv != 0)
+  {
+    wii_boot_log("\n  Start-up failed (code %d). Press any button to exit.\n", rv);
+
+    while (true)
+    {
+      WPAD_ScanPads();
+      if (WPAD_ButtonsDown(0) != 0 || DRC_ButtonsDownWPAD() != 0 || SS_ButtonsDownWPAD() != 0)
+        break;
+      VIDEO_WaitVSync();
+    }
+  }
+
+  return rv;
+}
+
+// ============================================================================
+// PLATFORM CALLBACKS
+// ============================================================================
+
+int os_GetFile(char *szFileName, char *szParse, u32 flags)
+{
+  if (strlen(selectedFilePath) > 0)
+  {
+    size_t len = strlen(selectedFilePath);
+    if (len > 4 && (strcmp(selectedFilePath + len - 4, ".elf") == 0 ||
+                    strcmp(selectedFilePath + len - 4, ".ELF") == 0))
+      return false;
+
+    strcpy(szFileName, selectedFilePath);
+    return true;
+  }
+  return false;
+}
+
+double os_GetSeconds()
+{
+  // NOTE: do NOT use clock()/CLOCKS_PER_SEC here — on the Wii's newlib/libogc
+  // clock() has no real backing timer and returns a (near-)constant.
+  //
+  // We read the PowerPC time base via gettime() (64-bit ticks, advances at
+  // PPC_TIMER_CLOCK = bus/4 = 60.75 MHz on Wii). Two pitfalls handled here:
+  //   * The absolute TB is enormous (Dolphin starts it ~5e16, i.e. decades of
+  //     ticks). Converting that whole value to a double loses the ~15 ms
+  //     per-frame increment in the mantissa, so seconds looked frozen. We
+  //     therefore anchor at the first call and only ever convert the DELTA.
+  //   * ticks_to_microsecs()/1e6 on the raw value also inflated the magnitude;
+  //     delta math keeps the numbers small and precise.
+  static u64 t0 = 0;
+  u64 now = gettime();
+  if (t0 == 0)
+    t0 = now;
+  return (double)ticks_to_microsecs(now - t0) / 1000000.0;
+}
+
+int os_msgbox(const wchar *text, unsigned int type)
+{
+  printf("OS_MSGBOX: %s\n", text);
+  return 0;
+}

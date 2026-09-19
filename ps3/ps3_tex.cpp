@@ -1,0 +1,387 @@
+// PVR texture decode (twiddled, planar, stride, VQ, palette, YUV422, mipmap top level) to RGBA8,
+// cached per TCW/TSP key and revalidated once per frame by a hash of the source VRAM.
+#include "ps3_tex.h"
+#include "plugs/drkPvr/drkPvr.h"
+#include "plugs/drkPvr/regs.h"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpragmas"
+extern "C" {
+#include "ps3gl.h"
+}
+#pragma GCC diagnostic pop
+
+#define CACHE_SLOTS 1024
+#define CACHE_PROBE 8
+// Textures unused this many frames give back their RSX memory.
+#define CACHE_MAX_AGE 180
+
+struct TexEntry
+{
+	u32 key0, key1; // TCW, TSP size bits | IgnoreTexA | palette format
+	u32 hash;
+	GLuint name;
+	u32 last_frame;
+	u32 checked_frame;
+	u16 w, h;
+};
+
+static TexEntry s_cache[CACHE_SLOTS];
+static u32 s_frame = 1;
+static u32 s_sweep;
+static u32 s_decodes;
+static u32 s_live;
+
+static u32 s_out[1024 * 1024];
+static u32 s_tx[1024], s_ty[1024];
+
+// Texel offset bit layout of the PVR twiddle: y and x bits interleave while both sizes last.
+static u32 twop(u32 x, u32 y, u32 xsz, u32 ysz)
+{
+	u32 rv = 0, sh = 0;
+	xsz >>= 1;
+	ysz >>= 1;
+	while (xsz || ysz)
+	{
+		if (ysz) { rv |= (y & 1) << sh; ysz >>= 1; y >>= 1; sh++; }
+		if (xsz) { rv |= (x & 1) << sh; xsz >>= 1; x >>= 1; sh++; }
+	}
+	return rv;
+}
+
+static void build_twiddle(u32 w, u32 h)
+{
+	for (u32 x = 0; x < w; x++) s_tx[x] = twop(x, 0, w, h);
+	for (u32 y = 0; y < h; y++) s_ty[y] = twop(0, y, w, h);
+}
+
+// VRAM holds DC little-endian u32 words as host values, so sub-word reads index into the word.
+static inline u32 vram32(u32 a)
+{
+	return *(u32*)&PVRPARAMS.vram[a & VRAM_MASK & ~3u];
+}
+static inline u32 vram16(u32 a)
+{
+	u32 w = vram32(a);
+	return (a & 2) ? (w >> 16) : (w & 0xFFFF);
+}
+static inline u32 vram8(u32 a)
+{
+	return (vram32(a) >> ((a & 3) * 8)) & 0xFF;
+}
+
+static inline u32 rgba(u32 r, u32 g, u32 b, u32 a)
+{
+	return (r << 24) | (g << 16) | (b << 8) | a;
+}
+static inline u32 x5(u32 v) { return (v << 3) | (v >> 2); }
+static inline u32 x6(u32 v) { return (v << 2) | (v >> 4); }
+static inline u32 x4(u32 v) { return (v << 4) | v; }
+
+static inline u32 cvt1555(u32 p) { return rgba(x5((p >> 10) & 31), x5((p >> 5) & 31), x5(p & 31), (p & 0x8000) ? 255 : 0); }
+static inline u32 cvt565(u32 p)  { return rgba(x5(p >> 11), x6((p >> 5) & 63), x5(p & 31), 255); }
+static inline u32 cvt4444(u32 p) { return rgba(x4((p >> 8) & 15), x4((p >> 4) & 15), x4(p & 15), x4(p >> 12)); }
+static inline u32 cvt8888(u32 c) { return rgba((c >> 16) & 255, (c >> 8) & 255, c & 255, c >> 24); }
+
+static inline u32 clamp8(s32 v) { return v < 0 ? 0 : (v > 255 ? 255 : (u32)v); }
+
+static inline u32 yuv(s32 y, s32 u, s32 v)
+{
+	u -= 128;
+	v -= 128;
+	return rgba(clamp8(y + v * 11 / 8), clamp8(y - (u * 11 + v * 22) / 32), clamp8(y + u * 110 / 64), 255);
+}
+
+// Two horizontal texels sharing U (in p0) and V (in p1); luma is the high byte.
+static inline void yuv_pair(u32 p0, u32 p1, u32* o)
+{
+	o[0] = yuv(p0 >> 8, p0 & 255, p1 & 255);
+	o[1] = yuv(p1 >> 8, p0 & 255, p1 & 255);
+}
+
+static inline u32 cvt16(u32 fmt, u32 p)
+{
+	switch (fmt)
+	{
+	case 1: return cvt565(p);
+	case 2: return cvt4444(p);
+	case 4: return 0xFFFFFFFF; // bump map: not emulated
+	default: return cvt1555(p); // 0, and 7 (reserved) as in Flycast
+	}
+}
+
+static inline u32 cvt_pal(u32 index)
+{
+	u32 c = PALETTE_RAM[index & 1023];
+	switch (PAL_RAM_CTRL & 3)
+	{
+	case 0: return cvt1555(c & 0xFFFF);
+	case 1: return cvt565(c & 0xFFFF);
+	case 2: return cvt4444(c & 0xFFFF);
+	default: return cvt8888(c);
+	}
+}
+
+// Full-size level offset in texels for mipmapped textures (levels are stored small to large).
+static const u32 mip_texels[11] = {
+	0x3, 0x4, 0x8, 0x18, 0x58, 0x158, 0x558, 0x1558, 0x5558, 0x15558, 0x55558
+};
+// Same for VQ: bytes of index map after the 2 KB codebook.
+static const u32 vq_mip_bytes[11] = {
+	0x0, 0x1, 0x2, 0x6, 0x16, 0x56, 0x156, 0x556, 0x1556, 0x5556, 0x15556
+};
+
+struct TexDesc
+{
+	u32 fmt, w, h, addr, pitch;
+	bool vq, twiddled, pal4, pal8;
+	u32 pal_base;
+	u32 src_bytes; // source span hashed for change detection
+};
+
+static void describe(TSP tsp, TCW tcw, TexDesc* d)
+{
+	d->fmt = tcw.NO_PAL.PixelFmt;
+	d->w = 8 << tsp.TexU;
+	d->h = 8 << tsp.TexV;
+	d->addr = (tcw.NO_PAL.TexAddr << 3) & VRAM_MASK;
+	d->pal4 = d->fmt == 5;
+	d->pal8 = d->fmt == 6;
+	d->vq = tcw.NO_PAL.VQ_Comp && !d->pal4 && !d->pal8;
+	d->twiddled = d->pal4 || d->pal8 || d->vq || !tcw.NO_PAL.ScanOrder;
+	d->pal_base = d->pal4 ? tcw.PAL.PalSelect << 4 : (tcw.PAL.PalSelect >> 4) << 8;
+	d->pitch = d->w;
+
+	bool mip = tcw.NO_PAL.MipMapped && d->twiddled;
+	if (mip)
+		d->h = d->w; // mipmapped textures are square
+
+	u32 lvl = tsp.TexU + 3;
+	if (d->vq)
+	{
+		if (mip)
+			d->addr += vq_mip_bytes[lvl];
+		d->src_bytes = 2048 + d->w * d->h / 4;
+	}
+	else if (d->pal4 || d->pal8)
+	{
+		u32 bits = d->pal4 ? 4 : 8;
+		if (mip)
+			d->addr += mip_texels[lvl] * bits / 8;
+		d->src_bytes = d->w * d->h * bits / 8;
+	}
+	else
+	{
+		if (mip)
+			d->addr += mip_texels[lvl] * 2;
+		// Stride textures: rows are TEXT_CONTROL[4:0] * 32 texels apart.
+		if (!d->twiddled && tcw.NO_PAL.StrideSel)
+		{
+			u32 stride = (TEXT_CONTROL & 31) * 32;
+			if (stride)
+				d->pitch = stride;
+		}
+		d->src_bytes = d->pitch * d->h * 2;
+	}
+}
+
+static u32 hash_range(u32 addr, u32 bytes, u32 h)
+{
+	addr &= ~3u;
+	for (u32 i = 0; i < bytes; i += 4)
+		h = (h ^ vram32(addr + i)) * 16777619u;
+	return h;
+}
+
+static u32 hash_texture(const TexDesc& d)
+{
+	u32 h = hash_range(d.addr, d.src_bytes, 2166136261u);
+	if (d.pal4 || d.pal8)
+	{
+		u32 n = d.pal4 ? 16 : 256;
+		for (u32 i = 0; i < n; i++)
+			h = (h ^ PALETTE_RAM[(d.pal_base + i) & 1023]) * 16777619u;
+		h ^= PAL_RAM_CTRL & 3;
+	}
+	return h;
+}
+
+static void decode(const TexDesc& d, bool ignore_alpha)
+{
+	u32 w = d.w, h = d.h;
+	if (d.twiddled)
+		build_twiddle(w, h);
+
+	if (d.vq)
+	{
+		u32 cb = d.addr;
+		u32 idx_base = d.addr + 2048;
+		for (u32 y = 0; y < h; y += 2)
+			for (u32 x = 0; x < w; x += 2)
+			{
+				u32 e = cb + vram8(idx_base + ((s_tx[x] | s_ty[y]) >> 2)) * 8;
+				// Codebook entry order is twiddled: (0,0) (0,1) (1,0) (1,1).
+				u32 s0 = vram16(e), s1 = vram16(e + 2), s2 = vram16(e + 4), s3 = vram16(e + 6);
+				u32* o0 = &s_out[y * w + x];
+				u32* o1 = o0 + w;
+				if (d.fmt == 3)
+				{
+					yuv_pair(s0, s2, o0);
+					yuv_pair(s1, s3, o1);
+				}
+				else
+				{
+					o0[0] = cvt16(d.fmt, s0); o0[1] = cvt16(d.fmt, s2);
+					o1[0] = cvt16(d.fmt, s1); o1[1] = cvt16(d.fmt, s3);
+				}
+			}
+	}
+	else if (d.pal4 || d.pal8)
+	{
+		for (u32 y = 0; y < h; y++)
+			for (u32 x = 0; x < w; x++)
+			{
+				u32 t = s_tx[x] | s_ty[y];
+				u32 i = d.pal4 ? (vram8(d.addr + (t >> 1)) >> ((t & 1) * 4)) & 15 : vram8(d.addr + t);
+				s_out[y * w + x] = cvt_pal(d.pal_base + i);
+			}
+	}
+	else if (d.twiddled)
+	{
+		if (d.fmt == 3)
+		{
+			for (u32 y = 0; y < h; y++)
+				for (u32 x = 0; x < w; x += 2)
+					yuv_pair(vram16(d.addr + (s_tx[x] | s_ty[y]) * 2),
+					         vram16(d.addr + (s_tx[x + 1] | s_ty[y]) * 2), &s_out[y * w + x]);
+		}
+		else
+		{
+			for (u32 y = 0; y < h; y++)
+				for (u32 x = 0; x < w; x++)
+					s_out[y * w + x] = cvt16(d.fmt, vram16(d.addr + (s_tx[x] | s_ty[y]) * 2));
+		}
+	}
+	else
+	{
+		for (u32 y = 0; y < h; y++)
+		{
+			u32 row = d.addr + y * d.pitch * 2;
+			if (d.fmt == 3)
+				for (u32 x = 0; x < w; x += 2)
+					yuv_pair(vram16(row + x * 2), vram16(row + x * 2 + 2), &s_out[y * w + x]);
+			else
+				for (u32 x = 0; x < w; x++)
+					s_out[y * w + x] = cvt16(d.fmt, vram16(row + x * 2));
+		}
+	}
+
+	if (ignore_alpha)
+		for (u32 i = 0; i < w * h; i++)
+			s_out[i] |= 0xFF;
+}
+
+static void free_entry(TexEntry& e)
+{
+	if (e.name)
+	{
+		glDeleteTextures(1, &e.name);
+		s_live--;
+	}
+	memset(&e, 0, sizeof(e));
+}
+
+void ps3tex_frame_begin()
+{
+	s_frame++;
+	// Age out a slice per frame so the sweep cost stays flat.
+	for (u32 i = 0; i < CACHE_SLOTS / 64; i++)
+	{
+		TexEntry& e = s_cache[s_sweep];
+		if (e.name && s_frame - e.last_frame > CACHE_MAX_AGE)
+			free_entry(e);
+		s_sweep = (s_sweep + 1) % CACHE_SLOTS;
+	}
+}
+
+bool ps3tex_bind(TSP tsp, TCW tcw)
+{
+	u32 key0 = tcw.full;
+	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((PAL_RAM_CTRL & 3) << 7);
+
+	u32 slot = ((key0 * 2654435761u) ^ key1) % CACHE_SLOTS;
+	TexEntry* hit = 0;
+	TexEntry* victim = 0;
+	for (u32 i = 0; i < CACHE_PROBE; i++)
+	{
+		TexEntry& e = s_cache[(slot + i) % CACHE_SLOTS];
+		if (e.name && e.key0 == key0 && e.key1 == key1)
+		{
+			hit = &e;
+			break;
+		}
+		if (!victim || !e.name || (victim->name && e.last_frame < victim->last_frame))
+			victim = &e;
+	}
+
+	TexDesc d;
+	if (!hit || hit->checked_frame != s_frame)
+		describe(tsp, tcw, &d);
+
+	if (hit && hit->checked_frame != s_frame)
+	{
+		u32 hsh = hash_texture(d);
+		if (hsh != hit->hash)
+		{
+			decode(d, tsp.IgnoreTexA);
+			glBindTexture(GL_TEXTURE_2D, hit->name);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+			hit->hash = hsh;
+			s_decodes++;
+		}
+		hit->checked_frame = s_frame;
+	}
+	else if (!hit)
+	{
+		if (d.w > 1024 || d.h > 1024)
+			return false;
+		free_entry(*victim);
+		hit = victim;
+		hit->key0 = key0;
+		hit->key1 = key1;
+		hit->w = d.w;
+		hit->h = d.h;
+		hit->hash = hash_texture(d);
+		hit->checked_frame = s_frame;
+		decode(d, tsp.IgnoreTexA);
+		glGenTextures(1, &hit->name);
+		glBindTexture(GL_TEXTURE_2D, hit->name);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+		s_live++;
+		s_decodes++;
+	}
+
+	hit->last_frame = s_frame;
+	glBindTexture(GL_TEXTURE_2D, hit->name);
+	// Flip (mirror) is not in ps3gl yet: it falls back to repeat.
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, tsp.ClampU ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, tsp.ClampV ? GL_CLAMP_TO_EDGE : GL_REPEAT);
+	GLint filter = tsp.FilterMode ? GL_LINEAR : GL_NEAREST;
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+	return true;
+}
+
+void ps3tex_reset()
+{
+	for (u32 i = 0; i < CACHE_SLOTS; i++)
+		free_entry(s_cache[i]);
+	s_live = 0;
+}
+
+void ps3tex_stats(u32* decodes, u32* live)
+{
+	*decodes = s_decodes;
+	*live = s_live;
+	s_decodes = 0;
+}
