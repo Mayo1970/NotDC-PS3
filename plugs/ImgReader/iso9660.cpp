@@ -222,7 +222,9 @@ bool iso_init(char* file)
 	size_t len=strlen(file);
 	if (len>4)
 	{
-		if (strcmp( &file[len-4],".gdi")==0)    //stricmp on *nix is?
+		// Case-insensitive: the PS3 browser lists whatever the card holds,
+		// and a ".GDI" would otherwise reach no reader at all.
+		if (strcasecmp( &file[len-4],".gdi")==0)
 		{
 			return load_gdi(file);
 		}

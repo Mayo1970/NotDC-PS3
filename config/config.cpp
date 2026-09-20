@@ -304,6 +304,13 @@ vector<vitem> vlist;
 char* trim_ws(char* str);
 bool cfgOpen()
 {
+	// The PS3 front end needs the cfg before EmuMain, which opens it again.
+	// Re-parsing would re-add every entry, so the second call is a no-op.
+	static bool opened = false;
+	if (opened)
+		return true;
+	opened = true;
+
 	wchar * tmpPath = GetEmuPath("");
 	strcpy(appPath, tmpPath);
 	free(tmpPath);

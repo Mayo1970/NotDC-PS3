@@ -863,6 +863,7 @@ static uint8_t gl_to_gcm_wrap(GLint param)
     case GL_REPEAT:        return GCM_TEXTURE_REPEAT;
     case GL_CLAMP:         return GCM_TEXTURE_CLAMP;
     case GL_CLAMP_TO_EDGE: return GCM_TEXTURE_CLAMP_TO_EDGE;
+    case GL_MIRRORED_REPEAT: return GCM_TEXTURE_MIRRORED_REPEAT;
     default:               return GCM_TEXTURE_REPEAT;
     }
 }

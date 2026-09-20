@@ -2,6 +2,9 @@
 #include "types.h"
 #include "stdclass.h"
 #include "ps3_log.h"
+#include "ps3_menu.h"
+#include "ps3_presets.h"
+#include "config/config.h"
 #include "plugins/plugin_manager.h"
 #include "dc/sh4/sh4_registers.h"
 #include "plugs/drkPvr/drkPvr.h"
@@ -131,6 +134,12 @@ static void ps3_log_init()
 	ps3_log_addr.sin_addr.s_addr = inet_addr(PS3_LOG_IP);
 }
 
+// The front end polls this so an XMB exit closes the menu as well.
+extern "C" int ps3_exit_pending()
+{
+	return ps3_exit_requested;
+}
+
 // XMB exit arrives here; only latch it, the emulator loop acts on it.
 static void ps3_sysutil_cb(u64 status, u64 param, void* userdata)
 {
@@ -153,8 +162,10 @@ static void ps3_monitor_thread(void* arg)
 		{
 			if (stop_ticks == 0)
 			{
+				// sh4_cpu is still all-zero while the front end runs.
 				printf("[ps3] XMB exit requested, stopping SH4\n");
-				sh4_cpu.Stop();
+				if (sh4_cpu.Stop)
+					sh4_cpu.Stop();
 			}
 			// A stuck core (die() loops forever) never returns; an unanswered exit crashes the console.
 			else if (stop_ticks >= 30)
@@ -256,9 +267,25 @@ int main(int argc, char* argv[])
 	ps3_input_init();
 	wii_audio_init();
 
-	char* av[] = { (char*)"nulldc", NULL };
-	int rv = EmuMain(1, av);
+	// The front end needs the settings before EmuMain opens the cfg itself.
+	int rv = 0;
+	if (!cfgOpen())
+		printf("[ps3] cfgOpen failed, using built-in defaults\n");
+	ps3_presets_load();
+
+	if (!ps3_menu_run())
+	{
+		printf("[ps3] front end quit, exiting to XMB\n");
+		goto shutdown;
+	}
+
+	{
+		char* av[] = { (char*)"nulldc", NULL };
+		rv = EmuMain(1, av);
+	}
 	printf("[ps3] EmuMain returned %d, exiting to XMB\n", rv);
+
+shutdown:
 
 	// Plugin term may not run on XMB exit; wii_audio_term() is safe to call twice.
 	wii_audio_term();

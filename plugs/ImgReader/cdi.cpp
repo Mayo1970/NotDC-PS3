@@ -119,6 +119,10 @@ void cdi_DriveReadSector(u8* buff, u32 StartSector, u32 SectorCount, u32 secsz)
     }
 }
 
+// Everything above runs per sector and must stay silent; from here down the
+// calls are one-shot (TOC, header parse, init), so they log to the UDP sink.
+#undef printf
+
 // ─── TOC / session info ──────────────────────────────────────────────────────
 
 void cdi_DriveGetTocInfo(TocInfo* toc, DiskArea area)
@@ -510,22 +514,18 @@ bool cdi_init(char* file)
         fclose(f); return false;
     }
 
-    long hdr_pos;
-    if (version == CDI_V2)
+    // cdirip CDI_init: only V3.5 stores the header size measured back from the
+    // end of the file. V2 and V3 store its absolute offset. Treating V3 like
+    // V3.5 landed on zeros, so the session count read 0 and the parse failed.
+    long hdr_pos = (version == CDI_V35)
+                 ? file_size - (long)hdr_offset
+                 : (long)hdr_offset;
+    printf("[CDI] hdr_pos = %ld (0x%08lX)\n", hdr_pos, hdr_pos);
+    if (hdr_pos < 0 || hdr_pos >= file_size)
     {
-        hdr_pos = 0;
-    }
-    else
-    {
-        hdr_pos = file_size - (long)hdr_offset;
-        printf("[CDI] hdr_pos = %ld - %u = %ld (0x%08lX)\n",
-               file_size, hdr_offset, hdr_pos, hdr_pos);
-        if (hdr_pos < 0 || hdr_pos >= file_size)
-        {
-            printf("[CDI] ERROR: hdr_pos out of bounds\n");
-            printf("********************************END********************************\n\n");
-            fclose(f); return false;
-        }
+        printf("[CDI] ERROR: hdr_pos out of bounds\n");
+        printf("********************************END********************************\n\n");
+        fclose(f); return false;
     }
 
     printf("********************************END********************************\n\n");

@@ -97,6 +97,8 @@ static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 
 static u32 s_stat_renders, s_stat_rtt, s_stat_vtx;
 static u32 s_stat_strips[5];
+// Strips as the TA builds them, so a list that is captured but never drawn shows up.
+static u32 s_stat_built[5];
 // Modifier volume triangles per list for the stats line (1 = opaque MV, 3 = translucent MV).
 static u32 s_mv_list;
 static u32 s_stat_mv[5];
@@ -288,6 +290,8 @@ struct Ps3VertexDecoder
 		s.count = (u16)(count > 0xFFFF ? 0xFFFF : count);
 		s.list = (u8)s_cur_list;
 		s.param = (u16)(s_ta->nparam - 1);
+		if (s_cur_list < 5)
+			s_stat_built[s_cur_list]++;
 	}
 
 	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); }
@@ -1296,15 +1300,18 @@ void StartRender()
 		u32 r = s_stat_renders ? s_stat_renders : 1;
 		u32 decodes, live;
 		ps3tex_stats(&decodes, &live);
-		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u\n",
+		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u\n",
 		       s_stat_renders, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 		       s_autosort ? "auto" : "pre", s_stat_vtx / r,
 		       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
 		       s_stat_strips[ListType_Translucent] / r,
+		       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
+		       s_stat_built[ListType_Translucent] / r,
 		       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow);
 		memset(s_stat_mv, 0, sizeof(s_stat_mv));
 		s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
 		memset(s_stat_strips, 0, sizeof(s_stat_strips));
+		memset(s_stat_built, 0, sizeof(s_stat_built));
 		s_overflow = 0;
 		s_stat_t0 = now;
 	}

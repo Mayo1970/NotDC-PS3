@@ -32,6 +32,11 @@ static u32 s_sweep;
 static u32 s_decodes;
 static u32 s_live;
 
+// Temporary G7 texture-mix counters, reset with the other per-window stats.
+static u32 s_fmt_count[8];
+static u32 s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride;
+static u32 s_flag_nonsq, s_flag_mirror, s_flag_clamp;
+
 static u32 s_out[1024 * 1024];
 static u32 s_tx[1024], s_ty[1024];
 
@@ -136,6 +141,7 @@ struct TexDesc
 	u32 fmt, w, h, addr, pitch;
 	bool vq, twiddled, pal4, pal8;
 	u32 pal_base;
+	u32 vq_cb;     // VQ codebook, at the texture address before any mip offset
 	u32 src_bytes; // source span hashed for change detection
 };
 
@@ -159,9 +165,13 @@ static void describe(TSP tsp, TCW tcw, TexDesc* d)
 	u32 lvl = tsp.TexU + 3;
 	if (d->vq)
 	{
+		// nullDC-v1 twidle_tex: the codebook stays at the texture address and
+		// only the index map moves by the mip offset, then by the 2 KB book.
+		d->vq_cb = d->addr;
 		if (mip)
 			d->addr += vq_mip_bytes[lvl];
-		d->src_bytes = 2048 + d->w * d->h / 4;
+		d->addr += 2048;
+		d->src_bytes = d->w * d->h / 4;
 	}
 	else if (d->pal4 || d->pal8)
 	{
@@ -196,6 +206,9 @@ static u32 hash_range(u32 addr, u32 bytes, u32 h)
 static u32 hash_texture(const TexDesc& d)
 {
 	u32 h = hash_range(d.addr, d.src_bytes, 2166136261u);
+	// The codebook is not contiguous with the index map once mipmapped.
+	if (d.vq)
+		h = hash_range(d.vq_cb, 2048, h);
 	if (d.pal4 || d.pal8)
 	{
 		u32 n = d.pal4 ? 16 : 256;
@@ -214,8 +227,8 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 
 	if (d.vq)
 	{
-		u32 cb = d.addr;
-		u32 idx_base = d.addr + 2048;
+		u32 cb = d.vq_cb;
+		u32 idx_base = d.addr;
 		for (u32 y = 0; y < h; y += 2)
 			for (u32 x = 0; x < w; x += 2)
 			{
@@ -353,6 +366,16 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		hit->h = d.h;
 		hit->hash = hash_texture(d);
 		hit->checked_frame = s_frame;
+		// Temporary G7 diagnostic, counted not printed, so the sample follows what
+		// is on screen instead of the first textures of the boot.
+		s_fmt_count[d.fmt & 7]++;
+		if (d.vq)                     s_flag_vq++;
+		if (tcw.NO_PAL.MipMapped)     s_flag_mip++;
+		if (!d.twiddled)              s_flag_planar++;
+		if (tcw.NO_PAL.StrideSel)     s_flag_stride++;
+		if (d.w != d.h)               s_flag_nonsq++;
+		if (tsp.FlipU || tsp.FlipV)   s_flag_mirror++;
+		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
 		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
@@ -363,7 +386,10 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 
 	hit->last_frame = s_frame;
 	glBindTexture(GL_TEXTURE_2D, hit->name);
-	// Flip (mirror) is not in ps3gl yet: it falls back to repeat.
+	// nullDC-v1 SetTexMode is clamp, then mirror, then wrap, but asking the RSX
+	// for GCM_TEXTURE_MIRRORED_REPEAT froze it on HW (2026-09-20): nearly every
+	// texture here is swizzled, and mirrored wrap needs a linear layout. Mirror
+	// falls back to repeat until the layout can be forced per texture.
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, tsp.ClampU ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, tsp.ClampV ? GL_CLAMP_TO_EDGE : GL_REPEAT);
 	GLint filter = tsp.FilterMode ? GL_LINEAR : GL_NEAREST;
@@ -384,4 +410,14 @@ void ps3tex_stats(u32* decodes, u32* live)
 	*decodes = s_decodes;
 	*live = s_live;
 	s_decodes = 0;
+
+	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
+	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u\n",
+	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
+	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
+	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
+	       s_flag_nonsq, s_flag_mirror, s_flag_clamp);
+	memset(s_fmt_count, 0, sizeof(s_fmt_count));
+	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
+	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
 }

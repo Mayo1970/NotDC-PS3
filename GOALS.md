@@ -64,11 +64,75 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
      first real test when a game boots in G7. Pack/read modes 24-bit and mode 4/5 log once and skip.
 Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mode.
 
-## G7 - Game boot and front end  `[ ]`
-1. Replace the Wii menu (`wii/main.cpp`) with an RSX disc browser.
-2. Load GDI/CDI/ISO from `/dev_hdd0/data/NullDC/` and USB (`/dev_usb000..006`).
-3. Port game presets and config.
-4. HW test: select a disc and boot a commercial game.
+## G7 - Game boot and front end  `[x]` (HW 2026-09-20: Crazy Taxi and ChuChu Rocket boot and play correctly, ~45% speed / ~12 RPS)
+1. Replace the Wii menu (`wii/main.cpp`) with an RSX disc browser. `[x]`
+   - `ps3/ps3_ui.cpp`: text and quad drawing on `ps3gl`, 8x8 bitmap font (`ps3/ps3_font.h`)
+     uploaded as one 128x64 RGBA texture. `ps3_video_init()` is idempotent, so the front end
+     brings the RSX up before `EmuMain` and `InitRenderer` reuses it.
+   - `ps3/ps3_menu.cpp`: browser, 3 option pages and a controls page. Every connected pad
+     drives it; each port keeps its own `padData` because `ioPadGetData` does not refresh the
+     buffer with no new input (same rule as `ps3_input.cpp`).
+2. Load discs from `/dev_hdd0/data/NullDC/discs/` and USB (`/dev_usb000..006`). `[x]`
+   `plugs/ImgReader` has three drives: CDI, NRG/MDS/MDF and "ISO reader", but the last one
+   only accepts `.gdi` - plain `.iso`, `.bin` and `.cue` reach no reader at all. The browser
+   therefore lists `.gdi`, `.cdi`, `.mds`, `.nrg` and `.elf`, and `iso_init` now compares the
+   extension case-insensitively so a `.GDI` still loads. The browser only fills
+   `selectedFilePath`. Empty path = boot the BIOS with no disc, as in G2-G6.
+3. Port game presets and config. `[x]`
+   nullDC-v1 has NO per-game preset system: its whole config is `nullDC.cfg` through the
+   `cfg*` API (`[nullDC]`, `[nullDC_plugins]`), read by `LoadSettings()` and written by
+   `SaveSettings()`. `game_presets.cfg` is a NullDC4Wii invention, so it is NOT ported
+   (Matt, 2026-09-20). The option pages read and write `[ps3]` in the same file through
+   `cfgLoadInt`/`cfgSaveInt` (`ps3/ps3_presets.cpp`). `cfgOpen()` now returns early on a
+   second call, since the front end opens the cfg before `EmuMain` does.
+   The DS3 `user_controls.cfg` remap is deferred to after the G7 hardware test (Matt).
+4. HW test: select a disc and boot a commercial game. `[x]`
+   HW 2026-09-20: the browser listed the games; **ChuChu Rocket (CDI V3.5) and Crazy Taxi
+   (CDI V3) both boot and play** at ~46% speed. Crazy Taxi switches PAL 480i to NTSC 480i by
+   itself, runs from RAM (`pc=0C15A670`), and draws 2092 vertices per render over 240 opaque
+   and 283 translucent strips with 52 live textures. Pad input reaches the game (`[pad] dc0`).
+   The opaque list ran on hardware for the first time here, and the framebuffer-write present
+   fired (`fb=1`). Modifier volumes ran on hardware for the first time later in the same
+   session (`mv_tris op=256`, no hang). Render to texture is still unexercised (`rtt=0/0`).
+   Crazy Taxi failed on the first attempt. Cause found offline against the real image, with no
+   console round trip: `cdi_init` applied the V3.5 header rule to V3. cdirip `CDI_init` stores
+   the header as a length back from the end of the file for V3.5 only; V2 and V3 store an
+   absolute offset. The V3 file therefore seeked to `size - hdr_offset` = 809, read zeros and
+   rejected the image on `session_count == 0`. Fixed in `plugs/ImgReader/cdi.cpp`. The `[CDI]`
+   parser logs are now on; the per-sector logs above `cdi_DriveGetTocInfo` stay off so the UDP
+   log cannot flood.
+5. Texture correctness, found after the first game boot (Matt: glitched textures, wrong tree
+   transparency). `[x]` HW 2026-09-20: both fixed, "It looked fine! Even the trees."
+   - Cause: mipmapped VQ textures took the codebook from the wrong address. nullDC-v1
+     `twidle_tex` keeps the codebook at the texture address and moves only the index map by
+     `MipPoint[TexU]`, then by the 2 KB book; `ps3_tex.cpp` advanced the address first and used
+     it for both. The block structure survived but every colour AND alpha came from the wrong
+     codebook entry, which is why the tree cutouts looked wrong. `hash_texture` had the same
+     fault, so a changed codebook never forced a re-decode. Added `TexDesc::vq_cb`.
+   - The rest of the decoder was audited against nullDC-v1 `d3dRend.cpp` + `TexCache.h` and
+     already matched: the four mipmap offset tables (numerically identical to `MipPoint[]`),
+     VQ 2x2 codebook order, PAL4 nibble / PAL8 byte order, palette bank select, YUV422 maths
+     and pairing, stride, twiddle (same as `twiddle_razi_`), `IgnoreTexA`, VRAM size and mask.
+     The alpha path also matched: PT `GEQUAL PT_ALPHA_REF`, TR `GREATER 0`, and the per-poly
+     zero-alpha clip condition `SrcInstr==4 && (DstInstr==1 || DstInstr==5)`.
+   - REGRESSION AND REVERT: adding nullDC-v1's mirrored wrap (`SetTexMode`) froze the console
+     after ~151 s. 159 of 160 live textures are swizzled, and RSX mirrored wrap needs a linear
+     layout; the RSX stalled, the command buffer filled and the SH4 thread blocked in host code
+     (pc and vbl frozen, monitor thread still alive). `GL_MIRRORED_REPEAT` stays plumbed in
+     `ps3gl` but nothing requests it. `mirror=1` per 5 s window, so the visual cost is tiny.
+     Do not re-enable it without forcing a linear layout for those textures.
+   - Punch-through settled: Crazy Taxi sends NO PT list (`built pt=0` every frame, counted as
+     the TA builds strips, not as they are drawn). Its trees are translucent polygons.
+   - Temporary diagnostics still in the tree: `[texfmt]` histogram in `ps3_tex.cpp`
+     (`s_fmt_count` / `s_flag_*`) and the `built op/pt/tr` counters in `ps3_rend.cpp`
+     (`s_stat_built`). Remove when no longer needed.
+6. Measured speed (HW 2026-09-20, Crazy Taxi, 246 samples): emulation 45.3% (26.6-56.6),
+   VPS 26.4 of NTSC 59.95, **RPS 12.0 average** (14.4 excluding idle windows), RSX present
+   13.7 fps. Dense driving is RSX bound at 143-152 ms per frame (~7 fps) with ~1390 draw calls
+   of ~8 vertices each: one `glBegin`/`glEnd` per PVR strip. Two independent limits - the SH4
+   interpreter (G8 targets it) and the renderer draw-call count (G8 will NOT help; batching
+   strips that share polygon state would, and `GPstate_cache` already knows when state is
+   unchanged).
 
 ## G8 - SH4 speed: cached interpreter  `[ ]`
 1. Build an SH4 cached interpreter (same method as `arm7_cached.cpp`).
