@@ -37,6 +37,9 @@ static u32 s_live;
 static u32 s_fmt_count[8];
 static u32 s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride;
 static u32 s_flag_nonsq, s_flag_mirror, s_flag_clamp;
+// Counted per bind, not per cache fill: a mirrored texture drawn every frame
+// fills once, so the fill counter cannot size the linear-layout cost.
+static u32 s_bind_total, s_bind_mirror;
 
 static u32 s_out[1024 * 1024];
 static u32 s_tx[1024], s_ty[1024];
@@ -318,10 +321,36 @@ void ps3tex_frame_begin()
 	}
 }
 
+// Set on the bound texture. ps3gl picks the RSX layout inside the first
+// glTexImage2D, so a new texture must get these BEFORE it is uploaded:
+// mirrored wrap needs a linear layout and stalls the RSX on a swizzled one.
+static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v)
+{
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+	                tsp.ClampU ? GL_CLAMP_TO_EDGE : (mirror_u ? GL_MIRRORED_REPEAT : GL_REPEAT));
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
+	                tsp.ClampV ? GL_CLAMP_TO_EDGE : (mirror_v ? GL_MIRRORED_REPEAT : GL_REPEAT));
+	GLint filter = tsp.FilterMode ? GL_LINEAR : GL_NEAREST;
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+}
+
 bool ps3tex_bind(TSP tsp, TCW tcw)
 {
+	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
+	bool mirror_u = !tsp.ClampU && tsp.FlipU;
+	bool mirror_v = !tsp.ClampV && tsp.FlipV;
+	bool mirror = mirror_u || mirror_v;
+
+	s_bind_total++;
+	if (mirror)
+		s_bind_mirror++;
+
 	u32 key0 = tcw.full;
-	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((PAL_RAM_CTRL & 3) << 7);
+	// Mirror is in the key because it decides the RSX layout at allocation time,
+	// and that layout is fixed for the life of the texture.
+	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((PAL_RAM_CTRL & 3) << 7)
+	         | (mirror << 9);
 
 	u32 slot = ((key0 * 2654435761u) ^ key1) % CACHE_SLOTS;
 	TexEntry* hit = 0;
@@ -383,6 +412,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
+		set_tex_params(tsp, mirror_u, mirror_v);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 		s_live++;
 		s_decodes++;
@@ -391,15 +421,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 
 	hit->last_frame = s_frame;
 	glBindTexture(GL_TEXTURE_2D, hit->name);
-	// nullDC-v1 SetTexMode is clamp, then mirror, then wrap, but asking the RSX
-	// for GCM_TEXTURE_MIRRORED_REPEAT froze it on HW (2026-09-20): nearly every
-	// texture here is swizzled, and mirrored wrap needs a linear layout. Mirror
-	// falls back to repeat until the layout can be forced per texture.
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, tsp.ClampU ? GL_CLAMP_TO_EDGE : GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, tsp.ClampV ? GL_CLAMP_TO_EDGE : GL_REPEAT);
-	GLint filter = tsp.FilterMode ? GL_LINEAR : GL_NEAREST;
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+	set_tex_params(tsp, mirror_u, mirror_v);
 	return true;
 }
 
@@ -417,12 +439,15 @@ void ps3tex_stats(u32* decodes, u32* live)
 	s_decodes = 0;
 
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
-	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u\n",
+	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
+	       " | binds=%u mirrorbinds=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
-	       s_flag_nonsq, s_flag_mirror, s_flag_clamp);
+	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
+	       s_bind_total, s_bind_mirror);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
+	s_bind_total = s_bind_mirror = 0;
 }

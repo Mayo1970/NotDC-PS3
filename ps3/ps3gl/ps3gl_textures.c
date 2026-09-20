@@ -388,11 +388,20 @@ static int tex_alloc_levels(uint32_t w0, uint32_t h0)
     return g_mipmap_enabled ? mip_num_levels(w0, h0) : 1;
 }
 
+/* RSX requires a linear texture's pitch to be a multiple of 64 bytes. A DC
+ * texture can be 8 or 16 texels wide, so width*4 is 32 or 64 -- the small
+ * ones are illegal and stall the RSX. Rows are padded to suit; the swizzled
+ * path ignores pitch entirely, so it is safe to use this value there too. */
+static uint32_t tex_linear_pitch(uint32_t w0)
+{
+    return ((w0 * 4) + 63u) & ~63u;
+}
+
 static uint32_t tex_level_bytes(uint32_t w0, uint32_t h0, int level, int swizzled)
 {
     if (swizzled)
         return mip_level_dim(w0, level) * mip_level_dim(h0, level) * 4;
-    return (w0 * 4) * mip_level_dim(h0, level); /* base pitch, shrinking rows */
+    return tex_linear_pitch(w0) * mip_level_dim(h0, level); /* base pitch, shrinking rows */
 }
 
 static uint32_t tex_level_offset(uint32_t w0, uint32_t h0, int level, int swizzled)
@@ -497,7 +506,7 @@ static void build_gcm_texture(ps3gl_texture_t *t)
      * than special-cased. If a first hardware test shows scrambled texels or
      * diagonal shearing on swizzled textures, try 0 here BEFORE touching
      * swz_ensure_tables -- the interleave is the far more likely-correct part. */
-    t->gcm_tex.pitch     = t->width * 4;
+    t->gcm_tex.pitch     = tex_linear_pitch(t->width);
     t->gcm_tex.offset    = t->offset;
 }
 
@@ -565,7 +574,13 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat,
          * upload -- but a silently mis-sampled texture is a bad failure mode to
          * leave open, so the check is real. */
         if (!t->data) {
-            t->swizzled = (uint8_t)(g_swizzle_enabled &&
+            /* Mirrored wrap forces linear: RSX stalls when it mirrors a
+             * swizzled texture. The caller must set GL_TEXTURE_WRAP_* BEFORE
+             * the first glTexImage2D, or the layout is already fixed. */
+            const int wants_mirror = (t->wrap_s == GCM_TEXTURE_MIRRORED_REPEAT ||
+                                      t->wrap_t == GCM_TEXTURE_MIRRORED_REPEAT);
+
+            t->swizzled = (uint8_t)(g_swizzle_enabled && !wants_mirror &&
                                     is_pow2((uint32_t)width) && is_pow2((uint32_t)height) &&
                                     width <= PS3GL_MAX_TEX_DIM && height <= PS3GL_MAX_TEX_DIM);
 
@@ -603,7 +618,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat,
         return;
     }
 
-    const uint32_t pitch      = (uint32_t)t->width * 4;
+    const uint32_t pitch      = tex_linear_pitch(t->width);
     const uint32_t lvl_off    = tex_level_offset(t->width, t->height, level, t->swizzled);
     const uint32_t lvl_bytes  = tex_level_bytes(t->width, t->height, level, t->swizzled);
     uint8_t       *lvl_data   = t->data + lvl_off;
@@ -687,7 +702,7 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
      * (lw==t->width, lh==t->height, level_data==t->data) in BOTH layouts, so
      * the already-hardware-validated packed-store fast path below is unchanged
      * for the lightmap call sites that are its whole reason to exist. */
-    const uint32_t pitch = (uint32_t)t->width * 4;
+    const uint32_t pitch = tex_linear_pitch(t->width);
     const int lw = (int)mip_level_dim(t->width, level);
     const int lh = (int)mip_level_dim(t->height, level);
     uint8_t *level_data = t->data + tex_level_offset(t->width, t->height, level, t->swizzled);

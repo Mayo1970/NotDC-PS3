@@ -119,8 +119,27 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
      after ~151 s. 159 of 160 live textures are swizzled, and RSX mirrored wrap needs a linear
      layout; the RSX stalled, the command buffer filled and the SH4 thread blocked in host code
      (pc and vbl frozen, monitor thread still alive). `GL_MIRRORED_REPEAT` stays plumbed in
-     `ps3gl` but nothing requests it. `mirror=1` per 5 s window, so the visual cost is tiny.
-     Do not re-enable it without forcing a linear layout for those textures.
+     `ps3gl` but nothing requests it.
+   - RE-ENABLED with the layout fix: `ps3gl` now allocates a mirrored texture linear, so the
+     stall condition cannot arise. `ps3_tex` sets the wrap before the first `glTexImage2D`
+     (the layout is chosen there and then fixed), and the mirror flag is part of the cache
+     key so one texture used both ways gets one entry per layout. The old `mirror=1` reading
+     was a cache-fill count, not a usage count; `mirrorbinds` in `[texfmt]` counts per bind.
+     Cause of the visible bug: a car body is mapped with `FlipU` about its centreline, so
+     plain repeat drew one half right and one half wrong.
+   - SECOND DEFECT, the real cause of both freezes: an RSX linear texture needs a pitch that
+     is a multiple of 64 bytes, and `ps3gl` used `width * 4` (32 for an 8-texel-wide DC
+     texture). It was dormant while everything was swizzled, because swizzled textures
+     ignore pitch, and the NPOT fallback that would have hit it is never reached. Enabling
+     mirror routed real textures down the linear path and stalled the RSX again, at ~205 s.
+     `tex_linear_pitch()` rounds it up and is now used at all four pitch sites (alloc size,
+     level offsets, upload stride, GCM descriptor).
+   - HARDWARE CONFIRMED 2026-09-20: cars draw correctly, ran to t=290 s with `vbl` advancing
+     (~42/s) at 41-42 VPS, past the 222 s best of the pre-mirror build. Measured in traffic:
+     `mirrorbinds` ~3000 of ~35000 binds (~9%), and ~25 of ~210 live textures now linear.
+     Mirror usage was underreported by three orders of magnitude by the old counter.
+     Cost: those ~9% lost the swizzled layout. If the frame rate needs it back, the next
+     step is decode-time mirror expansion, which keeps the swizzle.
    - Punch-through settled: Crazy Taxi sends NO PT list (`built pt=0` every frame, counted as
      the TA builds strips, not as they are drawn). Its trees are translucent polygons.
    - Temporary diagnostics still in the tree: `[texfmt]` histogram in `ps3_tex.cpp`
