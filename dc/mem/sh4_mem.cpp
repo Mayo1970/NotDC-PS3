@@ -207,6 +207,8 @@ void mem_Term()
 	_vmem_term();
 }
 
+#include "dc/sh4/sh4_interpreter.h"
+
 // ---------------------------------------------------------------------------
 // Block memory transfer helpers
 // ---------------------------------------------------------------------------
@@ -243,6 +245,9 @@ static void blockcopy_announce()
 
 void MEMCALL WriteMemBlock_nommu_dma(u32 dst, u32 src, u32 size)
 {
+	// Bulk writes are how games land new code in RAM; drop any cached SH4
+	// blocks over the range (no-op unless the cached interpreter is running).
+	sh4_cached_invalidate_range(dst, size);
 	// Word-at-a-time DMA copy through the normal memory accessors
 	verify((size & 3) == 0);   // must be 4-byte aligned
 	if (g_blockcopy_preset)
@@ -262,6 +267,9 @@ void MEMCALL WriteMemBlock_nommu_dma(u32 dst, u32 src, u32 size)
 
 void MEMCALL WriteMemBlock_nommu_ptr(u32 dst, u32* src, u32 size)
 {
+	// Bulk writes are how games land new code in RAM; drop any cached SH4
+	// blocks over the range (no-op unless the cached interpreter is running).
+	sh4_cached_invalidate_range(dst, size);
 	verify((size & 3) == 0);
 	if (g_blockcopy_preset)
 	{
@@ -279,6 +287,9 @@ void MEMCALL WriteMemBlock_nommu_ptr(u32 dst, u32* src, u32 size)
 
 void MEMCALL WriteMemBlock_ptr(u32 addr, u32* data, u32 size)
 {
+	// Bulk writes are how games land new code in RAM; drop any cached SH4
+	// blocks over the range (no-op unless the cached interpreter is running).
+	sh4_cached_invalidate_range(addr, size);
 	verify((size & 3) == 0);
 	if (g_blockcopy_preset)
 	{

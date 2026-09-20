@@ -1,6 +1,7 @@
 // PVR renderer on RSX via ps3gl: OP, PT, TR lists with textures and the background color.
 // Decoder follows plugs/drkPvr/gxRend.cpp; the Wii presets and workarounds are not carried over.
 #include "plugs/drkPvr/Renderer_if.h"
+#include "ps3_phase.h"
 #include "plugs/drkPvr/regs.h"
 #include "ps3_video.h"
 #include "ps3_tex.h"
@@ -1227,16 +1228,19 @@ void VBlank()
 	if (!fb_needs_present())
 		return; // the PVR render is still what the screen shows
 
+	SH4_PHASE(PH_VBLANK);
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
 	__asm__ volatile("mtfsfi 7,0" ::: "memory");
 	present_framebuffer();
 	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
 	FrameCount++;
+	SH4_PHASE(PH_GUEST);
 }
 
 void StartRender()
 {
+	SH4_PHASE(PH_RENDER);
 	s_rc = find_context(PARAM_BASE & 0xF00000);
 	if (!s_rc)
 	{
@@ -1270,8 +1274,10 @@ void StartRender()
 		double rtt_fpscr;
 		__asm__ volatile("mffs %0" : "=f"(rtt_fpscr) :: "memory");
 		__asm__ volatile("mtfsfi 7,0" ::: "memory");
+		SH4_PHASE(PH_RTT);
 		rtt_render();
 		__asm__ volatile("mtfsf 0xff,%0" :: "f"(rtt_fpscr) : "memory");
+		SH4_PHASE(PH_GUEST);
 		return;
 	}
 
@@ -1285,9 +1291,12 @@ void StartRender()
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
 	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+	SH4_PHASE(PH_BEGINFRAME);
 	if (ps3_video_begin_frame())
 	{
+		SH4_PHASE(PH_DRAW);
 		draw_frame();
+		SH4_PHASE(PH_ENDFRAME);
 		ps3_video_end_frame();
 	}
 	// Mark the framebuffer the PVR just produced, so VBlank knows it is on screen.
@@ -1315,6 +1324,7 @@ void StartRender()
 		s_overflow = 0;
 		s_stat_t0 = now;
 	}
+	SH4_PHASE(PH_GUEST);
 }
 
 void EndRender() {}

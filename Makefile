@@ -10,7 +10,11 @@ TITLE      := nullDC PS3
 TITLE_ID   := NULLDC000
 CONTENT_ID := UP0001-$(TITLE_ID)_00-0000000000000000
 BUILD      ?= build
-ICON0      ?= $(PS3DEV)/bin/ICON0.PNG
+# XMB icon, 320x176 PNG. Falls back to the PSL1GHT default if icon/ is missing.
+ICON0      ?= $(wildcard icon/ICON0.png)
+ifeq ($(strip $(ICON0)),)
+ICON0      := $(PS3DEV)/bin/ICON0.PNG
+endif
 LOG_IP     ?= 192.168.178.99
 
 PREFIX   := $(PS3DEV)/ppu/bin/ppu-

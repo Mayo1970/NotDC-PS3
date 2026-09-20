@@ -6,6 +6,7 @@
 
 extern int g_accuracy_preset;
 extern int g_sh4_clock_preset;
+extern int g_sh4_cached_preset;
 extern int g_sched_preset;
 extern int g_dma_fix_preset;
 extern int g_x_scaler_preset;

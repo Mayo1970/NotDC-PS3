@@ -289,6 +289,8 @@ static Option s_emu[] = {
 	  "SH4 FPU and timing exactness. FAST is the PS3 default." },
 	{ "SH4 Clock",       &g_sh4_clock_preset,     OPT_RANGE,  NULL,        0, 150,200,5, "%d MHz",
 	  "Underclocks the emulated SH4. Audio, video and RTC scale together." },
+	{ "SH4 Cached",      &g_sh4_cached_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Pre-decoded SH4 interpreter. Faster; takes effect on the next boot." },
 	{ "Scheduler",       &g_sched_preset,         OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Cycle-accurate event scheduling for AICA, DMA and GD-ROM." },
 	{ "DMA Fix",         &g_dma_fix_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

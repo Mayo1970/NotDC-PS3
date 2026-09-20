@@ -90,6 +90,11 @@ s32 sh4_GetTimeslice()
 	return s_timeslice;
 }
 
+s32 sh4_GetCpuRatio()
+{
+	return s_cpu_ratio;
+}
+
 void Sh4_int_Run()
 {
 	// Latch timing parameters for this run session
@@ -329,12 +334,17 @@ int FASTCALL UpdateSystem_handle_event()
 	return UpdateINTC();
 }
 
-// No cache emulation in the interpreter.
-void sh4_int_resetcache() { }
+// The plain interpreter emulates no cache; the cached engine uses this to drop
+// its decoded blocks (CCR write in ccn.cpp, ELF load in nullDC.cpp).
+void sh4_int_resetcache() { sh4_cached_flush(); }
+
+// Engine choice, from nullDC.cfg [ps3] SH4Cached. Latched by Get_Sh4Interpreter,
+// which runs once at plugin init, so it cannot change mid-run.
+extern "C" int get_sh4_cached_preset();
 
 void Get_Sh4Interpreter(sh4_if* rv)
 {
-	rv->Run          = Sh4_int_Run;
+	rv->Run          = get_sh4_cached_preset() ? Sh4_int_Run_Cached : Sh4_int_Run;
 	rv->Stop         = Sh4_int_Stop;
 	rv->Step         = Sh4_int_Step;
 	rv->Skip         = Sh4_int_Skip;

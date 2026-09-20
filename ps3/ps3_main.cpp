@@ -4,6 +4,7 @@
 #include "ps3_log.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
+#include "ps3_phase.h"
 #include "config/config.h"
 #include "plugins/plugin_manager.h"
 #include "dc/sh4/sh4_registers.h"
@@ -180,7 +181,11 @@ static void ps3_monitor_thread(void* arg)
 		if (++ticks % 10 == 0)
 		{
 			u32 vbl = spg_VblankCountTotal;
-			printf("[hb] t=%us pc=%08X vbl=%u (+%u)\n", ticks / 10, (u32)next_pc, vbl, vbl - last_vbl);
+			unsigned ph = g_sh4_phase;
+			if (ph >= PH_PHASE_COUNT)
+				ph = PH_GUEST;
+			printf("[hb] t=%us pc=%08X vbl=%u (+%u) phase=%s seq=%u\n", ticks / 10, (u32)next_pc,
+			       vbl, vbl - last_vbl, g_sh4_phase_name[ph], (unsigned)g_sh4_phase_seq);
 			last_vbl = vbl;
 			ps3_audio_stats();
 		}
@@ -303,4 +308,15 @@ shutdown:
 	// No netDeinitialize(): it froze shutdown on HW in xashPS3.
 	sysUtilUnregisterCallback(SYSUTIL_EVENT_SLOT0);
 	return 0;
+}
+
+// Phase marker storage (ps3_phase.h). Written by the SH4 thread, read by the
+// monitor thread; both are plain word accesses, so no lock is needed.
+extern "C" {
+volatile unsigned g_sh4_phase     = PH_GUEST;
+volatile unsigned g_sh4_phase_seq = 0;
+const char* const g_sh4_phase_name[PH_PHASE_COUNT] = {
+	"guest", "decode", "render", "beginframe", "draw",
+	"endframe", "rtt", "readback", "tex", "vblank"
+};
 }

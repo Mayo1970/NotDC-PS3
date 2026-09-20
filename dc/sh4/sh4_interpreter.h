@@ -119,6 +119,18 @@ int FASTCALL UpdateSystem_handle_event();
 // budget instead of a hardcoded SH4_TIMESLICE.
 void Sh4_ApplyAccuracyPreset();
 s32  sh4_GetTimeslice();
+s32  sh4_GetCpuRatio();
+
+// -------------------------------------------------------------------------
+// Cached (pre-decoded / threaded) interpreter — dc/sh4/sh4_cached.cpp.
+// Same execution semantics as Sh4_int_Run(), with the per-instruction fetch,
+// OpPtr lookup and handler call removed. Selected by the sh4_cached preset.
+// -------------------------------------------------------------------------
+extern volatile bool sh4_int_bCpuRun;
+
+void Sh4_int_Run_Cached();
+void sh4_cached_flush();                                   // drop all blocks
+void sh4_cached_invalidate_range(u32 addr, u32 size);      // drop [addr, addr+size)
 
 // Coarse timer (~13,216 kHz) used for block lifecycle tracking
 extern u32 gcp_timer;

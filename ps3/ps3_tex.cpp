@@ -1,6 +1,7 @@
 // PVR texture decode (twiddled, planar, stride, VQ, palette, YUV422, mipmap top level) to RGBA8,
 // cached per TCW/TSP key and revalidated once per frame by a hash of the source VRAM.
 #include "ps3_tex.h"
+#include "ps3_phase.h"
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
 
@@ -346,11 +347,13 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		u32 hsh = hash_texture(d);
 		if (hsh != hit->hash)
 		{
+			SH4_PHASE(PH_TEX);
 			decode(d, tsp.IgnoreTexA);
 			glBindTexture(GL_TEXTURE_2D, hit->name);
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 			hit->hash = hsh;
 			s_decodes++;
+			SH4_PHASE(PH_DRAW);
 		}
 		hit->checked_frame = s_frame;
 	}
@@ -376,12 +379,14 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		if (d.w != d.h)               s_flag_nonsq++;
 		if (tsp.FlipU || tsp.FlipV)   s_flag_mirror++;
 		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
+		SH4_PHASE(PH_TEX);
 		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 		s_live++;
 		s_decodes++;
+		SH4_PHASE(PH_DRAW);
 	}
 
 	hit->last_frame = s_frame;

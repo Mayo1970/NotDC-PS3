@@ -8,6 +8,7 @@
 
 int g_accuracy_preset      = 0;   // 0 fast, 1 balanced, 2 accurate
 int g_sh4_clock_preset     = 200; // effective SH4 MHz, 150..200
+int g_sh4_cached_preset    = 0;   // 0 plain SH4 interpreter, 1 cached (threaded)
 int g_sched_preset         = 0;
 int g_dma_fix_preset       = 1;
 int g_x_scaler_preset      = 1;
@@ -30,6 +31,7 @@ struct CfgItem { const char* key; int* val; };
 static const CfgItem s_items[] = {
 	{ "Accuracy",      &g_accuracy_preset },
 	{ "SH4Clock",      &g_sh4_clock_preset },
+	{ "SH4Cached",     &g_sh4_cached_preset },
 	{ "Scheduler",     &g_sched_preset },
 	{ "DmaFix",        &g_dma_fix_preset },
 	{ "XScaler",       &g_x_scaler_preset },
@@ -62,6 +64,7 @@ void ps3_presets_save(void)
 extern "C" {
 int get_accuracy_preset()      { return g_accuracy_preset; }
 int get_sh4_clock_preset()     { return g_sh4_clock_preset; }
+int get_sh4_cached_preset()    { return g_sh4_cached_preset; }
 int get_sched_preset()         { return g_sched_preset; }
 int get_dma_fix_preset()       { return g_dma_fix_preset; }
 int get_x_scaler_preset()      { return g_x_scaler_preset; }

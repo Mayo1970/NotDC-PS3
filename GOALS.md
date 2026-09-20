@@ -134,10 +134,60 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
    strips that share polygon state would, and `GPstate_cache` already knows when state is
    unchanged).
 
-## G8 - SH4 speed: cached interpreter  `[ ]`
-1. Build an SH4 cached interpreter (same method as `arm7_cached.cpp`).
-2. Measure FPS on hardware only (never RPCS3).
-3. HW test: speed gain against the plain interpreter, same output.
+## G8 - SH4 speed: cached interpreter  `[~]`
+1. Build an SH4 cached interpreter (same method as `arm7_cached.cpp`).  `[~]` awaiting HW test
+   - `dc/sh4/sh4_cached.cpp`: uop pool (256 K x 8 B) + direct-mapped tagged entrypoint table
+     (256 K x 8 B, indexed by `(pc>>1)`, so every RAM mirror shares a slot). A block is decoded
+     once into `{ &&label, opcode }` slots; the hot loop is `goto *pc_op->dispatch` with a
+     `pc_op++` step, which drops the per-instruction `_vmem_ReadMem16` fetch, the `OpPtr[]`
+     load and the full-ABI handler call.
+   - No opcode semantics are duplicated. The same body headers that `sh4_cpu.cpp` and
+     `sh4_fpu.cpp` compile into functions are re-included with `sh4op()` redefined as
+     `ADVANCE(); lbl_<name>:`, so control falls out of one body into the next body's advance.
+     That needed a mechanical split: `sh4_cpu_prelude.h` / `sh4_cpu_misc.h` out of `sh4_cpu.cpp`,
+     `sh4_fpu_prelude.h` / `sh4_fpu_ops.h` out of `sh4_fpu.cpp`, the two `branch_target_*`
+     helpers and the `do_sqw` template moved into the prelude (a template cannot be declared at
+     block scope), and the two early `return`s in fldi0/fldi1 rewritten as an `if`.
+     `sh4_cached_ops.inc` lists the 213 handler names so each function pointer can be paired
+     with its label; an opcode missing from that list falls back to a plain `OpPtr[op](op)`.
+   - PC model unchanged: while the instruction at A runs, `next_pc == A+2`. Branch handlers still
+     run their own delay slot through `ExecuteDelayslot()`, so timing and semantics match the
+     plain interpreter exactly (same `l -= cpu_ratio` per instruction, no charge for delay slots).
+   - A block ends on `WritesPC` or `WritesSR` (`ldc Rn,SR` and `ldc.l @Rn+,SR` can dispatch an
+     interrupt through `UpdateINTC()`), or at 128 instructions.
+   - Invalidation: entrypoint tags are cleared on `sh4_cpu.ResetCache()` (CCR write, ELF load)
+     and on every bulk write into system RAM (`WriteMemBlock_*` in `dc/mem/sh4_mem.cpp`, which
+     covers GD-ROM DMA and the store queue). The uop pool is only reset inside the decoder, so a
+     flush raised from inside a running block can never pull that block's slots away.
+   - Off by default. `nullDC.cfg [ps3] SH4Cached`, Options -> Emulation -> "SH4 Cached";
+     latched in `Get_Sh4Interpreter`, so it applies at the next boot.
+2. Measure FPS on hardware only (never RPCS3).  `[x]`
+   HW 2026-09-20, Crazy Taxi, cached ON: emulation 67-73% (was 45.3%), VPS 40-43.7 (was 26.4),
+   RPS 43.2-43.7 in light scenes (was ~12), RPS 10.8-14.0 in dense driving (was 12.0).
+   SH4 throughput is up ~1.5x. Dense driving did not move: the RSX still needs 78.5 ms/frame
+   for ~1306 draw calls of ~8 vertices, exactly the renderer limit G6/G7 predicted.
+3. HW test: speed gain against the plain interpreter, same output.  `[!]` SHELVED 2026-09-20 at Matt's request.
+   The speed goal is met, but the run FROZE at t=120 s in dense traffic: `pc=0C159AEA` and
+   `vbl=4190` stopped advancing, `[aud] in=0/s`, monitor thread still alive. That is the
+   "SH4 thread blocked in host code" signature, the same shape as the mirrored-wrap RSX stall.
+   Not yet attributed. Facts gathered:
+   - No vring fence-timeout warning, so it is NOT the bounded fence wait in `ps3gl_begin_frame`.
+   - `ps3_video_begin_frame` skips instead of blocking, and `ps3_video_end_frame` does not block,
+     so it is not a flip wait. The open suspect is a command-buffer-full stall inside
+     `rsxFlushBuffer`, which a 1.5x faster SH4 makes much easier to hit.
+   - The draw load had just doubled to 1306 flushes/frame in the window before the freeze.
+   - `Sh4: cached pool reset #8` printed ~1 s before the freeze; resets 1-8 span the whole run,
+     so the rate was already climbing. Probably unrelated, but not ruled out. Invalidated blocks
+     are never reclaimed until a pool reset, so the 256 K uop pool churns. Raising it is a
+     tuning option, not a fix.
+   NEXT SESSION, in order:
+   a. Run the phase-marker build (already built and packaged). `[hb]` now prints
+      `phase=<name> seq=<n>` from `ps3/ps3_phase.h`; the phase names the stuck host call
+      (guest / decode / render / beginframe / draw / endframe / rtt / readback / tex / vblank).
+   b. Run the same scene with `SH4 Cached` OFF for 3+ minutes. If it also freezes, the cached
+      interpreter is not the cause and this belongs to the renderer, not G8.
+   c. Only then decide the fix. Do NOT patch before (a) and (b) answer.
+   The phase markers are diagnostic scaffolding; remove them once the freeze is closed.
 
 ## G9 - SPE offload (optional)  `[ ]`
 1. Candidates: AICA/DSP mixing, texture decode.

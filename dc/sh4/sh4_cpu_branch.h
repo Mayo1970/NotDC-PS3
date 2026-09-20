@@ -5,19 +5,6 @@
 #include "sh4_cpu_branch_rec.h"
 #else
 
-// Helper function for 8-bit signed branch offset calculation
-// Inlined for performance
-static inline u32 branch_target_s8(u32 op)
-{
-	return GetSImm8(op) * 2 + next_pc + 2;
-}
-
-// Helper function for 12-bit signed branch offset calculation
-static inline u32 branch_target_s12(u32 op)
-{
-	return GetSImm12(op) * 2 + next_pc + 2;
-}
-
 //=============================================================================
 // UNCONDITIONAL BRANCHES WITH DELAY SLOT
 //=============================================================================
