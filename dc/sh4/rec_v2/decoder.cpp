@@ -96,6 +96,18 @@ struct
 	}
 } state;
 
+extern "C" int get_jit_pcrel_preset();
+
+// PC-relative data reads: mova (0xC7xx), mov.w @(disp,PC) (0x9xxx) and
+// mov.l @(disp,PC) (0xDxxx). Their address is baked in at decode time, so a
+// wrong PC or a wrong &~3 only shows at run time. JITPCREL forces them to the
+// interpreter to test exactly that.
+static bool dec_is_pcrel(u32 op)
+{
+	const u32 hi = op >> 12;
+	return hi == 0x9 || hi == 0xD || (op & 0xFF00) == 0xC700;
+}
+
 static void dec_fallback(u32 op)
 {
 	shil_opcode opcd;
@@ -1358,7 +1370,9 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 
 					if (state.ngen.OnlyDynamicEnds || !rec_oph)
 					{
-						if (state.ngen.InterpreterFallback || !dec_generic(op))
+						if (state.ngen.InterpreterFallback
+						    || (get_jit_pcrel_preset() && dec_is_pcrel(op))
+						    || !dec_generic(op))
 						{
 							dec_div1_probe(op,state.cpu.rpc);
 							dec_fallback(op);

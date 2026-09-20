@@ -5,6 +5,7 @@ wii/boot.elf
 wii/boot_dol/
 repomix/
 build/
+build_local/
 listfile.bat
 tmp
 .claude/

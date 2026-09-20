@@ -26,6 +26,8 @@
 #elif HOST_OS == OS_WII
 #include <gccore.h>
 #include <malloc.h>
+#elif HOST_OS == OS_PS3
+#include "ps3/ps3_jitmem.h"
 #endif
 
 #include "../sh4_interpreter.h"
@@ -50,6 +52,13 @@
 #include "decoder.h"
 
 #ifndef HOST_NO_REC
+
+// Hosts where we own cache pressure and I-cache coherency by hand.
+#if HOST_OS == OS_WII || HOST_OS == OS_PS3
+#define JIT_MANAGED_CACHE 1
+#else
+#define JIT_MANAGED_CACHE 0
+#endif
 
 // Defined in main.cpp — returns 1 when debug loop / boot-trace is active
 extern "C" int get_debug_loop();
@@ -92,6 +101,9 @@ extern volatile bool sh4_int_bCpuRun;
 
 #if HOST_OS == OS_WII
 u8 CodeCache[CODE_SIZE] __attribute__((aligned(32)));
+#elif HOST_OS == OS_PS3
+// .text: the only segment lv2 grants execute to. 128-byte Cell cache line.
+u8 CodeCache[CODE_SIZE] __attribute__((aligned(128), section(".text"), used));
 #elif HOST_OS == OS_LINUX
 // Linux needs an executable mapping; allocate with a page-alignment margin.
 u8  pMemBuff[CODE_SIZE + 4095];
@@ -116,7 +128,7 @@ u32* emit_ptr     = 0;
 // Hysteresis between the two avoids rapid clear/refill thrashing.
 // Both expressed as fractions of CODE_SIZE.
 // ============================================================================
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 static u32 cache_high_water_mark = 0;
 #define CACHE_WARN_THRESHOLD   ((CODE_SIZE * 80) / 100)   // 80 %
 #define CACHE_FLUSH_THRESHOLD  ((CODE_SIZE * 92) / 100)   // 92 %
@@ -135,15 +147,19 @@ static u32 cache_high_water_mark = 0;
 //
 // Both functions require 32-byte alignment and a size rounded up to 32 bytes.
 // ============================================================================
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 static inline u32 align_up_32(u32 v) { return (v + 31u) & ~31u; }
 
-static inline void wii_sync_icache(const void* start, u32 size)
+static inline void jit_sync_icache(const void* start, u32 size)
 {
 	if (!size) return;
+#if HOST_OS == OS_WII
 	// libogc functions are safe with unaligned inputs but work best aligned.
 	DCFlushRange((void*)start, align_up_32(size));
 	ICInvalidateRange((void*)start, align_up_32(size));
+#else
+	ps3_jit_icache_sync(start, size);
+#endif
 }
 #endif
 
@@ -247,10 +263,14 @@ void recSh4_ClearCache()
 	// dropped, so its counters and code pointers are meaningless now.
 	hotblocks_reset();
 
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 	// Invalidate the entire I-cache region we may have written into.
 	// This is safe even if LastAddr_min == 0 (full reset).
+#if HOST_OS == OS_WII
 	ICInvalidateRange(CodeCache, CODE_SIZE);
+#else
+	ps3_jit_icache_sync(CodeCache, CODE_SIZE);
+#endif
 	cache_high_water_mark = LastAddr;
 #endif
 }
@@ -319,7 +339,7 @@ static bool DoCheck(u32 pc, u32 len)
 // ============================================================================
 DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 {
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
 	{
@@ -368,17 +388,35 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	AnalyseBlock(blk);
 
 	// Remember where code for this block starts (for I-cache flush)
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 	void* code_start = emit_GetCCPtr();
 #endif
 
 	DynarecCodeEntry* rv = ngen_Compile(blk, DoCheck(blk->start, blk->sh4_code_size));
 
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 	if (rv)
 	{
 		u32 code_size = (u32)((u8*)emit_GetCCPtr() - (u8*)code_start);
-		wii_sync_icache(code_start, code_size);
+		jit_sync_icache(code_start, code_size);
+
+		// Bring-up trace: the last line before a freeze names the block that
+		// ran off, which the heartbeat pc alone cannot.
+		if (get_debug_loop() == 1)
+		{
+			// Dump the guest opcodes too: with the plumbing proven, the failing
+			// block's instruction list is what names the bad emitter.
+			char ops[160];
+			int  n = 0;
+			for (u32 o = 0; o < blk->sh4_code_size && n < (int)sizeof(ops) - 6; o += 2)
+				n += snprintf(ops + n, sizeof(ops) - n, "%04X ", ReadMem16(bpc + o));
+			ops[n > 0 ? n - 1 : 0] = 0;
+			printf("recSh4: ops %08X: %s\n", bpc, ops);
+		}
+
+		if (get_debug_loop() == 1)
+			printf("recSh4: block %08X -> %p (%u B, %u sh4 B)\n",
+			       bpc, (void*)rv, code_size, blk->sh4_code_size);
 	}
 #endif
 
@@ -597,6 +635,14 @@ void recSh4_Init()
 	}
 	memset(CodeCache, 0xCD, CODE_SIZE);
 
+#elif HOST_OS == OS_PS3
+	printf("recSh4: code cache at %p (%u KB, PS3 .text)\n",
+	       CodeCache, CODE_SIZE / 1024);
+
+	// No protection call exists or is needed: lv2 already maps .text RWX.
+	memset(CodeCache, 0x00, CODE_SIZE);
+	ps3_jit_icache_sync(CodeCache, CODE_SIZE);
+
 #elif HOST_OS == OS_WII
 	printf("recSh4: code cache at %p (%u KB, Wii)\n",
 	       CodeCache, CODE_SIZE / 1024);
@@ -635,7 +681,7 @@ void recSh4_Term()
 	printf("  block check fails : %u\n", perf_block_check_fails);
 	printf("  cache usage       : %u / %u bytes (%.1f%%)\n",
 	       LastAddr, CODE_SIZE, (LastAddr * 100.0f) / CODE_SIZE);
-#if HOST_OS == OS_WII
+#if JIT_MANAGED_CACHE
 	printf("  high water mark   : %u bytes (%.1f%%)\n",
 	       cache_high_water_mark,
 	       (cache_high_water_mark * 100.0f) / CODE_SIZE);

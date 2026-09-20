@@ -252,7 +252,9 @@
 // -------------------------------------------------------------------------------
 
 
-#if HOST_ARCH==ARCH_PPC && HOST_CPU!=CPU_PPC_BROADWAY
+// Cell has a JIT backend now (ps3/ps3_driver.cpp); exec memory comes from
+// a .text code cache, see Dynarec.MD 3.1.
+#if HOST_ARCH==ARCH_PPC && HOST_CPU!=CPU_PPC_BROADWAY && HOST_CPU!=CPU_PPC_CELL
 #define USE_INTERP
 #endif
 

@@ -25,6 +25,14 @@ int g_controller_type      = 0;   // only the standard pad exists on PS3
 int g_player_count         = 4;
 int g_debug_loop           = 0;
 int g_debug_gdrom          = 0;
+int g_dynarec_preset       = 0;   // 0 SH4 interpreter, 1 SH4 dynarec
+int g_jit_safe_preset      = 0;   // 1 = bring-up mode, see ngen_GetFeatures
+// Extra native opcode groups. Off until each one is cleared on hardware.
+int g_jit_newops_preset    = 0;
+int g_jit_carry_preset     = 0;
+int g_jit_mac_preset       = 0;
+int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
+int g_jit_dynends_preset   = 0;   // 1 = no static block linking
 
 struct CfgItem { const char* key; int* val; };
 
@@ -45,6 +53,14 @@ static const CfgItem s_items[] = {
 	{ "ExitFix",       &g_exit_fix_preset },
 	{ "AicaFast",      &g_aica_fast_preset },
 	{ "Players",       &g_player_count },
+	{ "Dynarec",       &g_dynarec_preset },
+	{ "JitSafe",       &g_jit_safe_preset },
+	{ "DebugLoop",     &g_debug_loop },
+	{ "JitNewOps",     &g_jit_newops_preset },
+	{ "JitCarry",      &g_jit_carry_preset },
+	{ "JitMac",        &g_jit_mac_preset },
+	{ "JitPcRelIfb",   &g_jit_pcrel_preset },
+	{ "JitDynEnds",    &g_jit_dynends_preset },
 };
 
 void ps3_presets_load(void)
@@ -81,12 +97,37 @@ int get_player_count()         { return g_player_count; }
 int get_debug_loop()           { return g_debug_loop; }
 int get_debug_gdrom()          { return g_debug_gdrom; }
 
-// 0 = SH4 interpreter. No JIT on PS3.
-int get_dynarec_preset()       { return 0; }
+// 0 = SH4 interpreter, 1 = dynarec. nullDC.cfg [ps3] Dynarec.
+int get_dynarec_preset()       { return g_dynarec_preset; }
+
+// Bring-up mode: interpreter fallback for every non-branch opcode and
+// dynamic-only block ends. Isolates block plumbing from opcode emission.
+int get_jit_safe_preset()      { return g_jit_safe_preset; }
 
 // Only read by the SH4 dynarec decoder.
 int get_ifb_probe_preset()     { return 0; }
-int get_jit_newops_preset()    { return 1; }
-int get_jit_carry_preset()     { return 1; }
-int get_jit_mac_preset()       { return 1; }
+int get_jit_newops_preset()    { return g_jit_newops_preset; }
+int get_jit_carry_preset()     { return g_jit_carry_preset; }
+int get_jit_mac_preset()       { return g_jit_mac_preset; }
+int get_jit_pcrel_preset()     { return g_jit_pcrel_preset; }
+int get_jit_dynends_preset()   { return g_jit_dynends_preset; }
+
+// JIT backend presets. The first PS3 port keeps every one of them off
+// (Dynarec.MD 1). FASTMEM can never be on: the Wii design needs a resumable
+// DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
+int get_fastmem_preset()       { return 0; }
+int get_bcache_preset()        { return 0; }
+int get_dyn_ic_preset()        { return 0; }
+int get_fpu_pin_preset()       { return 0; }
+int get_hotblocks_preset()     { return 0; }
+int get_ifb_flush_preset()     { return 0; }
+int get_jit_align_preset()     { return 0; }
+int get_jit_cr0_preset()       { return 0; }
+int get_jit_fmov_preset()      { return 0; }
+int get_jit_fschg_preset()     { return 0; }
+int get_jit_fsqrt_preset()     { return 0; }
+int get_jit_tfwd_preset()      { return 0; }
+
+// Self-modifying-block protection: 0=off, 1=known SMC addresses, 2=all RAM.
+int get_jit_sbp_preset()       { return 1; }
 }

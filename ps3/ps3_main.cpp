@@ -2,6 +2,8 @@
 #include "types.h"
 #include "stdclass.h"
 #include "ps3_log.h"
+#include "ps3_execmem.h"
+#include "ps3_jitmem.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_phase.h"
@@ -34,6 +36,9 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 #define PS3_LOG_IP "192.168.178.99"
 #endif
 #define PS3_LOG_PORT 18194
+
+// Bring-up: JIT block-entry counter, bumped by generated code (DebugLoop only).
+extern "C" volatile u32 g_jit_blocks_entered;
 
 // Data root; BIOS lives in data/, nullDC.cfg at the top.
 #define PS3_DATA_ROOT "/dev_hdd0/data/NullDC/"
@@ -153,6 +158,7 @@ static void ps3_monitor_thread(void* arg)
 {
 	u32 ticks = 0;
 	u32 last_vbl = 0;
+	u32 last_blks = 0;
 	u32 stop_ticks = 0;
 
 	while (!ps3_monitor_quit)
@@ -184,9 +190,12 @@ static void ps3_monitor_thread(void* arg)
 			unsigned ph = g_sh4_phase;
 			if (ph >= PH_PHASE_COUNT)
 				ph = PH_GUEST;
-			printf("[hb] t=%us pc=%08X vbl=%u (+%u) phase=%s seq=%u\n", ticks / 10, (u32)next_pc,
-			       vbl, vbl - last_vbl, g_sh4_phase_name[ph], (unsigned)g_sh4_phase_seq);
+			u32 blks = g_jit_blocks_entered;
+			printf("[hb] t=%us pc=%08X vbl=%u (+%u) blk=%u (+%u) phase=%s seq=%u\n", ticks / 10, (u32)next_pc,
+			       vbl, vbl - last_vbl, blks, blks - last_blks,
+			       g_sh4_phase_name[ph], (unsigned)g_sh4_phase_seq);
 			last_vbl = vbl;
+			last_blks = blks;
 			ps3_audio_stats();
 		}
 
@@ -277,6 +286,8 @@ int main(int argc, char* argv[])
 	if (!cfgOpen())
 		printf("[ps3] cfgOpen failed, using built-in defaults\n");
 	ps3_presets_load();
+	ps3_jit_selftest();
+	ps3_execmem_probe();
 
 	if (!ps3_menu_run())
 	{

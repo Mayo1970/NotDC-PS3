@@ -23,6 +23,13 @@ extern int g_controller_type;
 extern int g_player_count;
 extern int g_debug_loop;
 extern int g_debug_gdrom;
+extern int g_dynarec_preset;
+extern int g_jit_safe_preset;
+extern int g_jit_newops_preset;
+extern int g_jit_carry_preset;
+extern int g_jit_mac_preset;
+extern int g_jit_pcrel_preset;
+extern int g_jit_dynends_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
