@@ -46,8 +46,22 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 ## G6 - RSX renderer (port of `plugs/drkPvr/gxRend.cpp` onto `ps3gl`)  `[~]` (started before G4/G5 at Matt's request)
 1. Untextured TA polygons (opaque list). HW test. `[x]` (HW 2026-09-18: BIOS background plane in 4:3, no hang)
 2. Textures: decode, twiddle, VQ, palette, hash cache. Also draws the PT list (alpha test) and the TR list (PVR blend, unsorted) so the BIOS swirl can be checked (Matt, 2026-09-18). HW test. `[x]` (HW 2026-09-18: Date/Time + BIOS menu correct, clock from PS3 time via flash syscfg fix. Boot swirl `[x]` HW 2026-09-19: fixed by the GD-ROM no-disc spin-up BUSY status and one TA context per `TA_ISP_BASE` as in nullDC-v1; swirl debug code removed)
-3. Blend modes, punch-through, translucent sorting. HW test.
-4. Modifier volumes, render-to-texture, framebuffer writes. HW test.
+3. Blend modes, punch-through, translucent sorting. HW test. `[x]` (HW 2026-09-20: BIOS menu models correct, ~45% speed.
+   Translucent autosort follows nullDC-v1 `SortPParams` (AlphaSortMode 1, its default): whole polygons ordered by the
+   average 1/W. Per-triangle sorting (its mode 2) was tried first and drew model back faces over front faces. Added the
+   nullDC-v1 `GPstate_cache` to `apply_param`. Blend factor tables, depth compare, PT alpha ref and `IgnoreTexA` were
+   checked against nullDC-v1 and already matched, but the BIOS menu is TR-only, so the OP and PT paths run first in G7)
+4. Modifier volumes, render-to-texture, framebuffer writes. HW test. `[x]` (HW 2026-09-20: BIOS unchanged, ~45% speed,
+   `fb=0` so the framebuffer marker never misfires, `gcmMapMainMemory=0` so the readback buffer maps)
+   - Modifier volumes: ported from nullDC-v1 `SetMVS_Mode` (gxRend has empty stubs). Opaque volume list only, stencil bit 1
+     counts crossings, bit 0 folds a closed volume, then a flat 50% black quad over the pixels inside.
+   - Render to texture: the gxRend approach, not the D3D one. The pass draws at the `FB_X_CLIP`/`FB_Y_CLIP` size without
+     flipping, `rsxSetTransferData(LOCAL_TO_MAIN)` reads it back, and it is packed into VRAM at `FB_W_SOF1` so the texture
+     cache re-decodes on its hash. `gcmMapMainMemory` needs a 1 MB aligned buffer.
+   - Framebuffer writes: gxRend magic word `0xDC4F0FB0` stamped at `FB_W_SOF1`/`FB_W_SOF2` after a render; `VBlank()` shows
+     the VRAM image when the mark is gone at `FB_R_SOF1`.
+   - Not exercised on HW yet: the BIOS sends no modifier volumes and no bit-24 pass (`mv_tris=0`, `rtt=0/0`). Both get their
+     first real test when a game boots in G7. Pack/read modes 24-bit and mode 4/5 log once and skip.
 Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mode.
 
 ## G7 - Game boot and front end  `[ ]`

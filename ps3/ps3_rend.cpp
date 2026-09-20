@@ -50,6 +50,22 @@ struct DcParam
 	TCW tcw;
 };
 
+// nullDC-v1 ModTriangle: three corners of x, y and 1/W.
+struct ModTri
+{
+	float x0, y0, z0, x1, y1, z1, x2, y2, z2;
+};
+
+// nullDC-v1 ISP_Modvol: where this volume's triangles start, plus its ISP bits.
+// A terminator entry closes the list, so entry i owns [first, next.first).
+struct ModVolParam
+{
+	u32 first;
+	u8 cull, depth, volume_last;
+};
+#define MAX_MODTRI 4096
+#define MAX_MODVOL 256
+
 // One TA context per parameter buffer, as nullDC-v1 SetCurrentTARC/SetCurrentPVRRC:
 // the TA fills the one at TA_ISP_BASE, STARTRENDER draws the one at PARAM_BASE.
 struct TaContext
@@ -62,6 +78,9 @@ struct TaContext
 	u32 strip_first;
 	float min_w, max_w;
 	u32 mv_tris[5];
+	ModTri mtri[MAX_MODTRI];
+	ModVolParam mvol[MAX_MODVOL];
+	u32 nmtri, nmvol;
 };
 #define TA_CONTEXTS 4
 static TaContext s_ctx[TA_CONTEXTS];
@@ -91,6 +110,8 @@ static void reset_lists(TaContext* c)
 	c->strip_first = 0;
 	c->min_w = 1e30f;
 	c->max_w = 0.0f;
+	c->nmtri = 0;
+	c->nmvol = 0;
 	memset(c->mv_tris, 0, sizeof(c->mv_tris));
 }
 
@@ -159,6 +180,15 @@ static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
 	if (w > s_ta->max_w) s_ta->max_w = w;
 }
 
+// Modifier volume corners carry no color, so only their depth joins the range.
+static inline void track_w(float inv_w)
+{
+	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
+	float w = 1.0f / safe;
+	if (w < s_ta->min_w) s_ta->min_w = w;
+	if (w > s_ta->max_w) s_ta->max_w = w;
+}
+
 // 16-bit UVs are the top half of a float.
 static inline float uv16(u32 uv)
 {
@@ -201,7 +231,15 @@ static inline DcVertex* vtx_slot()
 struct Ps3VertexDecoder
 {
 	static void StartList(u32 ListType) { s_cur_list = ListType; }
-	static void EndList(u32 ListType) {}
+	// nullDC-v1 closes the volume list with a terminator holding the final count.
+	static void EndList(u32 ListType)
+	{
+		if (ListType != ListType_Opaque_Modifier_Volume || s_ta->nmvol >= MAX_MODVOL)
+			return;
+		ModVolParam& p = s_ta->mvol[s_ta->nmvol++];
+		p.first = s_ta->nmtri;
+		p.cull = p.depth = p.volume_last = 0;
+	}
 
 	template <class T>
 	static void add_param(T* pp)
@@ -320,13 +358,41 @@ struct Ps3VertexDecoder
 		EndPolyStrip();
 	}
 
+	// Only the opaque volume list is kept, as nullDC-v1 does.
 	static void StartModVol(TA_ModVolParam* param)
 	{
 		s_mv_list = s_cur_list;
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmvol >= MAX_MODVOL)
+			return;
+		ModVolParam& p = s_ta->mvol[s_ta->nmvol++];
+		p.first = s_ta->nmtri;
+		p.cull = (u8)param->isp.CullMode;
+		p.depth = (u8)param->isp.DepthMode;
+		p.volume_last = (u8)param->pcw.Volume;
 	}
 	static void ModVolStripEnd() {}
-	static void AppendModVolVertexA(TA_ModVolA* mvv) { s_ta->mv_tris[s_mv_list % 5]++; }
-	static void AppendModVolVertexB(TA_ModVolB* mvv) {}
+	// Part A opens the triangle, part B closes it: both test the same cap.
+	static void AppendModVolVertexA(TA_ModVolA* mvv)
+	{
+		s_ta->mv_tris[s_mv_list % 5]++;
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmtri >= MAX_MODTRI)
+			return;
+		ModTri& t = s_ta->mtri[s_ta->nmtri];
+		t.x0 = mvv->x0; t.y0 = mvv->y0; t.z0 = mvv->z0;
+		t.x1 = mvv->x1; t.y1 = mvv->y1; t.z1 = mvv->z1;
+		t.x2 = mvv->x2;
+		track_w(mvv->z0);
+		track_w(mvv->z1);
+	}
+	static void AppendModVolVertexB(TA_ModVolB* mvv)
+	{
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmtri >= MAX_MODTRI)
+			return;
+		ModTri& t = s_ta->mtri[s_ta->nmtri++];
+		t.y2 = mvv->y2;
+		t.z2 = mvv->z2;
+		track_w(mvv->z2);
+	}
 
 	static void SetTileClip(u32 xmin, u32 ymin, u32 xmax, u32 ymax) {}
 	static void TileClipMode(u32 mode) {}
@@ -351,11 +417,27 @@ void SetFbScale(float x, float y)
 }
 
 // VRAM is stored as two interleaved 32-bit banks; see gxRend.cpp fast_ConvOffset32toOffset64.
-static u32 vri(u32 addr)
+static u32 vri_off(u32 addr)
 {
 	addr &= VRAM_MASK;
-	u32 off = ((addr & 0x3FFFFC) << 1) | (((addr >> 22) & 1) << 2) | (addr & 3);
-	return *(u32*)&PVRPARAMS.vram[off];
+	return ((addr & 0x3FFFFC) << 1) | (((addr >> 22) & 1) << 2) | (addr & 3);
+}
+
+static u32 vri(u32 addr)
+{
+	return *(u32*)&PVRPARAMS.vram[vri_off(addr)];
+}
+
+static void vwi(u32 addr, u32 val)
+{
+	*(u32*)&PVRPARAMS.vram[vri_off(addr & ~3u)] = val;
+}
+
+// A native word holds two pixels; the low half is the left one, as in ps3_tex.cpp.
+static u32 vri16(u32 addr)
+{
+	u32 w = *(u32*)&PVRPARAMS.vram[vri_off(addr & ~3u)];
+	return (addr & 2) ? (w >> 16) : (w & 0xFFFF);
 }
 
 // nullDC-v1 UsingAutoSort(): with FPU_PARAM_CFG bit 21 set, the region array header picks the mode.
@@ -486,9 +568,23 @@ static void set_cull(u32 mode)
 	glCullFace(mode == 2 ? GL_FRONT : GL_BACK);
 }
 
+// nullDC-v1 GPstate_cache: sorted drawing revisits the same polygon state often,
+// and repeating it would re-bind the texture and re-push every GL state.
+static u32 s_cache_isp, s_cache_tsp, s_cache_tcw, s_cache_pcw, s_cache_list, s_cache_or;
+static bool s_cache_valid;
+
+static void reset_param_cache()
+{
+	s_cache_valid = false;
+}
+
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
 static u32 apply_param(const DcParam& p, u32 list)
 {
+	if (s_cache_valid && s_cache_list == list && s_cache_isp == p.isp.full &&
+	    s_cache_tsp == p.tsp.full && s_cache_tcw == p.tcw.full && s_cache_pcw == p.pcw.full)
+		return s_cache_or;
+
 	if (list == ListType_Translucent)
 	{
 		glEnable(GL_BLEND);
@@ -522,44 +618,34 @@ static u32 apply_param(const DcParam& p, u32 list)
 
 	// UseAlpha=0 means opaque vertex alpha; modulate (1) takes alpha from the texture only.
 	bool force = !p.tsp.UseAlpha || (textured && p.tsp.ShadInstr == 1);
-	return force ? 0xFF000000u : 0;
+	s_cache_isp = p.isp.full;
+	s_cache_tsp = p.tsp.full;
+	s_cache_tcw = p.tcw.full;
+	s_cache_pcw = p.pcw.full;
+	s_cache_list = list;
+	s_cache_or = force ? 0xFF000000u : 0;
+	s_cache_valid = true;
+	return s_cache_or;
 }
 
-struct SortRec
+static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
 {
-	float key;
-	u32 idx;
-};
-static SortRec s_order[MAX_STRIPS];
+	u32 c = v->col | alpha_or;
+	glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
+	glTexCoord2f(v->u, v->v);
+	glVertex3f(v->x * v->w, v->y * v->w, v->w);
+}
 
+// Draws one list in submission order: opaque, punch-through, and presorted translucent.
 static void draw_list(u32 list)
 {
-	u32 n = 0;
-	for (u32 i = 0; i < s_rc->nstrip; i++)
-		if (s_rc->strip[i].list == list)
-		{
-			s_order[n].idx = i;
-			if (list == ListType_Translucent && s_autosort)
-			{
-				const DcStrip& st = s_rc->strip[i];
-				float far_w = 0.0f;
-				for (u32 k = 0; k < st.count; k++)
-					if (s_rc->vtx[st.first + k].w > far_w)
-						far_w = s_rc->vtx[st.first + k].w;
-				s_order[n].key = far_w;
-			}
-			n++;
-		}
-	// The PVR sorts translucent pixels by depth; per-strip back-to-front is the approximation.
-	// Presort mode draws in submission order.
-	if (list == ListType_Translucent && s_autosort)
-		std::stable_sort(s_order, s_order + n, [](const SortRec& x, const SortRec& y) { return x.key > y.key; });
-
 	u32 last_param = 0xFFFFFFFF;
 	u32 alpha_or = 0;
-	for (u32 j = 0; j < n; j++)
+	for (u32 i = 0; i < s_rc->nstrip; i++)
 	{
-		const DcStrip& s = s_rc->strip[s_order[j].idx];
+		const DcStrip& s = s_rc->strip[i];
+		if (s.list != list)
+			continue;
 
 		if (s.param != last_param)
 		{
@@ -570,53 +656,196 @@ static void draw_list(u32 list)
 		glBegin(GL_TRIANGLE_STRIP);
 		const DcVertex* v = &s_rc->vtx[s.first];
 		for (u32 k = 0; k < s.count; k++, v++)
-		{
-			u32 c = v->col | alpha_or;
-			glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
-			glTexCoord2f(v->u, v->v);
-			glVertex3f(v->x * v->w, v->y * v->w, v->w);
-		}
+			emit_vertex(v, alpha_or);
 		glEnd();
 
 		s_stat_strips[list]++;
 	}
 }
 
-static void draw_frame()
+// nullDC-v1 sort entry: one per translucent polygon, keyed like PolyParam::zvZ.
+struct SortStrip
 {
-	u32 sw, sh;
-	ps3_video_size(&sw, &sh);
+	float key;
+	u32 idx;
+};
+static SortStrip s_order[MAX_STRIPS];
 
-	// 4:3 pillarbox inside the 16:9 display.
-	u32 vp_w = sh * 4 / 3;
-	if (vp_w > sw)
-		vp_w = sw;
-	u32 vp_x = (sw - vp_w) / 2;
+// Autosort translucent pass, as nullDC-v1 SortPParams (AlphaSortMode 1, its default):
+// whole polygons ordered by the average 1/W of their vertices, so the nearest draws last.
+// The PVR itself sorts per pixel; this is the approximation the reference ships.
+static void draw_tr_sorted()
+{
+	u32 n = 0;
+	for (u32 i = 0; i < s_rc->nstrip; i++)
+	{
+		const DcStrip& st = s_rc->strip[i];
+		if (st.list != ListType_Translucent || st.count == 0)
+			continue;
+		float sum = 0.0f;
+		for (u32 k = 0; k < st.count; k++)
+			sum += 1.0f / s_rc->vtx[st.first + k].w;
+		s_order[n].key = sum / st.count;
+		s_order[n].idx = i;
+		n++;
+	}
+	if (n == 0)
+		return;
+	std::stable_sort(s_order, s_order + n, [](const SortStrip& a, const SortStrip& b) { return a.key < b.key; });
 
-	float cw = 640.0f * s_fb_scale_x;
-	float ch = 480.0f * s_fb_scale_y;
+	u32 last_param = 0xFFFFFFFF;
+	u32 alpha_or = 0;
+	for (u32 j = 0; j < n; j++)
+	{
+		const DcStrip& s = s_rc->strip[s_order[j].idx];
+		if (s.param != last_param)
+		{
+			last_param = s.param;
+			alpha_or = apply_param(s_rc->param[s.param], ListType_Translucent);
+		}
 
-	ps3tex_frame_begin();
+		glBegin(GL_TRIANGLE_STRIP);
+		const DcVertex* v = &s_rc->vtx[s.first];
+		for (u32 k = 0; k < s.count; k++, v++)
+			emit_vertex(v, alpha_or);
+		glEnd();
 
+		s_stat_strips[ListType_Translucent]++;
+	}
+}
+
+// nullDC-v1 SetMVS_Mode. Mode 0 counts volume crossings by flipping stencil bit 1;
+// modes 1 and 2 fold the count of the volume just closed into bit 0.
+static void set_mvs_mode(u32 mode, const ModVolParam& p)
+{
+	if (mode == 0)
+	{
+		glEnable(GL_DEPTH_TEST);
+		glStencilMask(2);
+		glStencilFunc(GL_ALWAYS, 0, 0xFF);
+		glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+		set_cull(p.cull);
+	}
+	else
+	{
+		// 1 = last "in" (any crossing counts), 2 = last "out".
+		if (mode == 1)
+			glStencilFunc(GL_LEQUAL, 1, 3);
+		else
+			glStencilFunc(GL_GREATER, 2, 3);
+		glStencilOp(GL_ZERO, GL_KEEP, GL_REPLACE);
+		// Summing the volume area must not be depth tested.
+		glDisable(GL_DEPTH_TEST);
+		glStencilMask(3);
+	}
+}
+
+static inline void emit_mod_vertex(float x, float y, float inv_w)
+{
+	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
+	float w = 1.0f / safe;
+	glVertex3f(x * w, y * w, w);
+}
+
+static void draw_mod_tris(u32 first, u32 count)
+{
+	if (first + count > s_rc->nmtri)
+		return;
+	glBegin(GL_TRIANGLES);
+	for (u32 i = 0; i < count; i++)
+	{
+		const ModTri& t = s_rc->mtri[first + i];
+		emit_mod_vertex(t.x0, t.y0, t.z0);
+		emit_mod_vertex(t.x1, t.y1, t.z1);
+		emit_mod_vertex(t.x2, t.y2, t.z2);
+	}
+	glEnd();
+}
+
+// Opaque modifier volumes, as nullDC-v1 ModVolMode Normal: count the volume
+// crossings in the stencil, then darken every pixel that ended up inside.
+static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
+{
+	if (s_rc->nmvol < 2 || s_rc->nmtri == 0)
+		return;
+
+	glDisable(GL_TEXTURE_2D);
+	glDisable(GL_ALPHA_TEST);
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	glDepthMask(GL_FALSE);
+	// The DC compares 1/W with "greater"; our depth is W, so the test flips.
+	glDepthFunc(GL_LESS);
+	glEnable(GL_STENCIL_TEST);
+
+	u32 mod_last = 0;
+	for (u32 i = 0; i + 1 < s_rc->nmvol; i++)
+	{
+		const ModVolParam& p = s_rc->mvol[i];
+		u32 mod_base = p.first;
+		u32 sz = s_rc->mvol[i + 1].first - mod_base;
+		if (p.depth == 0)
+		{
+			set_mvs_mode(0, p);
+			draw_mod_tris(mod_base, sz);
+		}
+		else if (p.depth < 3)
+		{
+			// Each triangle closes a volume: count it, then merge its area.
+			while (sz)
+			{
+				set_mvs_mode(0, p);
+				draw_mod_tris(mod_base, 1);
+				set_mvs_mode(p.depth, p);
+				draw_mod_tris(mod_last, mod_base - mod_last + 1);
+				mod_last = mod_base + 1;
+				sz--;
+				mod_base++;
+			}
+		}
+	}
+
+	// Shade the odd ("in") pixels. nullDC-v1 uses a flat 50% black.
+	glDisable(GL_DEPTH_TEST);
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	glDisable(GL_CULL_FACE);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glStencilFunc(GL_EQUAL, 1, 1);
+	glStencilMask(0);
+	glColor4ub(0, 0, 0, 128);
+	glBegin(GL_TRIANGLE_STRIP);
+	glVertex3f(cx0 * quad_w, cy0 * quad_w, quad_w);
+	glVertex3f((cx0 + cw) * quad_w, cy0 * quad_w, quad_w);
+	glVertex3f(cx0 * quad_w, (cy0 + ch) * quad_w, quad_w);
+	glVertex3f((cx0 + cw) * quad_w, (cy0 + ch) * quad_w, quad_w);
+	glEnd();
+
+	glDisable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
+	glDisable(GL_BLEND);
+	reset_param_cache();
+}
+
+// Resets the GL state the passes below assume; must run before the clear.
+static void reset_gl_state()
+{
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_CULL_FACE);
+	glDisable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glDepthMask(GL_TRUE);
+}
 
-	glDisable(GL_SCISSOR_TEST);
-	glViewport(0, 0, sw, sh);
-	ps3gl_apply_states();
-	glClearColor(0, 0, 0, 1);
-	glClearDepth(1.0);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-
-	glEnable(GL_SCISSOR_TEST);
-	glScissor(vp_x, 0, vp_w, sh);
-	glViewport(vp_x, 0, vp_w, sh);
-	ps3gl_apply_states();
-
+// Draws the render context into the active viewport. The canvas rect is the DC
+// area mapped onto it: the whole screen when displaying, the FB clip window for
+// a render to texture.
+static void draw_scene(float cx0, float cy0, float cw, float ch)
+{
 	// ISP_BACKGND_D is the background 1/W (low 4 bits masked, as in nullDC-v1).
 	u32 bgd_bits = ISP_BACKGND_D & ~0xFu;
 	float bg_inv_w;
@@ -637,9 +866,9 @@ static void draw_frame()
 	// Input (x*W, y*W, W): clip.w = W, so attributes interpolate with perspective and z_ndc = A + B/W.
 	float m[16] = { 0 };
 	m[0] = 2.0f / cw;
-	m[8] = -1.0f;
+	m[8] = -1.0f - 2.0f * cx0 / cw;
 	m[5] = -2.0f / ch;
-	m[9] = 1.0f;
+	m[9] = 1.0f + 2.0f * cy0 / ch;
 	m[10] = (f + n) / (f - n);
 	m[14] = -2.0f * f * n / (f - n);
 	m[11] = 1.0f;
@@ -657,13 +886,14 @@ static void draw_frame()
 	BgVertex bgv[3];
 	DcParam bgp;
 	background_plane(bgv, &bgp);
+	reset_param_cache();
 	u32 bg_alpha_or = apply_param(bgp, ListType_Opaque);
 	static const float corner[4][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
 	glBegin(GL_TRIANGLE_STRIP);
 	for (int k = 0; k < 4; k++)
 	{
 		BgVertex bv;
-		bg_eval(bgv, corner[k][0] * cw, corner[k][1] * ch, &bv);
+		bg_eval(bgv, cx0 + corner[k][0] * cw, cy0 + corner[k][1] * ch, &bv);
 		u32 c = bv.col | bg_alpha_or;
 		glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
 		glTexCoord2f(bv.u, bv.v);
@@ -675,21 +905,285 @@ static void draw_frame()
 	if (s_rc->nstrip != 0)
 	{
 		// Hardware order: opaque, punch-through, translucent.
+		reset_param_cache();
 		draw_list(ListType_Opaque);
 
 		glEnable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GEQUAL, (PT_ALPHA_REF & 0xFF) / 255.0f);
+		reset_param_cache();
 		draw_list(ListType_Punch_Through);
+
+		// Hardware shades the opaque volumes between punch-through and translucent.
+		draw_modvols(cx0, cy0, cw, ch, bg_w);
 
 		// apply_param turns the "alpha > 0" test on per translucent poly.
 		glDisable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GREATER, 0.0f);
-		draw_list(ListType_Translucent);
+		reset_param_cache();
+		if (s_autosort)
+			draw_tr_sorted();
+		else
+			draw_list(ListType_Translucent);
 	}
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
 	glDepthMask(GL_TRUE);
+}
+
+static void draw_frame()
+{
+	u32 sw, sh;
+	ps3_video_size(&sw, &sh);
+
+	// 4:3 pillarbox inside the 16:9 display.
+	u32 vp_w = sh * 4 / 3;
+	if (vp_w > sw)
+		vp_w = sw;
+	u32 vp_x = (sw - vp_w) / 2;
+
+	ps3tex_frame_begin();
+	reset_gl_state();
+
+	glDisable(GL_SCISSOR_TEST);
+	glViewport(0, 0, sw, sh);
+	ps3gl_apply_states();
+	glClearColor(0, 0, 0, 1);
+	glClearDepth(1.0);
+	glClearStencil(0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+	glEnable(GL_SCISSOR_TEST);
+	glScissor(vp_x, 0, vp_w, sh);
+	glViewport(vp_x, 0, vp_w, sh);
+	ps3gl_apply_states();
+
+	draw_scene(0.0f, 0.0f, 640.0f * s_fb_scale_x, 480.0f * s_fb_scale_y);
+}
+
+// -- Render to texture -------------------------------------------------------
+// FB_W_SOF1 bit 24 marks a pass the PVR writes into the texture area instead of
+// the screen. gxRend.cpp does the same: draw the clip window at its own size,
+// read the pixels back and pack them into VRAM, where the texture cache sees
+// the change through its hash and re-decodes.
+static u32 s_stat_rtt_copies;
+
+static inline u16 pack16(u32 argb, u32 mode, u16 kbit)
+{
+	u32 a = argb >> 24, r = (argb >> 16) & 0xFF, g = (argb >> 8) & 0xFF, b = argb & 0xFF;
+	switch (mode)
+	{
+	case 1:  return (u16)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+	case 2:  return (u16)(((a >> 4) << 12) | ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4));
+	case 3:  return (u16)(((a >> 7) << 15) | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+	default: return (u16)(kbit | ((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+	}
+}
+
+static void rtt_render()
+{
+	u32 x0 = FB_X_CLIP.min, x1 = FB_X_CLIP.max;
+	u32 y0 = FB_Y_CLIP.min, y1 = FB_Y_CLIP.max;
+	if (x1 < x0 || y1 < y0)
+		return;
+	u32 w = x1 - x0 + 1, h = y1 - y0 + 1;
+	u32 sw, sh;
+	ps3_video_size(&sw, &sh);
+	if (w > sw || h > sh || w > 1024 || h > 1024)
+		return;
+
+	u32 packmode = FB_W_CTRL & 7;
+	if (packmode == 4 || packmode == 5)
+	{
+		static u32 s_warned;
+		if (s_warned++ < 3)
+			printf("[ps3rend] RTT pack mode %u not handled\n", packmode);
+		return;
+	}
+
+	if (!ps3_video_begin_frame())
+		return;
+	ps3tex_frame_begin();
+	reset_gl_state();
+	glDisable(GL_SCISSOR_TEST);
+	glViewport(0, 0, w, h);
+	ps3gl_apply_states();
+	glClearColor(0, 0, 0, 1);
+	glClearDepth(1.0);
+	glClearStencil(0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	draw_scene((float)x0, (float)y0, (float)w, (float)h);
+	ps3_video_end_frame_noflip();
+
+	const u32* px = ps3_video_readback(0, 0, w, h);
+	if (!px)
+		return;
+
+	// Bit 24 addresses the linear texture area, so no bank conversion here.
+	u32 base = FB_W_SOF1 & VRAM_MASK & ~3u;
+	u32 stride = (FB_W_LINESTRIDE & 0x1FF) * 8;
+	if (stride == 0)
+		stride = (packmode >= 6) ? w * 4 : w * 2;
+	u16 kbit = (u16)(FB_W_CTRL & 0x8000);
+
+	for (u32 y = 0; y < h; y++)
+	{
+		const u32* srow = px + (size_t)y * w;
+		u32 line = base + y * stride;
+		if (packmode <= 3)
+		{
+			for (u32 x = 0; x < w; x += 2)
+			{
+				u16 p0 = pack16(srow[x], packmode, kbit);
+				u16 p1 = (x + 1 < w) ? pack16(srow[x + 1], packmode, kbit) : 0;
+				*(u32*)&PVRPARAMS.vram[(line + x * 2) & VRAM_MASK & ~3u] = ((u32)p1 << 16) | p0;
+			}
+		}
+		else
+		{
+			for (u32 x = 0; x < w; x++)
+			{
+				u32 c = srow[x];
+				if (packmode == 6)
+					c &= 0x00FFFFFF; // KRGB0888: the K bit stays clear
+				*(u32*)&PVRPARAMS.vram[(line + x * 4) & VRAM_MASK & ~3u] = c;
+			}
+		}
+	}
+	s_stat_rtt_copies++;
+}
+
+// -- Framebuffer writes ------------------------------------------------------
+// 2D titles draw straight into VRAM and never issue a render, so nothing would
+// reach the screen. gxRend.cpp marks the framebuffer after each PVR render; if
+// the mark is gone at vblank, another writer refreshed it and we show it.
+#define FB_PRESENT_MAGIC 0xDC4F0FB0u
+#define FB2D_W 768
+#define FB2D_H 576
+static u32 s_fb_pix[FB2D_W * FB2D_H];
+static GLuint s_fb_tex;
+static u32 s_stat_fb_presents;
+
+static void fb_stamp_magic()
+{
+	vwi(FB_W_SOF1, FB_PRESENT_MAGIC);
+	vwi(FB_W_SOF2, FB_PRESENT_MAGIC);
+}
+
+static bool fb_needs_present()
+{
+	return vri(FB_R_SOF1 & ~3u) != FB_PRESENT_MAGIC;
+}
+
+static inline u32 e5(u32 v) { return (v << 3) | (v >> 2); }
+static inline u32 e6(u32 v) { return (v << 2) | (v >> 4); }
+
+static void present_framebuffer()
+{
+	u32 fb_x_size = FB_R_SIZE & 0x3FF;
+	u32 fb_y_size = (FB_R_SIZE >> 10) & 0x3FF;
+	u32 fb_modulus = (FB_R_SIZE >> 20) & 0x3FF;
+	u32 fb_depth = FB_R_CTRL.fb_depth;
+	if (fb_x_size == 0 || fb_y_size == 0)
+		return;
+	if (fb_depth == 2)
+	{
+		static u32 s_warned;
+		if (s_warned++ < 3)
+			printf("[ps3rend] 24-bit framebuffer read not handled\n");
+		return;
+	}
+
+	// fb_x_size counts 32-bit words per line, so a 16-bit line holds twice as many pixels.
+	bool wide = (fb_depth == 3);
+	u32 src_w = wide ? (fb_x_size + 1) : ((fb_x_size + 1) << 1);
+	u32 src_h = fb_y_size + 1;
+	u32 mod_px = (fb_modulus > 0 ? fb_modulus - 1 : 0) << (wide ? 0 : 1);
+	u32 bpp = wide ? 4 : 2;
+	u32 cpy_w = src_w > FB2D_W ? FB2D_W : src_w;
+	u32 cpy_h = src_h > FB2D_H ? FB2D_H : src_h;
+
+	u32 addr = FB_R_SOF1;
+	for (u32 y = 0; y < cpy_h; y++)
+	{
+		u32 line = addr;
+		u32* out = &s_fb_pix[(size_t)y * cpy_w];
+		for (u32 x = 0; x < cpy_w; x++, line += bpp)
+		{
+			u32 r, g, b;
+			if (wide)
+			{
+				u32 c = vri(line & ~3u);
+				r = (c >> 16) & 0xFF; g = (c >> 8) & 0xFF; b = c & 0xFF;
+			}
+			else
+			{
+				u32 c = vri16(line);
+				if (fb_depth == 1) { r = e5(c >> 11); g = e6((c >> 5) & 0x3F); b = e5(c & 0x1F); }
+				else               { r = e5((c >> 10) & 0x1F); g = e5((c >> 5) & 0x1F); b = e5(c & 0x1F); }
+			}
+			out[x] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
+		}
+		addr += (src_w + mod_px) * bpp;
+	}
+
+	if (!ps3_video_begin_frame())
+		return;
+
+	u32 sw, sh;
+	ps3_video_size(&sw, &sh);
+	u32 vp_w = sh * 4 / 3;
+	if (vp_w > sw)
+		vp_w = sw;
+	u32 vp_x = (sw - vp_w) / 2;
+
+	reset_gl_state();
+	glDisable(GL_SCISSOR_TEST);
+	glViewport(0, 0, sw, sh);
+	ps3gl_apply_states();
+	glClearColor(0, 0, 0, 1);
+	glClearDepth(1.0);
+	glClearStencil(0);
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	glViewport(vp_x, 0, vp_w, sh);
+	ps3gl_apply_states();
+
+	if (!s_fb_tex)
+		glGenTextures(1, &s_fb_tex);
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, s_fb_tex);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, cpy_w, cpy_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fb_pix);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+	glDisable(GL_DEPTH_TEST);
+	glDepthMask(GL_FALSE);
+
+	// Straight to clip space: the quad covers the whole viewport.
+	float m[16] = { 0 };
+	m[0] = m[5] = m[10] = m[15] = 1.0f;
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(m);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glColor4ub(255, 255, 255, 255);
+	glBegin(GL_TRIANGLE_STRIP);
+	glTexCoord2f(0, 0); glVertex3f(-1.0f,  1.0f, 0.0f);
+	glTexCoord2f(1, 0); glVertex3f( 1.0f,  1.0f, 0.0f);
+	glTexCoord2f(0, 1); glVertex3f(-1.0f, -1.0f, 0.0f);
+	glTexCoord2f(1, 1); glVertex3f( 1.0f, -1.0f, 0.0f);
+	glEnd();
+
+	glDisable(GL_TEXTURE_2D);
+	glDepthMask(GL_TRUE);
+	ps3_video_end_frame();
+	reset_param_cache();
+
+	// Mark what is now on screen; the next write by the game clears the mark.
+	vwi(FB_R_SOF1, FB_PRESENT_MAGIC);
+	s_stat_fb_presents++;
 }
 
 bool InitRenderer()
@@ -705,6 +1199,7 @@ void TermRenderer()
 {
 	TileAccel.Term();
 	ps3tex_reset();
+	s_fb_tex = 0;
 	ps3_video_term();
 }
 
@@ -720,7 +1215,21 @@ void ResetRenderer(bool Manual)
 bool ThreadStart() { return true; }
 void ThreadEnd() {}
 
-void VBlank() {}
+// Called at the start of every emulated vblank from SPG.cpp.
+void VBlank()
+{
+	if (!FB_R_CTRL.fb_enable)
+		return;
+	if (!fb_needs_present())
+		return; // the PVR render is still what the screen shows
+
+	double host_fpscr;
+	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
+	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+	present_framebuffer();
+	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
+	FrameCount++;
+}
 
 void StartRender()
 {
@@ -750,10 +1259,15 @@ void StartRender()
 			render_end_pending_cycles = 50000;
 	}
 
-	// FB_W_SOF1 bit 24 = render to texture, not a displayed frame (G6.4).
+	// FB_W_SOF1 bit 24 = render to texture, not a displayed frame.
 	if (FB_W_SOF1 & 0x1000000)
 	{
 		s_stat_rtt++;
+		double rtt_fpscr;
+		__asm__ volatile("mffs %0" : "=f"(rtt_fpscr) :: "memory");
+		__asm__ volatile("mtfsfi 7,0" ::: "memory");
+		rtt_render();
+		__asm__ volatile("mtfsf 0xff,%0" :: "f"(rtt_fpscr) : "memory");
 		return;
 	}
 
@@ -772,6 +1286,8 @@ void StartRender()
 		draw_frame();
 		ps3_video_end_frame();
 	}
+	// Mark the framebuffer the PVR just produced, so VBlank knows it is on screen.
+	fb_stamp_magic();
 	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
 
 	double now = os_GetSeconds();
@@ -780,12 +1296,14 @@ void StartRender()
 		u32 r = s_stat_renders ? s_stat_renders : 1;
 		u32 decodes, live;
 		ps3tex_stats(&decodes, &live);
-		printf("[rend] renders=%u rtt=%u avg/render: vtx=%u strips op=%u pt=%u tr=%u mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u\n",
-		       s_stat_renders, s_stat_rtt, s_stat_vtx / r,
+		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u\n",
+		       s_stat_renders, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
+		       s_autosort ? "auto" : "pre", s_stat_vtx / r,
 		       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
-		       s_stat_strips[ListType_Translucent] / r, s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow);
+		       s_stat_strips[ListType_Translucent] / r,
+		       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow);
 		memset(s_stat_mv, 0, sizeof(s_stat_mv));
-		s_stat_renders = s_stat_rtt = s_stat_vtx = 0;
+		s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
 		memset(s_stat_strips, 0, sizeof(s_stat_strips));
 		s_overflow = 0;
 		s_stat_t0 = now;

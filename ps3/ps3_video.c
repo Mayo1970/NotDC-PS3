@@ -33,6 +33,14 @@ static volatile u32 s_flip_done;
 static u32 s_presented, s_skipped;
 static double s_stats_t0;
 
+// Render-to-texture readback staging. CPU reads of RSX local memory run at
+// ~16 MB/s, so the RSX blits the rendered rect into main memory instead.
+#define PS3_RB_MAX_W 1024
+#define PS3_RB_MAX_H 1024
+#define PS3_RB_SIZE  (PS3_RB_MAX_W * PS3_RB_MAX_H * 4)
+static void* s_rb_addr;
+static u32 s_rb_off;
+
 // ps3gl_main.c and ps3gl_vertices.c link against these engine hooks.
 void Con_Printf(const char* fmt, ...)
 {
@@ -166,6 +174,22 @@ int ps3_video_init(void)
 	}
 	rsxAddressToOffset(s_depth, &s_depth_off);
 
+	// The RSX IO map works in 1 MB pages, so the staging buffer matches that.
+	s_rb_addr = memalign(1024 * 1024, PS3_RB_SIZE);
+	if (s_rb_addr)
+	{
+		s32 rb_ret = gcmMapMainMemory(s_rb_addr, PS3_RB_SIZE, &s_rb_off);
+		printf("[vid] readback %u KB at %p gcmMapMainMemory=%d offset=0x%X\n",
+		       (unsigned)(PS3_RB_SIZE / 1024), s_rb_addr, (int)rb_ret, (unsigned)s_rb_off);
+		if (rb_ret != 0)
+		{
+			free(s_rb_addr);
+			s_rb_addr = NULL;
+		}
+	}
+	if (!s_rb_addr)
+		printf("[vid] readback buffer unavailable, render to texture disabled\n");
+
 	gcmSetFlipMode(GCM_FLIP_VSYNC);
 	s_flip_queued = 0;
 	s_flip_done = 0;
@@ -203,6 +227,9 @@ void ps3_video_term(void)
 		if (s_depth)
 			rsxFree(s_depth);
 		s_depth = NULL;
+		if (s_rb_addr)
+			free(s_rb_addr);
+		s_rb_addr = NULL;
 		s_ready = 0;
 		printf("[vid] shut down\n");
 	}
@@ -232,6 +259,33 @@ int ps3_video_begin_frame(void)
 	set_render_target(s_cur_fb);
 	ps3gl_begin_frame();
 	return 1;
+}
+
+// Ends a frame that must not reach the screen (render to texture): the draw
+// commands still have to be flushed, but no flip is queued and the buffer stays.
+void ps3_video_end_frame_noflip(void)
+{
+	ps3gl_end_frame();
+	rsxFlushBuffer(s_ctx);
+}
+
+// Copies w*h pixels of the current back buffer into the staging buffer and
+// waits for the RSX. x/y are GL window coordinates, so y counts from the bottom.
+// Returns the pixels as native A8R8G8B8 rows, or NULL when the copy cannot run.
+const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
+{
+	if (!s_ready || !s_rb_addr || w == 0 || h == 0)
+		return NULL;
+	if (w > PS3_RB_MAX_W || h > PS3_RB_MAX_H || x + w > s_width || y + h > s_height)
+		return NULL;
+
+	u32 src_y = s_height - (y + h);
+	rsxSetTransferData(s_ctx, GCM_TRANSFER_LOCAL_TO_MAIN, s_rb_off, w * 4,
+	                   s_color_off[s_cur_fb] + src_y * s_pitch + x * 4, s_pitch,
+	                   w * 4, h);
+	rsxFlushBuffer(s_ctx);
+	rsxFinish(s_ctx, 1);
+	return (const u32*)s_rb_addr;
 }
 
 void ps3_video_end_frame(void)
