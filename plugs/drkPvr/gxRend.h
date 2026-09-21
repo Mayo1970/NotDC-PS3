@@ -15,6 +15,10 @@ void VBlank();
 void StartRender();
 void EndRender();
 
+// TR1: the SH4 thread only copies raw TA records; the decode runs later (TArender.MD).
+void ps3ta_store_sq(u32* data);
+void ps3ta_store_dma(u32* data, u32 size);
+
 void ListCont();
 void ListInit();
 void SoftReset();

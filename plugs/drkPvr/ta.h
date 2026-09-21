@@ -65,9 +65,12 @@ namespace TASplitter
 	};
 	
 	//Splitter function (normaly ta_dma_main , modified for split dma's)
+	//Only FifoSplitterEx uses this global; FifoSplitter owns a per-instance copy.
 	extern TaListFP* TaCmd;
 
-	template<class TA_decoder>
+	// FireListEndIrq: only the store stage may raise the guest's list-end
+	// interrupt; the deferred decode replays the same bytes and must stay silent.
+	template<class TA_decoder, bool FireListEndIrq = true>
 	class FifoSplitter
 	{
 	public:
@@ -83,6 +86,10 @@ namespace TASplitter
 		static u32 ta_type_lut[256];
 
 		static bool StripStarted;
+
+		// TR1: per-instantiation resume pointer, so the store and decode splitters
+		// cannot corrupt each other through one global (TArender.MD 3.5).
+		static TaListFP* TaCmd;
 
 		static void  ta_list_start(u32 new_list)
 		{
@@ -329,7 +336,8 @@ public:
 						}
 
 						//printf("End list %X\n",CurrentList);
-						spg_SchedListEndIrq(CurrentList);
+						if (FireListEndIrq)
+							spg_SchedListEndIrq(CurrentList);
 						ListIsFinished[CurrentList]=true;
 						CurrentList=ListType_None;
 						VerxexDataFP=0;
@@ -708,11 +716,12 @@ public:
 
 
 	//Well , olny in a C++ world you have to do smth like that ...
-	template <class TA_decoder> u32 FifoSplitter<TA_decoder> ::CurrentList;
-	template <class TA_decoder> TaListFP* FifoSplitter<TA_decoder> ::VerxexDataFP;
-	template <class TA_decoder> bool FifoSplitter<TA_decoder> ::ListIsFinished[5];
-	template <class TA_decoder> u32 FifoSplitter<TA_decoder> ::ta_type_lut[256];
-	template <class TA_decoder> bool FifoSplitter<TA_decoder> ::StripStarted;
+	template <class TA_decoder, bool F> u32 FifoSplitter<TA_decoder, F> ::CurrentList;
+	template <class TA_decoder, bool F> TaListFP* FifoSplitter<TA_decoder, F> ::VerxexDataFP;
+	template <class TA_decoder, bool F> bool FifoSplitter<TA_decoder, F> ::ListIsFinished[5];
+	template <class TA_decoder, bool F> u32 FifoSplitter<TA_decoder, F> ::ta_type_lut[256];
+	template <class TA_decoder, bool F> bool FifoSplitter<TA_decoder, F> ::StripStarted;
+	template <class TA_decoder, bool F> TaListFP* FifoSplitter<TA_decoder, F> ::TaCmd;
 
 	template<class TA_decoder>
 	class FifoSplitterEx

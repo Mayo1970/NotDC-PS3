@@ -6,6 +6,7 @@
 #include "ps3_video.h"
 #include "ps3_tex.h"
 #include <algorithm>
+#include <malloc.h>
 
 // ps3gl.h silences C-only warnings, which g++ reports as unknown pragmas.
 #pragma GCC diagnostic push
@@ -67,6 +68,10 @@ struct ModVolParam
 #define MAX_MODTRI 4096
 #define MAX_MODVOL 256
 
+// TR1: the SH4 thread appends raw 32-byte TA records here; StartRender decodes them.
+#define TA_RAW_SIZE  (4 * 1024 * 1024)
+#define MAX_CONT_MARKS 64
+
 // One TA context per parameter buffer, as nullDC-v1 SetCurrentTARC/SetCurrentPVRRC:
 // the TA fills the one at TA_ISP_BASE, STARTRENDER draws the one at PARAM_BASE.
 struct TaContext
@@ -82,6 +87,13 @@ struct TaContext
 	ModTri mtri[MAX_MODTRI];
 	ModVolParam mvol[MAX_MODVOL];
 	u32 nmtri, nmvol;
+	// Raw TA stream, decoded lazily. cont_marks holds the raw_used values at
+	// which TA_LIST_CONT arrived, so the replay can split at the same points.
+	u8* raw;
+	u32 raw_used, raw_decoded;
+	u32 cont_marks[MAX_CONT_MARKS];
+	u32 n_cont, n_cont_done;
+	bool raw_overflow;
 };
 #define TA_CONTEXTS 4
 static TaContext s_ctx[TA_CONTEXTS];
@@ -89,6 +101,9 @@ static TaContext* s_ta = &s_ctx[0];
 static TaContext* s_rc = &s_ctx[0];
 static u32 s_cur_list;
 static u32 s_overflow;
+// TA raw-stream health: dropped records, and the high-water mark for sizing.
+static u32 s_stat_raw_of;
+static u32 s_stat_raw_peak;
 
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
@@ -118,12 +133,23 @@ static void reset_lists(TaContext* c)
 	memset(c->mv_tris, 0, sizeof(c->mv_tris));
 }
 
+// The stored stream is per list-init, so it is cleared with the decoded lists.
+static void reset_raw(TaContext* c)
+{
+	c->raw_used = 0;
+	c->raw_decoded = 0;
+	c->n_cont = 0;
+	c->n_cont_done = 0;
+	c->raw_overflow = false;
+}
+
 static void reset_all_contexts()
 {
 	for (u32 i = 0; i < TA_CONTEXTS; i++)
 	{
 		s_ctx[i].addr = 0xFFFFFFFF;
 		reset_lists(&s_ctx[i]);
+		reset_raw(&s_ctx[i]);
 	}
 	s_ta = s_rc = &s_ctx[0];
 }
@@ -151,6 +177,7 @@ static void set_ta_context(u32 addr)
 			c = &s_ctx[s_next_slot++ % TA_CONTEXTS];
 		c->addr = addr;
 		reset_lists(c);
+		reset_raw(c);
 	}
 	s_ta = c;
 }
@@ -402,15 +429,167 @@ struct Ps3VertexDecoder
 	static void SetTileClip(u32 xmin, u32 ymin, u32 xmax, u32 ymax) {}
 	static void TileClipMode(u32 mode) {}
 
-	// As nullDC-v1: list init clears the context at TA_ISP_BASE, a soft reset keeps the lists.
-	static void ListCont() { set_ta_context(TA_ISP_BASE); }
-	static void ListInit() { set_ta_context(TA_ISP_BASE); reset_lists(s_ta); }
+	// As nullDC-v1: list init clears the context, a soft reset keeps the lists.
+	// The context is picked by the exported ListInit/ListCont, because by replay
+	// time TA_ISP_BASE may already point somewhere else.
+	static void ListCont() {}
+	static void ListInit() { reset_lists(s_ta); }
 	static void SoftReset() {}
 };
 DcVertex Ps3VertexDecoder::s_spr[4];
 float Ps3VertexDecoder::s_spr_z[3];
 
-FifoSplitter<Ps3VertexDecoder> TileAccel;
+// The decode stage replays bytes the store stage already answered for, so it
+// must not raise the list-end interrupts a second time.
+FifoSplitter<Ps3VertexDecoder, false> TileAccel;
+
+// Store stage: keeps list state and fires the list-end interrupts, and decodes
+// nothing. All vertex work happens later, on the replay (TArender.MD TR1).
+struct TaStoreDecoder
+{
+#define TA_STORE_NOP1(name, type) static void name(type*) {}
+	static void StartList(u32) {}
+	static void EndList(u32) {}
+	static void StartPolyStrip() {}
+	static void EndPolyStrip() {}
+	static void ModVolStripEnd() {}
+	static void SetTileClip(u32, u32, u32, u32) {}
+	static void TileClipMode(u32) {}
+	TA_STORE_NOP1(AppendPolyParam0, TA_PolyParam0)
+	TA_STORE_NOP1(AppendPolyParam1, TA_PolyParam1)
+	TA_STORE_NOP1(AppendPolyParam2A, TA_PolyParam2A)
+	TA_STORE_NOP1(AppendPolyParam2B, TA_PolyParam2B)
+	TA_STORE_NOP1(AppendPolyParam3, TA_PolyParam3)
+	TA_STORE_NOP1(AppendPolyParam4A, TA_PolyParam4A)
+	TA_STORE_NOP1(AppendPolyParam4B, TA_PolyParam4B)
+	TA_STORE_NOP1(AppendPolyVertex0, TA_Vertex0)
+	TA_STORE_NOP1(AppendPolyVertex1, TA_Vertex1)
+	TA_STORE_NOP1(AppendPolyVertex2, TA_Vertex2)
+	TA_STORE_NOP1(AppendPolyVertex3, TA_Vertex3)
+	TA_STORE_NOP1(AppendPolyVertex4, TA_Vertex4)
+	TA_STORE_NOP1(AppendPolyVertex5A, TA_Vertex5A)
+	TA_STORE_NOP1(AppendPolyVertex5B, TA_Vertex5B)
+	TA_STORE_NOP1(AppendPolyVertex6A, TA_Vertex6A)
+	TA_STORE_NOP1(AppendPolyVertex6B, TA_Vertex6B)
+	TA_STORE_NOP1(AppendPolyVertex7, TA_Vertex7)
+	TA_STORE_NOP1(AppendPolyVertex8, TA_Vertex8)
+	TA_STORE_NOP1(AppendPolyVertex9, TA_Vertex9)
+	TA_STORE_NOP1(AppendPolyVertex10, TA_Vertex10)
+	TA_STORE_NOP1(AppendPolyVertex11A, TA_Vertex11A)
+	TA_STORE_NOP1(AppendPolyVertex11B, TA_Vertex11B)
+	TA_STORE_NOP1(AppendPolyVertex12A, TA_Vertex12A)
+	TA_STORE_NOP1(AppendPolyVertex12B, TA_Vertex12B)
+	TA_STORE_NOP1(AppendPolyVertex13A, TA_Vertex13A)
+	TA_STORE_NOP1(AppendPolyVertex13B, TA_Vertex13B)
+	TA_STORE_NOP1(AppendPolyVertex14A, TA_Vertex14A)
+	TA_STORE_NOP1(AppendPolyVertex14B, TA_Vertex14B)
+	TA_STORE_NOP1(AppendSpriteParam, TA_SpriteParam)
+	TA_STORE_NOP1(AppendSpriteVertexA, TA_Sprite1A)
+	TA_STORE_NOP1(AppendSpriteVertexB, TA_Sprite1B)
+	TA_STORE_NOP1(StartModVol, TA_ModVolParam)
+	TA_STORE_NOP1(AppendModVolVertexA, TA_ModVolA)
+	TA_STORE_NOP1(AppendModVolVertexB, TA_ModVolB)
+#undef TA_STORE_NOP1
+	static void ListInit() {}
+	static void ListCont() {}
+	static void SoftReset() {}
+};
+
+FifoSplitter<TaStoreDecoder> TaStore;
+
+// Replays [from, to) of the stored stream through the real decoder. Merging what
+// arrived as separate SQ and DMA blocks is safe: a 64-byte record is only split
+// when it lands on a block end, and both halves feed the same decoder calls.
+static void decode_range(TaContext* c, u32 from, u32 to)
+{
+	Ta_Dma* p = (Ta_Dma*)(c->raw + from);
+	Ta_Dma* end = (Ta_Dma*)(c->raw + to) - 1;
+	do
+	{
+		p = TileAccel.TaCmd(p, end);
+	}
+	while (p <= end);
+}
+
+// Decodes what the SH4 stored since the last call, splitting where TA_LIST_CONT
+// arrived. A stream with nothing new decodes nothing, so the lists stay as they
+// were and a second STARTRENDER redraws them, as nullDC-v1 does.
+static void decode_pending(TaContext* c)
+{
+	if (!c->raw)
+		return;
+	TaContext* prev = s_ta;
+	s_ta = c;
+	if (c->raw_decoded == 0)
+		TileAccel.ListInit();
+
+	u32 pos = c->raw_decoded;
+	while (c->n_cont_done < c->n_cont && c->cont_marks[c->n_cont_done] <= c->raw_used)
+	{
+		u32 mark = c->cont_marks[c->n_cont_done++];
+		if (mark > pos)
+		{
+			decode_range(c, pos, mark);
+			pos = mark;
+		}
+		TileAccel.ListCont();
+	}
+	if (c->raw_used > pos)
+		decode_range(c, pos, c->raw_used);
+	c->raw_decoded = c->raw_used;
+
+	if (c->raw_used > s_stat_raw_peak)
+		s_stat_raw_peak = c->raw_used;
+	s_ta = prev;
+}
+
+// On overflow the store splitter still runs, over the source bytes, so the guest
+// keeps getting its list-end interrupts; only the replay copy is dropped.
+void ps3ta_store_sq(u32* data)
+{
+	TaContext* c = s_ta;
+	Ta_Dma* rec = (Ta_Dma*)data;
+	if (c->raw && c->raw_used + 32 <= TA_RAW_SIZE)
+	{
+		u8* dst = c->raw + c->raw_used;
+		memcpy(dst, data, 32);
+		c->raw_used += 32;
+		rec = (Ta_Dma*)dst;
+	}
+	else if (!c->raw_overflow)
+	{
+		c->raw_overflow = true;
+		s_stat_raw_of++;
+	}
+	verify(TaStore.TaCmd != 0);
+	TaStore.TaCmd(rec, rec);
+}
+
+void ps3ta_store_dma(u32* data, u32 size)
+{
+	TaContext* c = s_ta;
+	u32 bytes = size * 32;
+	Ta_Dma* p = (Ta_Dma*)data;
+	if (c->raw && c->raw_used + bytes <= TA_RAW_SIZE)
+	{
+		u8* dst = c->raw + c->raw_used;
+		memcpy(dst, data, bytes);
+		c->raw_used += bytes;
+		p = (Ta_Dma*)dst;
+	}
+	else if (!c->raw_overflow)
+	{
+		c->raw_overflow = true;
+		s_stat_raw_of++;
+	}
+	verify(TaStore.TaCmd != 0);
+	Ta_Dma* end = p + size - 1;
+	do
+	{
+		p = TaStore.TaCmd(p, end);
+	}
+	while (p <= end);
+}
 
 void SetFpsText(char* text) {}
 
@@ -1194,15 +1373,29 @@ static void present_framebuffer()
 bool InitRenderer()
 {
 	reset_all_contexts();
+	for (u32 i = 0; i < TA_CONTEXTS; i++)
+	{
+		if (s_ctx[i].raw)
+			continue;
+		s_ctx[i].raw = (u8*)memalign(32, TA_RAW_SIZE);
+		if (!s_ctx[i].raw)
+			printf("[ps3rend] TA raw buffer %u alloc failed; that context drops records\n", i);
+	}
 	// Keep running headless if the RSX fails: the UDP log still shows why.
 	if (!ps3_video_init())
 		printf("[ps3rend] RSX init failed, running headless\n");
-	return TileAccel.Init();
+	return TileAccel.Init() && TaStore.Init();
 }
 
 void TermRenderer()
 {
 	TileAccel.Term();
+	TaStore.Term();
+	for (u32 i = 0; i < TA_CONTEXTS; i++)
+	{
+		free(s_ctx[i].raw);
+		s_ctx[i].raw = 0;
+	}
 	ps3tex_reset();
 	s_fb_tex = 0;
 	ps3_video_term();
@@ -1211,6 +1404,7 @@ void TermRenderer()
 void ResetRenderer(bool Manual)
 {
 	TileAccel.Reset(Manual);
+	TaStore.Reset(Manual);
 	reset_all_contexts();
 	ps3tex_reset();
 	VertexCount = 0;
@@ -1249,6 +1443,8 @@ void StartRender()
 			printf("[ps3rend] no TA context for PARAM_BASE=%08X, drawing TA_ISP_BASE's\n", (u32)PARAM_BASE);
 		s_rc = s_ta;
 	}
+	// TR1: the stored TA bytes become vertices here, not on the guest's write.
+	decode_pending(s_rc);
 	u32 vtx = s_rc->nvtx;
 	VertexCount += vtx;
 
@@ -1309,19 +1505,22 @@ void StartRender()
 		u32 r = s_stat_renders ? s_stat_renders : 1;
 		u32 decodes, live;
 		ps3tex_stats(&decodes, &live);
-		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u\n",
+		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK\n",
 		       s_stat_renders, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 		       s_autosort ? "auto" : "pre", s_stat_vtx / r,
 		       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
 		       s_stat_strips[ListType_Translucent] / r,
 		       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
 		       s_stat_built[ListType_Translucent] / r,
-		       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow);
+		       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow,
+		       s_stat_raw_of, s_stat_raw_peak / 1024);
 		memset(s_stat_mv, 0, sizeof(s_stat_mv));
 		s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
 		memset(s_stat_strips, 0, sizeof(s_stat_strips));
 		memset(s_stat_built, 0, sizeof(s_stat_built));
 		s_overflow = 0;
+		s_stat_raw_of = 0;
+		s_stat_raw_peak = 0;
 		s_stat_t0 = now;
 	}
 	SH4_PHASE(PH_GUEST);
@@ -1329,6 +1528,27 @@ void StartRender()
 
 void EndRender() {}
 
-void ListCont() { TileAccel.ListCont(); }
-void ListInit() { TileAccel.ListInit(); }
-void SoftReset() { TileAccel.SoftReset(); }
+// The store stage owns TA_ISP_BASE: it picks the context the raw bytes land in.
+// The decoder-side ListInit/ListCont run later, from decode_pending().
+void ListCont()
+{
+	set_ta_context(TA_ISP_BASE);
+	if (s_ta->n_cont < MAX_CONT_MARKS)
+		s_ta->cont_marks[s_ta->n_cont++] = s_ta->raw_used;
+	else if (!s_ta->raw_overflow)
+	{
+		s_ta->raw_overflow = true;
+		s_stat_raw_of++;
+	}
+	TaStore.ListCont();
+}
+
+void ListInit()
+{
+	set_ta_context(TA_ISP_BASE);
+	reset_raw(s_ta);
+	TaStore.ListInit();
+}
+
+// As nullDC-v1: a soft reset keeps the lists and the stored bytes.
+void SoftReset() { TaStore.SoftReset(); }

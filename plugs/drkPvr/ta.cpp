@@ -13,12 +13,12 @@ namespace TASplitter
 using namespace TASplitter;
 
 // Store Queue path: single 32-byte write (e.g. via SQ registers)
+// TR1: the record is only copied here; ps3ta_store_sq runs the store-stage
+// splitter so the list-end interrupts still fire on time.
 void libPvr_TaSQ(u32* data)
 {
-    verify(TaCmd != nullptr);
     const u64 _t0 = PERF_TICKS();
-    Ta_Dma* t = (Ta_Dma*)data;
-    TaCmd(t, t);
+    ps3ta_store_sq(data);
     TaTicks += PERF_TICKS() - _t0;
     TaCalls++;
 }
@@ -27,20 +27,10 @@ void libPvr_TaSQ(u32* data)
 // 'size' is in units of Ta_Dma (32 bytes), not bytes
 void libPvr_TaDMA(u32* data, u32 size)
 {
-    verify(TaCmd != nullptr);
     verify(size > 0);
 
     const u64 _t0 = PERF_TICKS();
-
-    Ta_Dma* ta_data     = (Ta_Dma*)data;
-    Ta_Dma* ta_data_end = ta_data + size - 1;
-
-    do
-    {
-        ta_data = TaCmd(ta_data, ta_data_end);
-    }
-    while (ta_data <= ta_data_end);
-
+    ps3ta_store_dma(data, size);
     TaTicks += PERF_TICKS() - _t0;
     TaCalls++;
 }
