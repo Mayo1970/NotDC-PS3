@@ -8,7 +8,7 @@
 extern u64 ArmTicks;
 extern u64 AicaTicks;
 
-#if HOST_OS == OS_WII
+#if HOST_OS == OS_WII || HOST_OS == OS_PS3
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them. Same dance
 // as arm7.cpp.
 #ifdef BIG_ENDIAN

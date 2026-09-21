@@ -50,7 +50,10 @@ extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
 
-#if HOST_OS == OS_WII
+// PS3 has its own ogc/lwp_watchdog.h stand-in in ps3/include, so both targets
+// read the same mftb-based timebase. Without this every percentage in the
+// stats line reads 0.0%.
+#if HOST_OS == OS_WII || HOST_OS == OS_PS3
 #include <ogc/lwp_watchdog.h>
 #define PERF_TICKS() gettime()
 #define PERF_TICKS_US(t) ((double)ticks_to_microsecs(t))

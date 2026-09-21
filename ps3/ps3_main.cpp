@@ -190,10 +190,15 @@ static void ps3_monitor_thread(void* arg)
 			unsigned ph = g_sh4_phase;
 			if (ph >= PH_PHASE_COUNT)
 				ph = PH_GUEST;
+			unsigned rph = g_rend_phase;
+			if (rph >= PH_PHASE_COUNT)
+				rph = PH_IDLE;
 			u32 blks = g_jit_blocks_entered;
-			printf("[hb] t=%us pc=%08X vbl=%u (+%u) blk=%u (+%u) phase=%s seq=%u\n", ticks / 10, (u32)next_pc,
+			printf("[hb] t=%us pc=%08X vbl=%u (+%u) blk=%u (+%u) phase=%s seq=%u rend=%s seq=%u\n",
+			       ticks / 10, (u32)next_pc,
 			       vbl, vbl - last_vbl, blks, blks - last_blks,
-			       g_sh4_phase_name[ph], (unsigned)g_sh4_phase_seq);
+			       g_sh4_phase_name[ph], (unsigned)g_sh4_phase_seq,
+			       g_sh4_phase_name[rph], (unsigned)g_rend_phase_seq);
 			last_vbl = vbl;
 			last_blks = blks;
 			ps3_audio_stats();
@@ -324,10 +329,13 @@ shutdown:
 // Phase marker storage (ps3_phase.h). Written by the SH4 thread, read by the
 // monitor thread; both are plain word accesses, so no lock is needed.
 extern "C" {
-volatile unsigned g_sh4_phase     = PH_GUEST;
-volatile unsigned g_sh4_phase_seq = 0;
+volatile unsigned g_sh4_phase      = PH_GUEST;
+volatile unsigned g_sh4_phase_seq  = 0;
+volatile unsigned g_rend_phase     = PH_IDLE;
+volatile unsigned g_rend_phase_seq = 0;
 const char* const g_sh4_phase_name[PH_PHASE_COUNT] = {
 	"guest", "decode", "render", "beginframe", "draw",
-	"endframe", "rtt", "readback", "tex", "vblank"
+	"endframe", "rtt", "readback", "tex", "vblank",
+	"idle", "tadecode", "present"
 };
 }

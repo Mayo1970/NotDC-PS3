@@ -34,6 +34,8 @@ int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking
 int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
+int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
+int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 
 struct CfgItem { const char* key; int* val; };
 
@@ -63,6 +65,8 @@ static const CfgItem s_items[] = {
 	{ "JitPcRelIfb",   &g_jit_pcrel_preset },
 	{ "JitDynEnds",    &g_jit_dynends_preset },
 	{ "JitFastmem",    &g_jit_fastmem_preset },
+	{ "RenderThread",  &g_render_thread_preset },
+	{ "TaFastStore",   &g_ta_fast_preset },
 };
 
 void ps3_presets_load(void)
@@ -117,6 +121,14 @@ int get_jit_dynends_preset()   { return g_jit_dynends_preset; }
 // FASTMEM, PS3 flavour: inline main-RAM accesses in the JIT (Dynarec.MD 3.4).
 // Unrelated to get_fastmem_preset() below, which is the Wii MMU design.
 int get_jit_fastmem_preset()   { return g_jit_fastmem_preset; }
+
+// TArender TR3: off runs the TA decode and the RSX draw on the SH4 thread,
+// which is the TR2 baseline, so one build can A/B the render thread.
+int get_render_thread_preset() { return g_render_thread_preset; }
+
+// TArender TR4: off runs the store stage through the old FIFO splitter, which
+// is the TR3 baseline, so one build can A/B the ta% cost.
+int get_ta_fast_preset()       { return g_ta_fast_preset; }
 
 // JIT backend presets. The first PS3 port keeps every one of them off
 // (Dynarec.MD 1). FASTMEM can never be on: the Wii design needs a resumable

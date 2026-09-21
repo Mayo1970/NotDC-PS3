@@ -337,6 +337,10 @@ static Option s_audio[] = {
 };
 
 static Option s_video[] = {
+	{ "Render Thread",   &g_render_thread_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TA decode and RSX drawing on their own thread. Takes effect on boot." },
+	{ "TA Fast Store",   &g_ta_fast_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

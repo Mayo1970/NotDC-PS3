@@ -22,14 +22,21 @@ enum
 	PH_READBACK,    // ps3_video_readback: rsxFinish
 	PH_TEX,         // texture decode / upload
 	PH_VBLANK,      // VBlank present path
+	PH_IDLE,        // render thread waiting for a job
+	PH_TADEC,       // render thread replaying the stored TA stream
+	PH_PRESENT,     // render thread drawing the 2D framebuffer
 	PH_PHASE_COUNT
 };
 
 extern volatile unsigned g_sh4_phase;
 extern volatile unsigned g_sh4_phase_seq;
+// TR3: the render thread stamps its own pair, so one [hb] line names both.
+extern volatile unsigned g_rend_phase;
+extern volatile unsigned g_rend_phase_seq;
 extern const char* const g_sh4_phase_name[PH_PHASE_COUNT];
 
-#define SH4_PHASE(p) do { g_sh4_phase = (p); g_sh4_phase_seq++; } while (0)
+#define SH4_PHASE(p)  do { g_sh4_phase = (p); g_sh4_phase_seq++; } while (0)
+#define REND_PHASE(p) do { g_rend_phase = (p); g_rend_phase_seq++; } while (0)
 
 #ifdef __cplusplus
 }

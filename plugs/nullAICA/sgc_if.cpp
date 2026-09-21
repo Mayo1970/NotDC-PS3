@@ -9,7 +9,7 @@ extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
 
-#if HOST_OS == OS_WII
+#if HOST_OS == OS_WII || HOST_OS == OS_PS3
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them.
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN

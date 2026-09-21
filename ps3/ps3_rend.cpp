@@ -8,6 +8,9 @@
 #include "ps3_rend_regs.h"
 #include <algorithm>
 #include <malloc.h>
+#include <sys/thread.h>
+#include <sys/mutex.h>
+#include <sys/cond.h>
 
 // ps3gl.h silences C-only warnings, which g++ reports as unknown pragmas.
 #pragma GCC diagnostic push
@@ -21,6 +24,8 @@ using namespace TASplitter;
 
 extern s32 render_end_pending_cycles;
 extern "C" int get_render_delay_preset();
+extern "C" int get_render_thread_preset();
+extern "C" int get_ta_fast_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -90,7 +95,10 @@ struct TaContext
 };
 #define TA_CONTEXTS 4
 static TaContext s_ctx[TA_CONTEXTS];
+// s_ta is the store stage's target and belongs to the SH4 thread. s_dec (replay)
+// and s_rc (draw) belong to the render thread once it runs.
 static TaContext* s_ta = &s_ctx[0];
+static TaContext* s_dec = &s_ctx[0];
 static TaContext* s_rc = &s_ctx[0];
 static u32 s_cur_list;
 static u32 s_overflow;
@@ -104,7 +112,11 @@ static u32 s_sprite_col = 0xFFFFFFFF;
 
 static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 
+// g_rr is the draw side's copy, read only by whoever is drawing. s_snap is
+// filled on the SH4 thread, s_job_rr carries one posted job's values across.
 RenderRegs g_rr;
+static RenderRegs s_snap;
+static RenderRegs s_job_rr;
 
 static u32 s_stat_renders, s_stat_rtt, s_stat_vtx;
 static u32 s_stat_strips[5];
@@ -114,6 +126,30 @@ static u32 s_stat_built[5];
 static u32 s_mv_list;
 static u32 s_stat_mv[5];
 static double s_stat_t0;
+
+// -- TR3: render thread ------------------------------------------------------
+// One job at a time, as libswirl's single-slot queue. The SH4 thread snapshots
+// the PVR state, hands over a TA context and returns; the render thread replays
+// the stored stream and owns every RSX call from then on. A second frame is
+// dropped, never queued; only RTT makes the SH4 wait.
+enum { JOB_NONE = 0, JOB_RENDER, JOB_RTT, JOB_PRESENT };
+
+static sys_ppu_thread_t s_rend_tid;
+static sys_mutex_t s_rmx;
+static sys_cond_t s_job_cv;    // render thread waits here for work
+static sys_cond_t s_done_cv;   // SH4 thread waits here for decode or frame end
+static bool s_rend_running;
+static volatile int s_rend_quit;
+
+static int  s_job_type;
+static bool s_job_pending;     // posted, not taken yet
+static bool s_job_busy;        // posted or in flight
+static bool s_job_decoded;     // this job's TA replay has finished
+static TaContext* s_job_ctx;
+static TaContext* s_busy_ctx;  // context the render thread owns right now
+static u32 s_job_raw_end, s_job_cont_end;
+static u32 s_stat_dropped;
+static double s_stat_job_max;
 
 static void reset_lists(TaContext* c)
 {
@@ -146,7 +182,7 @@ static void reset_all_contexts()
 		reset_lists(&s_ctx[i]);
 		reset_raw(&s_ctx[i]);
 	}
-	s_ta = s_rc = &s_ctx[0];
+	s_ta = s_dec = s_rc = &s_ctx[0];
 }
 
 static TaContext* find_context(u32 addr)
@@ -168,7 +204,8 @@ static void set_ta_context(u32 addr)
 	if (!c)
 	{
 		c = &s_ctx[s_next_slot++ % TA_CONTEXTS];
-		if (c == s_rc)
+		// Skip the slot being drawn and the one the render thread holds.
+		for (u32 i = 0; i < TA_CONTEXTS && (c == s_rc || c == s_busy_ctx); i++)
 			c = &s_ctx[s_next_slot++ % TA_CONTEXTS];
 		c->addr = addr;
 		reset_lists(c);
@@ -201,8 +238,8 @@ static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
 	v->x = x;
 	v->y = y;
 	v->w = w;
-	if (w < s_ta->min_w) s_ta->min_w = w;
-	if (w > s_ta->max_w) s_ta->max_w = w;
+	if (w < s_dec->min_w) s_dec->min_w = w;
+	if (w > s_dec->max_w) s_dec->max_w = w;
 }
 
 // Modifier volume corners carry no color, so only their depth joins the range.
@@ -210,8 +247,8 @@ static inline void track_w(float inv_w)
 {
 	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
 	float w = 1.0f / safe;
-	if (w < s_ta->min_w) s_ta->min_w = w;
-	if (w > s_ta->max_w) s_ta->max_w = w;
+	if (w < s_dec->min_w) s_dec->min_w = w;
+	if (w > s_dec->max_w) s_dec->max_w = w;
 }
 
 // 16-bit UVs are the top half of a float.
@@ -224,8 +261,8 @@ static inline float uv16(u32 uv)
 
 static inline DcVertex* vtx_slot()
 {
-	if (s_ta->nvtx < MAX_VTX)
-		return &s_ta->vtx[s_ta->nvtx];
+	if (s_dec->nvtx < MAX_VTX)
+		return &s_dec->vtx[s_dec->nvtx];
 	s_overflow++;
 	return 0;
 }
@@ -236,7 +273,7 @@ static inline DcVertex* vtx_slot()
 	if (!v) return;                                                  \
 	set_pos(v, (pkt)->xyz[0], (pkt)->xyz[1], (pkt)->xyz[2]);        \
 	v->col = (color);                                                \
-	s_ta->nvtx++;
+	s_dec->nvtx++;
 
 // Two-part vertex: part A has the position, part B the color and the commit.
 #define VTX_A(pkt)                                                   \
@@ -245,13 +282,13 @@ static inline DcVertex* vtx_slot()
 	set_pos(v, (pkt)->xyz[0], (pkt)->xyz[1], (pkt)->xyz[2]);
 
 #define VTX_B(color)                                                 \
-	if (s_ta->nvtx >= MAX_VTX) return;                               \
-	s_ta->vtx[s_ta->nvtx].col = (color);                             \
-	s_ta->nvtx++;
+	if (s_dec->nvtx >= MAX_VTX) return;                              \
+	s_dec->vtx[s_dec->nvtx].col = (color);                           \
+	s_dec->nvtx++;
 
 #define VTX_B_KEEP()                                                 \
-	if (s_ta->nvtx >= MAX_VTX) return;                               \
-	s_ta->nvtx++;
+	if (s_dec->nvtx >= MAX_VTX) return;                              \
+	s_dec->nvtx++;
 
 struct Ps3VertexDecoder
 {
@@ -259,10 +296,10 @@ struct Ps3VertexDecoder
 	// nullDC-v1 closes the volume list with a terminator holding the final count.
 	static void EndList(u32 ListType)
 	{
-		if (ListType != ListType_Opaque_Modifier_Volume || s_ta->nmvol >= MAX_MODVOL)
+		if (ListType != ListType_Opaque_Modifier_Volume || s_dec->nmvol >= MAX_MODVOL)
 			return;
-		ModVolParam& p = s_ta->mvol[s_ta->nmvol++];
-		p.first = s_ta->nmtri;
+		ModVolParam& p = s_dec->mvol[s_dec->nmvol++];
+		p.first = s_dec->nmtri;
 		p.cull = p.depth = p.volume_last = 0;
 	}
 
@@ -270,9 +307,9 @@ struct Ps3VertexDecoder
 	static void add_param(T* pp)
 	{
 		// When full, keep rewriting the last slot: wrong state, but no overrun.
-		if (s_ta->nparam < MAX_PARAMS)
-			s_ta->nparam++;
-		DcParam& p = s_ta->param[s_ta->nparam - 1];
+		if (s_dec->nparam < MAX_PARAMS)
+			s_dec->nparam++;
+		DcParam& p = s_dec->param[s_dec->nparam - 1];
 		p.pcw = pp->pcw;
 		p.isp = pp->isp;
 		p.tsp = pp->tsp;
@@ -301,18 +338,18 @@ struct Ps3VertexDecoder
 		s_face_g = pp->FaceColor0G; s_face_b = pp->FaceColor0B;
 	}
 
-	static void StartPolyStrip() { s_ta->strip_first = s_ta->nvtx; }
+	static void StartPolyStrip() { s_dec->strip_first = s_dec->nvtx; }
 	static void EndPolyStrip()
 	{
-		u32 count = s_ta->nvtx - s_ta->strip_first;
+		u32 count = s_dec->nvtx - s_dec->strip_first;
 		StripCount++;
-		if (count < 3 || s_ta->nparam == 0 || s_ta->nstrip >= MAX_STRIPS)
+		if (count < 3 || s_dec->nparam == 0 || s_dec->nstrip >= MAX_STRIPS)
 			return;
-		DcStrip& s = s_ta->strip[s_ta->nstrip++];
-		s.first = s_ta->strip_first;
+		DcStrip& s = s_dec->strip[s_dec->nstrip++];
+		s.first = s_dec->strip_first;
 		s.count = (u16)(count > 0xFFFF ? 0xFFFF : count);
 		s.list = (u8)s_cur_list;
-		s.param = (u16)(s_ta->nparam - 1);
+		s.param = (u16)(s_dec->nparam - 1);
 		if (s_cur_list < 5)
 			s_stat_built[s_cur_list]++;
 	}
@@ -357,7 +394,7 @@ struct Ps3VertexDecoder
 	}
 	static void AppendSpriteVertexB(TA_Sprite1B* sv)
 	{
-		if (s_ta->nvtx + 4 > MAX_VTX)
+		if (s_dec->nvtx + 4 > MAX_VTX)
 		{
 			s_overflow++;
 			return;
@@ -378,9 +415,9 @@ struct Ps3VertexDecoder
 		StartPolyStrip();
 		for (int i = 0; i < 4; i++)
 		{
-			s_ta->vtx[s_ta->nvtx] = s_spr[order[i]];
-			s_ta->vtx[s_ta->nvtx].col = s_sprite_col;
-			s_ta->nvtx++;
+			s_dec->vtx[s_dec->nvtx] = s_spr[order[i]];
+			s_dec->vtx[s_dec->nvtx].col = s_sprite_col;
+			s_dec->nvtx++;
 		}
 		EndPolyStrip();
 	}
@@ -389,10 +426,10 @@ struct Ps3VertexDecoder
 	static void StartModVol(TA_ModVolParam* param)
 	{
 		s_mv_list = s_cur_list;
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmvol >= MAX_MODVOL)
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmvol >= MAX_MODVOL)
 			return;
-		ModVolParam& p = s_ta->mvol[s_ta->nmvol++];
-		p.first = s_ta->nmtri;
+		ModVolParam& p = s_dec->mvol[s_dec->nmvol++];
+		p.first = s_dec->nmtri;
 		p.cull = (u8)param->isp.CullMode;
 		p.depth = (u8)param->isp.DepthMode;
 		p.volume_last = (u8)param->pcw.Volume;
@@ -401,10 +438,10 @@ struct Ps3VertexDecoder
 	// Part A opens the triangle, part B closes it: both test the same cap.
 	static void AppendModVolVertexA(TA_ModVolA* mvv)
 	{
-		s_ta->mv_tris[s_mv_list % 5]++;
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmtri >= MAX_MODTRI)
+		s_dec->mv_tris[s_mv_list % 5]++;
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmtri >= MAX_MODTRI)
 			return;
-		ModTri& t = s_ta->mtri[s_ta->nmtri];
+		ModTri& t = s_dec->mtri[s_dec->nmtri];
 		t.x0 = mvv->x0; t.y0 = mvv->y0; t.z0 = mvv->z0;
 		t.x1 = mvv->x1; t.y1 = mvv->y1; t.z1 = mvv->z1;
 		t.x2 = mvv->x2;
@@ -413,9 +450,9 @@ struct Ps3VertexDecoder
 	}
 	static void AppendModVolVertexB(TA_ModVolB* mvv)
 	{
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_ta->nmtri >= MAX_MODTRI)
+		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmtri >= MAX_MODTRI)
 			return;
-		ModTri& t = s_ta->mtri[s_ta->nmtri++];
+		ModTri& t = s_dec->mtri[s_dec->nmtri++];
 		t.y2 = mvv->y2;
 		t.z2 = mvv->z2;
 		track_w(mvv->z2);
@@ -428,7 +465,7 @@ struct Ps3VertexDecoder
 	// The context is picked by the exported ListInit/ListCont, because by replay
 	// time TA_ISP_BASE may already point somewhere else.
 	static void ListCont() {}
-	static void ListInit() { reset_lists(s_ta); }
+	static void ListInit() { reset_lists(s_dec); }
 	static void SoftReset() {}
 };
 DcVertex Ps3VertexDecoder::s_spr[4];
@@ -492,6 +529,201 @@ struct TaStoreDecoder
 
 FifoSplitter<TaStoreDecoder> TaStore;
 
+// -- TR4: table-driven store stage --------------------------------------------
+// The splitter above walks a switch and a function pointer for every 32-byte
+// record. The store stage only needs the record size and the list state, so one
+// table lookup per record replaces it (TArender.MD TR4, libswirl's ta_fsm).
+// A state says what the next 32-byte word means.
+enum
+{
+	TAS_NOLIST = 0,  // no list open; a header must open one
+	TAS_P32,         // list open, not a modifier volume, 32-byte vertices
+	TAS_P64,         // same, 64-byte vertices
+	TAS_SKIP32,      // second half of a 64-byte record, then TAS_P32
+	TAS_SKIP64,      // second half of a 64-byte record, then TAS_P64
+	TAS_MV,          // modifier volume list open; its vertices are 64 bytes
+	TAS_SKIPMV,      // second half of a modvol vertex, then TAS_MV
+	TAS_COUNT = 8
+};
+#define TAS_SLOW 0x80
+
+// Indexed (state << 8) | (ParaType << 5) | (obj_ctrl >> 2). UV_16bit, Gouraud
+// and Shadow never change a record's size, so the key drops them and ParaType
+// owns bit 5 alone; without the mask a sprite would alias a 16-bit-UV polygon.
+static u8 s_fsm[TAS_COUNT * 256];
+static u8 s_fsm_state = TAS_NOLIST;
+static u32 s_store_list = ListType_None;
+// Latched once at InitRenderer, so a run never changes store path mid-stream.
+static bool s_ta_fast;
+
+static inline u32 fsm_key(u32 para, u32 objc)
+{
+	return (para << 5) | ((objc >> 2) & 31);
+}
+
+// The 64-byte vertex types, from the table above poly_data_type_id() in ta.h.
+static inline bool ta_vtx_is_64(u32 pdid)
+{
+	return pdid == 5 || pdid == 6 || pdid == 11 || pdid == 12 || pdid == 13 || pdid == 14;
+}
+
+// Built from drkPvr's ta_type_lut, so the two store paths size every record the
+// same way. TileAccel.Init() must have run first.
+static void ta_fsm_build()
+{
+	for (u32 st = 0; st < TAS_COUNT; st++)
+	for (u32 pt = 0; pt < 8; pt++)
+	for (u32 k = 0; k < 32; k++)
+	{
+		u8 e;
+		if (st == TAS_SKIP32)
+			e = TAS_P32;
+		else if (st == TAS_SKIP64)
+			e = TAS_P64;
+		else if (st == TAS_SKIPMV)
+			e = TAS_MV;
+		else if (st >= TAS_COUNT - 1)
+			e = TAS_NOLIST;  // state 7 is unused
+		else switch (pt)
+		{
+		case ParamType_User_Tile_Clip:
+			e = (u8)st;      // 32 bytes, ignored by the store stage
+			break;
+
+		case ParamType_Polygon_or_Modifier_Volume:
+			if (st == TAS_NOLIST)
+				e = TAS_SLOW | (u8)st;   // opens the list, so it needs ListType
+			else if (st == TAS_MV)
+				e = TAS_MV;              // 32-byte header, 64-byte vertices
+			else
+			{
+				u32 uid = TileAccel.ta_type_lut[k << 2];
+				u8 vtx = ta_vtx_is_64((u8)uid) ? TAS_P64 : TAS_P32;
+				if ((uid >> 30) == SZ64)
+					e = (vtx == TAS_P64) ? TAS_SKIP64 : TAS_SKIP32;
+				else
+					e = vtx;
+			}
+			break;
+
+		case ParamType_Sprite:
+			// Sprite vertices are 64 bytes, like modvol ones, so a modvol list
+			// keeps its state either way.
+			if (st == TAS_NOLIST)
+				e = TAS_SLOW | (u8)st;
+			else
+				e = (st == TAS_MV) ? TAS_MV : TAS_P64;
+			break;
+
+		case ParamType_Vertex_Parameter:
+			if (st == TAS_P64)
+				e = TAS_SKIP64;
+			else if (st == TAS_MV)
+				e = TAS_SKIPMV;
+			else
+				e = (u8)st;  // 32-byte vertex, or a stray one with no list open
+			break;
+
+		default:             // End_Of_List and the reserved types
+			e = TAS_SLOW | (u8)st;
+			break;
+		}
+		s_fsm[(st << 8) | (pt << 5) | k] = e;
+	}
+}
+
+static void ta_store_reset()
+{
+	s_fsm_state = TAS_NOLIST;
+	s_store_list = ListType_None;
+}
+
+// The records the table cannot answer from obj_ctrl alone: they open or close a
+// list, so they need the live list state.
+static u8 ta_store_slow(Ta_Dma* d, u8 st)
+{
+	PCW pcw = d->pcw;
+	switch (pcw.ParaType)
+	{
+	case ParamType_End_Of_List:
+		// As the splitter: an end with no list open adopts the parameter's own
+		// ListType, and spg_SchedListEndIrq drops anything above 4.
+		if (s_store_list == ListType_None)
+			s_store_list = pcw.ListType;
+		spg_SchedListEndIrq(s_store_list);
+		s_store_list = ListType_None;
+		return TAS_NOLIST;
+
+	case ParamType_Polygon_or_Modifier_Volume:
+	case ParamType_Sprite:
+		if (s_store_list == ListType_None)
+			s_store_list = pcw.ListType;
+		if (IsModVolList(s_store_list))
+			return TAS_MV;
+		// The list is open and ordinary now, so the table row answers the rest.
+		return s_fsm[(TAS_P32 << 8) | fsm_key(pcw.ParaType, pcw.obj_ctrl)];
+
+	default:
+		// Object_List_Set and the two reserved types. The splitter calls die()
+		// here, which on PS3 is a silent freeze; log once and skip instead.
+		{
+			static bool warned;
+			if (!warned)
+			{
+				warned = true;
+				printf("[ps3rend] TA parameter type %u ignored\n", pcw.ParaType);
+			}
+		}
+		return st;
+	}
+}
+
+// One table lookup per 32-byte record. The state carries across calls, so a
+// 64-byte record split over two SQ or DMA blocks resumes by itself.
+static void ta_store_fsm_run(Ta_Dma* p, u32 words)
+{
+	u32 st = s_fsm_state;
+	for (u32 i = 0; i < words; i++, p++)
+	{
+		// ParaType is bits 31..29 and obj_ctrl the low byte, in both endians.
+		u32 full = p->pcw.full;
+		u32 e = s_fsm[(st << 8) | ((full >> 24) & 0xE0) | ((full >> 2) & 0x1F)];
+		st = (e & TAS_SLOW) ? ta_store_slow(p, (u8)(e & 7)) : e;
+	}
+	s_fsm_state = (u8)st;
+}
+
+// The SH4 must not disturb a raw stream the render thread is still replaying.
+static void rth_wait_decode(TaContext* c)
+{
+	if (!s_rend_running)
+		return;
+	sysMutexLock(s_rmx, 0);
+	while (s_job_busy && s_busy_ctx == c && !s_job_decoded)
+		sysCondWait(s_done_cv, 0);
+	sysMutexUnlock(s_rmx);
+}
+
+static void rth_wait_idle()
+{
+	if (!s_rend_running)
+		return;
+	sysMutexLock(s_rmx, 0);
+	while (s_job_busy)
+		sysCondWait(s_done_cv, 0);
+	sysMutexUnlock(s_rmx);
+}
+
+static bool rth_busy()
+{
+	if (!s_rend_running)
+		return false;
+	sysMutexLock(s_rmx, 0);
+	bool busy = s_job_busy;
+	sysMutexUnlock(s_rmx);
+	return busy;
+}
+
 // Replays [from, to) of the stored stream through the real decoder. Merging what
 // arrived as separate SQ and DMA blocks is safe: a 64-byte record is only split
 // when it lands on a block end, and both halves feed the same decoder calls.
@@ -506,20 +738,21 @@ static void decode_range(TaContext* c, u32 from, u32 to)
 	while (p <= end);
 }
 
-// Decodes what the SH4 stored since the last call, splitting where TA_LIST_CONT
-// arrived. A stream with nothing new decodes nothing, so the lists stay as they
+// Decodes [raw_decoded, raw_end) of the stored stream, splitting where
+// TA_LIST_CONT arrived. raw_end is latched on the SH4 thread at STARTRENDER, so
+// the SH4 can keep appending while this runs and the extra bytes decode next
+// time. A stream with nothing new decodes nothing, so the lists stay as they
 // were and a second STARTRENDER redraws them, as nullDC-v1 does.
-static void decode_pending(TaContext* c)
+static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 {
-	if (!c->raw)
+	if (!c || !c->raw)
 		return;
-	TaContext* prev = s_ta;
-	s_ta = c;
+	s_dec = c;
 	if (c->raw_decoded == 0)
 		TileAccel.ListInit();
 
 	u32 pos = c->raw_decoded;
-	while (c->n_cont_done < c->n_cont && c->cont_marks[c->n_cont_done] <= c->raw_used)
+	while (c->n_cont_done < cont_end && c->cont_marks[c->n_cont_done] <= raw_end)
 	{
 		u32 mark = c->cont_marks[c->n_cont_done++];
 		if (mark > pos)
@@ -529,13 +762,12 @@ static void decode_pending(TaContext* c)
 		}
 		TileAccel.ListCont();
 	}
-	if (c->raw_used > pos)
-		decode_range(c, pos, c->raw_used);
-	c->raw_decoded = c->raw_used;
+	if (raw_end > pos)
+		decode_range(c, pos, raw_end);
+	c->raw_decoded = raw_end;
 
-	if (c->raw_used > s_stat_raw_peak)
-		s_stat_raw_peak = c->raw_used;
-	s_ta = prev;
+	if (raw_end > s_stat_raw_peak)
+		s_stat_raw_peak = raw_end;
 }
 
 // On overflow the store splitter still runs, over the source bytes, so the guest
@@ -555,6 +787,11 @@ void ps3ta_store_sq(u32* data)
 	{
 		c->raw_overflow = true;
 		s_stat_raw_of++;
+	}
+	if (s_ta_fast)
+	{
+		ta_store_fsm_run(rec, 1);
+		return;
 	}
 	verify(TaStore.TaCmd != 0);
 	TaStore.TaCmd(rec, rec);
@@ -576,6 +813,11 @@ void ps3ta_store_dma(u32* data, u32 size)
 	{
 		c->raw_overflow = true;
 		s_stat_raw_of++;
+	}
+	if (s_ta_fast)
+	{
+		ta_store_fsm_run(p, size);
+		return;
 	}
 	verify(TaStore.TaCmd != 0);
 	Ta_Dma* end = p + size - 1;
@@ -631,7 +873,7 @@ static bool using_autosort()
 // Bitfields are extracted by hand; the regs.h struct layout is little-endian.
 static void background_plane(BgVertex* out, DcParam* param)
 {
-	u32 param_base = g_rr.param_base;
+	u32 param_base = s_snap.param_base;
 	u32 bgt = ISP_BACKGND_T;
 	u32 tag_offset = bgt & 0x7;
 	u32 tag_address = (bgt >> 3) & 0x1FFFFF;
@@ -686,32 +928,33 @@ static void background_plane(BgVertex* out, DcParam* param)
 // TR2: the framebuffer read state the present path uses, latched at vblank.
 static void snapshot_present_regs()
 {
-	g_rr.fb_r_sof1 = FB_R_SOF1;
-	g_rr.fb_r_size = FB_R_SIZE;
-	g_rr.fb_r_depth = FB_R_CTRL.fb_depth;
+	s_snap.fb_r_sof1 = FB_R_SOF1;
+	s_snap.fb_r_size = FB_R_SIZE;
+	s_snap.fb_r_depth = FB_R_CTRL.fb_depth;
 }
 
 // TR2: everything the draw path reads, latched on the SH4 thread at STARTRENDER.
+// TR3: into s_snap, which the post copies into the job the render thread runs.
 // Order matters: param_base feeds background_plane, which reads VRAM.
 static void snapshot_render_regs()
 {
-	g_rr.param_base = PARAM_BASE & 0xF00000;
-	g_rr.isp_backgnd_d = ISP_BACKGND_D;
-	g_rr.pt_alpha_ref = PT_ALPHA_REF;
-	g_rr.fb_w_sof1 = FB_W_SOF1;
-	g_rr.fb_w_sof2 = FB_W_SOF2;
-	g_rr.fb_w_ctrl = FB_W_CTRL;
-	g_rr.fb_w_linestride = FB_W_LINESTRIDE;
-	g_rr.fb_x_clip_min = FB_X_CLIP.min;
-	g_rr.fb_x_clip_max = FB_X_CLIP.max;
-	g_rr.fb_y_clip_min = FB_Y_CLIP.min;
-	g_rr.fb_y_clip_max = FB_Y_CLIP.max;
-	g_rr.pal_ram_ctrl = PAL_RAM_CTRL;
-	g_rr.text_control = TEXT_CONTROL;
-	g_rr.fb_scale_x = s_fb_scale_x;
-	g_rr.fb_scale_y = s_fb_scale_y;
-	g_rr.autosort = using_autosort();
-	background_plane(g_rr.bg_vtx, &g_rr.bg_param);
+	s_snap.param_base = PARAM_BASE & 0xF00000;
+	s_snap.isp_backgnd_d = ISP_BACKGND_D;
+	s_snap.pt_alpha_ref = PT_ALPHA_REF;
+	s_snap.fb_w_sof1 = FB_W_SOF1;
+	s_snap.fb_w_sof2 = FB_W_SOF2;
+	s_snap.fb_w_ctrl = FB_W_CTRL;
+	s_snap.fb_w_linestride = FB_W_LINESTRIDE;
+	s_snap.fb_x_clip_min = FB_X_CLIP.min;
+	s_snap.fb_x_clip_max = FB_X_CLIP.max;
+	s_snap.fb_y_clip_min = FB_Y_CLIP.min;
+	s_snap.fb_y_clip_max = FB_Y_CLIP.max;
+	s_snap.pal_ram_ctrl = PAL_RAM_CTRL;
+	s_snap.text_control = TEXT_CONTROL;
+	s_snap.fb_scale_x = s_fb_scale_x;
+	s_snap.fb_scale_y = s_fb_scale_y;
+	s_snap.autosort = using_autosort();
+	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
 }
 
 // Plane through the 3 background vertices, evaluated per color channel and for UV at (x, y).
@@ -1264,8 +1507,8 @@ static u32 s_stat_fb_presents;
 
 static void fb_stamp_magic()
 {
-	vwi(g_rr.fb_w_sof1, FB_PRESENT_MAGIC);
-	vwi(g_rr.fb_w_sof2, FB_PRESENT_MAGIC);
+	vwi(s_snap.fb_w_sof1, FB_PRESENT_MAGIC);
+	vwi(s_snap.fb_w_sof2, FB_PRESENT_MAGIC);
 }
 
 static bool fb_needs_present()
@@ -1276,20 +1519,24 @@ static bool fb_needs_present()
 static inline u32 e5(u32 v) { return (v << 3) | (v >> 2); }
 static inline u32 e6(u32 v) { return (v << 2) | (v >> 4); }
 
-static void present_framebuffer()
+// TR3: the VRAM read stays on the SH4 thread, so the pixels are the ones the
+// guest had written at this vblank; only the quad goes to the render thread.
+static u32 s_fb_cpy_w, s_fb_cpy_h;
+
+static bool present_fb_convert()
 {
-	u32 fb_x_size = g_rr.fb_r_size & 0x3FF;
-	u32 fb_y_size = (g_rr.fb_r_size >> 10) & 0x3FF;
-	u32 fb_modulus = (g_rr.fb_r_size >> 20) & 0x3FF;
-	u32 fb_depth = g_rr.fb_r_depth;
+	u32 fb_x_size = s_snap.fb_r_size & 0x3FF;
+	u32 fb_y_size = (s_snap.fb_r_size >> 10) & 0x3FF;
+	u32 fb_modulus = (s_snap.fb_r_size >> 20) & 0x3FF;
+	u32 fb_depth = s_snap.fb_r_depth;
 	if (fb_x_size == 0 || fb_y_size == 0)
-		return;
+		return false;
 	if (fb_depth == 2)
 	{
 		static u32 s_warned;
 		if (s_warned++ < 3)
 			printf("[ps3rend] 24-bit framebuffer read not handled\n");
-		return;
+		return false;
 	}
 
 	// fb_x_size counts 32-bit words per line, so a 16-bit line holds twice as many pixels.
@@ -1301,7 +1548,7 @@ static void present_framebuffer()
 	u32 cpy_w = src_w > FB2D_W ? FB2D_W : src_w;
 	u32 cpy_h = src_h > FB2D_H ? FB2D_H : src_h;
 
-	u32 addr = g_rr.fb_r_sof1;
+	u32 addr = s_snap.fb_r_sof1;
 	for (u32 y = 0; y < cpy_h; y++)
 	{
 		u32 line = addr;
@@ -1324,7 +1571,14 @@ static void present_framebuffer()
 		}
 		addr += (src_w + mod_px) * bpp;
 	}
+	s_fb_cpy_w = cpy_w;
+	s_fb_cpy_h = cpy_h;
+	return true;
+}
 
+static void present_fb_draw()
+{
+	u32 cpy_w = s_fb_cpy_w, cpy_h = s_fb_cpy_h;
 	if (!ps3_video_begin_frame())
 		return;
 
@@ -1378,10 +1632,258 @@ static void present_framebuffer()
 	glDepthMask(GL_TRUE);
 	ps3_video_end_frame();
 	reset_param_cache();
-
-	// Mark what is now on screen; the next write by the game clears the mark.
-	vwi(g_rr.fb_r_sof1, FB_PRESENT_MAGIC);
 	s_stat_fb_presents++;
+}
+
+// -- TR3: the render thread --------------------------------------------------
+
+// Publishes "the replay is done", so the SH4 may touch this context's raw stream again.
+static void rth_mark_decoded()
+{
+	if (!s_rend_running)
+		return;
+	sysMutexLock(s_rmx, 0);
+	s_job_decoded = true;
+	sysCondBroadcast(s_done_cv);
+	sysMutexUnlock(s_rmx);
+}
+
+static void rth_print_stats()
+{
+	double now = os_GetSeconds();
+	if (now - s_stat_t0 < 5.0)
+		return;
+	u32 r = s_stat_renders ? s_stat_renders : 1;
+	u32 decodes, live;
+	ps3tex_stats(&decodes, &live);
+	printf("[rend] renders=%u drop=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK\n",
+	       s_stat_renders, s_stat_dropped, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
+	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
+	       (u32)(s_stat_job_max * 1000.0), s_stat_vtx / r,
+	       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
+	       s_stat_strips[ListType_Translucent] / r,
+	       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
+	       s_stat_built[ListType_Translucent] / r,
+	       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow,
+	       s_stat_raw_of, s_stat_raw_peak / 1024);
+	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
+	if (s_stat_job_max > 0.25)
+		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
+	memset(s_stat_mv, 0, sizeof(s_stat_mv));
+	s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
+	memset(s_stat_strips, 0, sizeof(s_stat_strips));
+	memset(s_stat_built, 0, sizeof(s_stat_built));
+	s_overflow = 0;
+	s_stat_raw_of = 0;
+	s_stat_raw_peak = 0;
+	s_stat_dropped = 0;
+	s_stat_job_max = 0.0;
+	s_stat_t0 = now;
+}
+
+// Stage 1 of a job: the TA replay. It is split from the draw so the inline path
+// can still run it under the guest rounding mode, as TR2 did.
+static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end)
+{
+	REND_PHASE(PH_TADEC);
+	decode_pending(c, raw_end, cont_end);
+	s_rc = c;
+	rth_mark_decoded();
+}
+
+// Stage 2: every RSX call of the job.
+static void rth_job_draw(int type)
+{
+	double t0 = os_GetSeconds();
+	if (type == JOB_PRESENT)
+	{
+		REND_PHASE(PH_PRESENT);
+		present_fb_draw();
+	}
+	else if (type == JOB_RTT)
+	{
+		REND_PHASE(PH_RTT);
+		rtt_render();
+	}
+	else
+	{
+		s_stat_renders++;
+		s_stat_vtx += s_rc->nvtx;
+		VertexCount += s_rc->nvtx;
+		for (int k = 0; k < 5; k++)
+			s_stat_mv[k] += s_rc->mv_tris[k];
+
+		REND_PHASE(PH_BEGINFRAME);
+		if (ps3_video_begin_frame())
+		{
+			REND_PHASE(PH_DRAW);
+			draw_frame();
+			REND_PHASE(PH_ENDFRAME);
+			ps3_video_end_frame();
+		}
+	}
+	REND_PHASE(PH_IDLE);
+
+	double dt = os_GetSeconds() - t0;
+	if (dt > s_stat_job_max)
+		s_stat_job_max = dt;
+	if (type == JOB_RENDER)
+		rth_print_stats();
+}
+
+static void rth_thread(void* arg)
+{
+	// The SH4 thread FPSCR follows the guest rounding mode. This thread has its
+	// own, set once here, so no draw call has to save and restore it.
+	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+
+	sysMutexLock(s_rmx, 0);
+	while (!s_rend_quit)
+	{
+		if (!s_job_pending)
+		{
+			// Timed wait: a missed signal costs 100 ms, never the whole run.
+			sysCondWait(s_job_cv, 100 * 1000);
+			continue;
+		}
+		int type = s_job_type;
+		TaContext* c = s_job_ctx;
+		u32 raw_end = s_job_raw_end, cont_end = s_job_cont_end;
+		memcpy(&g_rr, &s_job_rr, sizeof(g_rr));
+		s_job_pending = false;
+		sysMutexUnlock(s_rmx);
+
+		if (type != JOB_PRESENT)
+			rth_job_decode(c, raw_end, cont_end);
+		rth_job_draw(type);
+
+		sysMutexLock(s_rmx, 0);
+		s_job_type = JOB_NONE;
+		s_job_busy = false;
+		s_busy_ctx = 0;
+		s_job_decoded = true;
+		sysCondBroadcast(s_done_cv);
+	}
+	sysMutexUnlock(s_rmx);
+	sysThreadExit(0);
+}
+
+static bool rth_start()
+{
+	if (!get_render_thread_preset())
+	{
+		printf("[ps3rend] render thread off, drawing on the SH4 thread\n");
+		return false;
+	}
+	sys_mutex_attr_t mattr;
+	sysMutexAttrInitialize(mattr);
+	if (sysMutexCreate(&s_rmx, &mattr) != 0)
+	{
+		printf("[ps3rend] render mutex create failed\n");
+		return false;
+	}
+	// PSL1GHT spells the default cond attr 0x200 (pshared) and the default mutex
+	// attr 0x200 (not pshared); if lv2 rejects that pair, retry with it cleared.
+	sys_cond_attr_t cattr;
+	sysCondAttrInitialize(cattr);
+	if (sysCondCreate(&s_job_cv, s_rmx, &cattr) != 0)
+	{
+		cattr.attr_pshared = 0;
+		if (sysCondCreate(&s_job_cv, s_rmx, &cattr) != 0)
+		{
+			printf("[ps3rend] render cond create failed\n");
+			sysMutexDestroy(s_rmx);
+			return false;
+		}
+	}
+	if (sysCondCreate(&s_done_cv, s_rmx, &cattr) != 0)
+	{
+		printf("[ps3rend] render cond create failed\n");
+		sysCondDestroy(s_job_cv);
+		sysMutexDestroy(s_rmx);
+		return false;
+	}
+
+	s_job_type = JOB_NONE;
+	s_job_pending = s_job_busy = false;
+	s_job_decoded = true;
+	s_busy_ctx = 0;
+	s_rend_quit = 0;
+	// Priority 1000: just above the SH4 thread (1001), below the audio feeder (100).
+	s32 ret = sysThreadCreate(&s_rend_tid, rth_thread, NULL, 1000, 0x20000,
+	                          THREAD_JOINABLE, (char*)"nulldc_render");
+	if (ret != 0)
+	{
+		printf("[ps3rend] render thread create failed: 0x%08X\n", (unsigned)ret);
+		return false;
+	}
+	s_rend_running = true;
+	printf("[ps3rend] render thread up\n");
+	return true;
+}
+
+static void rth_stop()
+{
+	if (!s_rend_running)
+		return;
+	rth_wait_idle();
+	sysMutexLock(s_rmx, 0);
+	s_rend_quit = 1;
+	sysCondBroadcast(s_job_cv);
+	sysMutexUnlock(s_rmx);
+	u64 rv;
+	sysThreadJoin(s_rend_tid, &rv);
+	s_rend_running = false;
+	sysCondDestroy(s_job_cv);
+	sysCondDestroy(s_done_cv);
+	sysMutexDestroy(s_rmx);
+	printf("[ps3rend] render thread down\n");
+}
+
+// Hands one job over, or runs it inline when the render thread is off (the TR2
+// path). Returns false when the frame was dropped because the render thread was
+// still busy: libswirl drops too, rather than letting the guest wait. RTT never
+// drops, because the guest reads the rendered texture straight back from VRAM.
+static bool rth_run(int type, TaContext* c)
+{
+	if (s_rend_running)
+	{
+		bool blocking = (type == JOB_RTT);
+		sysMutexLock(s_rmx, 0);
+		while (blocking && s_job_busy)
+			sysCondWait(s_done_cv, 0);
+		if (s_job_busy)
+		{
+			sysMutexUnlock(s_rmx);
+			s_stat_dropped++;
+			return false;
+		}
+		s_job_type = type;
+		s_job_ctx = c;
+		s_busy_ctx = (type == JOB_PRESENT) ? 0 : c;
+		s_job_raw_end = c ? c->raw_used : 0;
+		s_job_cont_end = c ? c->n_cont : 0;
+		s_job_decoded = (type == JOB_PRESENT);
+		memcpy(&s_job_rr, &s_snap, sizeof(s_job_rr));
+		s_job_pending = true;
+		s_job_busy = true;
+		sysCondSignal(s_job_cv);
+		while (blocking && s_job_busy)
+			sysCondWait(s_done_cv, 0);
+		sysMutexUnlock(s_rmx);
+		return true;
+	}
+
+	memcpy(&g_rr, &s_snap, sizeof(g_rr));
+	if (type != JOB_PRESENT)
+		rth_job_decode(c, c ? c->raw_used : 0, c ? c->n_cont : 0);
+	// Host FPSCR follows the SH4 rounding mode (sh4_registers.cpp); draw with round-to-nearest.
+	double host_fpscr;
+	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
+	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+	rth_job_draw(type);
+	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
+	return true;
 }
 
 bool InitRenderer()
@@ -1398,11 +1900,18 @@ bool InitRenderer()
 	// Keep running headless if the RSX fails: the UDP log still shows why.
 	if (!ps3_video_init())
 		printf("[ps3rend] RSX init failed, running headless\n");
-	return TileAccel.Init() && TaStore.Init();
+	if (!TileAccel.Init() || !TaStore.Init())
+		return false;
+	s_ta_fast = get_ta_fast_preset() != 0;
+	ta_fsm_build();
+	ta_store_reset();
+	rth_start();
+	return true;
 }
 
 void TermRenderer()
 {
+	rth_stop();
 	TileAccel.Term();
 	TaStore.Term();
 	for (u32 i = 0; i < TA_CONTEXTS; i++)
@@ -1417,8 +1926,10 @@ void TermRenderer()
 
 void ResetRenderer(bool Manual)
 {
+	rth_wait_idle();
 	TileAccel.Reset(Manual);
 	TaStore.Reset(Manual);
+	ta_store_reset();
 	reset_all_contexts();
 	ps3tex_reset();
 	VertexCount = 0;
@@ -1435,15 +1946,17 @@ void VBlank()
 		return;
 	if (!fb_needs_present())
 		return; // the PVR render is still what the screen shows
+	if (rth_busy())
+		return; // the next vblank retries; nothing has been marked yet
 
 	SH4_PHASE(PH_VBLANK);
 	snapshot_present_regs();
-	double host_fpscr;
-	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
-	__asm__ volatile("mtfsfi 7,0" ::: "memory");
-	present_framebuffer();
-	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
-	FrameCount++;
+	if (present_fb_convert() && rth_run(JOB_PRESENT, 0))
+	{
+		// Mark what is now on screen; the next write by the game clears the mark.
+		vwi(s_snap.fb_r_sof1, FB_PRESENT_MAGIC);
+		FrameCount++;
+	}
 	SH4_PHASE(PH_GUEST);
 }
 
@@ -1451,20 +1964,19 @@ void StartRender()
 {
 	SH4_PHASE(PH_RENDER);
 	snapshot_render_regs();
-	s_rc = find_context(g_rr.param_base);
-	if (!s_rc)
+	TaContext* rc = find_context(s_snap.param_base);
+	if (!rc)
 	{
 		static u32 s_warned;
 		if (s_warned++ < 5)
 			printf("[ps3rend] no TA context for PARAM_BASE=%08X, drawing TA_ISP_BASE's\n", (u32)PARAM_BASE);
-		s_rc = s_ta;
+		rc = s_ta;
 	}
-	// TR1: the stored TA bytes become vertices here, not on the guest's write.
-	decode_pending(s_rc);
-	u32 vtx = s_rc->nvtx;
-	VertexCount += vtx;
 
-	// Same render-done timing as gxRend.cpp StartRender(); games pace off these IRQs.
+	// Same render-done timing as gxRend.cpp StartRender(); games pace off these
+	// IRQs. TR3 replays the TA stream after this point, so nvtx is still this
+	// context's previous count - close enough for a delay that is clamped anyway.
+	u32 vtx = rc->nvtx;
 	if (get_render_delay_preset())
 	{
 		render_isp_pending_cycles = 800000;
@@ -1480,65 +1992,20 @@ void StartRender()
 	}
 
 	// FB_W_SOF1 bit 24 = render to texture, not a displayed frame.
-	if (g_rr.fb_w_sof1 & 0x1000000)
+	if (s_snap.fb_w_sof1 & 0x1000000)
 	{
 		s_stat_rtt++;
-		double rtt_fpscr;
-		__asm__ volatile("mffs %0" : "=f"(rtt_fpscr) :: "memory");
-		__asm__ volatile("mtfsfi 7,0" ::: "memory");
 		SH4_PHASE(PH_RTT);
-		rtt_render();
-		__asm__ volatile("mtfsf 0xff,%0" :: "f"(rtt_fpscr) : "memory");
+		rth_run(JOB_RTT, rc);
 		SH4_PHASE(PH_GUEST);
 		return;
 	}
 
-	FrameCount++;
-	s_stat_renders++;
-	for (int k = 0; k < 5; k++)
-		s_stat_mv[k] += s_rc->mv_tris[k];
-	s_stat_vtx += vtx;
-
-	// Host FPSCR follows the SH4 rounding mode (sh4_registers.cpp); draw with round-to-nearest.
-	double host_fpscr;
-	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
-	__asm__ volatile("mtfsfi 7,0" ::: "memory");
-	SH4_PHASE(PH_BEGINFRAME);
-	if (ps3_video_begin_frame())
-	{
-		SH4_PHASE(PH_DRAW);
-		draw_frame();
-		SH4_PHASE(PH_ENDFRAME);
-		ps3_video_end_frame();
-	}
-	// Mark the framebuffer the PVR just produced, so VBlank knows it is on screen.
+	if (rth_run(JOB_RENDER, rc))
+		FrameCount++;
+	// Mark the framebuffer the PVR just produced, so VBlank knows it is on
+	// screen. A dropped frame is marked too: the guest believes it rendered.
 	fb_stamp_magic();
-	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
-
-	double now = os_GetSeconds();
-	if (now - s_stat_t0 >= 5.0)
-	{
-		u32 r = s_stat_renders ? s_stat_renders : 1;
-		u32 decodes, live;
-		ps3tex_stats(&decodes, &live);
-		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK\n",
-		       s_stat_renders, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
-		       g_rr.autosort ? "auto" : "pre", s_stat_vtx / r,
-		       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
-		       s_stat_strips[ListType_Translucent] / r,
-		       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
-		       s_stat_built[ListType_Translucent] / r,
-		       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow,
-		       s_stat_raw_of, s_stat_raw_peak / 1024);
-		memset(s_stat_mv, 0, sizeof(s_stat_mv));
-		s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
-		memset(s_stat_strips, 0, sizeof(s_stat_strips));
-		memset(s_stat_built, 0, sizeof(s_stat_built));
-		s_overflow = 0;
-		s_stat_raw_of = 0;
-		s_stat_raw_peak = 0;
-		s_stat_t0 = now;
-	}
 	SH4_PHASE(PH_GUEST);
 }
 
@@ -1556,15 +2023,29 @@ void ListCont()
 		s_ta->raw_overflow = true;
 		s_stat_raw_of++;
 	}
-	TaStore.ListCont();
+	// The fast store keeps no per-list-cont state: a continuation reopens the
+	// finished flags the splitter tracks, and the table does not use them.
+	if (!s_ta_fast)
+		TaStore.ListCont();
 }
 
 void ListInit()
 {
 	set_ta_context(TA_ISP_BASE);
+	// reset_raw drops bytes the render thread may still be replaying.
+	rth_wait_decode(s_ta);
 	reset_raw(s_ta);
-	TaStore.ListInit();
+	if (s_ta_fast)
+		ta_store_reset();
+	else
+		TaStore.ListInit();
 }
 
 // As nullDC-v1: a soft reset keeps the lists and the stored bytes.
-void SoftReset() { TaStore.SoftReset(); }
+void SoftReset()
+{
+	if (s_ta_fast)
+		ta_store_reset();
+	else
+		TaStore.SoftReset();
+}

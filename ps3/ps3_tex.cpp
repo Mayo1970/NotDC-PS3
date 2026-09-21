@@ -377,13 +377,13 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		u32 hsh = hash_texture(d);
 		if (hsh != hit->hash)
 		{
-			SH4_PHASE(PH_TEX);
+			REND_PHASE(PH_TEX);
 			decode(d, tsp.IgnoreTexA);
 			glBindTexture(GL_TEXTURE_2D, hit->name);
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 			hit->hash = hsh;
 			s_decodes++;
-			SH4_PHASE(PH_DRAW);
+			REND_PHASE(PH_DRAW);
 		}
 		hit->checked_frame = s_frame;
 	}
@@ -409,7 +409,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		if (d.w != d.h)               s_flag_nonsq++;
 		if (tsp.FlipU || tsp.FlipV)   s_flag_mirror++;
 		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
-		SH4_PHASE(PH_TEX);
+		REND_PHASE(PH_TEX);
 		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
@@ -417,7 +417,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 		s_live++;
 		s_decodes++;
-		SH4_PHASE(PH_DRAW);
+		REND_PHASE(PH_DRAW);
 	}
 
 	hit->last_frame = s_frame;

@@ -284,10 +284,10 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
 	rsxSetTransferData(s_ctx, GCM_TRANSFER_LOCAL_TO_MAIN, s_rb_off, w * 4,
 	                   s_color_off[s_cur_fb] + src_y * s_pitch + x * 4, s_pitch,
 	                   w * 4, h);
-	SH4_PHASE(PH_READBACK);
+	REND_PHASE(PH_READBACK);
 	rsxFlushBuffer(s_ctx);
 	rsxFinish(s_ctx, 1);
-	SH4_PHASE(PH_RTT);
+	REND_PHASE(PH_RTT);
 	return (const u32*)s_rb_addr;
 }
 
