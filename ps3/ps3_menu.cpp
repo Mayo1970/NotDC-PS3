@@ -307,6 +307,8 @@ static Option s_emu[] = {
 	  "On = mova and PC-relative loads run on the interpreter. Bisect aid." },
 	{ "JIT DynEnds",     &g_jit_dynends_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "On = no static block linking; every exit goes via the dispatcher." },
+	{ "JIT Fastmem",     &g_jit_fastmem_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Inlines main-RAM loads and stores. Other regions go out of line." },
 	{ "Scheduler",       &g_sched_preset,         OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Cycle-accurate event scheduling for AICA, DMA and GD-ROM." },
 	{ "DMA Fix",         &g_dma_fix_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

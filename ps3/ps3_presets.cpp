@@ -33,6 +33,7 @@ int g_jit_carry_preset     = 0;
 int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking
+int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
 
 struct CfgItem { const char* key; int* val; };
 
@@ -61,6 +62,7 @@ static const CfgItem s_items[] = {
 	{ "JitMac",        &g_jit_mac_preset },
 	{ "JitPcRelIfb",   &g_jit_pcrel_preset },
 	{ "JitDynEnds",    &g_jit_dynends_preset },
+	{ "JitFastmem",    &g_jit_fastmem_preset },
 };
 
 void ps3_presets_load(void)
@@ -111,6 +113,10 @@ int get_jit_carry_preset()     { return g_jit_carry_preset; }
 int get_jit_mac_preset()       { return g_jit_mac_preset; }
 int get_jit_pcrel_preset()     { return g_jit_pcrel_preset; }
 int get_jit_dynends_preset()   { return g_jit_dynends_preset; }
+
+// FASTMEM, PS3 flavour: inline main-RAM accesses in the JIT (Dynarec.MD 3.4).
+// Unrelated to get_fastmem_preset() below, which is the Wii MMU design.
+int get_jit_fastmem_preset()   { return g_jit_fastmem_preset; }
 
 // JIT backend presets. The first PS3 port keeps every one of them off
 // (Dynarec.MD 1). FASTMEM can never be on: the Wii design needs a resumable

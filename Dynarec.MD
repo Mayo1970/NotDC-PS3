@@ -174,6 +174,10 @@ Keep all of this out of the first port. Ship the C-call path first (`ReadMem*` /
 `WriteMem*` trampolines), measure, then decide whether the mirror mapping is
 worth it. Until then the PS3 dynarec lands slower than the Wii numbers suggest.
 
+**Built, 2026-09-21 — see 6.8.** The guard branch is unavoidable either way, so
+the mapping half was not built: `sysMMapper` would replace one `rlwinm` and add
+an lv2 dependency. The window is arithmetic instead.
+
 ### 3.5 Small 64-bit fixes
 
 - `bm_bcache` entries are 8 bytes on the Wii (`u32 addr` + 32-bit pointer). On
@@ -363,8 +367,8 @@ Same class as bug 3, fixed there and missed here.
 - `bm_bcache` still hardcodes `idx*8` for an entry that is 16 bytes at 64-bit.
   Guarded by `verify(sizeof(BlockCacheFlatEntry)==8)`, so BCACHE will abort
   loudly rather than corrupt. Fix before enabling that preset.
-- FASTMEM is permanently off (3.4). `rec_fastmem_patch()` is kept behind
-  `#if PS3_FASTMEM_DSI` for reference only.
+- The Wii MMU FASTMEM is permanently off (3.4). `rec_fastmem_patch()` is kept
+  behind `#if PS3_FASTMEM_DSI` for reference only. The PS3 replacement is 6.8.
 
 ## 6.6 Workflow
 
@@ -402,3 +406,80 @@ including dense driving.
 SPEED% is NOT comparable across the two. `rec_config.h` sets `CPU_RATIO 1`
 while the interpreter charges 8 (section 4), so the dynarec is doing roughly
 8x the emulated work per percent.
+
+## 6.8 FASTMEM, PS3 flavour — built and HW validated 2026-09-21
+
+Preset `JitFastmem` (`[ps3]` key, Emulation -> "JIT Fastmem"), default OFF.
+`[jitcfg]` prints it; a `[fastmem]` line names the RAM window at start-up.
+
+**What it does.** Main RAM is 16 MB of plain host memory and the SH4 reaches it
+through area 3 of every P0-P3 mirror. So a runtime load or store needs no table
+lookup at all:
+
+    rlwinm r0,addr,3,29,2      ; r0 = (area<<29) | region
+    xoris  r0,r0,0x6000        ; area 3 folds to 0
+    cmplwi r0,7                ; RAM in P0-P3 -> 0..6, P4 -> 7
+    bge    cold
+    rlwinm rT,addr,0,8,31      ; ea = addr & 0x00FFFFFF
+    addis  rT,rT,hi(mem_b)
+    [xori  rT,rT,4-sz]         ; big-endian sub-word swizzle
+    l/st   ...,0(rT)
+
+The single rotate works because the region bits (31..29) and the area bits
+(28..26) are adjacent, so one `rlwinm` brings both into one word with the area
+on top. Excluding region 7 is what keeps P4 right: `0xEC000000` masks onto
+area 3 but is not RAM, and the store queue at `0xE0000000` must keep reaching
+`sq_both`. The page-by-page guard was checked against `mem_map_defualt()` for
+all 256 top bytes — it accepts exactly the pages `_vmem` maps to `mem_b`.
+
+**Why this and not `sysMMapperSearchAndMap`.** 3.4's mapping idea still needs a
+guard branch, because unmapped pages inside the window would fault fatally and
+GameOS has no resumable handler. The mapping would therefore buy one `rlwinm`
+and cost an lv2 dependency plus moving `mem_b` out of `memalign`.
+
+**What moved.** The generic `_vmem_MemInfo_ptr` tier is factored into
+`emit_vmem_tier()` and, on a fastmem site, emitted in the COLD fragment ahead
+of the `ReadMem*`/`WriteMem*` call. So VRAM, the TA FIFO, wave RAM and the
+store queue still avoid the C call; they only leave the straight-line stream.
+Nothing that is direct today becomes a C call.
+
+Scalar reads gain the most. Before this they had no table tier at all: only the
+top byte `0x8C` was inlined and everything else — including `0x0C`, which is
+where Crazy Taxi runs — took a full C call.
+
+**Cleanup still owed.** The inline copies of the tier in `shop_readm` /
+`shop_writem` were left in place so a `JitFastmem=0` run stayed the untouched
+baseline. That baseline has now served its purpose, so they can be deleted and
+the preset defaulted ON.
+
+**HW 2026-09-21: PASS.** Crazy Taxi, `Dynarec=1 JitDynEnds=0 JitSafe=0
+JitFastmem=1`, RAM window at `0x51b10000`. 327 s of play, 236 one-second
+samples with real geometry (`vt > 1K`), no freeze — past the ~3 min `phase=rtt`
+stop in 6.5. Matt: "A bit faster!". Log clean: no unimplemented opcodes, no TA
+overflow, no dropped audio, 12757 frames presented against 48 skipped.
+
+| | min | avg | max | 6.7 baseline avg |
+|---|---|---|---|---|
+| VPS | 21.6 | 45.7 | 60.2 | 33.3 |
+| RPS | 8.0 | 45.2 | 60.2 | 30.7 |
+| SPEED% | 36.1 | 76.3 | 100.4 | 55.5 |
+
+RPS +47%, SPEED% +37%. 49% of samples sit at the 59.95 NTSC display cap.
+By geometry load, which is the reading that matters:
+
+| scene | samples | RPS | SPEED% |
+|---|---|---|---|
+| light, 1-1.5K verts | 9 | 51.9 | 98.2 |
+| medium, 1.5-8K | 131 | 56.2 | 94.6 |
+| dense, >8K | 96 | 29.5 | 49.3 |
+
+Everything but dense traffic now runs at or near full Dreamcast speed. Dense
+driving is unchanged in character and is the renderer wall G6/G7 predicted:
+508 strips per render, one `glBegin`/`glEnd` each. Fastmem cannot move that.
+Batching same-state strips is the next lever, and `GPstate_cache` already
+knows when the state is unchanged.
+
+Open, not a fastmem regression: the XMB exit took the `ExitFix=1` fallback
+(`[ps3] SH4 did not stop in 3 s, forcing process exit`) where earlier runs
+exited cleanly. A much faster SH4 sits longer inside a timeslice before it
+sees `Stop`. Worth one check.

@@ -2304,6 +2304,66 @@ static f32 rec_fsrra(f32 x)  { CCALL(CC_FSRRA); return 1.0f / sqrtf(x); }
 // OPERATION COMPILATION
 // =====================
 
+// FASTMEM (Dynarec.MD 3.4), preset `JitFastmem`. Fault-free variant: main RAM
+// is inlined, every other region goes to the cold fragment. No DSI handler.
+
+extern "C" int get_jit_fastmem_preset();
+
+static u32  s_fm_ram_hi;	// mem_b.data >> 16, for the single addis
+static bool s_fm_ok;		// RAM block fits the one-addis shape below
+
+// Idempotent. Needs _vmem_reserve() done and must precede the first compile.
+static void ps3_fastmem_init()
+{
+	static bool announced;
+	s_fm_ok=false;
+	s_fm_ram_hi=0;
+
+	const uintptr_t p=(uintptr_t)mem_b.data;
+	// One addis needs the low 16 bits clear, and sub-2 GB because it sign-extends.
+	if (!p || (p & 0xFFFF) || (p + RAM_SIZE) > 0x7FFF0000u)
+	{
+		if (!announced)
+			printf("[fastmem] disabled: RAM at %p is not a 64 KB-aligned"
+			       " sub-2 GB block\n", mem_b.data);
+		announced=true;
+		return;
+	}
+	s_fm_ram_hi=(u32)(p>>16);
+	s_fm_ok=true;
+	if (!announced)
+		printf("[fastmem] RAM window %p, preset %s\n",
+		       mem_b.data, get_jit_fastmem_preset()?"ON":"OFF");
+	announced=true;
+}
+
+static inline bool fm_on()
+{
+	return s_fm_ok && get_jit_fastmem_preset()!=0;
+}
+
+// CR0 "lt" <=> main RAM in any P0-P3 mirror. Region bits 31..29 and area bits
+// 28..26 are adjacent, so one rotate lands both; region 7 (P4) is excluded so
+// 0xEC and the store queue still take the generic path.
+// Scratch is r0 only: the cold path must still see the original address.
+static void fm_emit_guard(u32 areg)
+{
+	ppc_rlwinmx(ppc_r0,areg,3,29,2,0);	// r0 = (area<<29) | region
+	ppc_xoris(ppc_r0,ppc_r0,0x6000);	// area 3 -> 0
+	ppc_cmpli(ppc_cr0,ppc_r0,7,0);		// < 7: area 3 and region != 7
+}
+
+// rT = mem_b.data + (addr & 0x00FFFFFF), sub-word swizzle folded in. Emitted
+// only past the guard branch, and rlwinm zero-extends so a poisoned upper half
+// (6.2 bug 5) cannot reach the host access.
+static void fm_emit_addr(u32 rT,u32 areg,u32 sz)
+{
+	ppc_rlwinmx(rT,areg,0,8,31,0);		// 16 MB mirror mask
+	ppc_addis(rT,rT,s_fm_ram_hi);
+	if (sz==1 || sz==2)
+		ppc_xori(rT,rT,4-sz);
+}
+
 // ── Cold-out-of-line slow paths for memory ops ──────────────────────────────
 // The mem fast path is the common case (direct RAM/VRAM access). To keep it a
 // straight fall-through with a SINGLE not-taken branch, we emit:
@@ -2343,14 +2403,155 @@ struct ColdFrag
 	u8         fdreg;   // pinned FPR for the float bounce, or 0xFF = int path
 	u16        fofs;    // context byte offset of the FR's memory slot
 	void*      fuct;    // slow C function (ReadMem*/WriteMem*); 0 -> default by sz
+	// FASTMEM: the inline path covers main RAM only, so the fragment runs the
+	// generic _vmem table tier first and only then falls back to the C call.
+	u8         vmem_tier;
 };
 // Sized so it cannot overflow within one block: ngen_Compile bails when
 // emit_FreeSpace() < 16KB, so a block emits < 4096 PPC insns; each mem op's
-// fast path is >=~8 insns, capping mem ops well under 1024.
+// fast path is >=7 insns, capping mem ops well under 1024.
 static ColdFrag s_cold[1024];
 static u32      s_cold_n;
 
 static void ColdReset() { s_cold_n = 0; }
+
+// Generic _vmem_MemInfo_ptr tier for one memory op:
+//   iirf = _vmem_MemInfo_ptr[addr>>24]; ptr = iirf & ~0x1F;
+//   if (ptr) { sh=iirf&0x1F; a=(addr<<sh)>>sh; if (sz<4) a^=4-sz; *(T*)(ptr+a); }
+// Entries are void* (8 B here, 4 on the Wii) and big-endian puts a sub-4 GB
+// pointer's low word at +4, hence the *8 index and the +4 base bias.
+// Emits the MMIO test, a forward branch out, then the direct access, and
+// returns that branch's label for the caller to point at its own slow path.
+// areg/datareg and rarg0 survive to the branch, so the slow path can use them.
+static ppc_label* emit_vmem_tier(const ColdFrag& c)
+{
+	const bool fdirect = c.fdreg!=0xFF;
+	ppc_label* mmio;
+
+	if (c.kind==0)			// --- read scalar -> rdreg ---
+	{
+		ppc_rlwinmx(ppc_r0,c.areg,11,21,28,0);		// (addr>>24)*8
+		u32 lo=ppc_addr_high(ppc_rarg1,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
+		if (lo) ppc_addi(ppc_rarg1,ppc_rarg1,lo);
+		ppc_lwzx(ppc_rarg1,ppc_rarg1,ppc_r0);		// rarg1 = iirf
+		ppc_rlwinmx(ppc_rarg2,ppc_rarg1,0,0,26,0);	// rarg2 = ptr
+		ppc_cmpli(ppc_cr0,ppc_rarg1,0x20,0);		// iirf < 0x20 ? (MMIO)
+
+		mmio=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt -> MMIO
+
+		// shift count = iirf directly: ptr is >=0x40-aligned, so iirf's low 6
+		// bits are the shift and slw/srw only look at those.
+		ppc_slwx(ppc_r0,c.areg,ppc_rarg1,0);
+		ppc_srwx(ppc_r0,ppc_r0,ppc_rarg1,0);		// mirror mask
+		if (c.sz<4)
+			ppc_xori(ppc_r0,ppc_r0,4-c.sz);
+		if (fdirect)
+			ppc_lfsx(c.fdreg,ppc_rarg2,ppc_r0);
+		else if (c.sz==1)
+		{
+			ppc_lbzx(c.rdreg,ppc_rarg2,ppc_r0);
+			ppc_extsbx(c.rdreg,c.rdreg,0);
+		}
+		else if (c.sz==2)
+		{
+			ppc_lhzx(c.rdreg,ppc_rarg2,ppc_r0);
+			ppc_extshx(c.rdreg,c.rdreg,0);
+		}
+		else
+			ppc_lwzx(c.rdreg,ppc_rarg2,ppc_r0);
+	}
+	else if (c.kind==1)		// --- read pair (64) -> rrv0:rrv1 ---
+	{
+		ppc_rlwinmx(ppc_r0,ppc_rarg0,11,21,28,0);
+		u32 lo=ppc_addr_high(ppc_rarg1,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
+		if (lo) ppc_addi(ppc_rarg1,ppc_rarg1,lo);
+		ppc_lwzx(ppc_rarg1,ppc_rarg1,ppc_r0);		// rarg1 = iirf
+		ppc_rlwinmx(ppc_rarg2,ppc_rarg1,0,0,26,0);	// rarg2 = ptr (!= r0)
+		ppc_cmpli(ppc_cr0,ppc_rarg1,0x20,0);
+
+		mmio=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt -> MMIO
+
+		// Replicates the BE *(u64*)p load: word[addr] -> rrv0, word[addr+4] -> rrv1,
+		// which is the ReadMem64 register pair.
+		ppc_slwx(ppc_rarg0,ppc_rarg0,ppc_rarg1,0);
+		ppc_srwx(ppc_rarg0,ppc_rarg0,ppc_rarg1,0);
+		if (fdirect)
+		{
+			ppc_lfsx(c.fdreg,ppc_rarg2,ppc_rarg0);
+			ppc_addi(ppc_rarg0,ppc_rarg0,4);
+			ppc_lfsx(c.fdreg+1,ppc_rarg2,ppc_rarg0);
+		}
+		else
+		{
+			ppc_lwzx(ppc_rarg3,ppc_rarg2,ppc_rarg0);
+			ppc_addi(ppc_rarg0,ppc_rarg0,4);
+			ppc_lwzx(ppc_rrv1,ppc_rarg2,ppc_rarg0);
+			ppc_ori(ppc_rrv0,ppc_rarg3,0);
+		}
+	}
+	else if (c.kind==2)		// --- write scalar ---
+	{
+		ppc_rlwinmx(ppc_r0,c.areg,11,21,28,0);
+		u32 lo=ppc_addr_high(ppc_rarg2,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
+		if (lo) ppc_addi(ppc_rarg2,ppc_rarg2,lo);
+		ppc_lwzx(ppc_rarg2,ppc_rarg2,ppc_r0);		// rarg2 = iirf
+		// ptr must not be r0: an indexed store reads base r0 as literal zero.
+		ppc_rlwinmx(ppc_rarg3,ppc_rarg2,0,0,26,0);	// rarg3 = ptr
+		ppc_cmpli(ppc_cr0,ppc_rarg2,0x20,0);		// keeps iirf alive as the shift
+
+		mmio=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt -> MMIO
+
+		ppc_slwx(ppc_r0,c.areg,ppc_rarg2,0);
+		ppc_srwx(ppc_r0,ppc_r0,ppc_rarg2,0);
+		if (c.sz<4)
+			ppc_xori(ppc_r0,ppc_r0,4-c.sz);
+		if (fdirect)
+			ppc_stfsx(c.fdreg,ppc_rarg3,ppc_r0);
+		else if (c.sz==1)
+			ppc_stbx(c.datareg,ppc_rarg3,ppc_r0);
+		else if (c.sz==2)
+			ppc_sthx(c.datareg,ppc_rarg3,ppc_r0);
+		else
+			ppc_stwx(c.datareg,ppc_rarg3,ppc_r0);
+	}
+	else				// --- write pair (64), data in rarg2:rarg3 ---
+	{
+		ppc_rlwinmx(ppc_r0,ppc_rarg0,11,21,28,0);
+		u32 lo=ppc_addr_high(ppc_rarg1,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
+		if (lo) ppc_addi(ppc_rarg1,ppc_rarg1,lo);
+		ppc_lwzx(ppc_rarg1,ppc_rarg1,ppc_r0);		// rarg1 = iirf
+		// ppc_andi is the RECORD form and clobbers CR0, so the MMIO compare must
+		// come after it and before the rlwinm overwrites iirf.
+		ppc_andi(ppc_r0,ppc_rarg1,0x1F);		// r0 = shift
+		ppc_cmpli(ppc_cr0,ppc_rarg1,0x20,0);
+		ppc_rlwinmx(ppc_rarg1,ppc_rarg1,0,0,26,0);	// rarg1 = ptr
+
+		mmio=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt -> MMIO
+
+		// BE *(u64*)p store: word[addr] = high, word[addr+4] = low.
+		ppc_slwx(ppc_rarg0,ppc_rarg0,ppc_r0,0);
+		ppc_srwx(ppc_rarg0,ppc_rarg0,ppc_r0,0);
+		if (fdirect)
+		{
+			ppc_stfsx(c.fdreg,ppc_rarg1,ppc_rarg0);
+			ppc_addi(ppc_rarg0,ppc_rarg0,4);
+			ppc_stfsx(c.fdreg+1,ppc_rarg1,ppc_rarg0);
+		}
+		else
+		{
+			ppc_stwx(ppc_rarg2,ppc_rarg1,ppc_rarg0);
+			ppc_addi(ppc_rarg0,ppc_rarg0,4);
+			ppc_stwx(ppc_rarg3,ppc_rarg1,ppc_rarg0);
+		}
+	}
+
+	return mmio;
+}
+
 
 static void FlushCold()
 {
@@ -2364,6 +2565,14 @@ static void FlushCold()
 		snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
 		verify(beq_disp >= 0 && beq_disp < 32768);
 		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
+
+		// FASTMEM: try the generic table first, so only true MMIO pays a C call.
+		if (c.vmem_tier)
+		{
+			ppc_label* mmio=emit_vmem_tier(c);
+			ppc_bx(c.done,0);        // table hit -> join
+			mmio->MarkLabel();       // table miss falls into the call below
+		}
 
 		if (c.kind==0)                   // --- read scalar: ReadMem(addr)->rrv0 ---
 		{
@@ -3216,11 +3425,65 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 							ppc_lwz(rdreg,ppc_rarg1,0);		// fault site
 					}
 				}
+				else if (!isram && !op->rs1.is_imm() && fm_on())
+				{
+					// FASTMEM: main RAM inline, everything else out of line.
+					ColdFrag& c=s_cold[s_cold_n++];
+					c.kind=(op->flags==8)?1:0;
+					c.sz=(u8)((op->flags==8)?4:op->flags);
+					c.rdreg=(u8)rdreg; c.datareg=(u8)ppc_rarg1;
+					c.areg=(u8)areg;   c.fuct=fuct;
+					c.fdreg=fdirect?(u8)fd0:0xFF; c.fofs=(u16)fofs;
+					c.vmem_tier=1;
+
+					fm_emit_guard(areg);
+					c.beq=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
+
+					if (op->flags==8)
+					{
+						// Pair: rarg2 holds the native address because rrv0/rrv1
+						// (r3/r4) are the destinations and r3 is also the address.
+						fm_emit_addr(ppc_rarg2,areg,4);
+						if (fdirect)
+						{
+							ppc_lfs(fd0,ppc_rarg2,0);
+							ppc_lfs(fd1,ppc_rarg2,4);
+						}
+						else
+						{
+							ppc_lwz(ppc_rrv1,ppc_rarg2,4);
+							ppc_lwz(ppc_rrv0,ppc_rarg2,0);
+						}
+					}
+					else
+					{
+						const u32 sz=op->flags;
+						fm_emit_addr(ppc_rarg0,areg,sz);
+						if (fdirect)
+							ppc_lfs(fd0,ppc_rarg0,0);
+						else if (sz==1)
+						{
+							ppc_lbz(rdreg,ppc_rarg0,0);
+							ppc_extsbx(rdreg,rdreg,0);
+						}
+						else if (sz==2)
+						{
+							ppc_lhz(rdreg,ppc_rarg0,0);
+							ppc_extshx(rdreg,rdreg,0);
+						}
+						else
+							ppc_lwz(rdreg,ppc_rarg0,0);
+					}
+
+					c.done=emit_GetCCPtr();
+				}
 				else if (!isram)
 				{
 					// Inline the _vmem_readt fast path (direct RAM/VRAM) for
 					// runtime addresses. The MMIO path falls back to the C
-					// dispatcher.
+					// dispatcher. Same shapes as emit_vmem_tier(); kept inline
+					// so a fastmem-OFF run stays the untouched baseline.
 					//
 					// _vmem_MemInfo_ptr is void*[], 8 B per entry on PS3 (4 on the Wii),
 				// and BE puts a sub-4 GB pointer's low word at +4 - hence *8 and the
@@ -3273,7 +3536,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 						ColdFrag& c=s_cold[s_cold_n++];
 						c.beq=cold; c.done=emit_GetCCPtr();
-						c.kind=1; c.fuct=fuct;
+						c.kind=1; c.fuct=fuct; c.vmem_tier=0;
 						c.fdreg=fdirect?(u8)fd0:0xFF; c.fofs=(u16)fofs;
 					}
 					else
@@ -3342,7 +3605,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						ColdFrag& c=s_cold[s_cold_n++];
 						c.beq=cold; c.done=emit_GetCCPtr();
 						c.kind=0; c.sz=(u8)sz; c.rdreg=(u8)rdreg;
-						c.areg=(u8)areg; c.fuct=fuct;
+						c.areg=(u8)areg; c.fuct=fuct; c.vmem_tier=0;
 						c.fdreg=fdirect?(u8)fd0:0xFF; c.fofs=(u16)fofs;
 					}
 				}
@@ -3511,9 +3774,60 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 							ppc_stw(datareg,ppc_rarg2,0);		// fault site
 					}
 				}
+				else if (fm_on())
+				{
+					// FASTMEM: main RAM inline, everything else out of line.
+					// The store queue is region 7, so it keeps the table path.
+					ColdFrag& c=s_cold[s_cold_n++];
+					c.kind=(op->flags==8)?3:2;
+					c.sz=(u8)((op->flags==8)?4:op->flags);
+					c.rdreg=(u8)ppc_rrv0; c.datareg=(u8)datareg;
+					c.areg=(u8)areg;      c.fuct=0;
+					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
+					c.vmem_tier=1;
+
+					fm_emit_guard(areg);
+					c.beq=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
+
+					if (op->flags==8)
+					{
+						// Pair: address in rarg0, data in rarg2:rarg3, so the
+						// native address goes to rarg1.
+						fm_emit_addr(ppc_rarg1,ppc_rarg0,4);
+						if (fdirect)
+						{
+							ppc_stfs(fs0,ppc_rarg1,0);
+							ppc_stfs(fs1,ppc_rarg1,4);
+						}
+						else
+						{
+							ppc_stw(ppc_rarg2,ppc_rarg1,0);
+							ppc_stw(ppc_rarg3,ppc_rarg1,4);
+						}
+					}
+					else
+					{
+						const u32 sz=op->flags;
+						// stb/sth store the low byte/halfword, so no data mask.
+						fm_emit_addr(ppc_rarg2,areg,sz);
+						if (fdirect)
+							ppc_stfs(fs0,ppc_rarg2,0);
+						else if (sz==1)
+							ppc_stb(datareg,ppc_rarg2,0);
+						else if (sz==2)
+							ppc_sth(datareg,ppc_rarg2,0);
+						else
+							ppc_stw(datareg,ppc_rarg2,0);
+					}
+
+					c.done=emit_GetCCPtr();
+				}
 				else
 				// Inline the _vmem_writet fast path (direct RAM/VRAM) for runtime
-				// addresses. MMIO falls back to the C call.
+				// addresses. MMIO falls back to the C call. Same shapes as
+				// emit_vmem_tier(); kept inline so a fastmem-OFF run stays the
+				// untouched baseline.
 				//
 				// _vmem_MemInfo_ptr is void*[], 8 B per entry on PS3 (4 on the Wii),
 				// and BE puts a sub-4 GB pointer's low word at +4 - hence *8 and the
@@ -3569,7 +3883,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 					ColdFrag& c=s_cold[s_cold_n++];
 					c.beq=cold; c.done=emit_GetCCPtr();
-					c.kind=3;
+					c.kind=3; c.vmem_tier=0;
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 				}
 				else
@@ -3619,6 +3933,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ColdFrag& c=s_cold[s_cold_n++];
 					c.beq=cold; c.done=emit_GetCCPtr();
 					c.kind=2; c.sz=(u8)sz; c.datareg=(u8)datareg; c.areg=(u8)areg;
+					c.vmem_tier=0;
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 				}
 			}
@@ -4789,10 +5104,11 @@ static void ps3_jit_dump_toggles()
 	       get_jit_newops_preset(), get_jit_carry_preset(), get_jit_mac_preset(),
 	       get_jit_pcrel_preset(), get_debug_loop());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
-	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d\n",
+	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
-	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset());
+	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
+	       get_jit_fastmem_preset());
 }
 
 void ngen_mainloop()
@@ -4803,6 +5119,9 @@ void ngen_mainloop()
 	// Called here (not recSh4_Init) so the game preset file has been
 	// applied and _vmem_reserve() has placed the guest arrays.
 	// No WiiFastmem_Init(): the PPC-MMU window and DSI handler are Wii-only.
+	// The PS3 window is arithmetic, so init only validates where the RAM
+	// block landed (Dynarec.MD 3.4).
+	ps3_fastmem_init();
 
 	if (loop_code==0)
 	{

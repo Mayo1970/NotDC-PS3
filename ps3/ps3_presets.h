@@ -30,6 +30,7 @@ extern int g_jit_carry_preset;
 extern int g_jit_mac_preset;
 extern int g_jit_pcrel_preset;
 extern int g_jit_dynends_preset;
+extern int g_jit_fastmem_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
