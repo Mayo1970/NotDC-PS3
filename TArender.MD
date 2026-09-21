@@ -148,7 +148,7 @@ for window (30338 vs 30407 vtx, 6741 vs 6751 op strips). Raw peak 993 KB of
 from the extra memcpy and second splitter pass.
 RTT was NOT covered: `rtt=` read 0/0 in all 149 samples across the three games.
 
-### TR2 - Register and state snapshot  `[ ]`
+### TR2 - Register and state snapshot  `[x]`
 
 1. Add `struct RenderRegs` holding every PVR register the draw path reads
    (list in section 3.2), plus `s_fb_scale_x/y` and the `using_autosort()`
@@ -163,6 +163,22 @@ Still single-threaded. This phase is a pure refactor and must not change any
 pixel.
 
 **HW test:** same scenes as TR1, same output.
+
+Result 2026-09-21: passed on Crazy Taxi and Sonic Adventure, A/B'd in one log
+against pre-TR2 runs of the same discs. The nullDC menu windows are identical
+(vtx=397/399/258, op=78/79/51). Sonic's dense reference window reproduces TR1
+within 0.5% on vertices and 1% on strips (30477/30335 vtx vs 30338/30471;
+op 6760/6699 vs 6741/6735; peak 989K/993K vs 987K/993K). `built` equals drawn
+in every window, `ta_raw_of=0`, `sort=auto`, zero `[ps3rend]` messages.
+Speed is unchanged: 65.5% in both runs at the 30K window; run averages 79.4%
+vs 78.7%. Picture confirmed by eye on Crazy Taxi.
+Soul Calibur was not re-run. RTT is still uncovered: `rtt=` read 0/0 again, so
+the snapshotted `FB_X_CLIP` / `FB_Y_CLIP` / `FB_W_CTRL` / `FB_W_LINESTRIDE`
+path is unproven on hardware.
+
+Note for TR3: the build banner cannot tell these phases apart. `__DATE__` /
+`__TIME__` live in `ps3_main.cpp`, which an incremental build does not
+recompile, so every boot in the log printed the same 08:46:19 stamp.
 
 ### TR3 - Render thread  `[ ]`
 

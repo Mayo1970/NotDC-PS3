@@ -5,6 +5,7 @@
 #include "plugs/drkPvr/regs.h"
 #include "ps3_video.h"
 #include "ps3_tex.h"
+#include "ps3_rend_regs.h"
 #include <algorithm>
 #include <malloc.h>
 
@@ -42,14 +43,6 @@ struct DcStrip
 	u16 count;
 	u8 list;
 	u16 param;
-};
-
-struct DcParam
-{
-	PCW pcw;
-	ISP_TSP isp;
-	TSP tsp;
-	TCW tcw;
 };
 
 // nullDC-v1 ModTriangle: three corners of x, y and 1/W.
@@ -110,6 +103,8 @@ static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
 static u32 s_sprite_col = 0xFFFFFFFF;
 
 static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
+
+RenderRegs g_rr;
 
 static u32 s_stat_renders, s_stat_rtt, s_stat_vtx;
 static u32 s_stat_strips[5];
@@ -632,17 +627,11 @@ static bool using_autosort()
 	return ((vri(REGION_BASE) >> 29) & 1) == 0;
 }
 
-struct BgVertex
-{
-	float x, y, u, v;
-	u32 col;
-};
-
 // Background plane (ISP_BACKGND_T): 3 vertices; the PVR extends their plane over the whole screen.
 // Bitfields are extracted by hand; the regs.h struct layout is little-endian.
 static void background_plane(BgVertex* out, DcParam* param)
 {
-	u32 param_base = PARAM_BASE & 0xF00000;
+	u32 param_base = g_rr.param_base;
 	u32 bgt = ISP_BACKGND_T;
 	u32 tag_offset = bgt & 0x7;
 	u32 tag_address = (bgt >> 3) & 0x1FFFFF;
@@ -694,6 +683,37 @@ static void background_plane(BgVertex* out, DcParam* param)
 	}
 }
 
+// TR2: the framebuffer read state the present path uses, latched at vblank.
+static void snapshot_present_regs()
+{
+	g_rr.fb_r_sof1 = FB_R_SOF1;
+	g_rr.fb_r_size = FB_R_SIZE;
+	g_rr.fb_r_depth = FB_R_CTRL.fb_depth;
+}
+
+// TR2: everything the draw path reads, latched on the SH4 thread at STARTRENDER.
+// Order matters: param_base feeds background_plane, which reads VRAM.
+static void snapshot_render_regs()
+{
+	g_rr.param_base = PARAM_BASE & 0xF00000;
+	g_rr.isp_backgnd_d = ISP_BACKGND_D;
+	g_rr.pt_alpha_ref = PT_ALPHA_REF;
+	g_rr.fb_w_sof1 = FB_W_SOF1;
+	g_rr.fb_w_sof2 = FB_W_SOF2;
+	g_rr.fb_w_ctrl = FB_W_CTRL;
+	g_rr.fb_w_linestride = FB_W_LINESTRIDE;
+	g_rr.fb_x_clip_min = FB_X_CLIP.min;
+	g_rr.fb_x_clip_max = FB_X_CLIP.max;
+	g_rr.fb_y_clip_min = FB_Y_CLIP.min;
+	g_rr.fb_y_clip_max = FB_Y_CLIP.max;
+	g_rr.pal_ram_ctrl = PAL_RAM_CTRL;
+	g_rr.text_control = TEXT_CONTROL;
+	g_rr.fb_scale_x = s_fb_scale_x;
+	g_rr.fb_scale_y = s_fb_scale_y;
+	g_rr.autosort = using_autosort();
+	background_plane(g_rr.bg_vtx, &g_rr.bg_param);
+}
+
 // Plane through the 3 background vertices, evaluated per color channel and for UV at (x, y).
 static void bg_eval(const BgVertex* v, float x, float y, BgVertex* out)
 {
@@ -738,8 +758,6 @@ static const GLenum blend_dst[8] = {
 // ShadInstr 0 decal, 1 modulate, 2 decal alpha, 3 modulate alpha. Offset color is not added yet.
 static const GLenum tex_env[4] = { GL_REPLACE, GL_MODULATE, GL_DECAL, GL_MODULATE };
 
-static bool s_autosort = true;
-
 // nullDC-v1 CullMode[]: 2 culls counterclockwise, 3 clockwise, as seen on screen.
 static void set_cull(u32 mode)
 {
@@ -780,7 +798,7 @@ static u32 apply_param(const DcParam& p, u32 list)
 		else
 			glDisable(GL_ALPHA_TEST);
 		// Autosort ignores DepthMode and compares ">=" on 1/W.
-		glDepthFunc(s_autosort ? GL_LEQUAL : depth_func[p.isp.DepthMode]);
+		glDepthFunc(g_rr.autosort ? GL_LEQUAL : depth_func[p.isp.DepthMode]);
 	}
 	else
 	{
@@ -1031,7 +1049,7 @@ static void reset_gl_state()
 static void draw_scene(float cx0, float cy0, float cw, float ch)
 {
 	// ISP_BACKGND_D is the background 1/W (low 4 bits masked, as in nullDC-v1).
-	u32 bgd_bits = ISP_BACKGND_D & ~0xFu;
+	u32 bgd_bits = g_rr.isp_backgnd_d & ~0xFu;
 	float bg_inv_w;
 	memcpy(&bg_inv_w, &bgd_bits, 4);
 	float bg_w = 1.0f / ((bg_inv_w >= 0.0001f) ? bg_inv_w : 0.0001f);
@@ -1067,17 +1085,14 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glEnable(GL_DEPTH_TEST);
 
 	// Background quad over the whole canvas at the background depth; colors and UV from its plane.
-	BgVertex bgv[3];
-	DcParam bgp;
-	background_plane(bgv, &bgp);
 	reset_param_cache();
-	u32 bg_alpha_or = apply_param(bgp, ListType_Opaque);
+	u32 bg_alpha_or = apply_param(g_rr.bg_param, ListType_Opaque);
 	static const float corner[4][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
 	glBegin(GL_TRIANGLE_STRIP);
 	for (int k = 0; k < 4; k++)
 	{
 		BgVertex bv;
-		bg_eval(bgv, cx0 + corner[k][0] * cw, cy0 + corner[k][1] * ch, &bv);
+		bg_eval(g_rr.bg_vtx, cx0 + corner[k][0] * cw, cy0 + corner[k][1] * ch, &bv);
 		u32 c = bv.col | bg_alpha_or;
 		glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
 		glTexCoord2f(bv.u, bv.v);
@@ -1085,7 +1100,6 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	}
 	glEnd();
 
-	s_autosort = using_autosort();
 	if (s_rc->nstrip != 0)
 	{
 		// Hardware order: opaque, punch-through, translucent.
@@ -1093,7 +1107,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		draw_list(ListType_Opaque);
 
 		glEnable(GL_ALPHA_TEST);
-		glAlphaFunc(GL_GEQUAL, (PT_ALPHA_REF & 0xFF) / 255.0f);
+		glAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
 		reset_param_cache();
 		draw_list(ListType_Punch_Through);
 
@@ -1104,7 +1118,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		glDisable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
-		if (s_autosort)
+		if (g_rr.autosort)
 			draw_tr_sorted();
 		else
 			draw_list(ListType_Translucent);
@@ -1142,7 +1156,7 @@ static void draw_frame()
 	glViewport(vp_x, 0, vp_w, sh);
 	ps3gl_apply_states();
 
-	draw_scene(0.0f, 0.0f, 640.0f * s_fb_scale_x, 480.0f * s_fb_scale_y);
+	draw_scene(0.0f, 0.0f, 640.0f * g_rr.fb_scale_x, 480.0f * g_rr.fb_scale_y);
 }
 
 // -- Render to texture -------------------------------------------------------
@@ -1166,8 +1180,8 @@ static inline u16 pack16(u32 argb, u32 mode, u16 kbit)
 
 static void rtt_render()
 {
-	u32 x0 = FB_X_CLIP.min, x1 = FB_X_CLIP.max;
-	u32 y0 = FB_Y_CLIP.min, y1 = FB_Y_CLIP.max;
+	u32 x0 = g_rr.fb_x_clip_min, x1 = g_rr.fb_x_clip_max;
+	u32 y0 = g_rr.fb_y_clip_min, y1 = g_rr.fb_y_clip_max;
 	if (x1 < x0 || y1 < y0)
 		return;
 	u32 w = x1 - x0 + 1, h = y1 - y0 + 1;
@@ -1176,7 +1190,7 @@ static void rtt_render()
 	if (w > sw || h > sh || w > 1024 || h > 1024)
 		return;
 
-	u32 packmode = FB_W_CTRL & 7;
+	u32 packmode = g_rr.fb_w_ctrl & 7;
 	if (packmode == 4 || packmode == 5)
 	{
 		static u32 s_warned;
@@ -1204,11 +1218,11 @@ static void rtt_render()
 		return;
 
 	// Bit 24 addresses the linear texture area, so no bank conversion here.
-	u32 base = FB_W_SOF1 & VRAM_MASK & ~3u;
-	u32 stride = (FB_W_LINESTRIDE & 0x1FF) * 8;
+	u32 base = g_rr.fb_w_sof1 & VRAM_MASK & ~3u;
+	u32 stride = (g_rr.fb_w_linestride & 0x1FF) * 8;
 	if (stride == 0)
 		stride = (packmode >= 6) ? w * 4 : w * 2;
-	u16 kbit = (u16)(FB_W_CTRL & 0x8000);
+	u16 kbit = (u16)(g_rr.fb_w_ctrl & 0x8000);
 
 	for (u32 y = 0; y < h; y++)
 	{
@@ -1250,8 +1264,8 @@ static u32 s_stat_fb_presents;
 
 static void fb_stamp_magic()
 {
-	vwi(FB_W_SOF1, FB_PRESENT_MAGIC);
-	vwi(FB_W_SOF2, FB_PRESENT_MAGIC);
+	vwi(g_rr.fb_w_sof1, FB_PRESENT_MAGIC);
+	vwi(g_rr.fb_w_sof2, FB_PRESENT_MAGIC);
 }
 
 static bool fb_needs_present()
@@ -1264,10 +1278,10 @@ static inline u32 e6(u32 v) { return (v << 2) | (v >> 4); }
 
 static void present_framebuffer()
 {
-	u32 fb_x_size = FB_R_SIZE & 0x3FF;
-	u32 fb_y_size = (FB_R_SIZE >> 10) & 0x3FF;
-	u32 fb_modulus = (FB_R_SIZE >> 20) & 0x3FF;
-	u32 fb_depth = FB_R_CTRL.fb_depth;
+	u32 fb_x_size = g_rr.fb_r_size & 0x3FF;
+	u32 fb_y_size = (g_rr.fb_r_size >> 10) & 0x3FF;
+	u32 fb_modulus = (g_rr.fb_r_size >> 20) & 0x3FF;
+	u32 fb_depth = g_rr.fb_r_depth;
 	if (fb_x_size == 0 || fb_y_size == 0)
 		return;
 	if (fb_depth == 2)
@@ -1287,7 +1301,7 @@ static void present_framebuffer()
 	u32 cpy_w = src_w > FB2D_W ? FB2D_W : src_w;
 	u32 cpy_h = src_h > FB2D_H ? FB2D_H : src_h;
 
-	u32 addr = FB_R_SOF1;
+	u32 addr = g_rr.fb_r_sof1;
 	for (u32 y = 0; y < cpy_h; y++)
 	{
 		u32 line = addr;
@@ -1366,7 +1380,7 @@ static void present_framebuffer()
 	reset_param_cache();
 
 	// Mark what is now on screen; the next write by the game clears the mark.
-	vwi(FB_R_SOF1, FB_PRESENT_MAGIC);
+	vwi(g_rr.fb_r_sof1, FB_PRESENT_MAGIC);
 	s_stat_fb_presents++;
 }
 
@@ -1423,6 +1437,7 @@ void VBlank()
 		return; // the PVR render is still what the screen shows
 
 	SH4_PHASE(PH_VBLANK);
+	snapshot_present_regs();
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
 	__asm__ volatile("mtfsfi 7,0" ::: "memory");
@@ -1435,7 +1450,8 @@ void VBlank()
 void StartRender()
 {
 	SH4_PHASE(PH_RENDER);
-	s_rc = find_context(PARAM_BASE & 0xF00000);
+	snapshot_render_regs();
+	s_rc = find_context(g_rr.param_base);
 	if (!s_rc)
 	{
 		static u32 s_warned;
@@ -1464,7 +1480,7 @@ void StartRender()
 	}
 
 	// FB_W_SOF1 bit 24 = render to texture, not a displayed frame.
-	if (FB_W_SOF1 & 0x1000000)
+	if (g_rr.fb_w_sof1 & 0x1000000)
 	{
 		s_stat_rtt++;
 		double rtt_fpscr;
@@ -1507,7 +1523,7 @@ void StartRender()
 		ps3tex_stats(&decodes, &live);
 		printf("[rend] renders=%u rtt=%u/%u fb=%u sort=%s avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK\n",
 		       s_stat_renders, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
-		       s_autosort ? "auto" : "pre", s_stat_vtx / r,
+		       g_rr.autosort ? "auto" : "pre", s_stat_vtx / r,
 		       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
 		       s_stat_strips[ListType_Translucent] / r,
 		       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,

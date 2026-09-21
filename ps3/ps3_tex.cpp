@@ -2,6 +2,7 @@
 // cached per TCW/TSP key and revalidated once per frame by a hash of the source VRAM.
 #include "ps3_tex.h"
 #include "ps3_phase.h"
+#include "ps3_rend_regs.h"
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
 
@@ -122,7 +123,7 @@ static inline u32 cvt16(u32 fmt, u32 p)
 static inline u32 cvt_pal(u32 index)
 {
 	u32 c = PALETTE_RAM[index & 1023];
-	switch (PAL_RAM_CTRL & 3)
+	switch (g_rr.pal_ram_ctrl & 3)
 	{
 	case 0: return cvt1555(c & 0xFFFF);
 	case 1: return cvt565(c & 0xFFFF);
@@ -191,7 +192,7 @@ static void describe(TSP tsp, TCW tcw, TexDesc* d)
 		// Stride textures: rows are TEXT_CONTROL[4:0] * 32 texels apart.
 		if (!d->twiddled && tcw.NO_PAL.StrideSel)
 		{
-			u32 stride = (TEXT_CONTROL & 31) * 32;
+			u32 stride = (g_rr.text_control & 31) * 32;
 			if (stride)
 				d->pitch = stride;
 		}
@@ -218,7 +219,7 @@ static u32 hash_texture(const TexDesc& d)
 		u32 n = d.pal4 ? 16 : 256;
 		for (u32 i = 0; i < n; i++)
 			h = (h ^ PALETTE_RAM[(d.pal_base + i) & 1023]) * 16777619u;
-		h ^= PAL_RAM_CTRL & 3;
+		h ^= g_rr.pal_ram_ctrl & 3;
 	}
 	return h;
 }
@@ -349,7 +350,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 	u32 key0 = tcw.full;
 	// Mirror is in the key because it decides the RSX layout at allocation time,
 	// and that layout is fixed for the life of the texture.
-	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((PAL_RAM_CTRL & 3) << 7)
+	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((g_rr.pal_ram_ctrl & 3) << 7)
 	         | (mirror << 9);
 
 	u32 slot = ((key0 * 2654435761u) ^ key1) % CACHE_SLOTS;
