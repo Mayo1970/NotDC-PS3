@@ -42,7 +42,8 @@ EXCLUDE := plugs/nullAICA/mem.cpp \
            plugs/drkPvr/gxRend.cpp
 SRCS := $(filter-out $(EXCLUDE),$(SRCS))
 
-OBJS := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS)))
+ASMS := $(wildcard ps3/*.S)
+OBJS := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS) $(ASMS)))
 
 ifeq ($(DEBUG),1)
   DEBUG_FLAG := -g -DPS3_DEBUG
@@ -82,6 +83,12 @@ $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
 	@echo "CC $<"
 	@$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# fsca-table.bin is linked into the EBOOT through .incbin.
+$(BUILD)/ps3/ps3_fsca_table.o: ps3/ps3_fsca_table.S misc/fsca-table.bin
+	@mkdir -p $(dir $@)
+	@echo "AS $<"
+	@$(CC) $(CFLAGS) -Ips3 -c $< -o $@
 
 self: $(BUILD)/$(TARGET).elf
 	$(SPRXLINK) $<

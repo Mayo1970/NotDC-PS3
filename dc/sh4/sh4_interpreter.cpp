@@ -192,10 +192,22 @@ void Sh4_int_Reset(bool /*Manual*/)
 	printf("Sh4 Reset\n");
 }
 
+#ifdef _PS3
+// Linked into the EBOOT by ps3/ps3_fsca_table.S.
+extern "C" const u8 fsca_table_data[];
+extern "C" const u8 fsca_table_data_end[];
+#endif
+
 void GenerateSinCos()
 {
 	printf("Generating sincos tables ...\n");
 
+#ifdef _PS3
+	if ((size_t)(fsca_table_data_end - fsca_table_data) != sizeof(f32) * 0x8000)
+		die("fsca-table.bin has the wrong size!");
+
+	memcpy(sin_table, fsca_table_data, sizeof(f32) * 0x8000);
+#else
 	char* path = GetEmuPath("data/fsca-table.bin");
 	FILE* tbl  = fopen(path, "rb");
 	free(path);
@@ -205,6 +217,7 @@ void GenerateSinCos()
 
 	fread(sin_table, sizeof(f32), 0x8000, tbl);
 	fclose(tbl);
+#endif
 
 	// Endian-swap the loaded half (no-op on big-endian / Wii)
 	for (int i = 0; i < 0x8000; i++)
