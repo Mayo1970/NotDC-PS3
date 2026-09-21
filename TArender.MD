@@ -413,12 +413,105 @@ What was never done, and is the first thing to redo if TR4 is ever questioned:
   with no header. The table consumes 32 bytes there, the splitter would
   consume the previous strip's vertex size.
 
-### TR5 - Tuning  `[ ]`
+### TR5 - Tuning  `[~]`
 
 1. Frame drop policy and its interaction with the existing frameskip presets.
 2. Raw buffer size against real games. Measured peak is 993 KB (Sonic
    Adventure, 30k vtx/frame), so 2 MB is the smallest safe shrink, not 1 MB.
 3. Decide whether the VRAM race (section 3.3) needs a guard in any real game.
+
+#### Built 2026-09-21, not yet hardware tested. Item 3 not started.
+
+**There are no frameskip presets on PS3.** `get_frameskip_preset()` is defined
+only in `wii/main.cpp`, and its one caller `plugs/drkPvr/gxRend.cpp` is excluded
+by `Makefile` line 42. So item 1 has nothing to interact with: the TR3
+single-slot queue is the only frame-drop mechanism in the build.
+
+**What the drop policy was.** Three different rules, only one of them counted:
+
+| job | rule | counted |
+|---|---|---|
+| `JOB_RENDER` | drop at once when busy | yes, `drop=` |
+| `JOB_PRESENT` | `VBlank()` returns early on `rth_busy()` | **no** |
+| `JOB_RTT` | block until free | n/a |
+
+**What it is now.** Options -> VIDEO / DEBUG -> **Frame Drop**, `nullDC.cfg
+[ps3]` `DropPolicy`, **default WAIT 1 FRAME**:
+
+- `0` DROP - the TR3 baseline, so one build A/Bs the change.
+- `1` WAIT 1 FRAME - the SH4 waits up to 1/59.94 s for the slot, then drops.
+- `2` WAIT - the SH4 waits with no budget, as `JOB_RTT` already does.
+
+The budget is what makes 1 the default rather than 2: a render thread that hangs
+can never hang the SH4 through this wait. TR3 run 1 and the TR4 run each read
+`drop=1` for the whole run, so the expected cost is near zero and the expected
+win is one kept frame per run - the policy earns its place only if a heavier
+game drops more, which is what the new counters are for.
+
+`JOB_PRESENT` is deliberately left on DROP at every policy. A deferred present
+loses nothing: the framebuffer is not marked, so the next vblank presents it.
+
+**Counters added to the `[rend]` line:**
+
+- `wait=<ms>` - total SH4 time spent waiting for the job slot in the window.
+  This is the price of the policy, and it reads 0 when nothing ever collides.
+- `fbdef=<n>` - vblank presents the render thread was too busy to take. This
+  was silent before; it is a retry, not a lost frame.
+- `peak=<n>K/<cap>K` - the raw high-water now prints its buffer size with it.
+
+**The old peak figure was a floor, not a high-water.** `s_stat_raw_peak` was
+written only in `decode_pending()`, from `raw_end`. `raw_end` is the `raw_used`
+latched at STARTRENDER, so bytes stored after that latch, and any stream that is
+never drawn at all, never reached the peak. It is now taken in
+`ps3ta_store_sq()` / `ps3ta_store_dma()` on every append, so it covers the whole
+stream. **Expect the reported peak to rise**; the 993 KB and 577 KB figures in
+TR1 and TR4 are not comparable with it.
+
+**Item 2 shipped on the old figure.** `TA_RAW_SIZE` is 2 MB, so the four
+contexts hold 8 MB instead of 16 MB. That is the shrink the plan asks for, but
+it rests on a peak that was measured with the understating counter above. The
+hardware test must read the new `peak=` before this is considered settled; on
+overflow the store stage keeps firing interrupts and `ta_raw_of` counts, so the
+failure mode is lost geometry, not a crash.
+
+**HW test:** Crazy Taxi in dense traffic and one 2D-heavy screen, 3+ minutes.
+1. Read `peak=` against the 2048K cap and confirm `ta_raw_of=0`.
+2. Read `wait=` and `drop=` at the default policy.
+3. Run the same spot at Frame Drop = DROP and compare `drop=`, `wait=` and
+   SPEED. That pass is the A/B the policy needs.
+4. Confirm `fbdef=` on a 2D screen, where `JOB_PRESENT` actually runs.
+
+#### HW run 1, 2026-09-21 (Frame Drop = WAIT 1 FRAME only)
+
+Crazy Taxi NTSC, dynarec + JitFastmem, 224 s, 33 `[rend]` windows, menu through
+dense traffic. No freeze. `[hb]` read `rend=idle` at every sample and no
+`[ps3rend]` message fired, so the render thread never stalled.
+
+**Item 2 passes.** `peak=` reached **602K of 2048K** at 10-12K vtx/frame and
+~1050 OP strips, with `ta_raw_of=0` and `overflow=0` in all 33 windows. That is
+the fixed store-time counter, so it is a real high-water: 2 MB keeps 3.4x
+headroom, and the TR1/TR4 figures it replaces were understating by roughly 1.6x
+(993 KB reported for a denser Sonic scene than 602 KB here).
+
+**Item 1 fired twice and cost nothing.** `drop=0` in **every** window. Two
+windows read `wait=`: 11 ms over 235 renders (that window's `job_max` was 34 ms,
+the worst of the run) and 2 ms. Every other window read 0 ms. So a collision that
+the TR3 build would have counted as a lost frame became a sub-0.05 ms/render
+wait, twice in 224 s.
+
+Health: `job_max` 1-34 ms, the 250 ms warning never fired. SPEED 47-65%,
+VPS 28-39. `ta:` 3.4-4.8% at 253-359 k calls/s, in line with TR4's 3.86%.
+`[vid] presented=4084 skipped=30`.
+
+Not covered by this run:
+
+- **The A/B was not run.** Frame Drop = DROP on the same spot is what turns
+  "two collisions" into a dropped-frame count and a SPEED comparison. Until it
+  runs, the policy's win is observed, not measured.
+- `fbdef=0` everywhere and `fb=0` after the menu window, so `JOB_PRESENT` never
+  ran in game. The deferred-present counter is unexercised.
+- `rtt=0/0` again ([[rtt-never-observed]]).
+- Item 3, the VRAM race, was not started.
 
 ---
 

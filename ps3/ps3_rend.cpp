@@ -26,6 +26,7 @@ extern s32 render_end_pending_cycles;
 extern "C" int get_render_delay_preset();
 extern "C" int get_render_thread_preset();
 extern "C" int get_ta_fast_preset();
+extern "C" int get_drop_policy_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -67,7 +68,8 @@ struct ModVolParam
 #define MAX_MODVOL 256
 
 // TR1: the SH4 thread appends raw 32-byte TA records here; StartRender decodes them.
-#define TA_RAW_SIZE  (4 * 1024 * 1024)
+// TR5: 2 MB against a measured high-water of 993 KB (Sonic Adventure, 30K vtx).
+#define TA_RAW_SIZE  (2 * 1024 * 1024)
 #define MAX_CONT_MARKS 64
 
 // One TA context per parameter buffer, as nullDC-v1 SetCurrentTARC/SetCurrentPVRRC:
@@ -105,6 +107,14 @@ static u32 s_overflow;
 // TA raw-stream health: dropped records, and the high-water mark for sizing.
 static u32 s_stat_raw_of;
 static u32 s_stat_raw_peak;
+
+// TR5: the peak is taken at store time, not at replay time. A stream that grows
+// after STARTRENDER latches it, or is never drawn at all, still counts here.
+static inline void raw_note_peak(const TaContext* c)
+{
+	if (c->raw_used > s_stat_raw_peak)
+		s_stat_raw_peak = c->raw_used;
+}
 
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
@@ -149,6 +159,11 @@ static TaContext* s_job_ctx;
 static TaContext* s_busy_ctx;  // context the render thread owns right now
 static u32 s_job_raw_end, s_job_cont_end;
 static u32 s_stat_dropped;
+// TR5: a vblank present the render thread was too busy to take. Unlike a dropped
+// render this loses nothing - the framebuffer is unmarked, so the next vblank retries.
+static u32 s_stat_fb_defer;
+// TR5: total time the SH4 spent waiting for the job slot, so the drop policy costs a number.
+static double s_stat_wait;
 static double s_stat_job_max;
 
 static void reset_lists(TaContext* c)
@@ -765,9 +780,6 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 	if (raw_end > pos)
 		decode_range(c, pos, raw_end);
 	c->raw_decoded = raw_end;
-
-	if (raw_end > s_stat_raw_peak)
-		s_stat_raw_peak = raw_end;
 }
 
 // On overflow the store splitter still runs, over the source bytes, so the guest
@@ -781,6 +793,7 @@ void ps3ta_store_sq(u32* data)
 		u8* dst = c->raw + c->raw_used;
 		memcpy(dst, data, 32);
 		c->raw_used += 32;
+		raw_note_peak(c);
 		rec = (Ta_Dma*)dst;
 	}
 	else if (!c->raw_overflow)
@@ -807,6 +820,7 @@ void ps3ta_store_dma(u32* data, u32 size)
 		u8* dst = c->raw + c->raw_used;
 		memcpy(dst, data, bytes);
 		c->raw_used += bytes;
+		raw_note_peak(c);
 		p = (Ta_Dma*)dst;
 	}
 	else if (!c->raw_overflow)
@@ -1656,8 +1670,9 @@ static void rth_print_stats()
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
-	printf("[rend] renders=%u drop=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK\n",
-	       s_stat_renders, s_stat_dropped, s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
+	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
 	       (u32)(s_stat_job_max * 1000.0), s_stat_vtx / r,
 	       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
@@ -1665,7 +1680,7 @@ static void rth_print_stats()
 	       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
 	       s_stat_built[ListType_Translucent] / r,
 	       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow,
-	       s_stat_raw_of, s_stat_raw_peak / 1024);
+	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024));
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
@@ -1677,6 +1692,8 @@ static void rth_print_stats()
 	s_stat_raw_of = 0;
 	s_stat_raw_peak = 0;
 	s_stat_dropped = 0;
+	s_stat_fb_defer = 0;
+	s_stat_wait = 0.0;
 	s_stat_job_max = 0.0;
 	s_stat_t0 = now;
 }
@@ -1841,21 +1858,49 @@ static void rth_stop()
 }
 
 // Hands one job over, or runs it inline when the render thread is off (the TR2
-// path). Returns false when the frame was dropped because the render thread was
-// still busy: libswirl drops too, rather than letting the guest wait. RTT never
-// drops, because the guest reads the rendered texture straight back from VRAM.
+// path). Returns false when the job was not taken because the render thread was
+// still busy. RTT never drops: the guest reads the rendered texture straight
+// back from VRAM.
+//
+// TR5: how long a render waits for the slot is the Frame Drop preset. libswirl
+// drops at once; waiting costs SH4 time but keeps the frame. The bounded wait is
+// the default, so a render thread that hangs can never hang the SH4 with it.
+// A present is never waited for: dropping one only defers it to the next vblank.
 static bool rth_run(int type, TaContext* c)
 {
 	if (s_rend_running)
 	{
 		bool blocking = (type == JOB_RTT);
+		int pol = (type == JOB_RENDER) ? get_drop_policy_preset() : 0;
 		sysMutexLock(s_rmx, 0);
 		while (blocking && s_job_busy)
 			sysCondWait(s_done_cv, 0);
+		if (s_job_busy && pol != 0)
+		{
+			// One 59.94 Hz frame. Policy 2 waits with no budget at all.
+			const double budget = (pol == 1) ? (1.0 / 59.94) : 0.0;
+			double t0 = os_GetSeconds();
+			while (s_job_busy)
+			{
+				if (budget == 0.0)
+				{
+					sysCondWait(s_done_cv, 0);
+					continue;
+				}
+				double left = budget - (os_GetSeconds() - t0);
+				if (left <= 0.0)
+					break;
+				sysCondWait(s_done_cv, (u64)(left * 1000000.0) + 1);
+			}
+			s_stat_wait += os_GetSeconds() - t0;
+		}
 		if (s_job_busy)
 		{
 			sysMutexUnlock(s_rmx);
-			s_stat_dropped++;
+			if (type == JOB_PRESENT)
+				s_stat_fb_defer++;
+			else
+				s_stat_dropped++;
 			return false;
 		}
 		s_job_type = type;
@@ -1947,7 +1992,11 @@ void VBlank()
 	if (!fb_needs_present())
 		return; // the PVR render is still what the screen shows
 	if (rth_busy())
-		return; // the next vblank retries; nothing has been marked yet
+	{
+		// The next vblank retries; nothing has been marked yet.
+		s_stat_fb_defer++;
+		return;
+	}
 
 	SH4_PHASE(PH_VBLANK);
 	snapshot_present_regs();

@@ -263,6 +263,7 @@ static void list_directory(const char* dir_path)
 
 static const char* k_accuracy[]  = { "FAST", "BALANCED", "ACCURATE", NULL };
 static const char* k_onoff[]     = { "OFF", "ON", NULL };
+static const char* k_drop[]      = { "DROP", "WAIT 1 FRAME", "WAIT", NULL };
 static const char* k_exit_fix[]  = { "OFF", "SAFE", "SAFE + WATCHDOG",
                                      "SAFE + WATCHDOG + HOST POLL", NULL };
 static const char* k_arm7[]      = { "FULL", "HALF", "QUARTER", "EIGHTH", NULL };
@@ -341,6 +342,8 @@ static Option s_video[] = {
 	  "TA decode and RSX drawing on their own thread. Takes effect on boot." },
 	{ "TA Fast Store",   &g_ta_fast_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
+	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
+	  "What a render does when the render thread is busy. DROP loses the frame." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

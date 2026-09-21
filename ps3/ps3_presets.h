@@ -33,6 +33,7 @@ extern int g_jit_dynends_preset;
 extern int g_jit_fastmem_preset;
 extern int g_render_thread_preset;
 extern int g_ta_fast_preset;
+extern int g_drop_policy_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

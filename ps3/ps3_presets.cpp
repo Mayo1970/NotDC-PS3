@@ -36,6 +36,7 @@ int g_jit_dynends_preset   = 0;   // 1 = no static block linking
 int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
+int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 
 struct CfgItem { const char* key; int* val; };
 
@@ -67,6 +68,7 @@ static const CfgItem s_items[] = {
 	{ "JitFastmem",    &g_jit_fastmem_preset },
 	{ "RenderThread",  &g_render_thread_preset },
 	{ "TaFastStore",   &g_ta_fast_preset },
+	{ "DropPolicy",    &g_drop_policy_preset },
 };
 
 void ps3_presets_load(void)
@@ -129,6 +131,10 @@ int get_render_thread_preset() { return g_render_thread_preset; }
 // TArender TR4: off runs the store stage through the old FIFO splitter, which
 // is the TR3 baseline, so one build can A/B the ta% cost.
 int get_ta_fast_preset()       { return g_ta_fast_preset; }
+
+// TArender TR5: what StartRender does when the render thread is still busy.
+// 0 = drop at once (the TR3 baseline), 1 = wait one frame then drop, 2 = wait.
+int get_drop_policy_preset()   { return g_drop_policy_preset; }
 
 // JIT backend presets. The first PS3 port keeps every one of them off
 // (Dynarec.MD 1). FASTMEM can never be on: the Wii design needs a resumable
