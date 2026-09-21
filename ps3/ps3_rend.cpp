@@ -6,6 +6,7 @@
 #include "ps3_video.h"
 #include "ps3_tex.h"
 #include "ps3_rend_regs.h"
+#include "dc/pvr/pvr_if.h"
 #include <algorithm>
 #include <malloc.h>
 #include <sys/thread.h>
@@ -83,6 +84,9 @@ struct TaContext
 	u32 nvtx, nstrip, nparam;
 	u32 strip_first;
 	float min_w, max_w;
+	// reicast fZ_max: the largest usable 1/W of the frame, which alone sets the
+	// near plane. min_w/max_w are kept for the stats line only.
+	float max_inv_w;
 	u32 mv_tris[5];
 	ModTri mtri[MAX_MODTRI];
 	ModVolParam mvol[MAX_MODVOL];
@@ -165,6 +169,12 @@ static u32 s_stat_fb_defer;
 // TR5: total time the SH4 spent waiting for the job slot, so the drop policy costs a number.
 static double s_stat_wait;
 static double s_stat_job_max;
+// Depth diagnostic: the widest W range and the tightest near plane of the window.
+static float s_stat_w_lo = 1e30f, s_stat_w_hi = 0.0f, s_stat_near_lo = 1e30f;
+// Vertices that hit set_pos's 1/W floor: they all land on one depth, so a scene
+// drawn beyond it cannot separate itself from the background plane.
+static u32 s_stat_wclamp, s_stat_wtotal;
+static float s_stat_bg_inv_w; static u32 s_stat_bg_zw;
 
 static void reset_lists(TaContext* c)
 {
@@ -174,6 +184,7 @@ static void reset_lists(TaContext* c)
 	c->strip_first = 0;
 	c->min_w = 1e30f;
 	c->max_w = 0.0f;
+	c->max_inv_w = 1.0f;
 	c->nmtri = 0;
 	c->nmvol = 0;
 	memset(c->mv_tris, 0, sizeof(c->mv_tris));
@@ -245,25 +256,44 @@ static inline u32 intensity_argb(float i)
 	return float_argb(s_face_a, s_face_r * i, s_face_g * i, s_face_b * i);
 }
 
-// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor, as in gxRend).
-static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
+// The TA's 1/W only needs a floor to keep W finite. It used to be 1e-4, which
+// quantised every plane beyond W=10000 onto one depth: Space Channel 5's video
+// backdrop and the background plane both landed there, so the backdrop's
+// DepthMode 4 ("greater" on 1/W, GL_LESS here) compared equal and was rejected.
+// reicast applies no floor at all; 1e-9 keeps x*W inside float range.
+#define INV_W_FLOOR 1e-9f
+
+// reicast update_fz: one integer compare drops negatives, NaN and anything at or
+// above 1024*1024, so a single rogue vertex cannot pull the near plane down.
+static inline void track_inv_w(float inv_w)
 {
-	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
-	float w = 1.0f / safe;
-	v->x = x;
-	v->y = y;
-	v->w = w;
-	if (w < s_dec->min_w) s_dec->min_w = w;
-	if (w > s_dec->max_w) s_dec->max_w = w;
+	union { float f; s32 i; } z, m;
+	z.f = inv_w;
+	m.f = s_dec->max_inv_w;
+	if (m.i < z.i && z.i < 0x49800000)
+		s_dec->max_inv_w = inv_w;
 }
 
 // Modifier volume corners carry no color, so only their depth joins the range.
 static inline void track_w(float inv_w)
 {
-	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
+	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
 	float w = 1.0f / safe;
 	if (w < s_dec->min_w) s_dec->min_w = w;
 	if (w > s_dec->max_w) s_dec->max_w = w;
+	s_stat_wtotal++;
+	if (safe != inv_w) s_stat_wclamp++;
+	track_inv_w(inv_w);
+}
+
+// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor, as in gxRend).
+static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
+{
+	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
+	v->x = x;
+	v->y = y;
+	v->w = 1.0f / safe;
+	track_w(inv_w);
 }
 
 // 16-bit UVs are the top half of a float.
@@ -997,6 +1027,9 @@ static void bg_eval(const BgVertex* v, float x, float y, BgVertex* out)
 	out->col = col;
 }
 
+// Draws ps3gl actually emitted for the translucent pass, against draws offered.
+static u32 s_tr_attempt, s_tr_emit;
+
 // DC compares 1/W; our depth grows with W, so each test flips direction.
 static const GLenum depth_func[8] = {
 	GL_NEVER, GL_GREATER, GL_EQUAL, GL_GEQUAL, GL_LESS, GL_NOTEQUAL, GL_LEQUAL, GL_ALWAYS
@@ -1201,7 +1234,7 @@ static void set_mvs_mode(u32 mode, const ModVolParam& p)
 
 static inline void emit_mod_vertex(float x, float y, float inv_w)
 {
-	float safe = (inv_w >= 0.0001f) ? inv_w : 0.0001f;
+	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
 	float w = 1.0f / safe;
 	glVertex3f(x * w, y * w, w);
 }
@@ -1300,6 +1333,159 @@ static void reset_gl_state()
 	glDepthMask(GL_TRUE);
 }
 
+// Per-list dump of the last drawn frame: what the geometry looks like and what
+// state it carries. Prints beside the stats line while the SC5 fault is open.
+struct ListDiag
+{
+	u32 strips, verts, zwd, tex, forced, usealpha, ignoretexa;
+	float x0, x1, y0, y1, w0, w1;
+	u32 dm[8], cull[4], src[8], dst[8], shad[4], fmt[8];
+	u32 amin, amax;
+	// Shade mode 3 modulates the texture by the vertex color, so an all-black
+	// vertex color makes a correctly textured poly render as nothing.
+	u32 cmin, cmax, black, ct[4];
+	// Strips whose bounding box covers most of the canvas: one of these drawn
+	// near, with Z write on, masks everything the later lists put behind it.
+	u32 big;
+	float bigw0, bigw1;
+};
+static ListDiag s_diag[3];
+// Reset once per stats window so the dump costs nothing between them.
+static u32 s_fmv_dump = 3;
+static const char* s_diag_name[3] = { "op", "pt", "tr" };
+
+// One line per big textured strip: is the fullscreen quad really the YUV one,
+// and does the converter claim the address it samples?
+static void dump_fmv_strip(const DcStrip& st, const DcParam& p,
+                           float sx0, float sx1, float sy0, float sy1, float sw0)
+{
+	u32 addr = (p.tcw.NO_PAL.TexAddr << 3) & VRAM_MASK;
+	u32 cw = 0, ch = 0;
+	int hit = yuv_conv_lookup(addr, &cw, &ch);
+	// 0..1 means the quad expects the whole declared texture; about 0..0.625
+	// means it only samples the converter's 320 of the 512 declared columns.
+	float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+	for (u32 k = 0; k < st.count; k++)
+	{
+		const DcVertex& vv = s_rc->vtx[st.first + k];
+		if (vv.u < u0) u0 = vv.u;
+		if (vv.u > u1) u1 = vv.u;
+		if (vv.v < v0) v0 = vv.v;
+		if (vv.v > v1) v1 = vv.v;
+	}
+	printf("[yuvq] tcw=%08X fmt=%u scan=%u stride=%u vq=%u mip=%u addr=%06X "
+	       "decl=%ux%u texctl=%u x=[%g..%g] y=[%g..%g] w=%g | conv=%d %ux%u uv=[%g..%g],[%g..%g]\n",
+	       (unsigned)p.tcw.full, p.tcw.NO_PAL.PixelFmt, p.tcw.NO_PAL.ScanOrder,
+	       p.tcw.NO_PAL.StrideSel, p.tcw.NO_PAL.VQ_Comp, p.tcw.NO_PAL.MipMapped,
+	       addr, 8u << p.tsp.TexU, 8u << p.tsp.TexV, (unsigned)(g_rr.text_control & 31),
+	       (double)sx0, (double)sx1, (double)sy0, (double)sy1, (double)sw0,
+	       hit, cw, ch, (double)u0, (double)u1, (double)v0, (double)v1);
+}
+
+static void collect_diag()
+{
+	static const u32 lists[3] = { ListType_Opaque, ListType_Punch_Through, ListType_Translucent };
+	for (u32 L = 0; L < 3; L++)
+	{
+		ListDiag& d = s_diag[L];
+		memset(&d, 0, sizeof(d));
+		d.x0 = d.y0 = d.w0 = 1e30f;
+		d.x1 = d.y1 = -1e30f;
+		d.w1 = 0.0f;
+		d.amin = 256; d.amax = 0;
+		d.cmin = 256; d.cmax = 0;
+		d.bigw0 = 1e30f; d.bigw1 = 0.0f;
+		for (u32 i = 0; i < s_rc->nstrip; i++)
+		{
+			const DcStrip& st = s_rc->strip[i];
+			if (st.list != lists[L])
+				continue;
+			const DcParam& p = s_rc->param[st.param];
+			d.strips++;
+			d.verts += st.count;
+			d.dm[p.isp.DepthMode & 7]++;
+			d.cull[p.isp.CullMode & 3]++;
+			if (p.isp.ZWriteDis) d.zwd++;
+			if (p.pcw.Texture) d.tex++;
+			d.src[p.tsp.SrcInstr & 7]++;
+			d.dst[p.tsp.DstInstr & 7]++;
+			d.shad[p.tsp.ShadInstr & 3]++;
+			if (p.tsp.UseAlpha) d.usealpha++;
+			if (p.tsp.IgnoreTexA) d.ignoretexa++;
+			if (p.pcw.Texture) d.fmt[p.tcw.NO_PAL.PixelFmt & 7]++;
+			// The same rule apply_param uses, minus the bind result.
+			bool force = !p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1);
+			if (force) d.forced++;
+			d.ct[p.pcw.Col_Type & 3]++;
+			float sx0 = 1e30f, sx1 = -1e30f, sy0 = 1e30f, sy1 = -1e30f;
+			float sw0 = 1e30f, sw1 = 0.0f;
+			for (u32 k = 0; k < st.count; k++)
+			{
+				const DcVertex& v = s_rc->vtx[st.first + k];
+				if (v.x < sx0) sx0 = v.x;
+				if (v.x > sx1) sx1 = v.x;
+				if (v.y < sy0) sy0 = v.y;
+				if (v.y > sy1) sy1 = v.y;
+				if (v.w < sw0) sw0 = v.w;
+				if (v.w > sw1) sw1 = v.w;
+				u32 a = force ? 255u : (v.col >> 24);
+				if (a < d.amin) d.amin = a;
+				if (a > d.amax) d.amax = a;
+				u32 r = (v.col >> 16) & 0xFF, g = (v.col >> 8) & 0xFF, b = v.col & 0xFF;
+				u32 mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+				if (mx < d.cmin) d.cmin = mx;
+				if (mx > d.cmax) d.cmax = mx;
+				if (mx == 0) d.black++;
+				if (v.x < d.x0) d.x0 = v.x;
+				if (v.x > d.x1) d.x1 = v.x;
+				if (v.y < d.y0) d.y0 = v.y;
+				if (v.y > d.y1) d.y1 = v.y;
+				if (v.w < d.w0) d.w0 = v.w;
+				if (v.w > d.w1) d.w1 = v.w;
+			}
+			if ((sx1 - sx0) >= 320.0f && (sy1 - sy0) >= 240.0f)
+			{
+				// Throttled: only the big textured ones, and only for the log window.
+				if (p.pcw.Texture && s_fmv_dump < 3)
+				{
+					s_fmv_dump++;
+					dump_fmv_strip(st, p, sx0, sx1, sy0, sy1, sw0);
+				}
+				d.big++;
+				if (sw0 < d.bigw0) d.bigw0 = sw0;
+				if (sw1 > d.bigw1) d.bigw1 = sw1;
+			}
+		}
+	}
+}
+
+static void print_diag()
+{
+	for (u32 L = 0; L < 3; L++)
+	{
+		const ListDiag& d = s_diag[L];
+		if (d.strips == 0)
+			continue;
+		printf("[rendz] %s n=%u v=%u x=[%g..%g] y=[%g..%g] w=[%g..%g] "
+		       "dm=%u/%u/%u/%u/%u/%u/%u/%u zwd=%u cull=%u/%u/%u/%u tex=%u big=%u bigw=[%g..%g]\n",
+		       s_diag_name[L], d.strips, d.verts,
+		       (double)d.x0, (double)d.x1, (double)d.y0, (double)d.y1,
+		       (double)d.w0, (double)d.w1,
+		       d.dm[0], d.dm[1], d.dm[2], d.dm[3], d.dm[4], d.dm[5], d.dm[6], d.dm[7],
+		       d.zwd, d.cull[0], d.cull[1], d.cull[2], d.cull[3], d.tex,
+		       d.big, (double)d.bigw0, (double)d.bigw1);
+		printf("[rendz] %s a=[%u..%u] forced=%u ua=%u ita=%u shad=%u/%u/%u/%u "
+		       "src=%u/%u/%u/%u/%u/%u/%u/%u dst=%u/%u/%u/%u/%u/%u/%u/%u "
+		       "fmt=%u/%u/%u/%u/%u/%u/%u/%u rgb=[%u..%u] black=%u ct=%u/%u/%u/%u\n",
+		       s_diag_name[L], d.amin, d.amax, d.forced, d.usealpha, d.ignoretexa,
+		       d.shad[0], d.shad[1], d.shad[2], d.shad[3],
+		       d.src[0], d.src[1], d.src[2], d.src[3], d.src[4], d.src[5], d.src[6], d.src[7],
+		       d.dst[0], d.dst[1], d.dst[2], d.dst[3], d.dst[4], d.dst[5], d.dst[6], d.dst[7],
+		       d.fmt[0], d.fmt[1], d.fmt[2], d.fmt[3], d.fmt[4], d.fmt[5], d.fmt[6], d.fmt[7],
+		       d.cmin, d.cmax, d.black, d.ct[0], d.ct[1], d.ct[2], d.ct[3]);
+	}
+}
+
 // Draws the render context into the active viewport. The canvas rect is the DC
 // area mapped onto it: the whole screen when displaying, the FB clip window for
 // a render to texture.
@@ -1309,27 +1495,36 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	u32 bgd_bits = g_rr.isp_backgnd_d & ~0xFu;
 	float bg_inv_w;
 	memcpy(&bg_inv_w, &bgd_bits, 4);
-	float bg_w = 1.0f / ((bg_inv_w >= 0.0001f) ? bg_inv_w : 0.0001f);
+	float bg_w = 1.0f / ((bg_inv_w >= INV_W_FLOOR) ? bg_inv_w : INV_W_FLOOR);
 
-	// Depth range from this frame's W; the margins keep the nearest and farthest layer unclipped.
-	float n = s_rc->min_w < bg_w ? s_rc->min_w : bg_w;
-	float f = s_rc->max_w > bg_w ? s_rc->max_w : bg_w;
-	if (!(n < f) || n <= 0.0f)
-	{
-		n = 0.0001f;
-		f = 100000.0f;
-	}
-	n *= 0.999f;
-	f *= 1.001f;
+	// reicast glesrend.cpp pins the far plane at 1/W = 0, so only the nearest
+	// vertex sets the range; tracking the far end let one poly at 1/W <= 0.0001 eat it.
+	union { float f; s32 i; } bz, mz;
+	bz.f = bg_inv_w;
+	mz.f = s_rc->max_inv_w;
+	float max_inv_w = (mz.i < bz.i && bz.i < 0x49800000) ? bg_inv_w : mz.f;
+	// reicast's sanity fallback: past 1024*1024 the range is garbage, not a scene.
+	if (!(max_inv_w > 0.0f) || max_inv_w > 1048576.0f)
+		max_inv_w = 10.0f * 1024.0f;
+	// reicast's fZ_max *= 1.001: the nearest layer defines the plane it sits on,
+	// and float rounding would otherwise clip it away.
+	max_inv_w *= 1.001f;
+	float n = 1.0f / max_inv_w;
+	if (s_rc->min_w < s_stat_w_lo) s_stat_w_lo = s_rc->min_w;
+	if (s_rc->max_w > s_stat_w_hi) s_stat_w_hi = s_rc->max_w;
+	if (n < s_stat_near_lo) s_stat_near_lo = n;
+	s_stat_bg_inv_w = bg_inv_w;
+	s_stat_bg_zw = g_rr.bg_param.isp.ZWriteDis;
 
-	// Input (x*W, y*W, W): clip.w = W, so attributes interpolate with perspective and z_ndc = A + B/W.
+	// Input (x*W, y*W, W): clip.w = W, so attributes interpolate with perspective
+	// and z_ndc = 1 - 2n/W, which is -1 at W = n and +1 at 1/W = 0.
 	float m[16] = { 0 };
 	m[0] = 2.0f / cw;
 	m[8] = -1.0f - 2.0f * cx0 / cw;
 	m[5] = -2.0f / ch;
 	m[9] = 1.0f + 2.0f * cy0 / ch;
-	m[10] = (f + n) / (f - n);
-	m[14] = -2.0f * f * n / (f - n);
+	m[10] = 1.0f;
+	m[14] = -2.0f * n;
 	m[11] = 1.0f;
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixf(m);
@@ -1359,6 +1554,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 
 	if (s_rc->nstrip != 0)
 	{
+		collect_diag();
 		// Hardware order: opaque, punch-through, translucent.
 		reset_param_cache();
 		draw_list(ListType_Opaque);
@@ -1375,10 +1571,13 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		glDisable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
+		u32 a0 = ps3gl_draw_attempt, e0 = ps3gl_draw_emit;
 		if (g_rr.autosort)
 			draw_tr_sorted();
 		else
 			draw_list(ListType_Translucent);
+		s_tr_attempt = ps3gl_draw_attempt - a0;
+		s_tr_emit = ps3gl_draw_emit - e0;
 	}
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
@@ -1670,7 +1869,7 @@ static void rth_print_stats()
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
-	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | trdraw=%u/%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
 	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
@@ -1679,8 +1878,24 @@ static void rth_print_stats()
 	       s_stat_strips[ListType_Translucent] / r,
 	       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
 	       s_stat_built[ListType_Translucent] / r,
-	       s_stat_mv[1] / r, s_stat_mv[3] / r, decodes, live, s_overflow,
+	       s_stat_mv[1] / r, s_stat_mv[3] / r,
+	       s_tr_emit, s_tr_attempt,
+	       (double)s_stat_w_lo, (double)s_stat_w_hi, (double)s_stat_near_lo,
+	       s_stat_wclamp, s_stat_wtotal, (double)s_stat_bg_inv_w, s_stat_bg_zw,
+	       decodes, live, s_overflow,
 	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024));
+	{
+		u32 y[20];
+		yuv_stats(y);
+		printf("[yuv] inits=%u calls=%u bytes=%u blk420=%u blk422=%u "
+		       "dest=%06X size=%ux%u ctrl=%08X first=%06X:%08X midinit=%u@%u/%u "
+		       "inUVY=%08X %08X %08X mean=%u/%u/%u\n",
+		       y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7], y[8], y[9], y[10],
+		       y[11], y[12], y[13], y[14], y[15], y[16],
+		       y[17], y[18], y[19]);
+	}
+	s_fmv_dump = 0;
+	print_diag();
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
@@ -1695,6 +1910,9 @@ static void rth_print_stats()
 	s_stat_fb_defer = 0;
 	s_stat_wait = 0.0;
 	s_stat_job_max = 0.0;
+	s_stat_w_lo = s_stat_near_lo = 1e30f;
+	s_stat_w_hi = 0.0f;
+	s_stat_wclamp = s_stat_wtotal = 0;
 	s_stat_t0 = now;
 }
 

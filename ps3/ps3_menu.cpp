@@ -53,12 +53,43 @@ static u32 pad_poll_raw()
 	static padData pad[MAX_PORT_NUM];
 
 	u32 b = 0;
+	// Input went dead after the toolchain change: log what the API actually
+	// returns, once a second, so status and raw words can be told apart.
+	static u32 dbg_seen;
+	static bool dbg_once;
+	if (!dbg_once)
+	{
+		dbg_once = true;
+		// This libio never refreshes the buffer without it; the old one did not need it.
+		for (int i = 0; i < MAX_PORT_NUM; i++)
+			if (info.status[i])
+				printf("[padraw] setPortSetting(%d) -> %d\n", i, (int)ioPadSetPortSetting(i, 0));
+		padInfo2 i2;
+		int r2 = ioPadGetInfo2(&i2);
+		printf("[padraw] status=%u%u%u%u%u%u%u sizeof(padData)=%u | info2=%d port_status=%lX %lX\n",
+		       info.status[0], info.status[1], info.status[2], info.status[3],
+		       info.status[4], info.status[5], info.status[6],
+		       (unsigned)sizeof(padData), r2,
+		       (unsigned long)i2.port_status[0], (unsigned long)i2.port_status[1]);
+	}
 	for (int i = 0; i < MAX_PORT_NUM; i++)
 	{
 		if (!info.status[i])
 			continue;
 		padData& d = pad[i];
-		ioPadGetData(i, &d);
+		int gr = ioPadGetData(i, &d);
+		// Log only when the raw words move, next to what the bitfields decode to:
+		// if the words change and the bits do not, the struct layout is wrong.
+		static u32 heartbeat;
+		u32 raw = ((u32)d.button[2] << 16) | d.button[3];
+		if (i == 0 && (raw != dbg_seen || (heartbeat++ % 180) == 0))
+		{
+			dbg_seen = raw;
+			printf("[padraw] p%d ret=%d len=%d w2=%04X w3=%04X | L%u D%u R%u U%u St%u Sq%u X%u O%u T%u\n",
+			       i, gr, (int)d.len, d.button[2], d.button[3],
+			       d.BTN_LEFT, d.BTN_DOWN, d.BTN_RIGHT, d.BTN_UP, d.BTN_START,
+			       d.BTN_SQUARE, d.BTN_CROSS, d.BTN_CIRCLE, d.BTN_TRIANGLE);
+		}
 		if (d.BTN_UP)       b |= MB_UP;
 		if (d.BTN_DOWN)     b |= MB_DOWN;
 		if (d.BTN_LEFT)     b |= MB_LEFT;

@@ -6,6 +6,9 @@
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
 
+extern "C" u32 yuv_probe_off(void);
+
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpragmas"
 extern "C" {
@@ -32,6 +35,8 @@ static TexEntry s_cache[CACHE_SLOTS];
 static u32 s_frame = 1;
 static u32 s_sweep;
 static u32 s_decodes;
+static u32 s_black_tex, s_alpha0_tex;
+static u32 s_yuv_dump;
 static u32 s_live;
 
 // Temporary G7 texture-mix counters, reset with the other per-window stats.
@@ -282,21 +287,52 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 	}
 	else
 	{
+		// Only `pitch` texels per row actually exist; reicast converts that many
+		// into a w-wide buffer and leaves the tail alone (the UVs never reach it).
+		u32 cols = d.pitch < w ? d.pitch : w;
 		for (u32 y = 0; y < h; y++)
 		{
 			u32 row = d.addr + y * d.pitch * 2;
 			if (d.fmt == 3)
-				for (u32 x = 0; x < w; x += 2)
+				for (u32 x = 0; x < cols; x += 2)
 					yuv_pair(vram16(row + x * 2), vram16(row + x * 2 + 2), &s_out[y * w + x]);
 			else
-				for (u32 x = 0; x < w; x++)
+				for (u32 x = 0; x < cols; x++)
 					s_out[y * w + x] = cvt16(d.fmt, vram16(row + x * 2));
+			for (u32 x = cols; x < w; x++)
+				s_out[y * w + x] = 0;
 		}
+	}
+
+	// Same address the converter reports writing, read back through the decoder.
+	if (d.fmt == 3 && s_yuv_dump)
+	{
+		s_yuv_dump--;
+		u32 my = h / 2, mx = (d.pitch < w ? d.pitch : w) / 2;
+		u32 mid = d.addr + my * d.pitch * 2 + mx * 2;
+		printf("[yuvtex] addr=%06X %ux%u pitch=%u | raw %08X %08X | row1 %08X"
+		       " | mid(%u,%u) raw %08X %08X out %08X | at(%06X)=%08X\n",
+		       d.addr, w, h, d.pitch, vram32(d.addr), vram32(d.addr + 4),
+		       vram32(d.addr + d.pitch * 2),
+		       mx, my, vram32(mid), vram32(mid + 4), s_out[my * w + mx],
+		       yuv_probe_off(), vram32(yuv_probe_off()));
 	}
 
 	if (ignore_alpha)
 		for (u32 i = 0; i < w * h; i++)
 			s_out[i] |= 0xFF;
+
+	// Both inputs to the final pixel under shade mode 3 (modulate alpha):
+	// all-black RGB, or all-zero alpha, each render the poly as nothing.
+	u32 lit = 0, opaque = 0;
+	for (u32 i = 0; i < w * h; i++)
+	{
+		if (s_out[i] & 0xFFFFFF00u) lit = 1;
+		if (s_out[i] & 0xFFu) opaque = 1;
+		if (lit && opaque) break;
+	}
+	if (!lit) s_black_tex++;
+	if (!opaque) s_alpha0_tex++;
 }
 
 static void free_entry(TexEntry& e)
@@ -441,14 +477,16 @@ void ps3tex_stats(u32* decodes, u32* live)
 
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
-	       " | binds=%u mirrorbinds=%u\n",
+	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
-	       s_bind_total, s_bind_mirror);
+	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
 	s_bind_total = s_bind_mirror = 0;
+	s_black_tex = s_alpha0_tex = 0;
+	s_yuv_dump = 2;
 }

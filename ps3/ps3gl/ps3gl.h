@@ -705,4 +705,7 @@ static const float ps3gl_identity[16] = {
     0, 0, 0, 1
 };
 
+/* Draws handed to submit_ranges vs draws that reached the RSX ring. */
+extern unsigned int ps3gl_draw_attempt, ps3gl_draw_emit;
+
 #endif /* PS3GL_H */
