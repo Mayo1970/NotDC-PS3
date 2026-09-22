@@ -225,14 +225,10 @@ extern uint32_t ps3gl_frame_batched_poly_count;
  * OLD vertices that were recorded under different state. That was the
  * actual bug behind "textures and polygons glitched": every batch drew
  * one state-change late, every single chain, every frame. */
-/* A draw can be dropped here without any error reaching the caller, so the
- * renderer's own strip count proves submission, not rasterization. */
-unsigned int ps3gl_draw_attempt, ps3gl_draw_emit;
 
 static void submit_ranges(int total_verts, const int *first, const int *cnt,
                            int nranges, uint32_t gcm_prim, int apply_state)
 {
-    ps3gl_draw_attempt++;
     if (total_verts <= 0 || nranges <= 0) return;
 
     if (apply_state) {
@@ -246,7 +242,6 @@ static void submit_ranges(int total_verts, const int *first, const int *cnt,
     uint32_t vb_offset;
     ps3gl_vertex_t *dst = ps3gl_vring_alloc(total_verts, &vb_offset);
     if (!dst) return;
-    ps3gl_draw_emit++;
     memcpy(dst, ps3gl.imm.buf, (size_t)total_verts * PS3GL_VERTEX_SIZE);
 
     gcmContextData *ctx = ps3gl_get_ctx();

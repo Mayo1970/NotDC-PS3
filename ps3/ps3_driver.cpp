@@ -2622,9 +2622,11 @@ static void FlushCold()
 			else
 			{
 				if (c.datareg!=ppc_rarg1) ppc_ori(ppc_rarg1,c.datareg,0);
+				// andi clears the upper half for sz 1/2; sz 4 needs the explicit
+				// clrldi32, since ori copies a pinned reg's poison straight through.
 				if (c.sz==1)      { ppc_andi(ppc_rarg1,ppc_rarg1,0xFF);   ppc_call_c(&WriteMem8); }
 				else if (c.sz==2) { ppc_andi(ppc_rarg1,ppc_rarg1,0xFFFF); ppc_call_c(&WriteMem16); }
-				else                ppc_call_c(&WriteMem32);
+				else              { ppc_clrldi32(ppc_rarg1,ppc_rarg1);    ppc_call_c(&WriteMem32); }
 			}
 		}
 		else                             // --- write pair (64): WriteMem64 ---
@@ -4567,13 +4569,17 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				u32 a1=src_or_load(op->rs1,ppc_rarg0);
 
 				if (op->rs2.is_imm_u16())
-					ppc_andi(ppc_rarg0,a1,op->rs2._imm);		// andi. sets CR0
+					ppc_andi(ppc_rarg0,a1,op->rs2._imm);		// andi. zero-extends the imm, so CR0 is 32-bit safe
 				else
 				{
 					u32 b;
 					if (op->rs2.is_imm()) { ppc_li(ppc_rarg1,op->rs2._imm); b=ppc_rarg1; }
 					else b=src_or_load(op->rs2,ppc_rarg1);
-					ppc_andx(ppc_rarg0,a1,b,1);			// and. sets CR0
+					// `and.` sets CR0 from the FULL 64-bit result, but SH4 tst is a
+					// 32-bit test and pinned regs carry poison above bit 31: a zero
+					// low word with dirty high words gave T=0 instead of T=1.
+					ppc_andx(ppc_rarg0,a1,b,0);
+					ppc_cmpli(ppc_cr0,ppc_rarg0,0,0);		// cmplwi rarg0,0 -> CR0 from the low word
 				}
 				// JIT_CR0: the and./andi. above already set CR0.EQ.
 				if (emit_t_to_cr0(BI_CR0_EQ,false))
@@ -4815,6 +4821,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		case shop_pref:
 			{
 				ppc_sh_load(ppc_rarg0,op->rs1);
+				ppc_clrldi32(ppc_rarg0,ppc_rarg0);		// ELFv1: caller extends u32
 				ppc_rlwinmx(ppc_rarg1,ppc_rarg0,6,26,31,0);	// rarg1 = addr >> 26
 				ppc_cmpi(ppc_cr0,ppc_rarg1,0x38,0);		// SQ region?
 				ppc_label* skip=ppc_CreateLabel();
@@ -5091,6 +5098,9 @@ extern "C" int get_jit_newops_preset();
 extern "C" int get_jit_carry_preset();
 extern "C" int get_jit_mac_preset();
 extern "C" int get_jit_pcrel_preset();
+extern "C" int get_jit_ifb_mask();
+extern "C" int get_jit_ifb_group();
+extern "C" int get_jit_ifb_lomask();
 
 // One line per session naming every JIT toggle actually in force. Without it a
 // log cannot be told apart from a run with different settings, and an install
@@ -5100,9 +5110,11 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] Dynarec=%d JitSafe=%d JitDynEnds=%d -> static_linking=%s\n",
 	       get_dynarec_preset(), get_jit_safe_preset(), get_jit_dynends_preset(),
 	       (get_jit_safe_preset()||get_jit_dynends_preset()) ? "OFF" : "ON");
-	printf("[jitcfg] NewOps=%d Carry=%d Mac=%d PcRelIfb=%d DebugLoop=%d\n",
+	printf("[jitcfg] NewOps=%d Carry=%d Mac=%d PcRelIfb=%d DebugLoop=%d IfbMask=%04X"
+	       " IfbGroup=%d IfbLoMask=%04X\n",
 	       get_jit_newops_preset(), get_jit_carry_preset(), get_jit_mac_preset(),
-	       get_jit_pcrel_preset(), get_debug_loop());
+	       get_jit_pcrel_preset(), get_debug_loop(), get_jit_ifb_mask(),
+	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
 	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),

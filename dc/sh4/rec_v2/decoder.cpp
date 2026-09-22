@@ -97,6 +97,9 @@ struct
 } state;
 
 extern "C" int get_jit_pcrel_preset();
+extern "C" int get_jit_ifb_mask();
+extern "C" int get_jit_ifb_group();
+extern "C" int get_jit_ifb_lomask();
 
 // PC-relative data reads: mova (0xC7xx), mov.w @(disp,PC) (0x9xxx) and
 // mov.l @(disp,PC) (0xDxxx). Their address is baked in at decode time, so a
@@ -1368,9 +1371,20 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 					if (rec_oph && dec_is_newop(op) && !get_jit_newops_preset())
 						rec_oph=0;
 
+					// JitIfbMask bisect: force this opcode's whole top-nibble group
+					// to the interpreter without disturbing block ends, which is what
+					// JitSafe and JitDynEnds both do as a side effect. JitIfbGroup +
+					// JitIfbLoMask sub-bisect one group by low nibble.
+					const u32 hi=op>>12;
+					const bool force_ifb=((get_jit_ifb_mask()>>hi)&1)
+					    || ((int)hi==get_jit_ifb_group()
+					        && ((get_jit_ifb_lomask()>>(op&0xF))&1));
+					if (force_ifb)
+						rec_oph=0;
+
 					if (state.ngen.OnlyDynamicEnds || !rec_oph)
 					{
-						if (state.ngen.InterpreterFallback
+						if (state.ngen.InterpreterFallback || force_ifb
 						    || (get_jit_pcrel_preset() && dec_is_pcrel(op))
 						    || !dec_generic(op))
 						{

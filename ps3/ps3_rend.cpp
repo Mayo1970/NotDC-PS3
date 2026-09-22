@@ -1028,7 +1028,6 @@ static void bg_eval(const BgVertex* v, float x, float y, BgVertex* out)
 }
 
 // Draws ps3gl actually emitted for the translucent pass, against draws offered.
-static u32 s_tr_attempt, s_tr_emit;
 
 // DC compares 1/W; our depth grows with W, so each test flips direction.
 static const GLenum depth_func[8] = {
@@ -1350,37 +1349,7 @@ struct ListDiag
 	float bigw0, bigw1;
 };
 static ListDiag s_diag[3];
-// Reset once per stats window so the dump costs nothing between them.
-static u32 s_fmv_dump = 3;
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
-
-// One line per big textured strip: is the fullscreen quad really the YUV one,
-// and does the converter claim the address it samples?
-static void dump_fmv_strip(const DcStrip& st, const DcParam& p,
-                           float sx0, float sx1, float sy0, float sy1, float sw0)
-{
-	u32 addr = (p.tcw.NO_PAL.TexAddr << 3) & VRAM_MASK;
-	u32 cw = 0, ch = 0;
-	int hit = yuv_conv_lookup(addr, &cw, &ch);
-	// 0..1 means the quad expects the whole declared texture; about 0..0.625
-	// means it only samples the converter's 320 of the 512 declared columns.
-	float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
-	for (u32 k = 0; k < st.count; k++)
-	{
-		const DcVertex& vv = s_rc->vtx[st.first + k];
-		if (vv.u < u0) u0 = vv.u;
-		if (vv.u > u1) u1 = vv.u;
-		if (vv.v < v0) v0 = vv.v;
-		if (vv.v > v1) v1 = vv.v;
-	}
-	printf("[yuvq] tcw=%08X fmt=%u scan=%u stride=%u vq=%u mip=%u addr=%06X "
-	       "decl=%ux%u texctl=%u x=[%g..%g] y=[%g..%g] w=%g | conv=%d %ux%u uv=[%g..%g],[%g..%g]\n",
-	       (unsigned)p.tcw.full, p.tcw.NO_PAL.PixelFmt, p.tcw.NO_PAL.ScanOrder,
-	       p.tcw.NO_PAL.StrideSel, p.tcw.NO_PAL.VQ_Comp, p.tcw.NO_PAL.MipMapped,
-	       addr, 8u << p.tsp.TexU, 8u << p.tsp.TexV, (unsigned)(g_rr.text_control & 31),
-	       (double)sx0, (double)sx1, (double)sy0, (double)sy1, (double)sw0,
-	       hit, cw, ch, (double)u0, (double)u1, (double)v0, (double)v1);
-}
 
 static void collect_diag()
 {
@@ -1445,12 +1414,6 @@ static void collect_diag()
 			}
 			if ((sx1 - sx0) >= 320.0f && (sy1 - sy0) >= 240.0f)
 			{
-				// Throttled: only the big textured ones, and only for the log window.
-				if (p.pcw.Texture && s_fmv_dump < 3)
-				{
-					s_fmv_dump++;
-					dump_fmv_strip(st, p, sx0, sx1, sy0, sy1, sw0);
-				}
 				d.big++;
 				if (sw0 < d.bigw0) d.bigw0 = sw0;
 				if (sw1 > d.bigw1) d.bigw1 = sw1;
@@ -1571,13 +1534,10 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		glDisable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
-		u32 a0 = ps3gl_draw_attempt, e0 = ps3gl_draw_emit;
 		if (g_rr.autosort)
 			draw_tr_sorted();
 		else
 			draw_list(ListType_Translucent);
-		s_tr_attempt = ps3gl_draw_attempt - a0;
-		s_tr_emit = ps3gl_draw_emit - e0;
 	}
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
@@ -1869,7 +1829,7 @@ static void rth_print_stats()
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
-	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | trdraw=%u/%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
 	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
@@ -1879,22 +1839,10 @@ static void rth_print_stats()
 	       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
 	       s_stat_built[ListType_Translucent] / r,
 	       s_stat_mv[1] / r, s_stat_mv[3] / r,
-	       s_tr_emit, s_tr_attempt,
 	       (double)s_stat_w_lo, (double)s_stat_w_hi, (double)s_stat_near_lo,
 	       s_stat_wclamp, s_stat_wtotal, (double)s_stat_bg_inv_w, s_stat_bg_zw,
 	       decodes, live, s_overflow,
 	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024));
-	{
-		u32 y[20];
-		yuv_stats(y);
-		printf("[yuv] inits=%u calls=%u bytes=%u blk420=%u blk422=%u "
-		       "dest=%06X size=%ux%u ctrl=%08X first=%06X:%08X midinit=%u@%u/%u "
-		       "inUVY=%08X %08X %08X mean=%u/%u/%u\n",
-		       y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7], y[8], y[9], y[10],
-		       y[11], y[12], y[13], y[14], y[15], y[16],
-		       y[17], y[18], y[19]);
-	}
-	s_fmv_dump = 0;
 	print_diag();
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)

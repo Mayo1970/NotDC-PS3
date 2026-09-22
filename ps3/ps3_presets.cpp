@@ -34,6 +34,14 @@ int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking
 int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
+// Bisect knob: bit N forces every SH4 opcode whose top nibble is N through the
+// interpreter, leaving the rest of the JIT exactly at baseline.
+int g_jit_ifb_mask         = 0;
+// Sub-bisect one group: opcodes with top nibble JitIfbGroup and a low nibble in
+// JitIfbLoMask also go to the interpreter. Only meaningful for the n/m-form
+// groups (0,2,3,4,6) where the low nibble selects the opcode.
+int g_jit_ifb_group        = -1;
+int g_jit_ifb_lomask       = 0;
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
@@ -66,6 +74,9 @@ static const CfgItem s_items[] = {
 	{ "JitPcRelIfb",   &g_jit_pcrel_preset },
 	{ "JitDynEnds",    &g_jit_dynends_preset },
 	{ "JitFastmem",    &g_jit_fastmem_preset },
+	{ "JitIfbMask",    &g_jit_ifb_mask },
+	{ "JitIfbGroup",   &g_jit_ifb_group },
+	{ "JitIfbLoMask",  &g_jit_ifb_lomask },
 	{ "RenderThread",  &g_render_thread_preset },
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
@@ -119,6 +130,9 @@ int get_jit_carry_preset()     { return g_jit_carry_preset; }
 int get_jit_mac_preset()       { return g_jit_mac_preset; }
 int get_jit_pcrel_preset()     { return g_jit_pcrel_preset; }
 int get_jit_dynends_preset()   { return g_jit_dynends_preset; }
+int get_jit_ifb_mask()         { return g_jit_ifb_mask; }
+int get_jit_ifb_group()        { return g_jit_ifb_group; }
+int get_jit_ifb_lomask()       { return g_jit_ifb_lomask; }
 
 // FASTMEM, PS3 flavour: inline main-RAM accesses in the JIT (Dynarec.MD 3.4).
 // Unrelated to get_fastmem_preset() below, which is the Wii MMU design.

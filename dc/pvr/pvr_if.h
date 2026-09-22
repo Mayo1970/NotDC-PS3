@@ -97,13 +97,6 @@ void FASTCALL pvr_write_area1_32(u32 addr, u32 data);
  */
 extern "C" int yuv_conv_lookup(u32 addr, u32 *out_w, u32 *out_h);
 
-// 11 values: inits, calls, bytes, blk420, blk422, dest, w, h, ctrl,
-// first written offset, first written word. Resets the rates.
-extern "C" void yuv_stats(u32* v);
-
-// VRAM offset the converter last captured a word at.
-extern "C" u32 yuv_probe_off(void);
-
 //------------------------------------------------------------------------------
 // Tile Accelerator DMA Interface
 //------------------------------------------------------------------------------

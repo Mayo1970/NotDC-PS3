@@ -6,7 +6,6 @@
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
 
-extern "C" u32 yuv_probe_off(void);
 
 
 #pragma GCC diagnostic push
@@ -36,7 +35,6 @@ static u32 s_frame = 1;
 static u32 s_sweep;
 static u32 s_decodes;
 static u32 s_black_tex, s_alpha0_tex;
-static u32 s_yuv_dump;
 static u32 s_live;
 
 // Temporary G7 texture-mix counters, reset with the other per-window stats.
@@ -304,20 +302,6 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 		}
 	}
 
-	// Same address the converter reports writing, read back through the decoder.
-	if (d.fmt == 3 && s_yuv_dump)
-	{
-		s_yuv_dump--;
-		u32 my = h / 2, mx = (d.pitch < w ? d.pitch : w) / 2;
-		u32 mid = d.addr + my * d.pitch * 2 + mx * 2;
-		printf("[yuvtex] addr=%06X %ux%u pitch=%u | raw %08X %08X | row1 %08X"
-		       " | mid(%u,%u) raw %08X %08X out %08X | at(%06X)=%08X\n",
-		       d.addr, w, h, d.pitch, vram32(d.addr), vram32(d.addr + 4),
-		       vram32(d.addr + d.pitch * 2),
-		       mx, my, vram32(mid), vram32(mid + 4), s_out[my * w + mx],
-		       yuv_probe_off(), vram32(yuv_probe_off()));
-	}
-
 	if (ignore_alpha)
 		for (u32 i = 0; i < w * h; i++)
 			s_out[i] |= 0xFF;
@@ -488,5 +472,4 @@ void ps3tex_stats(u32* decodes, u32* live)
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
 	s_bind_total = s_bind_mirror = 0;
 	s_black_tex = s_alpha0_tex = 0;
-	s_yuv_dump = 2;
 }

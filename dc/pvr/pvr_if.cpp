@@ -79,14 +79,9 @@ extern "C" int yuv_conv_lookup(u32 addr, u32 *out_w, u32 *out_h)
 
 // YUV Helper Functions
 // Writes 2 YUYV pixels (4 bytes) at offset (x, y) from the current position.
-// First word of each surface, kept so the decoder's read of the same address
-// can be compared against it: equal means the encoding is not the fault.
-u32 g_yuv_grab, g_yuv_first_off, g_yuv_first_word;
-
 INLINE void YUV_putpixel2(u32 x, u32 y, u32 pixdata)
 {
     u32 offset = YUV_dest + (YUV_x_curr + x + (YUV_y_curr + y) * YUV_x_size) * 2;
-    if (g_yuv_grab) { g_yuv_grab = 0; g_yuv_first_off = offset; g_yuv_first_word = pixdata; }
     *(u32*)(&vram.data[offset]) = pixdata;
 }
 
@@ -120,44 +115,9 @@ INLINE u8 GetUV420(int x, int y, u8* base)
     return *host_ptr_xor(&base[realx + realy * 8]);
 }
 
-// Producer-side counters for the SC5 FMV backdrop hunt: they separate
-// "converter never fed" from "fed but writing where the cache never hashes".
-u32 g_yuv_inits, g_yuv_calls, g_yuv_bytes, g_yuv_blk420, g_yuv_blk422;
-u32 g_yuv_dest, g_yuv_w, g_yuv_h, g_yuv_ctrl;
-u32 g_yuv_midinit, g_yuv_midblk;
-// Raw macroblock input: first words of the U, V and Y planes. Real chroma
-// clusters near 128 and luma spreads, so this says whether the stream itself is
-// sane before any of our extraction touches it.
-u32 g_yuv_inU, g_yuv_inV, g_yuv_inY;
-u32 g_yuv_mean0, g_yuv_mean1, g_yuv_mean2;
-
-extern "C" u32 yuv_probe_off() { return g_yuv_first_off; }
-
-extern "C" void yuv_stats(u32* v)
-{
-    v[0] = g_yuv_inits; v[1] = g_yuv_calls; v[2] = g_yuv_bytes;
-    v[3] = g_yuv_blk420; v[4] = g_yuv_blk422;
-    v[5] = g_yuv_dest;  v[6] = g_yuv_w;     v[7] = g_yuv_h;
-    v[8] = g_yuv_ctrl;
-    v[9] = g_yuv_first_off; v[10] = g_yuv_first_word;
-    v[11] = g_yuv_midinit; v[12] = g_yuv_midblk; v[13] = YUV_blockcount;
-    v[14] = g_yuv_inU; v[15] = g_yuv_inV; v[16] = g_yuv_inY;
-    v[17] = g_yuv_mean0; v[18] = g_yuv_mean1; v[19] = g_yuv_mean2;
-    g_yuv_midinit = 0;
-    g_yuv_calls = g_yuv_bytes = g_yuv_blk420 = g_yuv_blk422 = 0;
-}
-
 // Initializes the YUV converter state from the hardware registers.
 void YUV_init()
 {
-    g_yuv_inits++;
-    // An init part-way through a surface rewinds the macroblock cursor to (0,0),
-    // so every block after it lands on top of the start of the frame.
-    if (YUV_blockcount && YUV_doneblocks && YUV_doneblocks < YUV_blockcount)
-    {
-        g_yuv_midinit++;
-        g_yuv_midblk = YUV_doneblocks;
-    }
     YUV_index = 0;
     YUV_x_curr = 0;
     YUV_y_curr = 0;
@@ -184,8 +144,6 @@ void YUV_init()
         YUV_x_size = blocks_x * YUV_MACROBLOCK_SIZE;
         YUV_y_size = blocks_y * YUV_MACROBLOCK_SIZE;
     }
-    g_yuv_dest = YUV_dest; g_yuv_w = YUV_x_size; g_yuv_h = YUV_y_size;
-    g_yuv_ctrl = TA_YUV_TEX_CTRL;
 }
 
 // Converts one 16x16 YUV macroblock to YUYV and writes it to VRAM.
@@ -195,31 +153,13 @@ INLINE void YUV_ConvertMacroBlock()
     
     YUV_doneblocks++;
     YUV_index = 0;
-    // doneblocks increments before converting, so this captures index 149:
-    // row 7, column 9 of the 20x15 grid, pixel (144,112).
-    if (YUV_doneblocks == 150)
-    {
-        g_yuv_grab = 1;
-        g_yuv_inU = YUV_tempdata[0];
-        g_yuv_inV = YUV_tempdata[64 / 4];
-        g_yuv_inY = YUV_tempdata[128 / 4];
-        // Both chroma planes average close to 128 in any real frame; luma
-        // averages the picture's brightness. Three means locate the planes.
-        const u8* b = (const u8*)YUV_tempdata;
-        u32 s0 = 0, s1 = 0, s2 = 0;
-        for (u32 i = 0; i < 64; i++)   s0 += b[i];
-        for (u32 i = 64; i < 128; i++) s1 += b[i];
-        for (u32 i = 128; i < 384; i++) s2 += b[i];
-        g_yuv_mean0 = s0 / 64; g_yuv_mean1 = s1 / 64; g_yuv_mean2 = s2 / 256;
-    }
-    
+
     // Determine block format
     bool is_yuv420 = ((TA_YUV_TEX_CTRL & (1 << 24)) == 0);
     
     if (is_yuv420) {
         // Remember the written region so the renderer can tell converter output from uploaded YUV422.
         YUV_RememberRegion(YUV_dest, YUV_x_size, YUV_y_size);
-        g_yuv_blk420++;
 
         // YUV 4:2:0 format (384 bytes per macroblock)
         // Layout: 64 bytes U, 64 bytes V, 256 bytes Y
@@ -227,20 +167,17 @@ INLINE void YUV_ConvertMacroBlock()
         u8* V = (u8*)&YUV_tempdata[64 / 4];
         u8* Y = (u8*)&YUV_tempdata[(64 + 64) / 4];
         
-        u8 yuyv[4]; // Temporary buffer for 2 pixels
-        
         // Convert 16x16 block
         for (u32 y = 0; y < YUV_MACROBLOCK_SIZE; y++) {
             for (u32 x = 0; x < YUV_MACROBLOCK_SIZE; x += 2) {
-                // Pack as DC LE UYVY u32 (U|Y0<<8|V<<16|Y1<<24); stored as a BE u32 this matches CPU
-                // 32-bit stores, so one decoder handles TA-YUV and CPU-written YUV422.
-                yuyv[0] = GetY420(x + 1, y, Y);  // Y1 = Wii BE MSB = DC byte 3
-                yuyv[1] = GetUV420(x, y, V);      // V  = DC byte 2
-                yuyv[2] = GetY420(x, y, Y);       // Y0 = DC byte 1
-                yuyv[3] = GetUV420(x, y, U);      // U  = Wii BE LSB = DC byte 0
-                
-                // Write 2 pixels at once
-                YUV_putpixel2(x, y, *(u32*)yuyv);
+                // DC LE UYVY u32: U|Y0<<8|V<<16|Y1<<24. Built as a value, not a u8[4]
+                // pun, so it is identical on either host endian and strict aliasing
+                // cannot reorder the byte stores against the u32 load.
+                u32 px = ((u32)GetY420(x + 1, y, Y) << 24)
+                       | ((u32)GetUV420(x, y, V)    << 16)
+                       | ((u32)GetY420(x, y, Y)     <<  8)
+                       |  (u32)GetUV420(x, y, U);
+                YUV_putpixel2(x, y, px);
             }
         }
         
@@ -253,11 +190,9 @@ INLINE void YUV_ConvertMacroBlock()
                 YUV_y_curr = 0;
             }
         }
-    } else {
-        // Consumed and acknowledged but never written: counted, not printed per block.
-        g_yuv_blk422++;
     }
-    
+    // 4:2:2 blocks are consumed and acknowledged, never written.
+
     // Check if all blocks are processed
     if (YUV_doneblocks >= YUV_blockcount) {
         YUV_init();
@@ -274,9 +209,6 @@ void YUV_data(u32* data, u32 count)
         printf("YUV_data: YUV decoder not initialized, initializing now\n");
         YUV_init();
     }
-    
-    g_yuv_calls++;
-    g_yuv_bytes += count * 32;
 
     u32 TA_YUV_TEX_CTRL = pvr_readreg_TA(TA_YUV_TEX_CTRL_ADDR, 4);
     
@@ -326,8 +258,11 @@ void pvr_writereg_TA(u32 addr, u32 data, u32 sz)
     // Delegate to plugin implementation
     libPvr_WriteReg(addr, data, sz);
     
-    // Reinitialize YUV converter if base address is written
-    if ((addr & 0xFFFFFF) == TA_YUV_TEX_BASE_ADDR) {
+    // Re-init on BASE *or* CTRL, as reicast does (pvr_sb_regs.cpp:382). CTRL carries
+    // the block grid, so a game that writes BASE then CTRL otherwise keeps a stale
+    // YUV_x_size/blockcount for the whole surface.
+    u32 reg = addr & 0xFFFFFF;
+    if (reg == TA_YUV_TEX_BASE_ADDR || reg == TA_YUV_TEX_CTRL_ADDR) {
         YUV_init();
     }
 }
