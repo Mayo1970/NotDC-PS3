@@ -98,18 +98,19 @@ static inline u32 cvt8888(u32 c) { return rgba((c >> 16) & 255, (c >> 8) & 255, 
 
 static inline u32 clamp8(s32 v) { return v < 0 ? 0 : (v > 255 ? 255 : (u32)v); }
 
-static inline u32 yuv(s32 y, s32 u, s32 v)
-{
-	u -= 128;
-	v -= 128;
-	return rgba(clamp8(y + v * 11 / 8), clamp8(y - (u * 11 + v * 22) / 32), clamp8(y + u * 110 / 64), 255);
-}
-
 // Two horizontal texels sharing U (in p0) and V (in p1); luma is the high byte.
+// Chroma terms depend only on the shared U/V, so compute them once per pair
+// instead of once per texel (FMV decodes this every changed frame).
 static inline void yuv_pair(u32 p0, u32 p1, u32* o)
 {
-	o[0] = yuv(p0 >> 8, p0 & 255, p1 & 255);
-	o[1] = yuv(p1 >> 8, p0 & 255, p1 & 255);
+	s32 u = (s32)(p0 & 255) - 128;
+	s32 v = (s32)(p1 & 255) - 128;
+	s32 dr = v * 11 / 8;
+	s32 dg = (u * 11 + v * 22) / 32;
+	s32 db = u * 110 / 64;
+	s32 y0 = (s32)(p0 >> 8), y1 = (s32)(p1 >> 8);
+	o[0] = rgba(clamp8(y0 + dr), clamp8(y0 - dg), clamp8(y0 + db), 255);
+	o[1] = rgba(clamp8(y1 + dr), clamp8(y1 - dg), clamp8(y1 + db), 255);
 }
 
 static inline u32 cvt16(u32 fmt, u32 p)
@@ -302,7 +303,10 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 		}
 	}
 
-	if (ignore_alpha)
+	// yuv_pair() already stores alpha=255 for every texel, so forcing alpha on
+	// a YUV (FMV) surface is a no-op; skip the extra full-buffer pass it costs
+	// on every changed video frame.
+	if (ignore_alpha && d.fmt != 3)
 		for (u32 i = 0; i < w * h; i++)
 			s_out[i] |= 0xFF;
 
