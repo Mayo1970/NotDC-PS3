@@ -580,7 +580,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat,
             const int wants_mirror = (t->wrap_s == GCM_TEXTURE_MIRRORED_REPEAT ||
                                       t->wrap_t == GCM_TEXTURE_MIRRORED_REPEAT);
 
-            t->swizzled = (uint8_t)(g_swizzle_enabled && !wants_mirror &&
+            t->swizzled = (uint8_t)(g_swizzle_enabled && !wants_mirror && !t->no_swizzle_hint &&
                                     is_pow2((uint32_t)width) && is_pow2((uint32_t)height) &&
                                     width <= PS3GL_MAX_TEX_DIM && height <= PS3GL_MAX_TEX_DIM);
 
@@ -929,6 +929,12 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param)
 {
     (void)target;
     tex_param(pname, param);
+}
+
+void ps3gl_texture_hint_no_swizzle(void)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (t) t->no_swizzle_hint = 1;
 }
 
 /* TexEnv */

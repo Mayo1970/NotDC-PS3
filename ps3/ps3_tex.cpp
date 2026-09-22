@@ -5,6 +5,7 @@
 #include "ps3_rend_regs.h"
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
+#include "dc/pvr/pvr_if.h"
 
 
 
@@ -214,6 +215,16 @@ static u32 hash_range(u32 addr, u32 bytes, u32 h)
 
 static u32 hash_texture(const TexDesc& d)
 {
+	// FMV: the TA converter already knows exactly when a frame completes, so
+	// use its generation counter instead of re-reading the whole surface -
+	// this used to run a full src_bytes scan on every changed video frame.
+	if (d.fmt == 3)
+	{
+		u32 gen;
+		if (yuv_conv_generation(d.addr, &gen))
+			return gen;
+	}
+
 	u32 h = hash_range(d.addr, d.src_bytes, 2166136261u);
 	// The codebook is not contiguous with the index map once mipmapped.
 	if (d.vq)
@@ -438,6 +449,13 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
 		set_tex_params(tsp, mirror_u, mirror_v);
+		// FMV is a full-screen quad re-uploaded whole every changed frame: the
+		// swizzle Morton order buys nothing here and forces an extra staging
+		// copy plus memcpy to VRAM on top of the pixel conversion (see
+		// ps3gl_texture_hint_no_swizzle in ps3gl.h). Must be set before this
+		// first glTexImage2D, since layout is fixed at allocation.
+		if (d.fmt == 3)
+			ps3gl_texture_hint_no_swizzle();
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 		s_live++;
 		s_decodes++;

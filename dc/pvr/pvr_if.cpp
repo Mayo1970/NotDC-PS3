@@ -36,10 +36,14 @@ static u32 YUV_y_size = 0;         // Output height in pixels
 
 // YUV converter output regions: the converter writes rows of the video's real width with no padding,
 // so the renderer looks texture addresses up here for the real pitch (TA_YUV_TEX_CTRL is often stale).
-struct YuvConvRegion { u32 base; u32 w; u32 h; };
+struct YuvConvRegion { u32 base; u32 w; u32 h; u32 gen; };
 static const u32 YUV_REGION_SLOTS = 4;
 static YuvConvRegion YUV_regions[YUV_REGION_SLOTS];
 static u32 YUV_region_next = 0;
+// Bumped once per completed video frame (see YUV_ConvertMacroBlock); lets a
+// texture cache detect a changed FMV frame with an int compare instead of
+// re-hashing the whole surface every check.
+static u32 YUV_generation = 0;
 
 // Records or refreshes the region the converter is writing (once per macroblock).
 static void YUV_RememberRegion(u32 base, u32 w, u32 h)
@@ -58,7 +62,22 @@ static void YUV_RememberRegion(u32 base, u32 w, u32 h)
     YUV_regions[YUV_region_next].base = base;
     YUV_regions[YUV_region_next].w    = w;
     YUV_regions[YUV_region_next].h    = h;
+    YUV_regions[YUV_region_next].gen  = 0;
     YUV_region_next = (YUV_region_next + 1) % YUV_REGION_SLOTS;
+}
+
+// Marks the region at base as having completed a full frame (called once the
+// converter finishes all of a video frame's macroblocks, before YUV_init()
+// picks a new destination for the next one).
+static void YUV_MarkRegionComplete(u32 base)
+{
+    YUV_generation++;
+    for (u32 i = 0; i < YUV_REGION_SLOTS; i++) {
+        if (YUV_regions[i].w != 0 && YUV_regions[i].base == base) {
+            YUV_regions[i].gen = YUV_generation;
+            return;
+        }
+    }
 }
 
 // Real pitch and rows of a YUV422 texture at VRAM address addr; returns 1 if the converter wrote it.
@@ -77,42 +96,57 @@ extern "C" int yuv_conv_lookup(u32 addr, u32 *out_w, u32 *out_h)
     return 0;
 }
 
+extern "C" int yuv_conv_generation(u32 addr, u32 *out_gen)
+{
+    for (u32 i = 0; i < YUV_REGION_SLOTS; i++) {
+        const YuvConvRegion &r = YUV_regions[i];
+        if (r.w == 0 || r.h == 0 || r.gen == 0)
+            continue;
+        if (addr >= r.base && addr < r.base + r.w * r.h * 2) {
+            *out_gen = r.gen;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // YUV Helper Functions
-// Writes 2 YUYV pixels (4 bytes) at offset (x, y) from the current position.
-INLINE void YUV_putpixel2(u32 x, u32 y, u32 pixdata)
-{
-    u32 offset = YUV_dest + (YUV_x_curr + x + (YUV_y_curr + y) * YUV_x_size) * 2;
-    *(u32*)(&vram.data[offset]) = pixdata;
-}
+// CH2 memcpy's main RAM verbatim, and this host stores guest u32s natively,
+// so a guest byte still lives at host offset ^3. host_ptr_xor() corrects that
+// on every plane byte read below.
 
-// Y of a 4:2:0 macroblock at (x, y), 0-15; base = 256 bytes of Y.
-INLINE u8 GetY420(int x, int y, u8* base)
+// One 8x8 luma quadrant of a 4:2:0 macroblock (qx/qy pick which of the 4,
+// each 0 or 8) plus its shared 8x8 chroma plane, converted to YUYV in VRAM.
+// Written as 4 explicit quadrant calls instead of one loop over all 256
+// texels: the old per-texel code re-tested "which quadrant" (x>7/y>7) and
+// recomputed the destination row's address multiply for every one of the
+// 128 pixel pairs in the block, both of which are constant per quadrant/row.
+// This runs synchronously on the SH4 store-queue write, off the JIT'd guest
+// code, so its cost shows up as a frame stall regardless of Dynarec state.
+INLINE void YUV_ConvertQuadrant(const u8* Yb, const u8* U, const u8* V, u32 qx, u32 qy)
 {
-    // 4:2:0 format stores Y in 8x8 sub-blocks
-    if (x > 7) {
-        x -= 8;
-        base += 64;  // Move to right 8x8 block
+    for (u32 ry = 0; ry < 8; ry++)
+    {
+        u32 y = qy + ry;
+        u32 cy = (qy >> 1) + (ry >> 1);
+        u32 row_off = YUV_dest + (YUV_x_curr + (YUV_y_curr + y) * YUV_x_size) * 2;
+        u32* drow = (u32*)&vram.data[row_off];
+        const u8* Yrow = Yb + ry * 8;
+        const u8* Urow = U + cy * 8;
+        const u8* Vrow = V + cy * 8;
+        for (u32 rx = 0; rx < 8; rx += 2)
+        {
+            u32 cx = (qx >> 1) + (rx >> 1);
+            // DC LE UYVY u32: U|Y0<<8|V<<16|Y1<<24. Built as a value, not a u8[4]
+            // pun, so it is identical on either host endian and strict aliasing
+            // cannot reorder the byte stores against the u32 load.
+            u32 px = ((u32)*host_ptr_xor(Yrow + rx + 1) << 24)
+                   | ((u32)*host_ptr_xor(Vrow + cx)      << 16)
+                   | ((u32)*host_ptr_xor(Yrow + rx)      <<  8)
+                   |  (u32)*host_ptr_xor(Urow + cx);
+            drow[cx] = px;
+        }
     }
-    
-    if (y > 7) {
-        y -= 8;
-        base += 128; // Move to bottom 8x8 block
-    }
-    
-    // CH2 memcpy's main RAM verbatim, and this host stores guest u32s natively,
-    // so a guest byte still lives at host offset ^3. Indexing linearly here mixes
-    // the two models.
-    return *host_ptr_xor(&base[x + y * 8]);
-}
-
-// U or V of a 4:2:0 macroblock at (x, y), 0-15; subsampled 2:1, base = 64 bytes.
-INLINE u8 GetUV420(int x, int y, u8* base)
-{
-    // Subsample coordinates
-    int realx = x >> 1;
-    int realy = y >> 1;
-
-    return *host_ptr_xor(&base[realx + realy * 8]);
 }
 
 // Initializes the YUV converter state from the hardware registers.
@@ -162,25 +196,16 @@ INLINE void YUV_ConvertMacroBlock()
         YUV_RememberRegion(YUV_dest, YUV_x_size, YUV_y_size);
 
         // YUV 4:2:0 format (384 bytes per macroblock)
-        // Layout: 64 bytes U, 64 bytes V, 256 bytes Y
-        u8* U = (u8*)&YUV_tempdata[0];
-        u8* V = (u8*)&YUV_tempdata[64 / 4];
-        u8* Y = (u8*)&YUV_tempdata[(64 + 64) / 4];
-        
-        // Convert 16x16 block
-        for (u32 y = 0; y < YUV_MACROBLOCK_SIZE; y++) {
-            for (u32 x = 0; x < YUV_MACROBLOCK_SIZE; x += 2) {
-                // DC LE UYVY u32: U|Y0<<8|V<<16|Y1<<24. Built as a value, not a u8[4]
-                // pun, so it is identical on either host endian and strict aliasing
-                // cannot reorder the byte stores against the u32 load.
-                u32 px = ((u32)GetY420(x + 1, y, Y) << 24)
-                       | ((u32)GetUV420(x, y, V)    << 16)
-                       | ((u32)GetY420(x, y, Y)     <<  8)
-                       |  (u32)GetUV420(x, y, U);
-                YUV_putpixel2(x, y, px);
-            }
-        }
-        
+        // Layout: 64 bytes U, 64 bytes V, 256 bytes Y, Y itself split TL/TR/BL/BR.
+        const u8* U = (const u8*)&YUV_tempdata[0];
+        const u8* V = (const u8*)&YUV_tempdata[64 / 4];
+        const u8* Y = (const u8*)&YUV_tempdata[(64 + 64) / 4];
+
+        YUV_ConvertQuadrant(Y,       U, V, 0, 0);
+        YUV_ConvertQuadrant(Y + 64,  U, V, 8, 0);
+        YUV_ConvertQuadrant(Y + 128, U, V, 0, 8);
+        YUV_ConvertQuadrant(Y + 192, U, V, 8, 8);
+
         // Advance to next macroblock position
         YUV_x_curr += YUV_MACROBLOCK_SIZE;
         if (YUV_x_curr >= YUV_x_size) {
@@ -195,6 +220,8 @@ INLINE void YUV_ConvertMacroBlock()
 
     // Check if all blocks are processed
     if (YUV_doneblocks >= YUV_blockcount) {
+        // Before YUV_init() picks a new destination: this frame's region is done.
+        YUV_MarkRegionComplete(YUV_dest);
         YUV_init();
         // Raise interrupt to signal completion
         asic_RaiseInterrupt(holly_YUV_DMA);

@@ -147,10 +147,18 @@ void spg_SchedListEndIrq(u32 list)
 #define PACE_MAX_LATE_FRAMES  4.0   // catch-up burst ceiling after a stall/load
 #define PACE_MAX_EARLY_FRAMES 1.0   // credit ceiling when running unthrottled
 
+// Temporary bisect counters for the FMV-overspeed investigation: which branch
+// spg_PaceFrame() takes, once per second in the existing stats line.
+u32 g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept;
+
 static void spg_PaceFrame()
 {
+    g_pace_calls++;
     if (spg_FrameSh4Cycles == 0)
+    {
+        g_pace_zero++;
         return;     // SPG not programmed yet: no meaningful frame period
+    }
 
     // Same effective clock spg_FrameSh4Cycles was built from, so the underclock preset keeps the real
     // video period.
@@ -160,6 +168,7 @@ static void spg_PaceFrame()
     if (s_pace_deadline == 0.0 ||
         period < spg_PaceFrameSec * 0.99 || period > spg_PaceFrameSec * 1.01)
     {
+        g_pace_reset++;
         spg_PaceFrameSec = period;
         spg_PaceErrorSec = 0.0;
         s_pace_deadline  = os_GetSeconds() + period;
@@ -172,6 +181,7 @@ static void spg_PaceFrame()
     // EARLY arm: cap at 100% speed by sleeping only the surplus (the SH4 thread never waits for vsync).
     if (err < 0.0 && SPEED_LIMITER())
     {
+        g_pace_slept++;
         usleep((useconds_t)(-err * 1000000.0));
         now = os_GetSeconds();
         err = now - s_pace_deadline;
@@ -333,6 +343,10 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     mv / tdiff,
                     vps, rnd_pct, ta_pct, ta_kps,
                     arm_pct, aica_pct, vox_pct, voices, snd_pct);
+                // Temporary: which branch spg_PaceFrame() took this window (FMV-overspeed bisect).
+                printf("[pace] calls=%u zero=%u reset=%u slept=%u\n",
+                       g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept);
+                g_pace_calls = g_pace_zero = g_pace_reset = g_pace_slept = 0;
                 fflush(stdout); // once per 1s: keep the log tail intact if the Wii is powered off
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on

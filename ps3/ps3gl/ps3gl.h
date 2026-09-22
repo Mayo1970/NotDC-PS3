@@ -102,6 +102,7 @@ typedef struct {
                                  * toggled between two uploads of the same texture. */
     uint8_t         wrap_s, wrap_t;
     uint8_t         min_filter, mag_filter;
+    uint8_t         no_swizzle_hint; /* set by ps3gl_texture_hint_no_swizzle() before alloc */
     gcmTexture      gcm_tex;
     int             dirty;
     int             content_dirty; /* RSX-local texels changed; cache invalidate pending */
@@ -583,6 +584,12 @@ void glColor3ubv(const GLubyte *v);
 void glBindTexture(GLenum target, GLuint texture);
 void glGenTextures(GLsizei n, GLuint *textures);
 void glDeleteTextures(GLsizei n, const GLuint *textures);
+/* PS3-only hint: force the linear (non-swizzled) layout for the bound
+ * texture's next glTexImage2D. Same rule as wrap_s/wrap_t -- call BEFORE
+ * that call, since layout is fixed at allocation. For a full-screen video
+ * quad the swizzle Morton lookup buys nothing and its mandatory staging
+ * copy plus memcpy to VRAM doubles the upload cost every changed frame. */
+void ps3gl_texture_hint_no_swizzle(void);
 void glTexImage2D(GLenum target, GLint level, GLint internalformat,
                       GLsizei width, GLsizei height, GLint border,
                       GLenum format, GLenum type, const void *pixels);

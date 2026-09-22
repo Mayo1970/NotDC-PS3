@@ -85,17 +85,15 @@ void FASTCALL pvr_write_area1_32(u32 addr, u32 data);
 // YUV Converter Output Regions
 //------------------------------------------------------------------------------
 
-/**
- * Look a VRAM address up against the regions the YUV converter has written.
- * Lets the renderer tell an FMV frame (rows packed at the video's native
- * width) apart from a YUV422 texture the game uploaded at its declared
- * power-of-two width - the two need different source pitches.
- * @param addr  VRAM address (VRAM_MASK'd) of a YUV422 texture
- * @param out_w Receives the real source pitch in pixels
- * @param out_h Receives the real source row count
- * @return 1 if addr falls inside converter output, 0 otherwise
- */
+// Real source pitch/rows of a converter-owned YUV422 region at addr (vs. a
+// game-uploaded texture's declared power-of-two size). Returns 1 if owned.
 extern "C" int yuv_conv_lookup(u32 addr, u32 *out_w, u32 *out_h);
+
+// Generation counter of the converter-owned region at addr, bumped once per
+// completed video frame. Lets a texture cache skip re-hashing the whole
+// surface every check: unchanged generation means unchanged pixels. Returns
+// 1 and fills out_gen if addr is converter-owned and has completed a frame.
+extern "C" int yuv_conv_generation(u32 addr, u32 *out_gen);
 
 //------------------------------------------------------------------------------
 // Tile Accelerator DMA Interface
