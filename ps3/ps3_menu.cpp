@@ -389,6 +389,10 @@ static Option s_jit[] = {
 	  "fsqrt and fsrra run as inline fsqrts, not a C call. Takes effect on boot." },
 	{ "JIT FPU PIN",     &g_fpu_pin_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SH4 FR0-FR15 stay in PPC registers, not memory. Takes effect on boot." },
+	{ "JIT T FORWARD",   &g_jit_tfwd_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Branches take the T bit from a register, not memory. Takes effect on boot." },
+	{ "JIT CR0 BRANCH",  &g_jit_cr0_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A block-ending compare branches on CR0 directly. Takes effect on boot." },
 };
 
 static Option s_controls[] = {

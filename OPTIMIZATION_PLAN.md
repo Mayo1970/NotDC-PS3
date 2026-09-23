@@ -302,7 +302,9 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.1c | `JitNewOps` (rotcl/rotcr, SR ops), Emulation page | `[x]` HW, no fault, speed within noise |
 | 5.1d | `fpu_pin` (JIT SPEED page, `JitFpuPin`) | `[x]` HW, no fault, dense SPEED +3.6 points |
 
-FSCHG, FSQRT and NewOps are default ON since 2026-09-23 (Matt).
+| 5.1e | `jit_tfwd` + `jit_cr0` (JIT SPEED page, `JitTfwd` / `JitCr0`) | `[x]` HW, no fault in the log, dense SPEED +3.5 points |
+
+FSCHG, FSQRT, NewOps and FPU PIN are default ON since 2026-09-23 (Matt).
 | 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
 | 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `[ ]` |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
@@ -373,6 +375,22 @@ FSCHG, FSQRT and NewOps are default ON since 2026-09-23 (Matt).
   The 12K+ bin of the FPU PIN run carried more load (15.3K vs 13.7K vtx).
   Total so far: dense SPEED +6.2 points (+11%), RPS 33.9 -> 37.7.
   This confirms the lesson above: gains come from inside the emitted code.
+- 5.1e audit: no code change. Every compare that feeds T is 32-bit
+  (`cmpw`/`cmplw`/`cmpwi`/`cmplwi`), and `tst` uses `andi.` or `and` +
+  `cmplwi` since the SC5 fix. The CR0 path only runs when the compare is the
+  block's last op, so no Rc=1 op can sit between it and the branch. The
+  forwarded T in rarg0 is a clean 0/1 from `rlwinm`.
+- 5.1e HW 2026-09-23, Crazy Taxi, FPU PIN settings plus both toggles
+  (`[jitcfg] cr0=1 tfwd=1`). 196 s, no fault, clears only at boot.
+
+  | Run | dense SPEED | vt 6-9K | vt 9-12K | vt 12K+ | dense RPS |
+  |---|---|---|---|---|---|
+  | FPU PIN | 62.9% | 67.6% | 59.9% | 51.5% | 37.7 |
+  | + TFWD + CR0 | 66.4% | 71.3% | 63.3% | 56.1% | 39.7 |
+
+  Total since the census: dense SPEED 56.7% -> 66.4% (+17%), RPS 33.9 -> 39.7.
+  The XMB exit took the "SH4 did not stop in 3 s" fallback, as in every run
+  of this session; not new.
 - 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
   PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
   wrong. Fix: zero-extend the operands and take the carry from bit 32.

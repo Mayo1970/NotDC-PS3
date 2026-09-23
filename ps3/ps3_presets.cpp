@@ -47,7 +47,9 @@ int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop,
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
-int g_fpu_pin_preset       = 0;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
+int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
+int g_jit_tfwd_preset      = 0;   // 1 = T passed from compare to branch in a register
+int g_jit_cr0_preset       = 0;   // 1 = block-ending compare branches on CR0 directly
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 
 struct CfgItem { const char* key; int* val; };
@@ -88,6 +90,8 @@ static const CfgItem s_items[] = {
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
+	{ "JitTfwd",       &g_jit_tfwd_preset },
+	{ "JitCr0",        &g_jit_cr0_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
 };
@@ -172,11 +176,11 @@ int get_fpu_pin_preset()       { return g_fpu_pin_preset; }
 int get_hotblocks_preset()     { return 0; }
 int get_ifb_flush_preset()     { return 0; }
 int get_jit_align_preset()     { return 0; }
-int get_jit_cr0_preset()       { return 0; }
+int get_jit_cr0_preset()       { return g_jit_cr0_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }
-int get_jit_tfwd_preset()      { return 0; }
+int get_jit_tfwd_preset()      { return g_jit_tfwd_preset; }
 
 // Self-modifying-block protection: 0=off, 1=known SMC addresses, 2=all RAM.
 int get_jit_sbp_preset()       { return 1; }
