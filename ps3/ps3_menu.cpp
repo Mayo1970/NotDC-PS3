@@ -393,6 +393,8 @@ static Option s_jit[] = {
 	  "Branches take the T bit from a register, not memory. Takes effect on boot." },
 	{ "JIT CR0 BRANCH",  &g_jit_cr0_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A block-ending compare branches on CR0 directly. Takes effect on boot." },
+	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
+	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
 
 static Option s_controls[] = {

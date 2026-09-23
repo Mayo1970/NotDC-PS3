@@ -27,7 +27,7 @@ SFO      := $(PS3DEV)/bin/sfo
 PKG      := $(PS3DEV)/bin/pkg
 
 # No JIT on PS3: rec_v2 builds its HOST_NO_REC paths (decoder tables, interpreter hook).
-# Wii-only parts (GX renderer, Wii pads, ARM7 JIT) are replaced by ps3/.
+# Wii-only parts (GX renderer, Wii pads) are replaced by ps3/.
 # ps3/ps3gl: GL 1.1 on RSX from xashPS3; shaders are prebuilt in ps3gl_shader_data.h.
 SRC_DIRS := . cl config plugins \
             dc dc/aica dc/asic dc/gdrom dc/maple dc/mem dc/pvr dc/sh4 dc/sh4/rec_v2 \
@@ -37,8 +37,6 @@ SRCS := $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cpp) $(wildcard $(d)/*.c))
 SRCS := $(patsubst ./%,%,$(SRCS))
 
 EXCLUDE := plugs/nullAICA/mem.cpp \
-           plugs/vbaARM/arm7_jit.cpp \
-           plugs/vbaARM/arm7_selftest.cpp \
            plugs/drkPvr/gxRend.cpp
 SRCS := $(filter-out $(EXCLUDE),$(SRCS))
 

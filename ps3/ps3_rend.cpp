@@ -168,6 +168,8 @@ static u32 s_stat_fb_defer;
 // TR5: total time the SH4 spent waiting for the job slot, so the drop policy costs a number.
 static double s_stat_wait;
 static double s_stat_job_max;
+// Render-thread busy time per window: TA replay, draw_frame (incl. texture decode), end_frame.
+static double s_stat_t_dec, s_stat_t_draw, s_stat_t_end;
 // Depth diagnostic: the widest W range and the tightest near plane of the window.
 static float s_stat_w_lo = 1e30f, s_stat_w_hi = 0.0f, s_stat_near_lo = 1e30f;
 // Vertices that hit set_pos's 1/W floor: they all land on one depth, so a scene
@@ -1948,6 +1950,11 @@ static void rth_print_stats()
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
+	const double win = (now - s_stat_t0) / 100.0;
+	printf("[rend] busy=%.0f%% (dec %.0f draw %.0f end %.0f)\n",
+	       (s_stat_t_dec + s_stat_t_draw + s_stat_t_end) / win,
+	       s_stat_t_dec / win, s_stat_t_draw / win, s_stat_t_end / win);
+	s_stat_t_dec = s_stat_t_draw = s_stat_t_end = 0.0;
 	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
 	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
@@ -1992,7 +1999,9 @@ static void rth_print_stats()
 static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end)
 {
 	REND_PHASE(PH_TADEC);
+	double t0 = os_GetSeconds();
 	decode_pending(c, raw_end, cont_end);
+	s_stat_t_dec += os_GetSeconds() - t0;
 	s_rc = c;
 	rth_mark_decoded();
 }
@@ -2001,6 +2010,7 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end)
 static void rth_job_draw(int type)
 {
 	double t0 = os_GetSeconds();
+	double end_dt = 0.0;
 	if (type == JOB_PRESENT)
 	{
 		REND_PHASE(PH_PRESENT);
@@ -2025,12 +2035,16 @@ static void rth_job_draw(int type)
 			REND_PHASE(PH_DRAW);
 			draw_frame();
 			REND_PHASE(PH_ENDFRAME);
+			double t_end = os_GetSeconds();
 			ps3_video_end_frame();
+			end_dt = os_GetSeconds() - t_end;
 		}
 	}
 	REND_PHASE(PH_IDLE);
 
 	double dt = os_GetSeconds() - t0;
+	s_stat_t_end  += end_dt;
+	s_stat_t_draw += dt - end_dt;
 	if (dt > s_stat_job_max)
 		s_stat_job_max = dt;
 	if (type == JOB_RENDER)

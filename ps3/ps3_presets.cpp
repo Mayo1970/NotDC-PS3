@@ -48,8 +48,9 @@ int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf v
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
-int g_jit_tfwd_preset      = 0;   // 1 = T passed from compare to branch in a register
-int g_jit_cr0_preset       = 0;   // 1 = block-ending compare branches on CR0 directly
+int g_jit_tfwd_preset      = 1;   // 1 = T passed from compare to branch in a register
+int g_jit_cr0_preset       = 1;   // 1 = block-ending compare branches on CR0 directly
+int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 
 struct CfgItem { const char* key; int* val; };
@@ -92,6 +93,7 @@ static const CfgItem s_items[] = {
 	{ "JitFpuPin",     &g_fpu_pin_preset },
 	{ "JitTfwd",       &g_jit_tfwd_preset },
 	{ "JitCr0",        &g_jit_cr0_preset },
+	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
 };
@@ -123,6 +125,7 @@ int get_speed_limiter_preset() { return g_speed_limiter_preset; }
 int get_render_delay_preset()  { return g_render_delay_preset; }
 int get_arm7_speed_preset()    { return g_arm7_speed_preset; }
 int get_arm7_batch_preset()    { return g_arm7_batch_preset; }
+int get_arm7_jit_preset()      { return g_arm7_jit_preset; }
 int get_audio_buffers_preset() { return g_audio_buffers_preset; }
 int get_exit_fix_preset()      { return g_exit_fix_preset; }
 int get_controller_type()      { return g_controller_type; }

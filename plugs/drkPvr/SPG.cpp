@@ -267,7 +267,9 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 double spd_fps = FrameCount    / tdiff;
                 double spd_vbs = spg_VblankCount / tdiff;
                 double spd_cpu = (spd_vbs * spg_FrameSh4Cycles) / 1000000.0;
-                double fullvbs = (spd_vbs / spd_cpu) * 200.0;
+                // Against the effective clock, so an underclocked run still reads 100% at full rate.
+                double clk_mhz = SH4_CLOCK_EFF / 1000000.0;
+                double fullvbs = (spd_vbs / spd_cpu) * clk_mhz;
                 double mv      = VertexCount  / 1000.0;
                 // Vertices per strip: decides whether the render loop's fixed
                 // per-STRIP cost or its per-VERTEX cost is the thing to attack.
@@ -329,14 +331,14 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     fpsStr,
                     "FPS: %.2f\nSPEED: %.2f%%",
                     spd_fps,
-                    spd_cpu * 100.0 / 200.0);
+                    spd_cpu * 100.0 / clk_mhz);
 
                 rend_set_fps_text(fpsStr);
 
 #ifndef TARGET_PSP
                 printf(
                     "%3.2f%% VPS:%3.2f(%s%s%3.2f)RPS:%3.2f vt:%4.2fK %4.2fK v/st:%.1f rnd:%.1f%% ta:%.1f%%(%.0fk/s) arm:%.1f%% aica:%.1f%% vox:%.1f%%(%.1f) snd:%.1f%%\n",
-                    spd_cpu * 100.0 / 200.0, spd_vbs,
+                    spd_cpu * 100.0 / clk_mhz, spd_vbs,
                     mode, res, fullvbs,
                     spd_fps,
                     (spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0),

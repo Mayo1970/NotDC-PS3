@@ -304,7 +304,15 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 
 | 5.1e | `jit_tfwd` + `jit_cr0` (JIT SPEED page, `JitTfwd` / `JitCr0`) | `[x]` HW, no fault in the log, dense SPEED +3.5 points |
 
-FSCHG, FSQRT, NewOps and FPU PIN are default ON since 2026-09-23 (Matt).
+| 5.4 | ARM7 JIT port (JIT SPEED page, `Arm7Jit` 0..5) | `[x]` HW, self-test PASS, sound fine, `arm%` 9.1 -> 5.4 |
+| 5.5 | SH4 Clock 150 MHz (existing Emulation option, speed over accuracy) | `[x]` HW, dense VPS +16%, not full speed |
+| 5.6 | Render thread busy % (`[rend] busy=` line) + SPEED/VPS target vs effective clock | `[x]` HW, dense busy 61% |
+
+FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
+ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
+Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
+the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
+clock by VPS.
 | 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
 | 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `[ ]` |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
@@ -391,6 +399,71 @@ FSCHG, FSQRT, NewOps and FPU PIN are default ON since 2026-09-23 (Matt).
   Total since the census: dense SPEED 56.7% -> 66.4% (+17%), RPS 33.9 -> 39.7.
   The XMB exit took the "SH4 did not stop in 3 s" fallback, as in every run
   of this session; not new.
+- 5.4 port, 2026-09-23. `plugs/vbaARM/arm7_jit.cpp` and `arm7_selftest.cpp`
+  now build (Makefile EXCLUDE), `ps3/ps3_nojit.cpp` (the stubs) is deleted.
+  PS3 fixes:
+  - Code in its own 2 MB `.text` array; the cached interpreter's block table
+    is still borrowed (it is data, not code).
+  - C calls through `ppc_call_c` (OPD entry); the entry stub is called through
+    an OPD built at stub time; 176-byte ELFv1 frame with `std`/`ld`, LR at 16.
+  - `arm_aica_ram` and the block table are 8-byte pointers: `ld`, index * 8.
+  - ADD/ADC/CMN C flag = bit 32 of the sum (`rldicl`): 64-bit CA never fires
+    for zero-extended operands. SUB-type CA is exact once operands are clean,
+    so ASR results and `li` immediates are zero-extended (`e_li32`).
+  - The size-4 MMIO test used a wrap mask with Rc=1, which sees the upper half
+    on PPC64 (every access would go slow): now `rlwinm` + `cmplwi`.
+  - u32 C arguments (addresses, values, opcodes) are zero-extended.
+  - The 45-binary ARM7DI self-test runs at boot when the level is > 0 and
+    falls back to the cached interpreter on any failure.
+- 5.4 HW 2026-09-23, Crazy Taxi, level 5, all JIT toggles ON, probes ON.
+  `[ARM7TEST] PASS: all 45 tests passed`, 153 s, no freeze, 0 ARM compiles/s
+  in play, 0 slow memory calls.
+  - Dense `arm%` 9.1% -> 5.4%. Same-load SPEED unchanged: vt 6-9K 71.3 ->
+    71.6%, vt 9-12K 63.3 -> 63.3%. The dense average fell (66.4 -> 64.0%)
+    only because this run carried more load (10.7K vs 9.5K vtx).
+  - `[ARMHOT]`: 99% of ARM instructions are a 4-instruction idle loop at
+    0x34 (`ldr r0,[pc,#12] / add r0,r0,#1 / str r0,[pc,#4] / b 0x34`), a
+    counter the sound driver bumps while it waits for the timer FIQ.
+  - Render thread `wait=` stayed 0-2 ms, so the SH4 thread is not waiting on
+    it; why the freed ARM time did not show as SPEED is still open.
+- 5.5 HW 2026-09-23, Crazy Taxi, SH4 Clock 150 MHz, all JIT options ON.
+
+  | Clock | dense VPS | vt 6-9K | vt 9-12K | vt 12K+ (RPS) | silent audio blocks/s |
+  |---|---|---|---|---|---|
+  | 200 MHz | 39.4 | 42.9 | 38.0 | 30.9 (30.9) | 53 |
+  | 150 MHz | 45.7 | 45.5 | 43.5 | 53.1 (31.2) | 28 |
+
+  - +16% dense VPS, audio gaps halved; no dense second reached full VPS.
+  - The gain is well under the 33% the clock cut would give if the SH4 were
+    the whole cost. Per-frame work that does not scale with SH4 cycles (the
+    render thread on the same PPE core, AICA/ARM per sample) takes the rest.
+    This also fits the ARM JIT result.
+  - In the heaviest scenes the game now drops its own frames (VPS 53, RPS
+    31), which is the intended trade.
+  - Cosmetic bug: `SPG.cpp:270` computes the full-rate VPS with a fixed 200,
+    so at 150 MHz the stats line shows the NTSC target as 79.93 and SPEED%
+    75% at full speed. Fixed in 5.6: both now use `SH4_CLOCK_EFF`.
+- 5.6: `ps3/ps3_rend.cpp` prints `[rend] busy=N% (dec D draw W end E)` every
+  5 s: wall time the render thread spends in the TA replay, in `draw_frame`
+  (texture decode included) and in `ps3_video_end_frame`, as % of the window.
+- 5.6 HW 2026-09-23, Crazy Taxi, SH4 Clock 150 MHz, all JIT options ON.
+  The stats line now reads the NTSC target as 59.95 at 150 MHz.
+
+  | Scene (vtx/render) | windows | busy | dec | draw | end | draws/render |
+  |---|---|---|---|---|---|---|
+  | light (< 1.5K) | 8 | 6% | 1 | 5 | 0 | 18 |
+  | mid (1.5-5K) | 3 | 13% | 4 | 9 | 0 | 92 |
+  | dense (>= 5K) | 17 | 61% | 19 | 41 | 0 | 507 |
+
+  - In dense traffic the render thread works 61% of the time on the same PPE
+    core as the SH4 thread (SMT). Its cost is draw 41 + TA replay 19; the
+    ps3gl flush/present (`end`) costs nothing.
+  - Dense traffic: ~40 renders/s x ~9.9K vertices x ~507 draws. Draw: ~20K
+    draws/s and ~400K vertices/s in ~410 ms/s. The per-vertex ps3gl path is
+    three small stores, so the per-draw cost (state, texture bind, flush)
+    is the likely bulk. Not yet split.
+  - Dense VPS at 150 MHz: 48.3 (earlier 150 MHz run 45.7), 10% of dense
+    seconds at full VPS.
 - 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
   PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
   wrong. Fix: zero-extend the operands and take the carry from bit 32.

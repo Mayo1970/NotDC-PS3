@@ -36,7 +36,7 @@
 #include "arm_mem.h"
 #include "arm7_jit.h"
 
-#if HOST_OS == OS_WII
+#if HOST_OS == OS_PS3
 
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them (as arm_aica.cpp).
 #ifdef BIG_ENDIAN
@@ -47,7 +47,7 @@
 #endif
 #include <ogc/lwp_watchdog.h>   // gettime(): census timers only
 
-extern "C" int get_arm7_jit_preset();   // wii/main.cpp
+extern "C" int get_arm7_jit_preset();   // ps3/ps3_presets.cpp
 
 // ── Emitter and SH4-driver helpers (C++ linkage) ────────────────────────────
 void* emit_GetCCPtr();                  // dc/sh4/rec_v2/driver.cpp
@@ -55,9 +55,10 @@ void* emit_GetCCPtr();                  // dc/sh4/rec_v2/driver.cpp
 #ifdef ppc_li
 #  undef ppc_li                         // macro is 16-bit only; use the driver's
 #endif
-void ppc_li(u32 D, u32 imm);            // wii/dc/sh4/rec_v2/wii_driver.cpp
+void ppc_li(u32 D, u32 imm);            // ps3/ps3_driver.cpp
 void ppc_call(void* funct);
 void ppc_jump(void* funct);
+void ppc_call_c(void* fn);              // ELFv1: C function pointers are OPD descriptors
 u32  ppc_addr_high(u32 rD, void* ptr);
 void make_address_range_executable(void* addr, u32 size);
 extern u32* emit_ptr;                   // driver.cpp: redirects ppc_emit output
@@ -98,6 +99,16 @@ enum
 };
 
 static const u32 MAX_BLOCK_INSNS = 128;     // == MAX_BLOCK_UOPS in arm7_cached.cpp
+static const u32 ENTRY_FRAME = 176;         // 112 linkage + 8 saved GPRs, 16-aligned
+
+// .text is the only segment lv2 lets execute, so the code cannot share the cached
+// interpreter's buffer as on the Wii; only its block table is borrowed.
+static const u32 ARM_CODE_BYTES = 2 * 1024 * 1024;
+static u8 s_arm_code[ARM_CODE_BYTES] __attribute__((aligned(128), section(".text"), used));
+
+// The entry stub is called from C, so it needs an ELFv1 descriptor.
+struct ArmOpd { u64 entry, toc, env; };
+static ArmOpd s_entry_opd;
 static const u32 COLD_FLUSH_INSNS = 16;     // keeps every bc displacement tiny
 static const u32 MAX_BLOCK_WORDS = 16384;   // free space demanded before compiling
 
@@ -184,6 +195,28 @@ static inline void e_rlwinm(u32 a, u32 s, u32 sh, u32 mb, u32 me)
 {
 	ppc_rlwinmx(a, s, sh & 31, mb, me, 0);
 }
+
+// 64-bit forms the PPC32 emitter lacks (encodings as ps3_driver.cpp).
+static void e_std(u32 S, s32 d, u32 A)  { ppc_emit(0xF8000000 | (S << 21) | (A << 16) | ((u32)d & 0xFFFC)); }
+static void e_stdu(u32 S, s32 d, u32 A) { ppc_emit(0xF8000001 | (S << 21) | (A << 16) | ((u32)d & 0xFFFC)); }
+static void e_ld(u32 D, s32 d, u32 A)   { ppc_emit(0xE8000000 | (D << 21) | (A << 16) | ((u32)d & 0xFFFC)); }
+static void e_rldicl(u32 A, u32 S, u32 sh, u32 mb)
+{
+	ppc_emit(0x78000000 | (S << 21) | (A << 16) | ((sh & 31) << 11) | ((mb & 31) << 6) |
+	         (((mb >> 5) & 1) << 5) | (((sh >> 5) & 1) << 1));
+}
+static void e_clrldi32(u32 A, u32 S) { e_rldicl(A, S, 0, 32); }
+
+// li leaving the upper half zero: li sign-extends, and u32 C arguments and the
+// carry maths below need zero-extended values.
+static void e_li32(u32 D, u32 imm)
+{
+	ppc_li(D, imm);
+	if (imm & 0x80000000)
+		e_clrldi32(D, D);
+}
+
+static void e_ccall(void* f) { ppc_call_c(f); }
 
 // Level 5 ("lean"): an instruction's ticks are summed at compile time and
 // charged once, with `addic.`, at its end (or before its exit branch). The
@@ -272,7 +305,7 @@ static void e_set_pc15(u32 val)
 
 static void e_call(void* f)
 {
-	ppc_call(f);
+	e_ccall(f);
 	s_pc15_known = false;   // conservative: helpers may write reg[15]
 }
 
@@ -509,26 +542,26 @@ static void flush_cold()
 			break;
 
 		case CK_RD:
-			ppc_mr(3, R_ADDR);
-			ppc_call(c.size == 1 ? (void*)&jit_rd8 : (void*)&jit_rd32);
+			e_clrldi32(3, R_ADDR);
+			e_ccall(c.size == 1 ? (void*)&jit_rd8 : (void*)&jit_rd32);
 			if (c.size == 1)
 				ppc_andi(3, 3, 0xFF);
 			ppc_jump(c.back);
 			break;
 
 		case CK_WR:
-			ppc_mr(3, R_ADDR);
+			e_clrldi32(3, R_ADDR);
 			if (c.size == 1)
 				ppc_andi(4, R_VAL, 0xFF);
 			else
-				ppc_mr(4, R_VAL);
-			ppc_call(c.size == 1 ? (void*)&jit_wr8 : (void*)&jit_wr32);
+				e_clrldi32(4, R_VAL);
+			e_ccall(c.size == 1 ? (void*)&jit_wr8 : (void*)&jit_wr32);
 			ppc_jump(c.back);
 			break;
 
 		case CK_BLOCK:                     // LDM/STM outside ARAM: the C helper
-			ppc_li(3, c.pc);
-			ppc_call(c.size == 0 ? (void*)&jit_stm :
+			e_li32(3, c.pc);
+			e_ccall(c.size == 0 ? (void*)&jit_stm :
 			         c.size == 1 ? (void*)&jit_ldm_nopc : (void*)&jit_ldm_pc);
 			if (c.size == 2)
 			{
@@ -822,17 +855,18 @@ static void emit_stubs()
 	u32* saved_emit_ptr = emit_ptr;
 	emit_ptr = s_code_base;
 
-	// entry: void (s32 budget), C ABI
+	// entry: void (s32 budget). ELFv1: LR into the caller's frame at 16, a 112-byte
+	// linkage + parameter area for the C helpers, r24..r31 saved above it.
 	s_stub_entry = emit_ptr;
 	ppc_mflr(0);
-	ppc_stwu(1, 1, (u32)-64);
-	ppc_stw(0, 1, 68);
+	e_std(0, 16, 1);
+	e_stdu(1, -(s32)ENTRY_FRAME, 1);
 	for (u32 i = 0; i < 8; i++)
-		ppc_stw(24 + i, 1, 32 + i * 4);
+		e_std(24 + i, 112 + i * 8, 1);
 	ppc_mr(R_BUD, 3);
-	ppc_li(R_REG, (u32)&arm_Reg[0]);
-	ppc_li(R_FLG, (u32)&N_FLAG);
-	{ u32 lo = ppc_addr_high(R_RAM, &arm_aica_ram); ppc_lwz(R_RAM, R_RAM, lo); }
+	ppc_li(R_REG, (u32)(uintptr_t)&arm_Reg[0]);
+	ppc_li(R_FLG, (u32)(uintptr_t)&N_FLAG);
+	{ u32 lo = ppc_addr_high(R_RAM, &arm_aica_ram); e_ld(R_RAM, (s32)(s16)lo, R_RAM); }
 	{ u32 lo = ppc_addr_high(3, &arm_ArmNextPC);    ppc_lwz(3, 3, lo); }
 
 	// dispatch: r3 = pc
@@ -845,7 +879,7 @@ static void emit_stubs()
 		u32 k = 0;
 		while (k < 30 && (2u << k) <= s_entry_mask + 1)
 			k++;                                   // table holds 2^k entries (k <= 30)
-		u32 tbl = (u32)s_entries;
+		u32 tbl = (u32)(uintptr_t)s_entries;
 		u32 lo  = tbl & 0xFFFF;
 		u32 hi  = (tbl - (u32)(s32)(s16)lo) >> 16;
 		u32* miss[4];
@@ -856,9 +890,9 @@ static void emit_stubs()
 		miss[0] = e_bc_placeholder(BO_FALSE, BI_CR0_EQ);
 		ppc_cmpi(0, R_BUD, 0, 0);
 		miss[1] = e_bc_placeholder(BO_FALSE, BI_CR0_GT);
-		e_rlwinm(4, 3, 0, 30 - k, 29);             // ((pc >> 2) & mask) * 4
+		e_rlwinm(4, 3, 1, 29 - k, 28);             // ((pc >> 2) & mask) * 8: void* is 8 bytes
 		ppc_addis(4, 4, hi);
-		ppc_lwz(5, 4, lo);                         // code = s_entries[...]
+		e_ld(5, (s32)(s16)lo, 4);                  // code = s_entries[...]
 		ppc_cmpli(0, 5, 0, 0);
 		miss[2] = e_bc_placeholder(BO_TRUE, BI_CR0_EQ);
 		ppc_lwz(6, 5, (u32)-4);                    // code[-1] == pc ?
@@ -870,7 +904,7 @@ static void emit_stubs()
 			patch_bc(miss[i], emit_ptr);
 	}
 	ppc_mr(4, R_BUD);
-	ppc_call((void*)&jit_dispatch_c);
+	e_ccall((void*)&jit_dispatch_c);
 	ppc_cmpli(0, 3, 0, 0);
 	u32* to_exit = e_bc_placeholder(BO_TRUE, BI_CR0_EQ);
 	ppc_mtctr(3);
@@ -886,17 +920,17 @@ static void emit_stubs()
 	s_stub_exit = emit_ptr;
 	patch_bc(to_exit, emit_ptr);
 	for (u32 i = 0; i < 8; i++)
-		ppc_lwz(24 + i, 1, 32 + i * 4);
-	ppc_lwz(0, 1, 68);
+		e_ld(24 + i, 112 + i * 8, 1);
+	ppc_addi(1, 1, ENTRY_FRAME);
+	e_ld(0, 16, 1);
 	ppc_mtlr(0);
-	ppc_addi(1, 1, 64);
 	ppc_blr();
 
 	// link: r3 = target pc, LR = just past the exit's `bl`
 	s_stub_link = emit_ptr;
 	ppc_mflr(5);
 	ppc_mr(4, R_BUD);
-	ppc_call((void*)&jit_link_c);
+	e_ccall((void*)&jit_link_c);
 	ppc_cmpli(0, 3, 0, 0);
 	e_bc_to(BO_TRUE, BI_CR0_EQ, (u32*)s_stub_exit);
 	ppc_mtctr(3);
@@ -916,7 +950,7 @@ static void emit_stubs()
 		ppc_jump(s_stub_dispatch);                 // and take the plain dispatcher
 		patch_bc(to_c, emit_ptr);
 		ppc_mr(4, R_BUD);
-		ppc_call((void*)&jit_icmiss_c);
+		e_ccall((void*)&jit_icmiss_c);
 		ppc_cmpli(0, 3, 0, 0);
 		e_bc_to(BO_TRUE, BI_CR0_EQ, (u32*)s_stub_exit);
 		ppc_mtctr(3);
@@ -925,6 +959,11 @@ static void emit_stubs()
 
 	s_code_blocks = emit_ptr;
 	emit_ptr = saved_emit_ptr;
+	u64 toc;
+	__asm__ volatile("mr %0,2" : "=r"(toc));
+	s_entry_opd.entry = (u64)(uintptr_t)s_stub_entry;
+	s_entry_opd.toc   = toc;
+	s_entry_opd.env   = 0;
 	make_address_range_executable(s_code_base, (u32)((u8*)s_code_blocks - (u8*)s_code_base));
 }
 
@@ -1036,6 +1075,7 @@ static void e_shift_imm(u32 shtype, u32 s, bool want_carry)
 			if (want_carry) e_rlwinm(6, 4, 1, 31, 31);
 			ppc_srawix(5, 4, 31, 0);
 		}
+		e_clrldi32(5, 5);                    // the carry maths needs a clean operand
 		break;
 
 	default:  // ROR / RRX
@@ -1089,7 +1129,7 @@ static void emit_dp(u32 pc, u32 op, bool& last)
 		u32 imm  = rot ? ((imm8 >> rot) | (imm8 << (32 - rot))) : imm8;
 		if (rn == 15 || pcwrite)
 			e_set_pc15(pc + 8);
-		ppc_li(5, imm);
+		e_li32(5, imm);
 		if (logicalS && !pcwrite && rot)
 			carry = (imm & 0x80000000) ? CARRY_CONST1 : CARRY_CONST0;
 	}
@@ -1125,7 +1165,7 @@ static void emit_dp(u32 pc, u32 op, bool& last)
 				ppc_li(4, (op >> 8) & 0xF);
 				ppc_li(5, shtype | (carry_uop ? 4 : 0));
 				bool known = s_pc15_known; u32 val = s_pc15_val;
-				ppc_call((void*)&jit_shift_reg);        // does not touch reg[15]
+				e_ccall((void*)&jit_shift_reg);         // does not touch reg[15]
 				s_pc15_known = known; s_pc15_val = val;
 				ppc_mr(5, 3);
 				if (carry_uop)
@@ -1176,7 +1216,15 @@ static void emit_dp(u32 pc, u32 op, bool& last)
 		bool arith = !dp_is_logical(op4);
 		if (arith)
 		{
-			e_flag_c_from_ca();
+			// 64-bit CA never fires for zero-extended adds: take bit 32 of the sum.
+			// Subtract-type CA is exact for zero-extended operands.
+			if (op4 == 0x4 || op4 == 0x5 || op4 == 0xB)
+			{
+				e_rldicl(9, 7, 32, 63);
+				e_store_byte(9, &C_FLAG);
+			}
+			else
+				e_flag_c_from_ca();
 			// V: ADD-type ((a^r)&(b^r)), SUB-type a-b ((a^b)&(a^r))
 			if (op4 == 0x4 || op4 == 0x5 || op4 == 0xB)
 			{
@@ -1272,7 +1320,12 @@ static void e_mem_read(u32 size)
 {
 	e_rlwinm(4, R_ADDR, 0, 8, 31);                    // addr & 0xFFFFFF
 	if (size == 4)
-		ppc_rlwinmx(0, 4, 0, 30, 8, 1);                // & 0xFF800003: MMIO or unaligned
+	{
+		// & 0xFF800003: MMIO or unaligned. A wrap mask keeps the upper half on PPC64,
+		// so test the low word with cmplwi instead of Rc=1.
+		ppc_rlwinmx(0, 4, 0, 30, 8, 0);
+		ppc_cmpli(0, 0, 0, 0);
+	}
 	else
 		ppc_rlwinmx(0, 4, 0, 8, 8, 1);                 // & 0x00800000: MMIO
 	u32* site = e_bc_placeholder(BO_FALSE, BI_CR0_EQ);
@@ -1290,7 +1343,10 @@ static void e_mem_write(u32 size)
 {
 	e_rlwinm(4, R_ADDR, 0, 8, 31);
 	if (size == 4)
-		ppc_rlwinmx(0, 4, 0, 30, 8, 1);
+	{
+		ppc_rlwinmx(0, 4, 0, 30, 8, 0);          // wrap mask: see e_mem_read
+		ppc_cmpli(0, 0, 0, 0);
+	}
 	else
 		ppc_rlwinmx(0, 4, 0, 8, 8, 1);
 	u32* site = e_bc_placeholder(BO_FALSE, BI_CR0_EQ);
@@ -1414,7 +1470,7 @@ static void emit_block(u32 pc, u32 op, bool& last)
 
 	if (!s_inline_blk || S || n == 0 || base == 15)
 	{
-		ppc_li(3, op);
+		e_li32(3, op);
 		e_call(!load ? (void*)&jit_stm : hasPC ? (void*)&jit_ldm_pc : (void*)&jit_ldm_nopc);
 		ppc_subfx(R_BUD, 3, R_BUD, 0, 0);
 		if (hasPC)
@@ -1542,7 +1598,7 @@ static void emit_insn(u32 block_pc, u32 pc, u32 op, bool& last, bool& blockSafe)
 			emit_mul(op);
 		else if (isSwp)
 		{
-			ppc_li(3, op);
+			e_li32(3, op);
 			e_call((void*)&jit_swp);
 			e_ticks(4);
 			blockSafe = false;
@@ -1561,7 +1617,7 @@ static void emit_insn(u32 block_pc, u32 pc, u32 op, bool& last, bool& blockSafe)
 			}
 			else
 			{
-				ppc_li(3, op);
+				e_li32(3, op);
 				e_call(spsr ? (void*)&jit_msr_spsr : (void*)&jit_msr_cpsr);
 				blockSafe = false;
 			}
@@ -1606,13 +1662,13 @@ static void emit_insn(u32 block_pc, u32 pc, u32 op, bool& last, bool& blockSafe)
 		{
 			e_ticks(3);
 			e_set_pc15(pc + 8);
-			ppc_li(3, op);
+			e_li32(3, op);
 			e_call((void*)&jit_swi);
 		}
 		else
 		{
 			e_set_pc15(pc + 8);
-			ppc_li(3, op);
+			e_li32(3, op);
 			ppc_li(4, pc);
 			e_call((void*)&jit_undefined);
 		}
@@ -1755,6 +1811,8 @@ static bool jit_setup()
 
 	u8* code; u32 code_bytes; void** entries; u32 entry_count;
 	arm7_cached_borrow_buffers(&code, &code_bytes, &entries, &entry_count);
+	code       = s_arm_code;
+	code_bytes = ARM_CODE_BYTES;
 
 	if ((size_t)code & 3)
 	{
@@ -1808,7 +1866,7 @@ void arm_jit_run(u32 CycleCount)
 {
 	s_slices++;
 	ARMC(ARMC_SLICE);
-	((void (*)(s32))s_stub_entry)((s32)CycleCount);
+	((void (*)(s32))(void*)&s_entry_opd)((s32)CycleCount);
 }
 
 // Once a second from the SPG stats block, next to the jit_ccalls [CC] dump.
@@ -1916,7 +1974,7 @@ void arm_jit_after_init()
 	arm_Reset();   // pristine post-init state, engine re-latched
 }
 
-#else   // non-Wii hosts: no PPC JIT
+#else   // non-PS3 hosts: no PPC JIT
 
 void arm_jit_after_init() {}
 void arm_jit_on_reset() {}
