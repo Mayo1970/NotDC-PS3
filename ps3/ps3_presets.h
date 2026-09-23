@@ -39,6 +39,7 @@ extern int g_drop_policy_preset;
 extern int g_strip_merge_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
+extern int g_fpu_pin_preset;
 extern int g_ifb_probe_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 

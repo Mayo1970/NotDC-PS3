@@ -28,7 +28,7 @@ int g_debug_gdrom          = 0;
 int g_dynarec_preset       = 0;   // 0 SH4 interpreter, 1 SH4 dynarec
 int g_jit_safe_preset      = 0;   // 1 = bring-up mode, see ngen_GetFeatures
 // Extra native opcode groups. Off until each one is cleared on hardware.
-int g_jit_newops_preset    = 0;
+int g_jit_newops_preset    = 1;
 int g_jit_carry_preset     = 0;
 int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
@@ -47,6 +47,7 @@ int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop,
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
+int g_fpu_pin_preset       = 0;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 
 struct CfgItem { const char* key; int* val; };
@@ -86,6 +87,7 @@ static const CfgItem s_items[] = {
 	{ "StripMerge",    &g_strip_merge_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
+	{ "JitFpuPin",     &g_fpu_pin_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
 };
@@ -166,7 +168,7 @@ int get_strip_merge_preset()   { return g_strip_merge_preset; }
 int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }
 int get_dyn_ic_preset()        { return 0; }
-int get_fpu_pin_preset()       { return 0; }
+int get_fpu_pin_preset()       { return g_fpu_pin_preset; }
 int get_hotblocks_preset()     { return 0; }
 int get_ifb_flush_preset()     { return 0; }
 int get_jit_align_preset()     { return 0; }

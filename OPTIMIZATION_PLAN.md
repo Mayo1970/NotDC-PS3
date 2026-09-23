@@ -300,9 +300,9 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.1a | `jit_fschg` (JIT SPEED page, `JitFschg`) | `[x]` HW, no fault, speed within noise |
 | 5.1b | `jit_fsqrt` as inline `fsqrts` (JIT SPEED page, `JitFsqrt`) | `[x]` HW, no fault, dense SPEED +2.5 points |
 | 5.1c | `JitNewOps` (rotcl/rotcr, SR ops), Emulation page | `[x]` HW, no fault, speed within noise |
-| 5.1d | `fpu_pin` | `[ ]` |
+| 5.1d | `fpu_pin` (JIT SPEED page, `JitFpuPin`) | `[x]` HW, no fault, dense SPEED +3.6 points |
 
-FSCHG and FSQRT are default ON since 2026-09-23 (Matt).
+FSCHG, FSQRT and NewOps are default ON since 2026-09-23 (Matt).
 | 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
 | 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `[ ]` |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
@@ -353,6 +353,26 @@ FSCHG and FSQRT are default ON since 2026-09-23 (Matt).
   0.5 K -> 3 K/s: the `ldc SR` block ends call `UpdateINTC`, as designed.
 - Lesson from 5.1a and 5.1c: removing 330 K C calls/s or 80 K IFB/s does not
   move SPEED. The time is inside the emitted code, not at its C boundary.
+- 5.1d audit: no code change. FPRs carry no 64-bit poison, and f14-f29 are
+  callee-saved in ELFv1 as on the Wii. Every FP emitter uses the pin-aware
+  helpers (`fsrc_or_load`, `fdst_reg`, `ppc_fvec_*`, the int bounce in
+  `ppc_sh_load/store`). The PS3 JitFastmem path already carries the
+  float-direct shapes (`ColdFrag::fdreg`, `emit_vmem_tier`), and with the Wii
+  fastmem off those shapes are active whenever `fpu_pin` is on. Every SHIL op
+  has a native case, so the canonical fallback (whose reload would overwrite a
+  pinned result) is never reached. The Wii default preset ran `fpu_pin=on`.
+- 5.1d HW 2026-09-23, Crazy Taxi, NewOps settings plus FPU PIN. Matt: runs
+  better, no visual artifacts. Code cache clears only at boot, as before.
+
+  | Run | dense SPEED | vt 6-9K | vt 9-12K | vt 12K+ |
+  |---|---|---|---|---|
+  | census (all OFF) | 56.7% | 60.5% | 54.6% | 47.1% |
+  | NewOps | 59.3% | 63.6% | 56.6% | 51.1% |
+  | + FPU PIN | 62.9% | 67.6% | 59.9% | 51.5% |
+
+  The 12K+ bin of the FPU PIN run carried more load (15.3K vs 13.7K vtx).
+  Total so far: dense SPEED +6.2 points (+11%), RPS 33.9 -> 37.7.
+  This confirms the lesson above: gains come from inside the emitted code.
 - 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
   PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
   wrong. Fix: zero-extend the operands and take the carry from bit 32.

@@ -387,6 +387,8 @@ static Option s_jit[] = {
 	  "fschg skips the FPSCR sync call. Takes effect on boot." },
 	{ "JIT FSQRT",       &g_jit_fsqrt_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "fsqrt and fsrra run as inline fsqrts, not a C call. Takes effect on boot." },
+	{ "JIT FPU PIN",     &g_fpu_pin_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SH4 FR0-FR15 stay in PPC registers, not memory. Takes effect on boot." },
 };
 
 static Option s_controls[] = {
