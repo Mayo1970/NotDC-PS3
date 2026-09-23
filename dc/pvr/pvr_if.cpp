@@ -17,6 +17,7 @@ namespace {
     constexpr u32 YUV_MACROBLOCK_SIZE = 16;   // 16x16 pixels per macroblock
     
     // Register addresses
+    constexpr u32 STARTRENDER_ADDR     = 0x5F8014;
     constexpr u32 TA_YUV_TEX_BASE_ADDR = 0x5F8148;
     constexpr u32 TA_YUV_TEX_CTRL_ADDR = 0x5F814C;
     constexpr u32 TA_YUV_TEX_CNT_ADDR  = 0x5F8150;
@@ -40,9 +41,8 @@ struct YuvConvRegion { u32 base; u32 w; u32 h; u32 gen; };
 static const u32 YUV_REGION_SLOTS = 4;
 static YuvConvRegion YUV_regions[YUV_REGION_SLOTS];
 static u32 YUV_region_next = 0;
-// Bumped once per completed video frame (see YUV_ConvertMacroBlock); lets a
-// texture cache detect a changed FMV frame with an int compare instead of
-// re-hashing the whole surface every check.
+// Bumped once per completed video frame, so the texture cache detects a new
+// FMV frame with an int compare instead of re-hashing the surface.
 static u32 YUV_generation = 0;
 
 // Records or refreshes the region the converter is writing (once per macroblock).
@@ -66,9 +66,8 @@ static void YUV_RememberRegion(u32 base, u32 w, u32 h)
     YUV_region_next = (YUV_region_next + 1) % YUV_REGION_SLOTS;
 }
 
-// Marks the region at base as having completed a full frame (called once the
-// converter finishes all of a video frame's macroblocks, before YUV_init()
-// picks a new destination for the next one).
+// Marks the region at base as holding a full frame; called when the converter
+// finishes the frame's last macroblock.
 static void YUV_MarkRegionComplete(u32 base)
 {
     YUV_generation++;
@@ -110,19 +109,11 @@ extern "C" int yuv_conv_generation(u32 addr, u32 *out_gen)
     return 0;
 }
 
-// YUV Helper Functions
-// CH2 memcpy's main RAM verbatim, and this host stores guest u32s natively,
-// so a guest byte still lives at host offset ^3. host_ptr_xor() corrects that
-// on every plane byte read below.
+// CH2 copies main RAM verbatim and guest u32s are stored natively, so a guest
+// byte sits at host offset ^3; host_ptr_xor() corrects every plane byte read.
 
-// One 8x8 luma quadrant of a 4:2:0 macroblock (qx/qy pick which of the 4,
-// each 0 or 8) plus its shared 8x8 chroma plane, converted to YUYV in VRAM.
-// Written as 4 explicit quadrant calls instead of one loop over all 256
-// texels: the old per-texel code re-tested "which quadrant" (x>7/y>7) and
-// recomputed the destination row's address multiply for every one of the
-// 128 pixel pairs in the block, both of which are constant per quadrant/row.
-// This runs synchronously on the SH4 store-queue write, off the JIT'd guest
-// code, so its cost shows up as a frame stall regardless of Dynarec state.
+// One 8x8 luma quadrant (qx/qy = 0 or 8) of a 4:2:0 macroblock to YUYV in VRAM.
+// Per quadrant so the quadrant test and row address are hoisted; runs on the SH4 thread.
 INLINE void YUV_ConvertQuadrant(const u8* Yb, const u8* U, const u8* V, u32 qx, u32 qy)
 {
     for (u32 ry = 0; ry < 8; ry++)
@@ -138,8 +129,7 @@ INLINE void YUV_ConvertQuadrant(const u8* Yb, const u8* U, const u8* V, u32 qx, 
         {
             u32 cx = (qx >> 1) + (rx >> 1);
             // DC LE UYVY u32: U|Y0<<8|V<<16|Y1<<24. Built as a value, not a u8[4]
-            // pun, so it is identical on either host endian and strict aliasing
-            // cannot reorder the byte stores against the u32 load.
+            // pun, so it is endian-neutral and safe under strict aliasing.
             u32 px = ((u32)*host_ptr_xor(Yrow + rx + 1) << 24)
                    | ((u32)*host_ptr_xor(Vrow + cx)      << 16)
                    | ((u32)*host_ptr_xor(Yrow + rx)      <<  8)
@@ -218,12 +208,9 @@ INLINE void YUV_ConvertMacroBlock()
     }
     // 4:2:2 blocks are consumed and acknowledged, never written.
 
-    // Check if all blocks are processed
-    if (YUV_doneblocks >= YUV_blockcount) {
-        // Before YUV_init() picks a new destination: this frame's region is done.
+    // No reset here: TA_YUV_TEX_CNT keeps the full count until more data arrives (Flycast 805d014b5).
+    if (YUV_doneblocks == YUV_blockcount) {
         YUV_MarkRegionComplete(YUV_dest);
-        YUV_init();
-        // Raise interrupt to signal completion
         asic_RaiseInterrupt(holly_YUV_DMA);
     }
 }
@@ -249,6 +236,10 @@ void YUV_data(u32* data, u32 count)
     
     // Process data in chunks
     while (count > 0) {
+        // A finished frame resets when the next block starts, also mid-transfer.
+        if (YUV_index == 0 && YUV_doneblocks >= YUV_blockcount)
+            YUV_init();
+
         u32 bytes_til_block_end = block_size - YUV_index;
         
         if (count >= bytes_til_block_end) {
@@ -285,11 +276,10 @@ void pvr_writereg_TA(u32 addr, u32 data, u32 sz)
     // Delegate to plugin implementation
     libPvr_WriteReg(addr, data, sz);
     
-    // Re-init on BASE *or* CTRL, as reicast does (pvr_sb_regs.cpp:382). CTRL carries
-    // the block grid, so a game that writes BASE then CTRL otherwise keeps a stale
-    // YUV_x_size/blockcount for the whole surface.
+    // BASE or CTRL (reicast pvr_sb_regs.cpp:382): CTRL holds the block grid.
+    // STARTRENDER also resets the converter on real hw (Flycast 805d014b5).
     u32 reg = addr & 0xFFFFFF;
-    if (reg == TA_YUV_TEX_BASE_ADDR || reg == TA_YUV_TEX_CTRL_ADDR) {
+    if (reg == TA_YUV_TEX_BASE_ADDR || reg == TA_YUV_TEX_CTRL_ADDR || reg == STARTRENDER_ADDR) {
         YUV_init();
     }
 }

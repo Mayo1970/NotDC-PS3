@@ -1,6 +1,5 @@
-// Writes the RTC time into the flash user syscfg block, so the BIOS sees a set clock and plays
-// the boot animation instead of the Date/Time screen. Port of Flycast fixUpDCFlash() (block code
-// from redream). Flash bytes are DC little-endian; fields are accessed bytewise on any host.
+// Flycast fixUpDCFlash() port (block code from redream): RTC into the syscfg block so the BIOS skips
+// the Date/Time screen, plus the region bytes. Flash bytes are DC order, accessed bytewise on BE.
 #include "types.h"
 #include "dc/mem/sh4_mem.h"
 #include <string.h>
@@ -131,4 +130,58 @@ void dc_flash_set_time(u32 rtc)
 	wr16(blk + 62, crc_block(blk));
 	memcpy(phys(id), blk, FLASH_BLOCK_SIZE);
 	printf("[flash] syscfg time set to %08X (block %d)\n", rtc, id);
+}
+
+// Factory partition region bytes ('0' JP, '1' USA, '2' EU), two copies, as Flycast fixUpDCFlash.
+#define FLASH_REGION_A 0x1a002
+#define FLASH_REGION_B 0x1a0a2
+
+static bool s_region_patched;
+static u8 s_region_orig[2];
+
+// Flycast loadSpecialSettings: keep the console region if the disc lists it, else switch to one
+// it lists (USA first). The original bytes come back in dc_flash_restore_region before the save.
+void dc_flash_set_region(const char* area)
+{
+	s_region_patched = false;
+	if (flash_b.data == 0)
+		return;
+	bool j = memchr(area, 'J', 8) != 0;
+	bool u = memchr(area, 'U', 8) != 0;
+	bool e = memchr(area, 'E', 8) != 0;
+	if (!j && !u && !e)
+	{
+		printf("[flash] disc lists no region (area '%.8s'), region kept\n", area);
+		return;
+	}
+	int cur = (int)flash_b[FLASH_REGION_A] - '0';
+	int want = cur;
+	switch (cur)
+	{
+	case 0: if (!j) want = u ? 1 : 2; break;
+	case 1: if (!u) want = e ? 2 : 0; break;
+	case 2: if (!e) want = u ? 1 : 0; break;
+	default: want = u ? 1 : (e ? 2 : 0); break;
+	}
+	if (want == cur)
+	{
+		printf("[flash] region %d fits disc area '%.8s'\n", cur, area);
+		return;
+	}
+	s_region_orig[0] = flash_b[FLASH_REGION_A];
+	s_region_orig[1] = flash_b[FLASH_REGION_B];
+	flash_b[FLASH_REGION_A] = (u8)('0' + want);
+	flash_b[FLASH_REGION_B] = (u8)('0' + want);
+	s_region_patched = true;
+	printf("[flash] region %d -> %d for disc area '%.8s'\n", cur, want, area);
+}
+
+// Keeps the console's own region in dc_flash_wb.bin; a per-disc switch must not persist.
+void dc_flash_restore_region()
+{
+	if (!s_region_patched || flash_b.data == 0)
+		return;
+	flash_b[FLASH_REGION_A] = s_region_orig[0];
+	flash_b[FLASH_REGION_B] = s_region_orig[1];
+	s_region_patched = false;
 }

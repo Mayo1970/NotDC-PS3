@@ -109,6 +109,8 @@ void FASTCALL libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 se
   if (get_debug_gdrom() && get_debug_loop()) {
 	  printf("[GDR] libGDR_ReadSector FAD=%u count=%u secsz=%u\n", StartSector, SectorCount, secsz);
   }
+	// Flycast e94b26f1d: a FAD no track covers reads as zeros, not stale buffer bytes (NBA Hoopz voices).
+	memset(buff, 0, SectorCount * secsz);
 	if (CurrDrive)
 		CurrDrive->ReadSector(buff,StartSector,SectorCount,secsz);
 }

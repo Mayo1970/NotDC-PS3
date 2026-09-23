@@ -27,6 +27,7 @@ struct RenderRegs
 	u32 fb_x_clip_min, fb_x_clip_max, fb_y_clip_min, fb_y_clip_max;
 	u32 fb_r_sof1, fb_r_size, fb_r_depth;
 	u32 pal_ram_ctrl, text_control;
+	u32 fpu_shad_scale;
 	float fb_scale_x, fb_scale_y;
 	bool autosort;
 	// Resolved on the SH4 thread: both read VRAM through PARAM_BASE.

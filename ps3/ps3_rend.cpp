@@ -8,6 +8,7 @@
 #include "ps3_rend_regs.h"
 #include "dc/pvr/pvr_if.h"
 #include <algorithm>
+#include <math.h>
 #include <malloc.h>
 #include <sys/thread.h>
 #include <sys/mutex.h>
@@ -28,6 +29,7 @@ extern "C" int get_render_delay_preset();
 extern "C" int get_render_thread_preset();
 extern "C" int get_ta_fast_preset();
 extern "C" int get_drop_policy_preset();
+extern "C" int get_strip_merge_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -141,11 +143,8 @@ static u32 s_mv_list;
 static u32 s_stat_mv[5];
 static double s_stat_t0;
 
-// -- TR3: render thread ------------------------------------------------------
-// One job at a time, as libswirl's single-slot queue. The SH4 thread snapshots
-// the PVR state, hands over a TA context and returns; the render thread replays
-// the stored stream and owns every RSX call from then on. A second frame is
-// dropped, never queued; only RTT makes the SH4 wait.
+// -- TR3: render thread. One job at a time (libswirl single-slot queue): the SH4 snapshots and posts,
+// this thread replays the TA stream and owns every RSX call. A second frame drops; only RTT waits.
 enum { JOB_NONE = 0, JOB_RENDER, JOB_RTT, JOB_PRESENT };
 
 static sys_ppu_thread_t s_rend_tid;
@@ -242,6 +241,9 @@ static void set_ta_context(u32 addr)
 
 static inline u32 clamp_byte(float f)
 {
+	// Flycast c0f0a758d: NaN is max. PPC fctiwz turns NaN into 0x80000000, which clamped to black.
+	if (f != f)
+		return 255;
 	s32 v = (s32)(f * 255.0f);
 	return v < 0 ? 0 : (v > 255 ? 255 : (u32)v);
 }
@@ -256,11 +258,8 @@ static inline u32 intensity_argb(float i)
 	return float_argb(s_face_a, s_face_r * i, s_face_g * i, s_face_b * i);
 }
 
-// The TA's 1/W only needs a floor to keep W finite. It used to be 1e-4, which
-// quantised every plane beyond W=10000 onto one depth: Space Channel 5's video
-// backdrop and the background plane both landed there, so the backdrop's
-// DepthMode 4 ("greater" on 1/W, GL_LESS here) compared equal and was rejected.
-// reicast applies no floor at all; 1e-9 keeps x*W inside float range.
+// Floor on 1/W to keep W finite. 1e-4 merged every plane past W=10000 (SC5's video backdrop failed
+// DepthMode 4 against the background); reicast has none, 1e-9 keeps x*W in float range.
 #define INV_W_FLOOR 1e-9f
 
 // reicast update_fz: one integer compare drops negatives, NaN and anything at or
@@ -506,9 +505,8 @@ struct Ps3VertexDecoder
 	static void SetTileClip(u32 xmin, u32 ymin, u32 xmax, u32 ymax) {}
 	static void TileClipMode(u32 mode) {}
 
-	// As nullDC-v1: list init clears the context, a soft reset keeps the lists.
-	// The context is picked by the exported ListInit/ListCont, because by replay
-	// time TA_ISP_BASE may already point somewhere else.
+	// As nullDC-v1: list init clears the context, a soft reset keeps the lists. ListInit/ListCont
+	// pick the context, because by replay time TA_ISP_BASE may point elsewhere.
 	static void ListCont() {}
 	static void ListInit() { reset_lists(s_dec); }
 	static void SoftReset() {}
@@ -574,11 +572,8 @@ struct TaStoreDecoder
 
 FifoSplitter<TaStoreDecoder> TaStore;
 
-// -- TR4: table-driven store stage --------------------------------------------
-// The splitter above walks a switch and a function pointer for every 32-byte
-// record. The store stage only needs the record size and the list state, so one
-// table lookup per record replaces it (TArender.MD TR4, libswirl's ta_fsm).
-// A state says what the next 32-byte word means.
+// -- TR4: table-driven store stage. The store only needs record size and list state, so one table
+// lookup per 32-byte record replaces the splitter (libswirl ta_fsm); a state says what the next word is.
 enum
 {
 	TAS_NOLIST = 0,  // no list open; a header must open one
@@ -592,9 +587,8 @@ enum
 };
 #define TAS_SLOW 0x80
 
-// Indexed (state << 8) | (ParaType << 5) | (obj_ctrl >> 2). UV_16bit, Gouraud
-// and Shadow never change a record's size, so the key drops them and ParaType
-// owns bit 5 alone; without the mask a sprite would alias a 16-bit-UV polygon.
+// Indexed (state << 8) | (ParaType << 5) | (obj_ctrl >> 2). UV_16bit/Gouraud/Shadow never change a
+// record's size, so the key drops them; without the mask a sprite aliases a 16-bit-UV polygon.
 static u8 s_fsm[TAS_COUNT * 256];
 static u8 s_fsm_state = TAS_NOLIST;
 static u32 s_store_list = ListType_None;
@@ -769,9 +763,8 @@ static bool rth_busy()
 	return busy;
 }
 
-// Replays [from, to) of the stored stream through the real decoder. Merging what
-// arrived as separate SQ and DMA blocks is safe: a 64-byte record is only split
-// when it lands on a block end, and both halves feed the same decoder calls.
+// Replays [from, to) of the stored stream. Joining SQ and DMA blocks is safe: a 64-byte record split
+// at a block end still feeds both halves to the same decoder calls.
 static void decode_range(TaContext* c, u32 from, u32 to)
 {
 	Ta_Dma* p = (Ta_Dma*)(c->raw + from);
@@ -783,11 +776,8 @@ static void decode_range(TaContext* c, u32 from, u32 to)
 	while (p <= end);
 }
 
-// Decodes [raw_decoded, raw_end) of the stored stream, splitting where
-// TA_LIST_CONT arrived. raw_end is latched on the SH4 thread at STARTRENDER, so
-// the SH4 can keep appending while this runs and the extra bytes decode next
-// time. A stream with nothing new decodes nothing, so the lists stay as they
-// were and a second STARTRENDER redraws them, as nullDC-v1 does.
+// Decodes [raw_decoded, raw_end), split at TA_LIST_CONT; raw_end is latched at STARTRENDER, later bytes
+// decode next time. Nothing new keeps the lists, so a second STARTRENDER redraws them (nullDC-v1).
 static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 {
 	if (!c || !c->raw)
@@ -942,6 +932,7 @@ static void background_plane(BgVertex* out, DcParam* param)
 	param->pcw.Texture = isp.Texture;
 	param->pcw.Offset = isp.Offset;
 	param->pcw.Gouraud = isp.Gouraud;
+	param->pcw.Shadow = shadow;
 
 	u32 col_off = 12; // x, y, 1/W
 	if (isp.Texture)
@@ -977,8 +968,7 @@ static void snapshot_present_regs()
 	s_snap.fb_r_depth = FB_R_CTRL.fb_depth;
 }
 
-// TR2: everything the draw path reads, latched on the SH4 thread at STARTRENDER.
-// TR3: into s_snap, which the post copies into the job the render thread runs.
+// TR2/TR3: everything the draw path reads, latched on the SH4 thread at STARTRENDER into s_snap.
 // Order matters: param_base feeds background_plane, which reads VRAM.
 static void snapshot_render_regs()
 {
@@ -995,6 +985,7 @@ static void snapshot_render_regs()
 	s_snap.fb_y_clip_max = FB_Y_CLIP.max;
 	s_snap.pal_ram_ctrl = PAL_RAM_CTRL;
 	s_snap.text_control = TEXT_CONTROL;
+	s_snap.fpu_shad_scale = FPU_SHAD_SCALE;
 	s_snap.fb_scale_x = s_fb_scale_x;
 	s_snap.fb_scale_y = s_fb_scale_y;
 	s_snap.autosort = using_autosort();
@@ -1097,6 +1088,8 @@ static u32 apply_param(const DcParam& p, u32 list)
 	}
 	glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
 	set_cull(p.isp.CullMode);
+	// Flycast SetGPState: stencil bit 7 marks pixels whose polygon takes modifier-volume shadows.
+	glStencilFunc(GL_ALWAYS, p.pcw.Shadow ? 0x80 : 0, 0xFF);
 
 	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw);
 	if (textured)
@@ -1127,31 +1120,157 @@ static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
 	glVertex3f(v->x * v->w, v->y * v->w, v->w);
 }
 
-// Draws one list in submission order: opaque, punch-through, and presorted translucent.
-static void draw_list(u32 list)
+// Flycast ta_util.cpp makeIndex(): consecutive strips with the same state share one GL
+// strip, joined by degenerate triangles, and inf vertices split a strip.
+#define RUN_MAX_VTX 16000   // ps3gl drops vertices past PS3GL_MAX_VERTS (16384) per glBegin
+
+static bool s_merge;          // Strip Merge preset, latched per scene
+static u32 s_stat_draws[5];   // glBegin/glEnd pairs per list
+
+struct StripRun
 {
-	u32 last_param = 0xFFFFFFFF;
-	u32 alpha_or = 0;
-	for (u32 i = 0; i < s_rc->nstrip; i++)
+	bool open;
+	bool reversed;          // current strip goes out with flipped winding
+	u8 cull;                // CullMode of the run's first strip
+	u16 param;              // the run's first strip; its state is the one applied
+	u32 list;
+	u32 count;              // vertices in the open GL strip
+	u32 alpha_or;
+	const DcVertex* last;   // last vertex emitted
+};
+static StripRun s_run;
+
+// Flycast PolyParam::equivalentIgnoreCullingDirection: ISP 0xF4000000 keeps cull on/off, not its direction.
+static inline bool strip_equivalent(const DcParam& a, const DcParam& b)
+{
+	return ((a.pcw.full ^ b.pcw.full) & 0x300CE) == 0
+	    && ((a.isp.full ^ b.isp.full) & 0xF4000000) == 0
+	    && a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full;
+}
+
+// Flycast is_vertex_inf. set_pos stores W, so its "1/W > 3.4e37" is W < 1/3.4e37 (+inf 1/W gives W = 0).
+static inline bool vertex_inf(const DcVertex* v)
+{
+	return v->x != v->x || fabsf(v->x) > 1e25f || v->y != v->y || fabsf(v->y) > 1e25f
+	    || v->w < 1.0f / 3.4e37f;
+}
+
+static inline void run_emit(const DcVertex* v)
+{
+	emit_vertex(v, s_run.alpha_or);
+	s_run.last = v;
+	s_run.count++;
+}
+
+static void run_close()
+{
+	if (!s_run.open)
+		return;
+	glEnd();
+	s_run.open = false;
+	if (s_run.count != 0)
+		s_stat_draws[s_run.list]++;
+}
+
+// No GL state may change while a run is open: apply_param only runs after run_close().
+static void draw_strip(const DcStrip& s, u32 list)
+{
+	const DcParam& p = s_rc->param[s.param];
+	s_stat_strips[list]++;
+
+	if (!s_merge)
 	{
-		const DcStrip& s = s_rc->strip[i];
-		if (s.list != list)
-			continue;
-
-		if (s.param != last_param)
-		{
-			last_param = s.param;
-			alpha_or = apply_param(s_rc->param[s.param], list);
-		}
-
+		u32 alpha_or = apply_param(p, list);
 		glBegin(GL_TRIANGLE_STRIP);
 		const DcVertex* v = &s_rc->vtx[s.first];
 		for (u32 k = 0; k < s.count; k++, v++)
 			emit_vertex(v, alpha_or);
 		glEnd();
-
-		s_stat_strips[list]++;
+		s_stat_draws[list]++;
+		return;
 	}
+
+	bool dupe_next = false;
+	if (s_run.open && s_run.count != 0 && s_run.list == list &&
+	    s_run.count + s.count * 2u + 4u <= RUN_MAX_VTX &&
+	    strip_equivalent(p, s_rc->param[s_run.param]))
+	{
+		// Repeat the last vertex; one more copy flips the parity when the cull direction differs.
+		const DcVertex* last = s_run.last;
+		run_emit(last);
+		if (p.isp.CullMode < 2 || p.isp.CullMode == s_run.cull)
+		{
+			if (s_run.reversed)
+				run_emit(last);
+			s_run.reversed = false;
+		}
+		else
+		{
+			if (!s_run.reversed)
+				run_emit(last);
+			s_run.reversed = true;
+		}
+		dupe_next = true;
+	}
+	else
+	{
+		run_close();
+		s_run.alpha_or = apply_param(p, list);
+		glBegin(GL_TRIANGLE_STRIP);
+		s_run.open = true;
+		s_run.reversed = false;
+		s_run.cull = p.isp.CullMode;
+		s_run.param = s.param;
+		s_run.list = list;
+		s_run.count = 0;
+	}
+
+	const DcVertex* v0 = &s_rc->vtx[s.first];
+	const DcVertex* last_good = 0;
+	for (u32 i = 0; i < s.count; i++)
+	{
+		const DcVertex* v = v0 + i;
+		if (vertex_inf(v))
+		{
+			// Skip the inf run; the next good vertex restarts the strip after a degenerate join.
+			while (i < s.count - 1u)
+			{
+				if (!vertex_inf(v0 + i + 1))
+				{
+					if (last_good)
+					{
+						run_emit(last_good);
+						dupe_next = true;
+					}
+					break;
+				}
+				i++;
+			}
+			continue;
+		}
+		last_good = v;
+		if (dupe_next)
+		{
+			run_emit(v);
+			dupe_next = false;
+		}
+		// Vertex i must sit at the same parity as in its own strip, or its triangles flip winding.
+		if (((i ^ s_run.count) & 1) ^ (u32)s_run.reversed)
+			run_emit(v);
+		run_emit(v);
+	}
+}
+
+// Draws one list in submission order: opaque, punch-through, and presorted translucent.
+static void draw_list(u32 list)
+{
+	for (u32 i = 0; i < s_rc->nstrip; i++)
+	{
+		const DcStrip& s = s_rc->strip[i];
+		if (s.list == list)
+			draw_strip(s, list);
+	}
+	run_close();
 }
 
 // nullDC-v1 sort entry: one per translucent polygon, keyed like PolyParam::zvZ.
@@ -1162,9 +1281,8 @@ struct SortStrip
 };
 static SortStrip s_order[MAX_STRIPS];
 
-// Autosort translucent pass, as nullDC-v1 SortPParams (AlphaSortMode 1, its default):
-// whole polygons ordered by the average 1/W of their vertices, so the nearest draws last.
-// The PVR itself sorts per pixel; this is the approximation the reference ships.
+// Autosort pass, nullDC-v1 SortPParams (AlphaSortMode 1): polygons ordered by average 1/W, nearest
+// last. The PVR sorts per pixel; this is the approximation the reference ships.
 static void draw_tr_sorted()
 {
 	u32 n = 0;
@@ -1184,50 +1302,47 @@ static void draw_tr_sorted()
 		return;
 	std::stable_sort(s_order, s_order + n, [](const SortStrip& a, const SortStrip& b) { return a.key < b.key; });
 
-	u32 last_param = 0xFFFFFFFF;
-	u32 alpha_or = 0;
+	// Merging after the sort keeps the draw order, as Flycast's per-strip sort mode does.
 	for (u32 j = 0; j < n; j++)
-	{
-		const DcStrip& s = s_rc->strip[s_order[j].idx];
-		if (s.param != last_param)
-		{
-			last_param = s.param;
-			alpha_or = apply_param(s_rc->param[s.param], ListType_Translucent);
-		}
-
-		glBegin(GL_TRIANGLE_STRIP);
-		const DcVertex* v = &s_rc->vtx[s.first];
-		for (u32 k = 0; k < s.count; k++, v++)
-			emit_vertex(v, alpha_or);
-		glEnd();
-
-		s_stat_strips[ListType_Translucent]++;
-	}
+		draw_strip(s_rc->strip[s_order[j].idx], ListType_Translucent);
+	run_close();
 }
 
-// nullDC-v1 SetMVS_Mode. Mode 0 counts volume crossings by flipping stencil bit 1;
-// modes 1 and 2 fold the count of the volume just closed into bit 0.
-static void set_mvs_mode(u32 mode, const ModVolParam& p)
+// Flycast gldraw.cpp SetMVS_Mode. Stencil bit 7 = polygon takes shadows (kept), bit 1 = volume
+// parity, bit 0 = inside the summed volume. Inclusion ORs bit 1 into bit 0, exclusion ANDs.
+enum { MV_XOR, MV_OR, MV_INCLUSION, MV_EXCLUSION };
+
+static void set_mvs_mode(u32 mode, u32 cull)
 {
-	if (mode == 0)
+	if (mode == MV_XOR || mode == MV_OR)
 	{
 		glEnable(GL_DEPTH_TEST);
 		glStencilMask(2);
-		glStencilFunc(GL_ALWAYS, 0, 0xFF);
-		glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
-		set_cull(p.cull);
+		if (mode == MV_XOR)
+		{
+			glStencilFunc(GL_ALWAYS, 0, 2);
+			glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+		}
+		else
+		{
+			glStencilFunc(GL_ALWAYS, 2, 2);
+			glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+		}
+		set_cull(cull);
+		return;
+	}
+	// Summing the area is not depth tested.
+	glDisable(GL_DEPTH_TEST);
+	glStencilMask(3);
+	if (mode == MV_INCLUSION)
+	{
+		glStencilFunc(GL_LEQUAL, 1, 3);
+		glStencilOp(GL_ZERO, GL_ZERO, GL_REPLACE);
 	}
 	else
 	{
-		// 1 = last "in" (any crossing counts), 2 = last "out".
-		if (mode == 1)
-			glStencilFunc(GL_LEQUAL, 1, 3);
-		else
-			glStencilFunc(GL_GREATER, 2, 3);
-		glStencilOp(GL_ZERO, GL_KEEP, GL_REPLACE);
-		// Summing the volume area must not be depth tested.
-		glDisable(GL_DEPTH_TEST);
-		glStencilMask(3);
+		glStencilFunc(GL_EQUAL, 1, 3);
+		glStencilOp(GL_ZERO, GL_ZERO, GL_KEEP);
 	}
 }
 
@@ -1253,8 +1368,8 @@ static void draw_mod_tris(u32 first, u32 count)
 	glEnd();
 }
 
-// Opaque modifier volumes, as nullDC-v1 ModVolMode Normal: count the volume
-// crossings in the stencil, then darken every pixel that ended up inside.
+// Opaque modifier volumes, as Flycast gldraw.cpp DrawModVols: build the volume in stencil bits 1:0,
+// then shade only pixels with bit 7 (Shadow polygon) and bit 0 set, at FPU_SHAD_SCALE.
 static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 {
 	if (s_rc->nmvol < 2 || s_rc->nmtri == 0)
@@ -1268,42 +1383,41 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 	glDepthFunc(GL_LESS);
 	glEnable(GL_STENCIL_TEST);
 
-	u32 mod_last = 0;
+	s32 mod_base = -1;
 	for (u32 i = 0; i + 1 < s_rc->nmvol; i++)
 	{
 		const ModVolParam& p = s_rc->mvol[i];
-		u32 mod_base = p.first;
-		u32 sz = s_rc->mvol[i + 1].first - mod_base;
-		if (p.depth == 0)
+		u32 count = s_rc->mvol[i + 1].first - p.first;
+		if (count == 0)
+			continue;
+		if (mod_base < 0)
+			mod_base = (s32)p.first;
+
+		// An open volume or quad ORs; a closed volume XORs.
+		set_mvs_mode((!p.volume_last && p.depth > 0) ? MV_OR : MV_XOR, p.cull);
+		draw_mod_tris(p.first, count);
+
+		// DepthMode 1/2 closes the volume: sum its area as inclusion or exclusion.
+		if (p.depth == 1 || p.depth == 2)
 		{
-			set_mvs_mode(0, p);
-			draw_mod_tris(mod_base, sz);
-		}
-		else if (p.depth < 3)
-		{
-			// Each triangle closes a volume: count it, then merge its area.
-			while (sz)
-			{
-				set_mvs_mode(0, p);
-				draw_mod_tris(mod_base, 1);
-				set_mvs_mode(p.depth, p);
-				draw_mod_tris(mod_last, mod_base - mod_last + 1);
-				mod_last = mod_base + 1;
-				sz--;
-				mod_base++;
-			}
+			set_mvs_mode(p.depth == 1 ? MV_INCLUSION : MV_EXCLUSION, p.cull);
+			draw_mod_tris((u32)mod_base, p.first + count - (u32)mod_base);
+			mod_base = -1;
 		}
 	}
 
-	// Shade the odd ("in") pixels. nullDC-v1 uses a flat 50% black.
+	// Shade Shadow polygons inside a volume; the op also clears bits 1:0.
 	glDisable(GL_DEPTH_TEST);
 	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	glDisable(GL_CULL_FACE);
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glStencilFunc(GL_EQUAL, 1, 1);
-	glStencilMask(0);
-	glColor4ub(0, 0, 0, 128);
+	glStencilFunc(GL_EQUAL, 0x81, 0x81);
+	glStencilMask(3);
+	glStencilOp(GL_ZERO, GL_ZERO, GL_ZERO);
+	// Flycast: black at alpha 1 - scale/256, so the lit colour keeps scale/256 of itself.
+	u32 sf = g_rr.fpu_shad_scale & 0xFF;
+	glColor4ub(0, 0, 0, (GLubyte)(255 - (sf * 255 + 128) / 256));
 	glBegin(GL_TRIANGLE_STRIP);
 	glVertex3f(cx0 * quad_w, cy0 * quad_w, quad_w);
 	glVertex3f((cx0 + cw) * quad_w, cy0 * quad_w, quad_w);
@@ -1449,15 +1563,17 @@ static void print_diag()
 	}
 }
 
-// Draws the render context into the active viewport. The canvas rect is the DC
-// area mapped onto it: the whole screen when displaying, the FB clip window for
-// a render to texture.
+// Draws the render context into the viewport. The canvas rect is the DC area mapped onto it:
+// the whole screen for display, the FB clip window for a render to texture.
 static void draw_scene(float cx0, float cy0, float cw, float ch)
 {
-	// ISP_BACKGND_D is the background 1/W (low 4 bits masked, as in nullDC-v1).
+	// ISP_BACKGND_D is the background 1/W (low 4 bits masked, as in nullDC-v1). The register value
+	// is a native u32 here, so memcpy gives the float on BE as on LE.
 	u32 bgd_bits = g_rr.isp_backgnd_d & ~0xFu;
 	float bg_inv_w;
 	memcpy(&bg_inv_w, &bgd_bits, 4);
+	// Flycast 443d5a2ba: push the plane 1e-6 back so geometry at its depth wins (Xtreme Sports skybox).
+	bg_inv_w = std::max(bg_inv_w - 1e-6f, 1e-11f);
 	float bg_w = 1.0f / ((bg_inv_w >= INV_W_FLOOR) ? bg_inv_w : INV_W_FLOOR);
 
 	// reicast glesrend.cpp pins the far plane at 1/W = 0, so only the nearest
@@ -1499,6 +1615,11 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glFrontFace(GL_CCW);
 	glEnable(GL_DEPTH_TEST);
 
+	// OP/PT write stencil bit 7 from each polygon's Shadow flag (apply_param), as Flycast DrawList.
+	glEnable(GL_STENCIL_TEST);
+	glStencilMask(0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+
 	// Background quad over the whole canvas at the background depth; colors and UV from its plane.
 	reset_param_cache();
 	u32 bg_alpha_or = apply_param(g_rr.bg_param, ListType_Opaque);
@@ -1517,6 +1638,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 
 	if (s_rc->nstrip != 0)
 	{
+		s_merge = get_strip_merge_preset() != 0;
 		collect_diag();
 		// Hardware order: opaque, punch-through, translucent.
 		reset_param_cache();
@@ -1529,6 +1651,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 
 		// Hardware shades the opaque volumes between punch-through and translucent.
 		draw_modvols(cx0, cy0, cw, ch, bg_w);
+		glDisable(GL_STENCIL_TEST);
 
 		// apply_param turns the "alpha > 0" test on per translucent poly.
 		glDisable(GL_ALPHA_TEST);
@@ -1542,6 +1665,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
+	glDisable(GL_STENCIL_TEST);
 	glDepthMask(GL_TRUE);
 }
 
@@ -1575,11 +1699,8 @@ static void draw_frame()
 	draw_scene(0.0f, 0.0f, 640.0f * g_rr.fb_scale_x, 480.0f * g_rr.fb_scale_y);
 }
 
-// -- Render to texture -------------------------------------------------------
-// FB_W_SOF1 bit 24 marks a pass the PVR writes into the texture area instead of
-// the screen. gxRend.cpp does the same: draw the clip window at its own size,
-// read the pixels back and pack them into VRAM, where the texture cache sees
-// the change through its hash and re-decodes.
+// -- Render to texture (FB_W_SOF1 bit 24). As gxRend.cpp: draw the clip window at its own size, read it
+// back and pack it into VRAM, where the texture cache sees the new hash and re-decodes.
 static u32 s_stat_rtt_copies;
 
 static inline u16 pack16(u32 argb, u32 mode, u16 kbit)
@@ -1667,10 +1788,8 @@ static void rtt_render()
 	s_stat_rtt_copies++;
 }
 
-// -- Framebuffer writes ------------------------------------------------------
-// 2D titles draw straight into VRAM and never issue a render, so nothing would
-// reach the screen. gxRend.cpp marks the framebuffer after each PVR render; if
-// the mark is gone at vblank, another writer refreshed it and we show it.
+// -- Framebuffer writes. 2D titles draw straight into VRAM with no render; as gxRend.cpp, a mark is
+// stamped after each render, and if it is gone at vblank another writer refreshed it, so show it.
 #define FB_PRESENT_MAGIC 0xDC4F0FB0u
 #define FB2D_W 768
 #define FB2D_H 576
@@ -1829,13 +1948,16 @@ static void rth_print_stats()
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
-	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
 	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
 	       (u32)(s_stat_job_max * 1000.0), s_stat_vtx / r,
 	       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
 	       s_stat_strips[ListType_Translucent] / r,
+	       s_merge ? "merge" : "strip",
+	       s_stat_draws[ListType_Opaque] / r, s_stat_draws[ListType_Punch_Through] / r,
+	       s_stat_draws[ListType_Translucent] / r,
 	       s_stat_built[ListType_Opaque] / r, s_stat_built[ListType_Punch_Through] / r,
 	       s_stat_built[ListType_Translucent] / r,
 	       s_stat_mv[1] / r, s_stat_mv[3] / r,
@@ -1850,6 +1972,7 @@ static void rth_print_stats()
 	memset(s_stat_mv, 0, sizeof(s_stat_mv));
 	s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
 	memset(s_stat_strips, 0, sizeof(s_stat_strips));
+	memset(s_stat_draws, 0, sizeof(s_stat_draws));
 	memset(s_stat_built, 0, sizeof(s_stat_built));
 	s_overflow = 0;
 	s_stat_raw_of = 0;
@@ -2023,15 +2146,8 @@ static void rth_stop()
 	printf("[ps3rend] render thread down\n");
 }
 
-// Hands one job over, or runs it inline when the render thread is off (the TR2
-// path). Returns false when the job was not taken because the render thread was
-// still busy. RTT never drops: the guest reads the rendered texture straight
-// back from VRAM.
-//
-// TR5: how long a render waits for the slot is the Frame Drop preset. libswirl
-// drops at once; waiting costs SH4 time but keeps the frame. The bounded wait is
-// the default, so a render thread that hangs can never hang the SH4 with it.
-// A present is never waited for: dropping one only defers it to the next vblank.
+// Posts one job, or runs it inline with the render thread off (TR2); false = not taken, thread busy.
+// RTT never drops (the guest reads it back); renders wait per Frame Drop (TR5); presents never wait.
 static bool rth_run(int type, TaContext* c)
 {
 	if (s_rend_running)
@@ -2188,9 +2304,8 @@ void StartRender()
 		rc = s_ta;
 	}
 
-	// Same render-done timing as gxRend.cpp StartRender(); games pace off these
-	// IRQs. TR3 replays the TA stream after this point, so nvtx is still this
-	// context's previous count - close enough for a delay that is clamped anyway.
+	// gxRend.cpp StartRender() render-done timing; games pace off these IRQs. nvtx is still the previous
+	// count here (TR3 replays later), close enough for a clamped delay.
 	u32 vtx = rc->nvtx;
 	if (get_render_delay_preset())
 	{

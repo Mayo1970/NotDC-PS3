@@ -39,11 +39,8 @@ extern u32 AicaSampleCount;
 SampleType mixl;
 SampleType mixr;
 
-// MUTE_PCM16_FIX(): preset-gated (default OFF) workaround for ChuChu Rocket's
-// echoey/slow-motion 16-bit SFX. When ON, any AICA channel whose sample format
-// is 16-bit PCM (PCMS==0, non-noise) is silenced at KEY_ON instead of playing.
-// Also mutes 16-bit music/voices, so it is a per-game hack. See main.cpp
-// g_mute_pcm16_preset and [[chuchu-rocket-echo-investigation]].
+// MutePcm16 preset (default OFF): silences every 16-bit PCM channel at KEY_ON.
+// Per-game hack for ChuChu Rocket's echoey 16-bit sounds; also mutes music/voices.
 extern "C" int get_mute_pcm16_preset();
 #define MUTE_PCM16_FIX() (get_mute_pcm16_preset() != 0)
 
@@ -331,6 +328,18 @@ enum _EG_state
 
 struct ChannelEx;
 
+// Echo hunt diagnostic for 16-bit PCM notes. diag_clock never resets (44100/s);
+// per-note lines share a 60 lines/s budget, reset by the [pcm16s] summary.
+static u64 diag_clock;
+static u32 diag_lines, diag_dropped, diag_kon, diag_konign, diag_koff, diag_end;
+static inline bool diag_take()
+{
+    if (diag_lines < 60) { diag_lines++; return true; }
+    diag_dropped++;
+    return false;
+}
+static inline u32 diag_ms(u64 samples) { return (u32)(samples * 1000 / 44100); }
+
 void (FASTCALL* STREAM_STEP_LUT[5][2][2])(ChannelEx* ch);
 void (FASTCALL* STREAM_INITAL_STEP_LUT[5])(ChannelEx* ch);
 void (FASTCALL* AEG_STEP_LUT[4])(ChannelEx* ch);
@@ -344,7 +353,8 @@ struct ChannelEx
 
     ChannelCommonData* ccd;
 
-    u8*        SA;
+    u8*        SA;      // 4-byte-aligned base: ARAM is native BE u32 words
+    u32        sa_ofs;  // SA & 3, re-added per sample so the ^1/^3 swizzle stays exact
     u32        CA;
     fp_22_10   step;
     u32        update_rate;
@@ -355,15 +365,23 @@ struct ChannelEx
     {
         u32 LSA;
         u32 LEA;
+        u32 alignedLEA;   // ADPCM stream ends on a 4-sample boundary
         u8  looped;
     } loop;
 
     struct
     {
         s32 last_quant;
+        // Decoder state at the first pass over LSA; ADPCM (mode 2) restores it on every loop (Flycast).
+        s32        loopstart_quant;
+        SampleType loopstart_prev_sample;
+        bool       in_loop;
         void Reset(ChannelEx* ch)
         {
             last_quant = 127;
+            loopstart_quant = 0;
+            loopstart_prev_sample = 0;
+            in_loop = false;
             ch->s0 = 0;
         }
     } adpcm;
@@ -438,9 +456,13 @@ struct ChannelEx
     bool enabled;
     int  ChanelNumber;
 
-    // Bit n set <=> Chans[n].enabled. Kept in step by enable()/disable() (the
-    // only writers of `enabled`) whatever aica_fast says, so flipping the
-    // preset never starts from a stale mask.
+    bool diag_pcm16;   // this note is 16-bit PCM and is being tracked
+    bool diag_keyoff;  // KEY_OFF reached it
+    bool diag_d2end;   // Decay2 ran out, not a KEY_OFF
+    u64  diag_on;      // diag_clock at KEY_ON
+
+    // Bit n set <=> Chans[n].enabled. enable()/disable() keep it in step even with
+    // aica_fast off, so turning the preset on never starts from a stale mask.
     static u32 active_lo;   // channels 0..31
     static u32 active_hi;   // channels 32..63
 
@@ -454,12 +476,23 @@ struct ChannelEx
     }
     void disable()
     {
+        if (diag_pcm16 && enabled)
+        {
+            diag_end++;
+            if (diag_take())
+                printf("[pcm16] end ch=%2d t=%u life=%ums by=%s\n", ChanelNumber, diag_ms(diag_clock),
+                       diag_ms(diag_clock - diag_on),
+                       diag_keyoff ? "keyoff" : diag_d2end ? "decay2" : AEG.state != EG_Release ? "oneshot" : "?");
+        }
+        diag_pcm16 = false;
         enabled = false;
         const u32 n = (u32)(this - Chans);
         if (n < 32) active_lo &= ~(1u << n);
         else        active_hi &= ~(1u << (n - 32));
         SetAegState(EG_Release);
         AEG.SetValue(0x3FF);
+        // Games poll CA for the end of a sound, looping ones included (Flycast b468c9bda).
+        CA = 0;
     }
     void enable()
     {
@@ -497,20 +530,18 @@ struct ChannelEx
         SampleType oRight = FPMul(sample, logtable[dr], 15);
         SampleType oDsp   = FPMul(sample, logtable[ds], 15);
 
-        if ((AEG.state != EG_Attack) && (AEG.state != EG_Release))
-        {
-            if ((this->AEG.Decay2Value == 0) && ((s64)(oLeft + oRight + oDsp) == 0))
-                this->SetAegState(EG_Attack);
-        }
-
         *VolMix.DSPOut += oDsp;
         mixl += oLeft;
         mixr += oRight;
 
         StepAEG(this);
-        StepFEG(this);
-        StepStream(this);
-        lfo.Step(this);
+        // AEG may have disabled the channel; stepping on would move CA off 0 (Flycast 5393235c4).
+        if (enabled)
+        {
+            StepFEG(this);
+            StepStream(this);
+            lfo.Step(this);
+        }
     }
 
     INLINE void Generate()    { Step(); }
@@ -535,11 +566,17 @@ struct ChannelEx
 
     void KEY_ON()
     {
-        // Workaround: silence 16-bit PCM channels when the mute_pcm16 preset is
-        // on. Leaving the channel in EG_Release (not enabling it) produces no
-        // output — a per-game hack for ChuChu Rocket's echoey 16-bit SFX.
+        // MutePcm16: leave 16-bit PCM channels in EG_Release, so they make no sound.
         if (MUTE_PCM16_FIX() && !ccd->SSCTL && ccd->PCMS == 0)
             return;
+
+        if (AEG.state != EG_Release && !ccd->SSCTL && ccd->PCMS == 0)
+        {
+            diag_konign++;
+            if (diag_take())
+                printf("[pcm16] kon-ignored ch=%2d t=%u state=%d aeg=%d\n", ChanelNumber,
+                       diag_ms(diag_clock), (int)AEG.state, AEG.GetValue());
+        }
 
         if (AEG.state == EG_Release)
         {
@@ -554,11 +591,8 @@ struct ChannelEx
             adpcm.Reset(this);
             StepStreamInitial(this);
 
-            // Filter removed: the buggy SFX never showed up while SA=0x2A04E
-            // was excluded, meaning it likely reuses that same raw waveform
-            // (a single wavetable sample pitched/retriggered for both BGM
-            // notes and some SFX is common). Log everything again and
-            // correlate by timing/channel instead of by address.
+            // Logs every key-on: one waveform (e.g. SA=0x2A04E) can serve both music
+            // and SFX, so correlate by timing/channel, not by address.
             key_printf("[AICA] KEY_ON  ch=%2d fmt=%s %s SA=0x%05X LSA=%u LEA=%u loopLen=%d TL=%u OCT=%d FNS=%u "
                        "KRS=%u DL=%u D1R=%u D2R=%u RR=%u effRR=%u\n",
                        ChanelNumber,
@@ -568,6 +602,25 @@ struct ChannelEx
                        ccd->LSA, ccd->LEA, (int)ccd->LEA - (int)ccd->LSA,
                        ccd->TL, ccd->OCT, ccd->FNS,
                        ccd->KRS, ccd->DL, ccd->D1R, ccd->D2R, ccd->RR, AEG_EffRate(ccd->RR));
+
+            diag_pcm16 = !ccd->SSCTL && ccd->PCMS == 0;
+            if (diag_pcm16)
+            {
+                diag_keyoff = false;
+                diag_d2end  = false;
+                diag_on     = diag_clock;
+                diag_kon++;
+                if (diag_take())
+                {
+                    const u32 sa = (ccd->SA_hi << 16) | ccd->SA_low;
+                    printf("[pcm16] on  ch=%2d t=%u SA=0x%06X LSA=%u LEA=%u %s OCT=%u FNS=%u TL=%u DIPAN=%u "
+                           "AR=%u D1R=%u D2R=%u DL=%u RR=%u KRS=%u LPSLNK=%u effD1=%u effD2=%u effRR=%u\n",
+                           ChanelNumber, diag_ms(diag_clock), sa, ccd->LSA, ccd->LEA,
+                           ccd->LPCTL ? "loop" : "one", ccd->OCT, ccd->FNS, ccd->TL, ccd->DIPAN,
+                           ccd->AR, ccd->D1R, ccd->D2R, ccd->DL, ccd->RR, ccd->KRS, ccd->LPSLNK,
+                           AEG_EffRate(ccd->D1R), AEG_EffRate(ccd->D2R), AEG_EffRate(ccd->RR));
+                }
+            }
         }
     }
     void KEY_OFF()
@@ -575,6 +628,14 @@ struct ChannelEx
         if (AEG.state != EG_Release)
         {
             key_printf("[AICA] KEY_OFF ch=%2d\n", ChanelNumber);
+            if (diag_pcm16)
+            {
+                diag_keyoff = true;
+                diag_koff++;
+                if (diag_take())
+                    printf("[pcm16] off ch=%2d t=%u held=%ums state=%d aeg=%d\n", ChanelNumber,
+                           diag_ms(diag_clock), diag_ms(diag_clock - diag_on), (int)AEG.state, AEG.GetValue());
+            }
             SetAegState(EG_Release);
         }
     }
@@ -590,36 +651,27 @@ struct ChannelEx
     {
         u32 addr = (ccd->SA_hi << 16) | ccd->SA_low;
         if (ccd->PCMS == 0) addr &= ~1;
-        SA = &aica_ram_l[addr];
+        SA     = &aica_ram_l[addr & ~3u];
+        sa_ofs = addr & 3;
     }
     void UpdateLoop()
     {
         loop.LSA = ccd->LSA;
         loop.LEA = ccd->LEA;
+        loop.alignedLEA = (loop.LEA + 3) & ~3u;
     }
     u32 AEG_EffRate(u32 re)
     {
-        // Key-rate scaling per verified SCSP/AICA reference: when KRS==0xF,
-        // octave/FNS contribution is disabled entirely (rate = 2*re only).
-        // The previous formula applied the octave term even at KRS==0xF,
-        // which for a KRS=0xF (no key-tracking) instrument at a negative
-        // octave (OCT=15 => oct=-1, exactly what ChuChu Rocket's chime/BGM
-        // instrument uses) skews the computed rate lower than real hardware
-        // — i.e. decays/releases slower than intended. With several
-        // overlapping chime notes fired in quick succession (a button-press
-        // arpeggio), a too-slow release means each note keeps ringing well
-        // after the next starts, smearing into what sounds like an
-        // echo/slow-motion wash instead of a crisp jingle.
-        s32 rate_offset = 0;
-        if (ccd->KRS != 0xF)
+        // Flycast 265c5c6c3 (real hw tests): KRS==0xF drops FNS and OCT; a negative KRS+OCT counts as 0.
+        u32 rv = re * 2;
+        if (ccd->KRS < 0xF)
         {
-            s32 oct = (s32)(ccd->OCT ^ 8) - 8;   // sign-extend 4-bit OCT
-            rate_offset = oct + 2 * (s32)ccd->KRS + ((ccd->FNS >> 9) & 1);
+            rv += (ccd->FNS >> 9) & 1;
+            s32 ko = ((s32)ccd->KRS + (s32)(ccd->OCT ^ 8) - 8) * 2;
+            if (ko > 0)
+                rv += ko;
         }
-        s32 rv = (re << 1) + rate_offset;
-        if (rv < 0)    rv = 0;
-        if (rv > 0x3f) rv = 0x3f;
-        return rv;
+        return rv > 0x3f ? 0x3f : rv;
     }
     void UpdateAEG()
     {
@@ -749,6 +801,13 @@ INLINE void FASTCALL StepDecodeSample(ChannelEx* ch, u32 CA)
     s16* sptr16 = (s16*)ch->SA;
     s8*  sptr8  = (s8*) ch->SA;
     u8*  uptr8  = (u8*) ch->SA;
+    const u32 ofs = ch->sa_ofs;
+
+    // The interpolation partner wraps to LSA at the loop end (Flycast 265c5c6c3).
+    u32 next_addr = CA + 1;
+    const u32 lea = PCMS == 3 ? ch->loop.alignedLEA : ch->loop.LEA;
+    if (next_addr >= lea && lea > ch->loop.LSA)
+        next_addr = ch->loop.LSA;
 
     SampleType s0, s1;
     switch (PCMS)
@@ -759,26 +818,51 @@ INLINE void FASTCALL StepDecodeSample(ChannelEx* ch, u32 CA)
         s1 = ch->noise_state * 16807 + 0xbeef; s1 >>= 16;
         break;
     case 0:
-        s0 = sptr16[(CA + 0) ^ 1];
-        s1 = sptr16[(CA + 1) ^ 1];
+        s0 = sptr16[((ofs >> 1) + CA) ^ 1];
+        s1 = sptr16[((ofs >> 1) + next_addr) ^ 1];
         break;
     case 1:
-        s0 = sptr8[(CA + 0) ^ 3] << 8;
-        s1 = sptr8[(CA + 1) ^ 3] << 8;
+        s0 = sptr8[(ofs + CA) ^ 3] << 8;
+        s1 = sptr8[(ofs + next_addr) ^ 3] << 8;
         break;
     case 2: case 3:
         {
-            u8 ad1 = uptr8[(CA >> 1) ^ 3];
-            u8 ad2 = uptr8[((CA + 1) >> 1) ^ 3];
-            u8 sf  = (CA & 1) << 2;
-            ad1 >>= sf;
-            ad2 >>= 4 - sf;
+            u8 ad1 = uptr8[(ofs + (CA >> 1)) ^ 3];
+            u8 ad2 = uptr8[(ofs + (next_addr >> 1)) ^ 3];
+            ad1 >>= (CA & 1) << 2;
+            ad2 >>= (next_addr & 1) << 2;
             ad1 &= 0xF;
             ad2 &= 0xF;
             s32 q = ch->adpcm.last_quant;
+            // Flycast 3f70e47ad: both ADPCM modes save the LSA state, only mode 2 restores it.
+            if (CA == ch->loop.LSA)
+            {
+                if (!ch->adpcm.in_loop)
+                {
+                    ch->adpcm.in_loop = true;
+                    ch->adpcm.loopstart_quant = q;
+                    ch->adpcm.loopstart_prev_sample = ch->s0;
+                }
+                else if (PCMS == 2)
+                {
+                    q = ch->adpcm.loopstart_quant;
+                    ch->s0 = ch->adpcm.loopstart_prev_sample;
+                }
+            }
             s0 = DecodeADPCM(ad1, ch->s0, q);
             ch->adpcm.last_quant = q;
-            s1 = last ? DecodeADPCM(ad2, s0, q) : 0;
+            if (last)
+            {
+                SampleType prev = s0;
+                if (PCMS == 2 && next_addr == ch->loop.LSA && ch->adpcm.in_loop)
+                {
+                    q = ch->adpcm.loopstart_quant;
+                    prev = ch->adpcm.loopstart_prev_sample;
+                }
+                s1 = DecodeADPCM(ad2, prev, q);
+            }
+            else
+                s1 = 0;
         }
         break;
     }
@@ -803,9 +887,8 @@ void FASTCALL StreamStep(ChannelEx* ch)
     {
         sp.ip--;
 
-        u32 CA   = ch->CA + 1;
-        u32 ca_t = CA;
-        if (PCMS == 3) ca_t &= ~3;
+        u32 CA = ch->CA + 1;
+        const u32 lea = PCMS == 3 ? ch->loop.alignedLEA : ch->loop.LEA;
 
         if (LPSLNK)
         {
@@ -815,17 +898,28 @@ void FASTCALL StreamStep(ChannelEx* ch)
                 ch->SetAegState(EG_Decay1);
             }
         }
-        if (ca_t >= ch->loop.LEA)
+        if (CA >= lea)
         {
-            ch->loop.looped = 1;
-            CA = ch->loop.LSA;
-            if (LPCTL)
+            if (ch->loop.LSA > lea)
             {
-                if (PCMS == 2) ch->adpcm.Reset(ch);
+                // Real hw (Flycast 265c5c6c3): with LSA > LEA it plays on to LSA, then CA = 0 and it stops, even if looping.
+                if (CA >= ch->loop.LSA)
+                {
+                    ch->loop.looped = 1;
+                    CA = 0;
+                    ch->disable();
+                }
             }
             else
             {
-                ch->disable();
+                ch->loop.looped = 1;
+                if (LPCTL)
+                    CA = ch->loop.LSA;
+                else
+                {
+                    CA = 0;
+                    ch->disable();
+                }
             }
         }
         ch->CA = CA;
@@ -845,7 +939,8 @@ void FASTCALL CalcAlfo(ChannelEx* ch)
     case 0: rv = ch->lfo.state; break;
     case 1: rv = ch->lfo.state & 0x80 ? 255 : 0; break;
     case 2: rv = (ch->lfo.state & 0x7f) ^ (ch->lfo.state & 0x80 ? 0x7F : 0); rv <<= 1; break;
-    case 3: rv = (ch->lfo.state >> 3) ^ (ch->lfo.state << 3) ^ (ch->lfo.state & 0xE3); break;
+    // Random waveform, Flycast 8f7e4bf2d.
+    case 3: rv = (ch->lfo.state * 0x41c64e6du + 0x3039u) & 0xff; break;
     default: rv = 0; break;
     }
     ch->lfo.alfo = rv >> ch->lfo.alfo_shft;
@@ -867,7 +962,7 @@ void FASTCALL CalcPlfo(ChannelEx* ch)
     case 3: rv = (ch->lfo.state >> 3) ^ (ch->lfo.state << 3) ^ (ch->lfo.state & 0xE3); break;
     default: rv = 0; break;
     }
-    ch->lfo.alfo = rv >> ch->lfo.plfo_shft;
+    ch->lfo.plfo = rv >> ch->lfo.plfo_shft;
 }
 
 template<u32 state>
@@ -894,6 +989,7 @@ void FASTCALL AegStep(ChannelEx* ch)
         if (ch->AEG.GetValue() >= 0x3FF)
         {
             ch->AEG.SetValue(0x3FF);
+            ch->diag_d2end = true;
             ch->SetAegState(EG_Release);
         }
         break;
@@ -911,19 +1007,8 @@ void FASTCALL AegStep(ChannelEx* ch)
 template<u32 state>
 void FASTCALL FegStep(ChannelEx* ch) { /* stub */ }
 
-// ---------------------------------------------------------------------------
-// aica_fast preset: produces exactly the same samples as ChannelEx::Step() /
-// GenerateAll(), for less work per sample. Differences, all output-neutral:
-//   * only channels whose bit is set in active_lo/hi are visited; the mask is
-//     snapshotted, which matches the per-channel `enabled` test because a
-//     channel's step can only disable ITSELF
-//   * no StepFEG call: every FegStep<> is an empty stub
-//   * the DSP send is computed only when the DSP runs, or when the rare
-//     envelope silence test below needs it
-//   * the AEG step is a direct call picked by AEG.state instead of the StepAEG
-//     pointer; SetAegState() is the only writer of either and sets both
-//   * left/right accumulate in locals and are written back once
-// ---------------------------------------------------------------------------
+// aica_fast: same samples as ChannelEx::Step(); visits only active_lo/hi channels,
+// skips the stub FEG, sends to the DSP only when it runs, and calls AegStep directly.
 extern int g_aica_fast_preset;   // wii/main.cpp; read directly, 44,100x/s
 
 static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, SampleType& mr)
@@ -942,27 +1027,11 @@ static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, S
     SampleType oLeft  = FPMul(sample, logtable[dl], 15);
     SampleType oRight = FPMul(sample, logtable[dr], 15);
 
-    SampleType oDsp = 0;
     if (dsp_on)
     {
         u32 ds = min(ch->VolMix.DSPAtt, max_att);
-        oDsp = FPMul(sample, logtable[ds], 15);
+        *ch->VolMix.DSPOut += FPMul(sample, logtable[ds], 15);
     }
-
-    if ((ch->AEG.state != EG_Attack) && (ch->AEG.state != EG_Release) &&
-        (ch->AEG.Decay2Value == 0))
-    {
-        if (!dsp_on)
-        {
-            u32 ds = min(ch->VolMix.DSPAtt, max_att);
-            oDsp = FPMul(sample, logtable[ds], 15);
-        }
-        if ((s64)(oLeft + oRight + oDsp) == 0)
-            ch->SetAegState(EG_Attack);
-    }
-
-    if (dsp_on)
-        *ch->VolMix.DSPOut += oDsp;
     ml += oLeft;
     mr += oRight;
 
@@ -973,6 +1042,8 @@ static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, S
     case EG_Decay2:  AegStep<2>(ch); break;
     case EG_Release: AegStep<3>(ch); break;
     }
+    if (!ch->enabled)
+        return;
     ch->StepStream(ch);
     ch->lfo.Step(ch);
 }
@@ -1099,8 +1170,11 @@ void ReadCommonReg(u32 reg, bool byte)
         break;
     case 0x2814: case 0x2815:
         {
-            u32 chan = CommonData->MSLC;
-            CommonData->CA = Chans[chan].CA;
+            const ChannelEx& ch = Chans[CommonData->MSLC];
+            CommonData->CA = ch.CA;
+            // Flycast 788cbfb64: VC 2K sports games miss a sound's end if CA reads >= LEA-2.
+            if (ch.loop.LEA > ch.loop.LSA && ch.loop.LEA > 3)
+                CommonData->CA = min(ch.CA, ch.loop.LEA - 3);
         }
         break;
     }
@@ -1124,9 +1198,8 @@ u32 cdda_index = CDDA_SIZE << 1;
 // modes, so it is never stale when aica_fast is switched on mid-sector.
 static bool cdda_silent = false;
 
-// CDDA_FIX(): feed GD-ROM Red Book audio (CD music tracks) into the AICA
-// EXTS0 mixer input. Preset-gated, default OFF: pulls one 2352-byte sector
-// from the disc image every 588 samples (~75 reads/s while a track plays).
+// Cdda preset: feeds Red Book audio into the EXTS0 mixer input, reading one
+// 2352-byte sector every 588 samples (~75 reads/s while a track plays).
 extern "C" int get_cdda_preset();
 #define CDDA_FIX() (get_cdda_preset() != 0)
 void FASTCALL gdrom_get_cdda(s16* sector);
@@ -1151,6 +1224,17 @@ void AICA_Sample()
         ChannelEx::GenerateAll();
     AicaVoxTicks += SGC_PERF_TICKS() - t_vox;
     AicaSampleCount++;
+
+    if (++diag_clock % 44100 == 0)
+    {
+        u32 active = 0;
+        for (int i = 0; i < 64; i++)
+            if (ChannelEx::Chans[i].enabled && ChannelEx::Chans[i].diag_pcm16)
+                active++;
+        printf("[pcm16s] t=%u kon=%u kon-ignored=%u koff=%u end=%u active=%u not-logged=%u\n",
+               diag_ms(diag_clock), diag_kon, diag_konign, diag_koff, diag_end, active, diag_dropped);
+        diag_lines = diag_dropped = diag_kon = diag_konign = diag_koff = diag_end = 0;
+    }
 
     // CDDA input — refill the sector buffer every 588 stereo frames.
     if (cdda_index >= CDDA_SIZE)
@@ -1206,12 +1290,8 @@ void AICA_Sample()
         dsp_step();
         for (int i = 0; i < 16; i++)
         {
-            // EFREG[i] is a u32 whose low 16 bits hold the effect return
-            // value (x86 nulldc read this via a naive s16* cast onto the
-            // u32's first 2 bytes, which is the low half only on a
-            // little-endian host). On big-endian Wii that same cast reads
-            // the HIGH half instead, so offset by 2 bytes to land on the
-            // low 16 bits. Currently dormant: DSPEnabled defaults to 0.
+            // EFREG[i] is a u32 with the value in its low 16 bits; on big-endian
+            // those are bytes 2-3, so a plain s16* cast would read the high half.
 #ifdef WII
             VOLPAN((*(s16*)((u8*)&DSPData->EFREG[i] + 2)), dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
 #else
@@ -1227,9 +1307,8 @@ void AICA_Sample()
         mixr = mixl;
     }
 
-    // Master volume. The float math (u32->float, fdivs, float->int) only has
-    // to rerun when one of its two inputs changes; volume_lut is fixed after
-    // sgc_Init().
+    // Master volume: the float math only reruns when MVOL or Volume changes
+    // (volume_lut is fixed after sgc_Init()).
     u32 mvol = CommonData->MVOL;
     s32 val;
     if (fast)

@@ -12,25 +12,19 @@
 #include "_vmem.h"
 #include "mmu.h"
 
-// ---------------------------------------------------------------------------
-// Main memory banks
-// ---------------------------------------------------------------------------
+// -- Main memory banks -------------------------------------------------------
 
 VArray2  mem_b;      // Main system RAM  (16 MB)
 Array<u8> bios_b;   // BIOS ROM         (2 MB)
 Array<u8> flash_b;  // Flash / NVRAM    (128 KB)
 
-// ---------------------------------------------------------------------------
-// Forward declarations
-// ---------------------------------------------------------------------------
+// -- Forward declarations ----------------------------------------------------
 
 void _vmem_init();
 void _vmem_reset();
 void _vmem_term();
 
-// ---------------------------------------------------------------------------
-// AREA 1 – VRAM  (PVR, 8 MB)
-// ---------------------------------------------------------------------------
+// -- AREA 1 – VRAM  (PVR, 8 MB) ----------------------------------------------
 
 static _vmem_handler area1_32b;
 
@@ -51,16 +45,12 @@ static void map_area1(u32 base)
 	_vmem_mirror_mapping(0x06 | base, 0x04 | base, 0x02);
 }
 
-// ---------------------------------------------------------------------------
-// AREA 2 – Unassigned
-// ---------------------------------------------------------------------------
+// -- AREA 2 – Unassigned -----------------------------------------------------
 
 static void map_area2_init() {}
 static void map_area2(u32 /*base*/) {}
 
-// ---------------------------------------------------------------------------
-// AREA 3 – Main RAM  (16 MB mirrored 4×)
-// ---------------------------------------------------------------------------
+// -- AREA 3 – Main RAM  (16 MB mirrored 4×) ----------------------------------
 
 static void map_area3_init() {}
 
@@ -69,9 +59,7 @@ static void map_area3(u32 base)
 	_vmem_map_block_mirror(mem_b.data, 0x0C | base, 0x0F | base, RAM_SIZE);
 }
 
-// ---------------------------------------------------------------------------
-// AREA 4 – Tile Accelerator
-// ---------------------------------------------------------------------------
+// -- AREA 4 – Tile Accelerator -----------------------------------------------
 
 static void map_area4_init() {}
 
@@ -81,9 +69,7 @@ static void map_area4(u32 base)
 	_vmem_mirror_mapping(0x12 | base, 0x10 | base, 0x02);
 }
 
-// ---------------------------------------------------------------------------
-// AREA 5 – External Device  (modem / broadband adapter)
-// ---------------------------------------------------------------------------
+// -- AREA 5 – External Device  (modem / broadband adapter) -------------------
 
 template<u32 sz, class T>
 static T FASTCALL ReadMem_extdev_T(u32 addr)
@@ -109,23 +95,13 @@ static void map_area5(u32 base)
 	_vmem_map_handler(area5_handler, base | 0x14, base | 0x17);
 }
 
-// ---------------------------------------------------------------------------
-// AREA 6 – Unassigned
-// ---------------------------------------------------------------------------
+// -- AREA 6 – Unassigned -----------------------------------------------------
 
 static void map_area6_init() {}
 static void map_area6(u32 /*base*/) {}
 
-// ---------------------------------------------------------------------------
-// Full memory map setup
-//
-// SH4 address space layout:
-//   U0/P0  0x00000000–0x7FFFFFFF  –  normal map (mirrored ×4 inside 512 MB)
-//   P1     0x80000000–0x9FFFFFFF  –  same physical, cached
-//   P2     0xA0000000–0xBFFFFFFF  –  same physical, uncached
-//   P3     0xC0000000–0xDFFFFFFF  –  same physical, TLB
-//   P4     0xE0000000–0xFFFFFFFF  –  SH4 internal (on-chip) registers
-// ---------------------------------------------------------------------------
+// Memory map: P0 0-7FFFFFFF (x4 mirror of 512 MB), P1/P2/P3 same physical (cached/uncached/TLB),
+// P4 E0000000-FFFFFFFF SH4 on-chip registers.
 
 void mem_map_defualt()
 {
@@ -159,9 +135,7 @@ void mem_map_defualt()
 	map_p4();
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// -- Lifecycle ---------------------------------------------------------------
 
 void mem_Init()
 {
@@ -189,13 +163,16 @@ void mem_Reset(bool Manual)
 	MMU_Reset(Manual);
 }
 
+void dc_flash_restore_region(); // flash_fix.cpp
+
 void mem_Term()
 {
 	MMU_Term();
 	sh4_internal_reg_Term();
 	sh4_area0_Term();
 
-	// Persist flash (NVRAM) back to disk
+	// Persist flash (NVRAM) back to disk, with the console's own region.
+	dc_flash_restore_region();
 	char* temp_path = GetEmuPath("data/");
 	strcat(temp_path, "dc_flash_wb.bin");
 	SaveSh4FlashromToFile(temp_path);
@@ -209,19 +186,10 @@ void mem_Term()
 
 #include "dc/sh4/sh4_interpreter.h"
 
-// ---------------------------------------------------------------------------
-// Block memory transfer helpers
-// ---------------------------------------------------------------------------
+// -- Block memory transfer helpers -------------------------------------------
 
-// BLOCKCOPY preset: 0 = legacy per-word dispatcher loop, 1 = one bulk copy
-// whenever the whole range resolves to a single direct-mapped region.
-// Defined here rather than in wii/main.cpp so every target links; the Wii menu
-// and game_presets just write to it. See _vmem_GetBlockPtr() for why the bulk
-// copy is byte-for-byte identical to the loop it replaces, and for the cases
-// that deliberately stay on the loop (MMIO, mirror wrap, region crossing).
-// Wii-CONFIRMED +2% ([[blockwrite-per-word-dispatch]]). Default ON.
-// Kept extern "C" like the declarations in wii/main.cpp and wii/game_presets.cpp
-// (both TUs declare it that way; changing only this side would mismatch them).
+// BLOCKCOPY: 1 = one bulk copy when the range is one direct-mapped region (identical bytes, see
+// _vmem_GetBlockPtr; MMIO/mirror wrap/region crossing keep the per-word loop). Default ON, +2%.
 extern "C" { int g_blockcopy_preset = 1; }
 
 extern "C" {
@@ -239,9 +207,8 @@ static void blockcopy_announce()
 	}
 }
 
-// memmove, not memcpy, throughout: these are guest-to-guest transfers whose
-// source can itself be a pointer into the RAM image (pvr_sb_regs.cpp hands us
-// GetMemPtr(src, len)), so the ranges are not guaranteed to be disjoint.
+// memmove, not memcpy: guest-to-guest transfers whose source can point into the RAM image
+// (pvr_sb_regs.cpp passes GetMemPtr(src, len)), so the ranges may overlap.
 
 void MEMCALL WriteMemBlock_nommu_dma(u32 dst, u32 src, u32 size)
 {
@@ -305,19 +272,10 @@ void MEMCALL WriteMemBlock_ptr(u32 addr, u32* data, u32 size)
 		WriteMem32(addr + i, data[i >> 2]);
 }
 
-// ---------------------------------------------------------------------------
-// Debugger / dynarec helpers
-// ---------------------------------------------------------------------------
+// -- Debugger / dynarec helpers ----------------------------------------------
 
-/**
- * GetMemPtr – return a host pointer into a known memory region, or NULL.
- *
- * Supported regions:
- *   Area 3  (bits 28:26 == 3)  –  main RAM
- *   Area 0  (bits 28:26 == 0)  –  BIOS ROM (first 2 MB of area 0)
- *
- * P4 (bits 31:29 == 7) is never accessible this way.
- */
+// Host pointer into main RAM (area 3) or the BIOS ROM (first 2 MB of area 0), else NULL.
+// P4 is never reachable this way.
 u8* GetMemPtr(u32 Addr, u32 /*size*/)
 {
 	// P4 – internal registers, never directly addressable

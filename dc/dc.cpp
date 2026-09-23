@@ -1,7 +1,4 @@
-/*
-	Emulation Interface for very high level stuff, like starting/pausing emulation
-	Rewritten for improved safety, clarity, and Wii compatibility
-*/
+// High-level emulation interface: init, start, stop, reset.
 
 #include "mem/sh4_mem.h"
 #include "mem/memutil.h"
@@ -12,16 +9,13 @@
 #include "maple/maple_if.h"
 #include "dc.h"
 #include "config/config.h"
+#include "plugins/plugin_manager.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-// ARM7 CPU plugin (vbaARM) — forward declarations only.
-// We do NOT include vbaARM.h here because it redefines ReadMemArrRet /
-// WriteMemArrRet macros already defined in sh4_mem.h.
-// arm_Init() is NOT called here — it is called inside libARM_Init() in
-// plugin_manager.cpp where arm_init_params and aica_ram are both in scope.
-// dc.cpp only needs Reset and Term, which take no struct parameters.
+// ARM7 (vbaARM) forward declarations only: vbaARM.h redefines ReadMemArrRet/WriteMemArrRet.
+// arm_Init() runs in libARM_Init() (plugin_manager.cpp); here only Reset and Term are needed.
 extern void FASTCALL armTerm ();
 extern void FASTCALL armReset(bool Manual);
 
@@ -67,11 +61,6 @@ static volatile emu_thread_rv_t emu_thread_rv = RV_WAIT;
 static void ResetDC(bool manual);
 static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd);
 
-/**
- * Execute emulator command with state machine
- * @param cmd Command to execute
- * @return Result of command execution
- */
 static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 {
 	emu_thread_state = cmd;
@@ -116,9 +105,7 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 			mem_Init();
 			pvr_Init();
 			aica_Init();   // AICA RAM is ready after this call
-			// NOTE: ARM7 CPU is initialised by libARM_Init() inside
-			// plugins_Init() (plugin_manager.cpp), which runs before
-			// this EMU_INIT block. No arm_Init() call needed here.
+			// The ARM7 was already initialised by libARM_Init() inside plugins_Init() above.
 			mem_map_defualt();
 
 			emu_thread_rv = RV_OK;
@@ -127,9 +114,7 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 		case EMU_TERM:
 			emu_thread_state = EMU_IDLE;
 
-			// Terminate in reverse order of initialization.
-			// ARM must be torn down before AICA because it holds a pointer
-			// into aica_ram; freeing AICA RAM first would leave a dangling ref.
+			// Reverse init order. The ARM goes before AICA: it holds a pointer into aica_ram.
 			arm_Term();
 			aica_Term();
 			pvr_Term();
@@ -167,10 +152,6 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 	return emu_thread_rv;
 }
 
-/**
- * Initialize the Dreamcast emulator
- * @return true on success, false on failure
- */
 bool Init_DC()
 {
 	if (dc_inited)
@@ -198,10 +179,6 @@ bool Init_DC()
 	return true;
 }
 
-/**
- * Internal reset function
- * @param manual true for manual reset, false for automatic
- */
 static void ResetDC(bool manual)
 {
 	printf("Resetting DC (%s)...\n", manual ? "manual" : "auto");
@@ -212,22 +189,15 @@ static void ResetDC(bool manual)
 	pvr_Reset(manual);
 	aica_Reset(manual);
 
-	// Reset ARM7 CPU — must come after aica_Reset() so that AICA RAM is
-	// in its post-reset state before the ARM7 re-reads it.
-	// On a non-manual (auto) reset aica_Reset clears aica_ram, so the ARM
-	// must be reset afterwards to avoid running stale code.
+	// After aica_Reset(), which clears aica_ram on a hard reset, so the ARM7 never runs stale code.
 	arm_Reset(manual);
 
-	// ELF boot hook: if an ELF was loaded, override the BIOS reset vector
-	// with the ELF entry point.  Must be called AFTER sh4_cpu.Reset() so
-	// our PC value wins over the reset vector (0xA0000000).
+	// ELF boot: the ELF entry replaces the BIOS reset vector. After sh4_cpu.Reset(), so our PC
+	// wins over 0xA0000000.
 	dc_elf_pre_run_hook();
 }
 
-/**
- * Perform a soft reset (can be called while CPU is running)
- * @return true if reset was initiated, false otherwise
- */
+// Soft reset; safe while the CPU runs.
 bool SoftReset_DC()
 {
 	if (!dc_inited)
@@ -248,18 +218,8 @@ bool SoftReset_DC()
 	return false;
 }
 
-/**
- * Holly-level system reset (SB_SFRES = 0x7611)
- *
- * Real hardware: writing this resets the Holly-controlled peripherals
- * (video, sound, etc.) but NOT the SH4 -- the CPU is the one issuing the
- * write and keeps running right through it. Deliberately mirrors only the
- * peripheral half of ResetDC(): no sh4_cpu.Reset() (would corrupt the live
- * CPU/GPR state we're executing under right now) and no mem_Reset() (would
- * wipe the RAM the current code is running from). aica_Reset(true) never
- * zeroes RAM (only the non-manual path does), so unlike ResetDC() there is
- * no AICA-RAM-before-ARM7-reset ordering constraint here.
- */
+// Holly reset (SB_SFRES = 0x7611): peripherals only. The SH4 issued the write and keeps running, so no
+// CPU or RAM reset; aica_Reset(true) keeps AICA RAM, so the ARM7 order of ResetDC() does not apply.
 void HollySoftReset()
 {
 	printf("Performing Holly soft reset (peripherals only, CPU keeps running)...\n");
@@ -270,11 +230,6 @@ void HollySoftReset()
 	arm_Reset(true);
 }
 
-/**
- * Reset the Dreamcast emulator
- * @param manual true for manual reset, false for automatic
- * @return true on success, false on failure
- */
 bool Reset_DC(bool manual)
 {
 	if (!dc_inited)
@@ -298,9 +253,6 @@ bool Reset_DC(bool manual)
 	return true;
 }
 
-/**
- * Terminate the Dreamcast emulator
- */
 void Term_DC()
 {
 	if (!dc_inited)
@@ -319,12 +271,7 @@ void Term_DC()
 	printf("Dreamcast emulator terminated\n");
 }
 
-/**
- * Helper function to safely build file paths
- * @param base_path Base directory path
- * @param filename File to append
- * @return Allocated string with full path (caller must free)
- */
+// Returns base_path + filename in a malloc'd string; the caller frees it.
 static char* BuildFilePath(const char* base_path, const char* filename)
 {
 	if (!base_path || !filename)
@@ -348,10 +295,47 @@ static char* BuildFilePath(const char* base_path, const char* filename)
 	return full_path;
 }
 
-/**
- * Load BIOS and system files
- */
 void dc_flash_set_time(u32 rtc); // flash_fix.cpp
+void dc_flash_set_region(const char* area);
+
+// Cable forced for this boot only; -1 = the nullDC.cfg value. Read by bsc.cpp read_BSC_PDTRA.
+int g_cable_override = -1;
+
+// Flycast loadSpecialSettings: region and cable from the disc's IP.BIN (area symbols at 0x30,
+// VGA flag at 0x3D). Byte reads only, so host endianness does not matter.
+static void apply_disc_meta()
+{
+	g_cable_override = -1;
+	u32 type = libGDR_GetDiscType();
+	if (type == NoDisk || type == Open || type == Busy || type == CdDA)
+		return;
+
+	u32 fad = 45150;   // GD-ROM high-density area
+	if (type != GdRom)
+	{
+		// CD: IP.BIN opens the last session (Flycast Disc::GetBaseFAD).
+		u8 ses[6];
+		libGDR_GetSessionInfo(ses, 0);
+		if (ses[2] == 0)
+			return;
+		libGDR_GetSessionInfo(ses, ses[2]);
+		fad = (ses[3] << 16) | (ses[4] << 8) | ses[5];
+	}
+
+	static u8 ip[2048];
+	libGDR_ReadSector(ip, fad, 1, sizeof(ip));
+	if (memcmp(ip, "SEGA SEGAKATANA ", 16) != 0)
+	{
+		printf("[disc] no IP.BIN at FAD %u, region and cable kept\n", fad);
+		return;
+	}
+	dc_flash_set_region((const char*)&ip[0x30]);
+	if (settings.dreamcast.cable <= 1 && ip[0x3D] != '1')
+	{
+		g_cable_override = 3;
+		printf("[disc] no VGA support, TV composite for this boot\n");
+	}
+}
 
 void LoadBiosFiles()
 {
@@ -413,7 +397,10 @@ void LoadBiosFiles()
 		if (flash_path)
 			free(flash_path);
 		if (any_loaded)
+		{
 			dc_flash_set_time(settings.dreamcast.RTC);
+			apply_disc_meta();
+		}
 	}
 
 	// Load syscalls
@@ -456,9 +443,6 @@ void LoadBiosFiles()
 		printf("WARNING: No BIOS files were loaded successfully\n");
 }
 
-/**
- * Start the Dreamcast emulator
- */
 void Start_DC()
 {
 	printf("Starting Dreamcast emulator...\n");
@@ -497,9 +481,6 @@ void Start_DC()
 	printf("Dreamcast emulator started\n");
 }
 
-/**
- * Stop the Dreamcast emulator
- */
 void Stop_DC()
 {
 	if (!dc_inited)
@@ -514,19 +495,11 @@ void Stop_DC()
 	}
 }
 
-/**
- * Check if DC is initialized
- * @return true if initialized, false otherwise
- */
 bool IsDCInited()
 {
 	return dc_inited;
 }
 
-/**
- * Check if DC is running
- * @return true if running, false otherwise
- */
 bool IsDCRunning()
 {
 	return dc_running;

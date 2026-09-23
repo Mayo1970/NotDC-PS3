@@ -561,6 +561,11 @@ void gd_process_spi_cmd()
 			{
 				sector_type=2340;
 			}
+			else if (readcmd.other==1 || readcmd.expdtype==1)
+			{
+				// Flycast e94b26f1d: expected data type CD-DA reads the raw 2352-byte sector.
+				sector_type=2352;
+			}
 			else if (get_debug_gdrom() && (readcmd.head || readcmd.subh || readcmd.other || (!readcmd.data)))
 			{
 				printf("GDROM: unsupported CD_READ flags head=%u subh=%u data=%u "

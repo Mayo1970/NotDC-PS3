@@ -37,14 +37,14 @@ int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
 // Bisect knob: bit N forces every SH4 opcode whose top nibble is N through the
 // interpreter, leaving the rest of the JIT exactly at baseline.
 int g_jit_ifb_mask         = 0;
-// Sub-bisect one group: opcodes with top nibble JitIfbGroup and a low nibble in
-// JitIfbLoMask also go to the interpreter. Only meaningful for the n/m-form
-// groups (0,2,3,4,6) where the low nibble selects the opcode.
+// Sub-bisect one group: opcodes with top nibble JitIfbGroup and a low nibble in JitIfbLoMask also go
+// to the interpreter. Only meaningful for n/m-form groups (0,2,3,4,6).
 int g_jit_ifb_group        = -1;
 int g_jit_ifb_lomask       = 0;
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
+int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 
 struct CfgItem { const char* key; int* val; };
 
@@ -80,6 +80,7 @@ static const CfgItem s_items[] = {
 	{ "RenderThread",  &g_render_thread_preset },
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
+	{ "StripMerge",    &g_strip_merge_preset },
 };
 
 void ps3_presets_load(void)
@@ -150,8 +151,10 @@ int get_ta_fast_preset()       { return g_ta_fast_preset; }
 // 0 = drop at once (the TR3 baseline), 1 = wait one frame then drop, 2 = wait.
 int get_drop_policy_preset()   { return g_drop_policy_preset; }
 
-// JIT backend presets. The first PS3 port keeps every one of them off
-// (Dynarec.MD 1). FASTMEM can never be on: the Wii design needs a resumable
+// OPTIMIZATION_PLAN 2.4: off draws one strip per glBegin/glEnd, the old path, so one build can A/B it.
+int get_strip_merge_preset()   { return g_strip_merge_preset; }
+
+// JIT backend presets, all off (Dynarec.MD 1). Wii FASTMEM can never be on: it needs a resumable
 // DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
 int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }

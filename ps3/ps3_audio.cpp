@@ -38,15 +38,20 @@ static volatile u32 ring_rd;
 static s16 prev_l, prev_r;
 static u32 phase;
 
-static volatile u32 st_in, st_out, st_blocks, st_silent, st_dropped;
+// Port blocks queued after the one playing (~16 ms). A slot the feeder misses would
+// replay 8-block-old audio (a 42.7 ms echo), so every slot up to the lead is written.
+#define LEAD_BLOCKS 3
+
+static volatile u32 st_in, st_out, st_blocks, st_silent, st_dropped, st_late;
 
 static void feeder_thread(void* arg)
 {
 	volatile u64* read_index = (volatile u64*)(uintptr_t)port_cfg.readIndex;
 	f32* data = (f32*)(uintptr_t)port_cfg.audioDataStart;
-	u64 num_blocks = port_cfg.numBlocks;
+	u32 num_blocks = (u32)port_cfg.numBlocks;
 	// audioDataStart alignment is not guaranteed, so stage then memcpy (xashPS3).
 	static f32 staging[BLOCK * CHANNELS] __attribute__((aligned(16)));
+	u32 wr_slot = (u32)((*read_index + 1) % num_blocks);
 
 	while (!feeder_quit)
 	{
@@ -56,30 +61,46 @@ static void feeder_thread(void* arg)
 		if (feeder_quit)
 			break;
 
-		u32 wb = (u32)((*read_index + 1) % num_blocks);
-		f32* dst = data + wb * CHANNELS * BLOCK;
+		u32 ri = (u32)(*read_index % num_blocks);
+		u32 ahead = (wr_slot + num_blocks - ri - 1) % num_blocks;
+		// The reader passed wr_slot: restart right after the playing block.
+		if (ahead > LEAD_BLOCKS)
+		{
+			wr_slot = (ri + 1) % num_blocks;
+			ahead = 0;
+			st_late++;
+		}
 
-		// Whole blocks only: a partial block would add a gap inside every block when starved.
-		u32 rd = ring_rd;
-		if (ring_wr - rd >= BLOCK)
+		while (ahead < LEAD_BLOCKS)
 		{
-			__sync_synchronize();
-			for (u32 i = 0; i < BLOCK; i++)
+			// Whole blocks only: a partial block would add a gap inside every block when starved.
+			u32 rd = ring_rd;
+			if (ring_wr - rd >= BLOCK)
 			{
-				u32 s = ((rd + i) & (RING_FRAMES - 1)) * CHANNELS;
-				staging[i * 2 + 0] = ring[s + 0];
-				staging[i * 2 + 1] = ring[s + 1];
+				__sync_synchronize();
+				for (u32 i = 0; i < BLOCK; i++)
+				{
+					u32 s = ((rd + i) & (RING_FRAMES - 1)) * CHANNELS;
+					staging[i * 2 + 0] = ring[s + 0];
+					staging[i * 2 + 1] = ring[s + 1];
+				}
+				__sync_synchronize();
+				ring_rd = rd + BLOCK;
+				st_blocks++;
 			}
-			__sync_synchronize();
-			ring_rd = rd + BLOCK;
-			st_blocks++;
+			else if (ahead == 0)
+			{
+				// Starved with nothing queued: silence beats replaying a stale slot.
+				memset(staging, 0, sizeof(staging));
+				st_silent++;
+			}
+			else
+				break;
+
+			memcpy(data + wr_slot * CHANNELS * BLOCK, staging, sizeof(staging));
+			wr_slot = (wr_slot + 1) % num_blocks;
+			ahead++;
 		}
-		else
-		{
-			memset(staging, 0, sizeof(staging));
-			st_silent++;
-		}
-		memcpy(dst, staging, sizeof(staging));
 	}
 	sysThreadExit(0);
 }
@@ -255,10 +276,12 @@ void ps3_audio_stats()
 {
 	if (!running)
 		return;
-	static u32 l_in, l_out, l_blocks, l_silent, l_dropped;
+	static u32 l_in, l_out, l_blocks, l_silent, l_dropped, l_late;
 	u32 in = st_in, out = st_out, blocks = st_blocks, silent = st_silent, dropped = st_dropped;
-	printf("[aud] in=%u/s out=%u/s blocks=%u silent=%u dropped=%u fill=%u\n",
+	u32 late = st_late;
+	printf("[aud] in=%u/s out=%u/s blocks=%u silent=%u dropped=%u late=%u fill=%u\n",
 	       in - l_in, out - l_out, blocks - l_blocks, silent - l_silent,
-	       dropped - l_dropped, ring_wr - ring_rd);
+	       dropped - l_dropped, late - l_late, ring_wr - ring_rd);
 	l_in = in; l_out = out; l_blocks = blocks; l_silent = silent; l_dropped = dropped;
+	l_late = late;
 }

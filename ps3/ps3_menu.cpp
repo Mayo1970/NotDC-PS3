@@ -23,9 +23,7 @@
 extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
 
-// ---------------------------------------------------------------------------
-// Pad
-// ---------------------------------------------------------------------------
+// -- Pad ---------------------------------------------------------------------
 
 enum {
 	MB_UP = 1, MB_DOWN = 2, MB_LEFT = 4, MB_RIGHT = 8,
@@ -153,9 +151,7 @@ static int pad_count()
 	return n;
 }
 
-// ---------------------------------------------------------------------------
-// Storage devices
-// ---------------------------------------------------------------------------
+// -- Storage devices ---------------------------------------------------------
 
 struct Device
 {
@@ -200,9 +196,7 @@ static void scan_devices()
 	printf("[menu] %d storage device(s)\n", s_dev_count);
 }
 
-// ---------------------------------------------------------------------------
-// File list
-// ---------------------------------------------------------------------------
+// -- File list ---------------------------------------------------------------
 
 struct FileEntry
 {
@@ -288,9 +282,7 @@ static void list_directory(const char* dir_path)
 		qsort(s_files, s_file_count, sizeof(FileEntry), entry_cmp);
 }
 
-// ---------------------------------------------------------------------------
-// Option pages
-// ---------------------------------------------------------------------------
+// -- Option pages ------------------------------------------------------------
 
 static const char* k_accuracy[]  = { "FAST", "BALANCED", "ACCURATE", NULL };
 static const char* k_onoff[]     = { "OFF", "ON", NULL };
@@ -375,6 +367,8 @@ static Option s_video[] = {
 	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
 	  "What a render does when the render thread is busy. DROP loses the frame." },
+	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Same-state strips share one draw call; inf vertices are dropped. Live." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -451,9 +445,7 @@ static void option_step(Option* o, int dir)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Drawing
-// ---------------------------------------------------------------------------
+// -- Drawing -----------------------------------------------------------------
 
 #define COL_BG       0xFF101018u
 #define COL_TITLE    0xFF80C0FFu
@@ -530,9 +522,7 @@ static int list_max_chars()
 	return (int)((s_sw - 2 * s_mx) / (8.0f * s_scale));
 }
 
-// ---------------------------------------------------------------------------
-// Screens
-// ---------------------------------------------------------------------------
+// -- Screens -----------------------------------------------------------------
 
 enum Screen { SCR_BROWSER, SCR_OPTIONS, SCR_CONTROLS, SCR_LAUNCH, SCR_QUIT };
 
@@ -746,9 +736,7 @@ static void controls_draw()
 	            "LEFT/RIGHT Change   X Start   O Back");
 }
 
-// ---------------------------------------------------------------------------
-// Loop
-// ---------------------------------------------------------------------------
+// -- Loop --------------------------------------------------------------------
 
 int ps3_menu_run(void)
 {

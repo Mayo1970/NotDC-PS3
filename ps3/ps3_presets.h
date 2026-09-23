@@ -1,7 +1,6 @@
 #pragma once
 
-// Settings the core reads, held in nullDC.cfg section [ps3] through the cfg*
-// API — the same place and mechanism nullDC-v1 keeps its own settings in.
+// Settings the core reads, kept in nullDC.cfg [ps3] through the cfg* API, as nullDC-v1 does.
 // nullDC-v1 has no per-game preset file, so neither does this port.
 
 extern int g_accuracy_preset;
@@ -37,6 +36,7 @@ extern int g_jit_ifb_lomask;
 extern int g_render_thread_preset;
 extern int g_ta_fast_preset;
 extern int g_drop_policy_preset;
+extern int g_strip_merge_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

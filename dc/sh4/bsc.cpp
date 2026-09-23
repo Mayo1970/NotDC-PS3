@@ -1,18 +1,11 @@
-// Bus State Controller (BSC) register implementation
-// Emulates the SH4 memory bus interface registers for Dreamcast.
-//
-// Key responsibilities:
-//   - Register init, reset, and teardown (bsc_Init / bsc_Reset / bsc_Term)
-//   - GPIO port A control & data (PCTRA / PDTRA) including cable-type detection
-//   - Stub for port B read (PDTRB) – not used by Dreamcast software
+// SH4 Bus State Controller registers: init/reset/term, GPIO port A (PCTRA/PDTRA) with the
+// cable-type detection, and a port B (PDTRB) stub that Dreamcast software never uses.
 
 #include "types.h"
 #include "dc/mem/sh4_internal_reg.h"
 #include "bsc.h"
 
-// ---------------------------------------------------------------------------
-// Register instances (definitions – declarations are in bsc.h via extern)
-// ---------------------------------------------------------------------------
+// -- Register instances (definitions – declarations are in bsc.h via extern) ---
 
 BCR1_type   BSC_BCR1;   // 32-bit bus control 1
 BCR2_type   BSC_BCR2;   // 16-bit bus control 2  (A0SZ0_inp/A0SZ1_inp read-only)
@@ -31,30 +24,15 @@ PCTRB_type  BSC_PCTRB;  // 32-bit port B control
 PDTRB_type  BSC_PDTRB;  // 16-bit port B data
 GPIOIC_type BSC_GPIOIC; // 16-bit GPIO interrupt control
 
-// ---------------------------------------------------------------------------
-// GPIO port A internal state
-//
-// vreg_2      – virtual output latch: tracks the current driven value for
-//               all output-configured pins.
-// mask_read   – bitmask of pins currently configured as inputs.
-// mask_pull_up– bitmask of input pins with pull-up enabled.
-// mask_write  – bitmask of pins currently configured as outputs.
-// ---------------------------------------------------------------------------
+// GPIO port A: vreg_2 = latch of the driven output pins; mask_read / mask_pull_up / mask_write =
+// pins set as input / input with pull-up / output.
 static u32 vreg_2      = 0;
 static u32 mask_read   = 0;
 static u32 mask_pull_up = 0;
 static u32 mask_write  = 0;
 
-// ---------------------------------------------------------------------------
-// write_BSC_PCTRA – Port A control register write handler
-//
-// Each GPIO pin i (0–15) is controlled by a 2-bit field at bits [2i+1:2i]:
-//   bit [2i]   (IO)  : 1 = output, 0 = input
-//   bit [2i+1] (PUP) : when input, 0 = pull-up active, 1 = no pull-up
-//
-// The function recomputes the three mask globals, then syncs vreg_2 so
-// that output pins retain whatever PDTRA last wrote.
-// ---------------------------------------------------------------------------
+// PCTRA write: pin i has bit 2i = output (1) / input (0) and bit 2i+1 = no pull-up (1). Rebuilds
+// the masks and keeps vreg_2 so output pins hold the last PDTRA value.
 void write_BSC_PCTRA(u32 data)
 {
   //printf("C:BSC_PCTRA = %08X\n",data);
@@ -91,37 +69,17 @@ void write_BSC_PCTRA(u32 data)
     vreg_2 = (vreg_2 & ~mask_write) | (BSC_PDTRA.full & mask_write);
 }
 
-// ---------------------------------------------------------------------------
-// write_BSC_PDTRA – Port A data register write handler
-//
-// Stores the written value (low 16 bits) and updates the output latch for
-// all pins currently configured as outputs.
-// ---------------------------------------------------------------------------
+// PDTRA write: stores the low 16 bits and updates the latch of the output pins.
 void write_BSC_PDTRA(u32 data)
 {
     BSC_PDTRA.full = (u16)data;
     vreg_2 = (vreg_2 & ~mask_write) | (BSC_PDTRA.full & mask_write);
 }
 
-// ---------------------------------------------------------------------------
-// read_BSC_PDTRA – Port A data register read handler
-//
-// The Dreamcast BIOS detects the attached video cable type by probing specific
-// PCTRA/PDTRA pin combinations.  This function replicates the hardware
-// behaviour observed by the Chankast team:
-//
-//   PCTRA[3:0] == 0x8  → PB1 input/no-pull-up, PB0 input/pull-up
-//                         → return bits[1:0] = 3 (both asserted)
-//   PCTRA[3:0] == 0xB  → PB1 input/no-pull-up, PB0 output/no-pull-up
-//                         → return bits[1:0] = 3, UNLESS PDTRA[3:0] == 2
-//                            in which case return 0 (cable sense inverted)
-//   PCTRA[3:0] == 0xC  → PB1 output/no-pull-up, PB0 input/no-pull-up
-//     AND PDTRA[3:0] == 2 → return bits[1:0] = 3
-//   All other configurations  → return bits[1:0] = 0
-//
-// Bits [9:8] always carry the cable-type setting from emulator configuration
-// (DC_CABLE_VGA / DC_CABLE_RGB / DC_CABLE_COMPOSITE).
-// ---------------------------------------------------------------------------
+extern int g_cable_override; // dc.cpp apply_disc_meta
+
+// Port A read: the BIOS probes PCTRA/PDTRA pin setups for the cable (Chankast's findings);
+// bits [9:8] carry the cable type (0 VGA, 2 RGB, 3 composite).
 u32 read_BSC_PDTRA()
 {
     const u32 pctra_lo = BSC_PCTRA.full & 0xF;
@@ -149,24 +107,19 @@ u32 read_BSC_PDTRA()
     // else result stays 0
 
     // Overlay the configured cable type into bits [9:8]
-    result |= (u32)settings.dreamcast.cable << 8;
+    result |= (u32)(g_cable_override >= 0 ? g_cable_override : (int)settings.dreamcast.cable) << 8;
 
     return result;
 }
 
-// ---------------------------------------------------------------------------
-// read_BSC_PDTRB – Port B data register read (not used on Dreamcast)
-// ---------------------------------------------------------------------------
+// -- read_BSC_PDTRB – Port B data register read (not used on Dreamcast) ------
 u32 read_BSC_PDTRB()
 {
     die("read_BSC_PDTRB: unexpected read – port B not used on Dreamcast");
     return 0;
 }
 
-// ---------------------------------------------------------------------------
-// Helper macro to reduce repetition in bsc_Init.
-// Fills in a BSC register table entry for a simple data-backed register.
-// ---------------------------------------------------------------------------
+// bsc_Init helper: one register-table entry for a plain data-backed register.
 #define BSC_REG_INIT_DATA(addr, bits, dataptr)                                  \
     do {                                                                         \
         const u32 _idx = ((addr) & 0xFF) >> 2;                                  \
@@ -176,9 +129,7 @@ u32 read_BSC_PDTRB()
         BSC[_idx].data##bits    = (dataptr);                                     \
     } while (0)
 
-// ---------------------------------------------------------------------------
-// bsc_Init – wire up every BSC register into the register dispatch table
-// ---------------------------------------------------------------------------
+// -- bsc_Init – wire up every BSC register into the register dispatch table ---
 void bsc_Init()
 {
     // --- Simple data-backed registers (read and write go straight to the var) ---
@@ -255,11 +206,7 @@ void bsc_Init()
 
 #undef BSC_REG_INIT_DATA
 
-// ---------------------------------------------------------------------------
-// bsc_Reset – restore all registers to their hardware reset values
-// PDTRA and PDTRB are documented as "undefined" after reset, so we leave
-// them as-is (no assignment).
-// ---------------------------------------------------------------------------
+// Hardware reset values. PDTRA and PDTRB are "undefined" after reset, so they are left as-is.
 void bsc_Reset(bool /*Manual*/)
 {
     BSC_BCR1.full  = 0x00000000;
@@ -290,9 +237,7 @@ void bsc_Reset(bool /*Manual*/)
     mask_write   = 0;
 }
 
-// ---------------------------------------------------------------------------
-// bsc_Term – nothing to release; kept for symmetry with Init/Reset
-// ---------------------------------------------------------------------------
+// -- bsc_Term – nothing to release; kept for symmetry with Init/Reset --------
 void bsc_Term()
 {
 }
