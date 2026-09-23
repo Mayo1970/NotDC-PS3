@@ -226,6 +226,38 @@ extern uint32_t ps3gl_frame_batched_poly_count;
  * actual bug behind "textures and polygons glitched": every batch drew
  * one state-change late, every single chain, every frame. */
 
+/* Binds the four ps3gl_vertex_t attributes of a vring block. */
+static void bind_vertex_attribs(gcmContextData *ctx, uint32_t vb_offset)
+{
+    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, vb_offset + PS3GL_VATTR_POS_OFF,
+                             PS3GL_VERTEX_SIZE, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, vb_offset + PS3GL_VATTR_TC0_OFF,
+                             PS3GL_VERTEX_SIZE, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, vb_offset + PS3GL_VATTR_TC1_OFF,
+                             PS3GL_VERTEX_SIZE, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, vb_offset + PS3GL_VATTR_COLOR_OFF,
+                             PS3GL_VERTEX_SIZE, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+}
+
+/* Draws [first, first+count) of a caller-filled vring block under the current GL state.
+ * The caller writes the vertices in ps3gl_vertex_t form; nothing is copied here. */
+void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count)
+{
+    if (count <= 0) return;
+    ps3gl_flush_polygon_batch();
+    ps3gl_apply_states();
+    ps3gl_apply_matrices();
+    ps3gl_apply_textures();
+    ps3gl_apply_shader();
+
+    gcmContextData *ctx = ps3gl_get_ctx();
+    if (!ctx) return;
+    ps3gl_frame_flush_count++;
+    ps3gl_frame_flush_vertex_count += (uint32_t)count;
+    bind_vertex_attribs(ctx, vb_offset);
+    rsxDrawVertexArray(ctx, ps3gl_gl_to_gcm_prim(mode), first, count);
+}
+
 static void submit_ranges(int total_verts, const int *first, const int *cnt,
                            int nranges, uint32_t gcm_prim, int apply_state)
 {
@@ -247,31 +279,7 @@ static void submit_ranges(int total_verts, const int *first, const int *cnt,
     gcmContextData *ctx = ps3gl_get_ctx();
     if (!ctx) return;
 
-    /* Bind vertex attributes from ring buffer */
-    /* Position: attr 0, 4 floats */
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0,
-                             vb_offset + PS3GL_VATTR_POS_OFF,
-                             PS3GL_VERTEX_SIZE, 4,
-                             GCM_VERTEX_DATA_TYPE_F32,
-                             GCM_LOCATION_RSX);
-    /* Texcoord 0: attr 8, 2 floats */
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0,
-                             vb_offset + PS3GL_VATTR_TC0_OFF,
-                             PS3GL_VERTEX_SIZE, 2,
-                             GCM_VERTEX_DATA_TYPE_F32,
-                             GCM_LOCATION_RSX);
-    /* Texcoord 1: attr 9, 2 floats */
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0,
-                             vb_offset + PS3GL_VATTR_TC1_OFF,
-                             PS3GL_VERTEX_SIZE, 2,
-                             GCM_VERTEX_DATA_TYPE_F32,
-                             GCM_LOCATION_RSX);
-    /* Color: attr 3, 4 unsigned bytes */
-    rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0,
-                             vb_offset + PS3GL_VATTR_COLOR_OFF,
-                             PS3GL_VERTEX_SIZE, 4,
-                             GCM_VERTEX_DATA_TYPE_U8,
-                             GCM_LOCATION_RSX);
+    bind_vertex_attribs(ctx, vb_offset);
 
     /* Draw -- one call per range, all against the single binding above */
     for (int i = 0; i < nranges; i++)

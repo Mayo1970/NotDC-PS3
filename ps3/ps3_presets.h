@@ -37,6 +37,7 @@ extern int g_render_thread_preset;
 extern int g_ta_fast_preset;
 extern int g_drop_policy_preset;
 extern int g_strip_merge_preset;
+extern int g_vertex_array_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;

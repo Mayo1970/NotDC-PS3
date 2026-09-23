@@ -45,6 +45,7 @@ int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thr
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
+int g_vertex_array_preset  = 0;   // 1 = merged strips drawn as ranges of one vring block
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -88,6 +89,7 @@ static const CfgItem s_items[] = {
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "StripMerge",    &g_strip_merge_preset },
+	{ "VertexArrays",  &g_vertex_array_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -169,6 +171,7 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 
 // OPTIMIZATION_PLAN 2.4: off draws one strip per glBegin/glEnd, the old path, so one build can A/B it.
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
+int get_vertex_array_preset()  { return g_vertex_array_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

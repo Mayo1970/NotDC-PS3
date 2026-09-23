@@ -369,6 +369,8 @@ static Option s_video[] = {
 	  "What a render does when the render thread is busy. DROP loses the frame." },
 	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Same-state strips share one draw call; inf vertices are dropped. Live." },
+	{ "Vertex Arrays",   &g_vertex_array_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Merged strips go to the RSX as vertex-array ranges, not glBegin. Live." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

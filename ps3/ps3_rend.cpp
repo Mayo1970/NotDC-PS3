@@ -30,6 +30,7 @@ extern "C" int get_render_thread_preset();
 extern "C" int get_ta_fast_preset();
 extern "C" int get_drop_policy_preset();
 extern "C" int get_strip_merge_preset();
+extern "C" int get_vertex_array_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -170,6 +171,9 @@ static double s_stat_wait;
 static double s_stat_job_max;
 // Render-thread busy time per window: TA replay, draw_frame (incl. texture decode), end_frame.
 static double s_stat_t_dec, s_stat_t_draw, s_stat_t_end;
+// Split of draw time (timebase ticks): apply_param, its texture bind, glEnd, TR sort keys, modifier volumes.
+enum { DT_PARAM, DT_TEX, DT_GLEND, DT_SORT, DT_MODVOL, DT_COUNT };
+static u64 s_dt[DT_COUNT];
 // Depth diagnostic: the widest W range and the tightest near plane of the window.
 static float s_stat_w_lo = 1e30f, s_stat_w_hi = 0.0f, s_stat_near_lo = 1e30f;
 // Vertices that hit set_pos's 1/W floor: they all land on one depth, so a scene
@@ -1063,11 +1067,21 @@ static void reset_param_cache()
 }
 
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
+static u32 apply_param_body(const DcParam& p, u32 list);
+
 static u32 apply_param(const DcParam& p, u32 list)
 {
 	if (s_cache_valid && s_cache_list == list && s_cache_isp == p.isp.full &&
 	    s_cache_tsp == p.tsp.full && s_cache_tcw == p.tcw.full && s_cache_pcw == p.pcw.full)
 		return s_cache_or;
+	const u64 t0 = PERF_TICKS();
+	u32 rv = apply_param_body(p, list);
+	s_dt[DT_PARAM] += PERF_TICKS() - t0;
+	return rv;
+}
+
+static u32 apply_param_body(const DcParam& p, u32 list)
+{
 
 	if (list == ListType_Translucent)
 	{
@@ -1093,7 +1107,9 @@ static u32 apply_param(const DcParam& p, u32 list)
 	// Flycast SetGPState: stencil bit 7 marks pixels whose polygon takes modifier-volume shadows.
 	glStencilFunc(GL_ALWAYS, p.pcw.Shadow ? 0x80 : 0, 0xFF);
 
+	const u64 t_tex = PERF_TICKS();
 	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw);
+	s_dt[DT_TEX] += PERF_TICKS() - t_tex;
 	if (textured)
 	{
 		glEnable(GL_TEXTURE_2D);
@@ -1129,6 +1145,11 @@ static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
 static bool s_merge;          // Strip Merge preset, latched per scene
 static u32 s_stat_draws[5];   // glBegin/glEnd pairs per list
 
+// Vertex Arrays preset: the scene's merged strips are written once, straight into one vring
+// block, and each run is a draw of a range of it. Null = the glBegin/glEnd path.
+static ps3gl_vertex_t* s_vb;
+static u32 s_vb_off, s_vb_used, s_vb_cap;
+
 struct StripRun
 {
 	bool open;
@@ -1137,6 +1158,7 @@ struct StripRun
 	u16 param;              // the run's first strip; its state is the one applied
 	u32 list;
 	u32 count;              // vertices in the open GL strip
+	u32 first;              // Vertex Arrays: the run's first vertex in s_vb
 	u32 alpha_or;
 	const DcVertex* last;   // last vertex emitted
 };
@@ -1157,9 +1179,36 @@ static inline bool vertex_inf(const DcVertex* v)
 	    || v->w < 1.0f / 3.4e37f;
 }
 
+// Same vertex as emit_vertex, in ps3gl_vertex_t form: z = W, w = 1, colour RGBA.
+// Word stores only: RSX memory is cache-inhibited, and the 8-byte store GCC merges u1/v1
+// into is misaligned on every odd 36-byte vertex, which raises an alignment exception.
+static inline bool vb_emit(const DcVertex* v, u32 alpha_or)
+{
+	if (s_vb_used >= s_vb_cap)
+		return false;
+	volatile float* o = (volatile float*)&s_vb[s_vb_used++];
+	u32 c = v->col | alpha_or;
+	o[0] = v->x * v->w;
+	o[1] = v->y * v->w;
+	o[2] = v->w;
+	o[3] = 1.0f;
+	o[4] = v->u;
+	o[5] = v->v;
+	o[6] = 0.0f;
+	o[7] = 0.0f;
+	((volatile u32*)o)[8] = (c << 8) | (c >> 24);
+	return true;
+}
+
 static inline void run_emit(const DcVertex* v)
 {
-	emit_vertex(v, s_run.alpha_or);
+	if (s_vb)
+	{
+		if (!vb_emit(v, s_run.alpha_or))
+			return;
+	}
+	else
+		emit_vertex(v, s_run.alpha_or);
 	s_run.last = v;
 	s_run.count++;
 }
@@ -1168,7 +1217,12 @@ static void run_close()
 {
 	if (!s_run.open)
 		return;
-	glEnd();
+	const u64 t0 = PERF_TICKS();
+	if (s_vb)
+		ps3gl_draw_vb(GL_TRIANGLE_STRIP, s_vb_off, (int)s_run.first, (int)s_run.count);
+	else
+		glEnd();
+	s_dt[DT_GLEND] += PERF_TICKS() - t0;
 	s_run.open = false;
 	if (s_run.count != 0)
 		s_stat_draws[s_run.list]++;
@@ -1187,7 +1241,9 @@ static void draw_strip(const DcStrip& s, u32 list)
 		const DcVertex* v = &s_rc->vtx[s.first];
 		for (u32 k = 0; k < s.count; k++, v++)
 			emit_vertex(v, alpha_or);
+		const u64 t0 = PERF_TICKS();
 		glEnd();
+		s_dt[DT_GLEND] += PERF_TICKS() - t0;
 		s_stat_draws[list]++;
 		return;
 	}
@@ -1218,7 +1274,9 @@ static void draw_strip(const DcStrip& s, u32 list)
 	{
 		run_close();
 		s_run.alpha_or = apply_param(p, list);
-		glBegin(GL_TRIANGLE_STRIP);
+		if (!s_vb)
+			glBegin(GL_TRIANGLE_STRIP);
+		s_run.first = s_vb_used;
 		s_run.open = true;
 		s_run.reversed = false;
 		s_run.cull = p.isp.CullMode;
@@ -1287,6 +1345,7 @@ static SortStrip s_order[MAX_STRIPS];
 // last. The PVR sorts per pixel; this is the approximation the reference ships.
 static void draw_tr_sorted()
 {
+	const u64 t_sort = PERF_TICKS();
 	u32 n = 0;
 	for (u32 i = 0; i < s_rc->nstrip; i++)
 	{
@@ -1301,8 +1360,12 @@ static void draw_tr_sorted()
 		n++;
 	}
 	if (n == 0)
+	{
+		s_dt[DT_SORT] += PERF_TICKS() - t_sort;
 		return;
+	}
 	std::stable_sort(s_order, s_order + n, [](const SortStrip& a, const SortStrip& b) { return a.key < b.key; });
+	s_dt[DT_SORT] += PERF_TICKS() - t_sort;
 
 	// Merging after the sort keeps the draw order, as Flycast's per-strip sort mode does.
 	for (u32 j = 0; j < n; j++)
@@ -1642,6 +1705,14 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	{
 		s_merge = get_strip_merge_preset() != 0;
 		collect_diag();
+		// Worst case per strip: 3 joins, and per vertex a join copy, a parity copy and itself.
+		s_vb = 0;
+		if (s_merge && get_vertex_array_preset())
+		{
+			s_vb_cap = 3 * s_rc->nvtx + 4 * s_rc->nstrip + 16;
+			s_vb_used = 0;
+			s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+		}
 		// Hardware order: opaque, punch-through, translucent.
 		reset_param_cache();
 		draw_list(ListType_Opaque);
@@ -1652,7 +1723,9 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		draw_list(ListType_Punch_Through);
 
 		// Hardware shades the opaque volumes between punch-through and translucent.
+		const u64 t_mv = PERF_TICKS();
 		draw_modvols(cx0, cy0, cw, ch, bg_w);
+		s_dt[DT_MODVOL] += PERF_TICKS() - t_mv;
 		glDisable(GL_STENCIL_TEST);
 
 		// apply_param turns the "alpha > 0" test on per translucent poly.
@@ -1663,6 +1736,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			draw_tr_sorted();
 		else
 			draw_list(ListType_Translucent);
+		s_vb = 0;
 	}
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
@@ -1954,6 +2028,20 @@ static void rth_print_stats()
 	printf("[rend] busy=%.0f%% (dec %.0f draw %.0f end %.0f)\n",
 	       (s_stat_t_dec + s_stat_t_draw + s_stat_t_end) / win,
 	       s_stat_t_dec / win, s_stat_t_draw / win, s_stat_t_end / win);
+	{
+		double us[DT_COUNT];
+		double sum = 0.0;
+		for (int k = 0; k < DT_COUNT; k++)
+		{
+			us[k] = PERF_TICKS_US(s_dt[k]) / 1e6 / win;
+			s_dt[k] = 0;
+		}
+		sum = us[DT_PARAM] + us[DT_GLEND] + us[DT_SORT] + us[DT_MODVOL];
+		// param includes tex; "vtx" is the rest of draw: vertex emit, strip merge, list walks, frame setup.
+		printf("[rend] draw split %%: param %.1f (tex %.1f) glEnd %.1f sort %.1f modvol %.1f vtx+other %.1f\n",
+		       us[DT_PARAM], us[DT_TEX], us[DT_GLEND], us[DT_SORT], us[DT_MODVOL],
+		       s_stat_t_draw / win - sum);
+	}
 	s_stat_t_dec = s_stat_t_draw = s_stat_t_end = 0.0;
 	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,

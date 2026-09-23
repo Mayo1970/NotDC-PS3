@@ -307,6 +307,8 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.4 | ARM7 JIT port (JIT SPEED page, `Arm7Jit` 0..5) | `[x]` HW, self-test PASS, sound fine, `arm%` 9.1 -> 5.4 |
 | 5.5 | SH4 Clock 150 MHz (existing Emulation option, speed over accuracy) | `[x]` HW, dense VPS +16%, not full speed |
 | 5.6 | Render thread busy % (`[rend] busy=` line) + SPEED/VPS target vs effective clock | `[x]` HW, dense busy 61% |
+| 5.7 | Draw split (`[rend] draw split %:` line) | `[~]` built, HW pending (runs with 5.8) |
+| 5.8 | Vertex arrays for merged strips (VIDEO / DEBUG, `VertexArrays`) | `[x]` HW, dense VPS +6%, busy 61 -> 57% |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -464,6 +466,45 @@ clock by VPS.
     is the likely bulk. Not yet split.
   - Dense VPS at 150 MHz: 48.3 (earlier 150 MHz run 45.7), 10% of dense
     seconds at full VPS.
+- 5.7: `[rend] draw split %: param P (tex T) glEnd G sort S modvol M
+  vtx+other V`, % of the window. `param` is `apply_param` on a cache miss
+  (tex = its `ps3tex_bind` part), `glEnd` is the ps3gl draw submission,
+  `sort` the TR autosort keys + sort, `modvol` the modifier volumes, and
+  `vtx+other` the rest of `draw_frame` (vertex emit, strip merge, list walks).
+- 5.8 (Matt, 2026-09-23): vertex buffers + vertex arrays.
+  - `ps3gl_draw_vb(mode, vb_offset, first, count)` (new, `ps3gl_vertices.c`):
+    applies the GL state like `glEnd`, binds the four attributes of a
+    caller-filled vring block and issues `rsxDrawVertexArray`. No copy.
+  - `draw_scene` reserves one vring block per scene (worst case 3 x nvtx +
+    4 x nstrip). `run_emit` writes each merged-strip vertex once, straight
+    into it in `ps3gl_vertex_t` form (x*W, y*W, W, 1, u, v, RGBA); each run is
+    then one `ps3gl_draw_vb` range. Removes, per vertex, three ps3gl calls,
+    the write to ps3gl's immediate buffer and the `memcpy` into the vring.
+  - Background, modifier volumes and Strip Merge OFF keep glBegin/glEnd. A
+    failed vring reserve falls back to glBegin/glEnd for that scene.
+  - TA decode is unchanged; writing the final format at decode is a later step.
+- 5.7/5.8 HW 2026-09-23, boot A (Vertex Arrays OFF), dense windows, % of wall:
+  draw ~42 = vtx+other ~22, param ~13 (tex bind ~12), glEnd ~5, sort ~1,
+  modvol ~1; TA decode ~19. `ps3tex_bind` at ~12% is a second target.
+- 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
+  crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
+  runs on: the render thread died at its first vertex-array draw. Cause: GCC
+  merged the zero `u1`/`v1` of the packed 36-byte vertex into one `std`,
+  misaligned on every odd vertex, and RSX memory is cache-inhibited, so the
+  store raised an alignment exception. Fixed: `vb_emit` writes through
+  `volatile float*` / `volatile u32*` (checked in the disassembly: only
+  `stfs`/`stw` to the vertex, and the stfs->lwz bounce for x*W/y*W is gone).
+- 5.8 HW 2026-09-23, fixed build, Vertex Arrays ON: swirl back, 199 s of
+  Crazy Taxi, no freeze, `overflow=0`, `ta_raw_of=0`. Against boot A (OFF):
+
+  | | busy | draw | glEnd | vtx+other | tex | dense VPS | full-VPS secs |
+  |---|---|---|---|---|---|---|---|
+  | OFF | 61% | 42 | 5.1 | 22.2 | 12.2 | 46.1 | 5% |
+  | ON | 57% | 38 | 3.0 | 20.0 | 11.9 | 49.0 | 16% |
+
+  vt 9-12K bin: VPS 43.4 -> 48.6. `vtx+other` stays at 20%: it also holds
+  `collect_diag()`, a per-frame diagnostic for the `[rendz]` lines that walks
+  every vertex of every frame, and three passes over all strips per frame.
 - 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
   PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
   wrong. Fix: zero-extend the operands and take the carry from bit 32.
