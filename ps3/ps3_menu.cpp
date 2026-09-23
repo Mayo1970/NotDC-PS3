@@ -375,6 +375,18 @@ static Option s_video[] = {
 	  "Very verbose UDP log. Slows emulation a lot." },
 	{ "Debug GD-ROM",    &g_debug_gdrom,          OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs every GD-ROM SPI command." },
+	{ "IFB Probe",       &g_ifb_probe_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
+	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Logs [CC] C call-outs per second from the JIT. Live." },
+};
+
+// OPTIMIZATION_PLAN 5.1: JIT speed paths, one A/B toggle each.
+static Option s_jit[] = {
+	{ "JIT FSCHG",       &g_jit_fschg_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "fschg skips the FPSCR sync call. Takes effect on boot." },
+	{ "JIT FSQRT",       &g_jit_fsqrt_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "fsqrt and fsrra run as inline fsqrts, not a C call. Takes effect on boot." },
 };
 
 static Option s_controls[] = {
@@ -395,6 +407,7 @@ static Page s_opt_pages[] = {
 	{ "EMULATION",     s_emu,   (int)(sizeof(s_emu) / sizeof(s_emu[0])) },
 	{ "AUDIO",         s_audio, (int)(sizeof(s_audio) / sizeof(s_audio[0])) },
 	{ "VIDEO / DEBUG", s_video, (int)(sizeof(s_video) / sizeof(s_video[0])) },
+	{ "JIT SPEED",     s_jit,   (int)(sizeof(s_jit) / sizeof(s_jit[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))

@@ -16,7 +16,7 @@ Flycast is little-endian only. Check every ported line for byte order.
 | Item | Status |
 |---|---|
 | 2.1 YUV reset on STARTRENDER | `[x]` HW, no visible change |
-| 2.2 AICA EG rate + loop fixes | built, HW: echo unchanged, no regression |
+| 2.2 AICA EG rate + loop fixes | `[x]` HW, echo unchanged, no regression |
 | 2.3 DSP | PARKED: Matt wants a PPC DSP JIT |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | PARKED, likely cause of the ChuChu echo |
@@ -29,9 +29,8 @@ Flycast is little-endian only. Check every ported line for byte order.
 | 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl` |
 | 3h GD-ROM CDDA lead-out / restart rules | OPEN |
 
-Next, in the order discussed with Matt: 3a + 3b (one shader job: new Cg
-vertex + fragment program via cgc.exe + cgcomp, fog table texture, a second
-per-vertex colour in `DcVertex` and `ps3gl_vertex_t`), then 3h. Ask Matt first.
+Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
+work is section 5, SH4-side speed.
 
 All changes are uncommitted in the working tree. Matt commits.
 
@@ -70,7 +69,7 @@ All changes are uncommitted in the working tree. Matt commits.
 - HW 2026-09-23: Space Channel 5 and Crazy Taxi FMVs look the same as before.
   No regression, no visible gain. Kept, because it matches real hardware.
 
-### 2.2 AICA envelope rate and loop fixes  `[~]`
+### 2.2 AICA envelope rate and loop fixes  `[x]`
 
 - Source: Flycast `core/hw/aica/sgc_if.cpp`. These fixes are newer than the
   Reicast/Minicast AICA code.
@@ -285,6 +284,80 @@ shader for `ps3gl`, which replaces the fixed-function texture modes.
 RTT test discs (for `rtt=0/0`): Flycast `core/emulator.cpp:64-157` lists games
 that need RTT copy to VRAM - Tony Hawk 1/2, Shenmue, Jet Set Radio, Skies of
 Arcadia, Grandia II, Worms World Party, Silent Scope.
+
+---
+
+## 5. SH4-side speed (Matt, 2026-09-23)
+
+The 2.4 run showed the dense-scene limit is the SH4 thread (`slept=0`). Split
+in Crazy Taxi dense traffic: arm 7.4-9%, aica 4-4.5%, ta 3-4.3%. The other ~80%
+is JIT code and its C calls, not split yet. The PS3 JIT runs with almost every
+speed feature OFF. Matt allowed the Wii-era JIT code for this work.
+
+| # | Item | Status |
+|---|---|---|
+| 5.0 | Census: `IFB Probe` + `JIT C-Calls` toggles (VIDEO / DEBUG) | `[x]` HW, results below |
+| 5.1a | `jit_fschg` (JIT SPEED page, `JitFschg`) | `[x]` HW, no fault, speed within noise |
+| 5.1b | `jit_fsqrt` as inline `fsqrts` (JIT SPEED page, `JitFsqrt`) | `[x]` HW, no fault, dense SPEED +2.5 points |
+| 5.1c | `JitNewOps` (rotcl/rotcr, SR ops), Emulation page | `[x]` HW, no fault, speed within noise |
+| 5.1d | `fpu_pin` | `[ ]` |
+
+FSCHG and FSQRT are default ON since 2026-09-23 (Matt).
+| 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
+| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `[ ]` |
+| 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
+
+- 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
+  time, so set it before boot. The log gets `[IFB]` and `[CC]` lines once a
+  second.
+- 5.0 HW 2026-09-23, Crazy Taxi, Dynarec + JIT Fastmem, 102 dense windows
+  (vt > 3K, SPEED < 90%): SPEED 56.7%, RPS 33.9, 1.20 M C calls/s,
+  115 K IFB/s.
+  - C calls/s: `sync_fpscr` 442 K, `sqw` 371 K, `fsqrt` 165 K, `getcode`
+    75 K, `writemem` 67 K (49 K from JIT code, mostly a0 regs and a7),
+    `timeslice` 63 K, `fsrra` 7 K.
+  - IFB/s: rotcl 45.6 K, rotcr 21.8 K, addc 18.8 K, subc 15.3 K, div1 5.0 K,
+    stc SR 3.6 K, ldc SR 2.6 K, lds FPSCR 1.4 K.
+  - Light scenes (SPEED ~100%) have 3.8x fewer IFB and 16x fewer
+    `sync_fpscr`, so the T&L code of dense scenes is where these costs are.
+  - Cell note: the PPE has a large load-hit-store penalty, which the Wii CPU
+    did not have. Features that keep values out of memory (`fpu_pin`,
+    `jit_tfwd`, `jit_cr0`) can gain more here than their 0-3% on the Wii.
+- 5.1a: no code change, the Wii path was already in `ps3_driver.cpp`. It skips
+  the C call and its `mtfsfi`.
+- 5.1b: the Wii path was a Newton-Raphson for a CPU without `fsqrt`. The PPU has
+  `fsqrts`, and GCC already compiles `rec_fsqrt`'s `sqrtf` to it, so inline
+  `fsqrts` is bit-identical. `fsrra` = `fsqrts` + `fdivs`, as `1.0f/sqrtf`.
+- 5.1 HW 2026-09-23, Crazy Taxi, both probes ON in all three runs. Dense =
+  vt > 3K and SPEED < 90%.
+
+  | Run | dense n | SPEED | RPS | `sync_fpscr`/s | `fsqrt`/s |
+  |---|---|---|---|---|---|
+  | census (both OFF) | 102 | 56.7% | 33.9 | 442 K | 165 K |
+  | boot 1 (FSCHG) | 85 | 56.4% | 33.8 | 111 K | 161 K |
+  | boot 2 (FSCHG + FSQRT) | 98 | 59.0% | 35.4 | 107 K | 0 |
+
+  - Same-load bins agree: vt 6-9K 60.5 / 60.1 / 63.1%, vt 12K+ 47.1 / 48.4 /
+    51.2%. Matt: boot 2 looked fine and felt faster.
+  - FSCHG removed 331 K C calls/s with no speed change, so a plain C call is
+    cheap here. FSQRT gained more with half the calls removed.
+  - The 107 K `sync_fpscr`/s left are not `fschg` (likely `frchg`).
+- 5.1c audit: no code change. Every SHIL op the NewOps decoders emit is already
+  used by base opcodes on PS3: `mov32`, shifts by an immediate (`rlwinm`), `and`
+  with an immediate (`andi.`), `or`, `seteq`, byte and `@(disp,Rn)` memory ops,
+  `sync_sr` (`rte`), and the full `sync_fpscr` (`frchg`). None of them use
+  carry, `addis` or Rc=1 on a pinned register.
+- 5.1c HW 2026-09-23, Crazy Taxi, same settings as boot 2 plus NewOps: dense
+  SPEED 59.3% (boot 2: 59.0%), vt 6-9K 63.6% (63.1%), vt 12K+ 51.1% (51.2%).
+  IFB 120 K/s -> 41 K/s; only addc, subc, div1 are left. `interrupt` rose
+  0.5 K -> 3 K/s: the `ldc SR` block ends call `UpdateINTC`, as designed.
+- Lesson from 5.1a and 5.1c: removing 330 K C calls/s or 80 K IFB/s does not
+  move SPEED. The time is inside the emitted code, not at its C boundary.
+- 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
+  PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
+  wrong. Fix: zero-extend the operands and take the carry from bit 32.
+- `jit_fmov` does not apply: it needs the Wii DSI fastmem, which is off.
+- Dropped: `SmcCheckLevel` (the guard is 2 halfword loads), `regalloc`, SSA.
 
 ---
 

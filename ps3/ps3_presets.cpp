@@ -45,6 +45,9 @@ int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thr
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
+int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
+int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
+int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 
 struct CfgItem { const char* key; int* val; };
 
@@ -81,6 +84,10 @@ static const CfgItem s_items[] = {
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "StripMerge",    &g_strip_merge_preset },
+	{ "JitFschg",      &g_jit_fschg_preset },
+	{ "JitFsqrt",      &g_jit_fsqrt_preset },
+	{ "IfbProbe",      &g_ifb_probe_preset },
+	{ "JitCCalls",     &g_jit_ccalls_preset },
 };
 
 void ps3_presets_load(void)
@@ -125,7 +132,7 @@ int get_dynarec_preset()       { return g_dynarec_preset; }
 int get_jit_safe_preset()      { return g_jit_safe_preset; }
 
 // Only read by the SH4 dynarec decoder.
-int get_ifb_probe_preset()     { return 0; }
+int get_ifb_probe_preset()     { return g_ifb_probe_preset; }
 int get_jit_newops_preset()    { return g_jit_newops_preset; }
 int get_jit_carry_preset()     { return g_jit_carry_preset; }
 int get_jit_mac_preset()       { return g_jit_mac_preset; }
@@ -154,8 +161,8 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 // OPTIMIZATION_PLAN 2.4: off draws one strip per glBegin/glEnd, the old path, so one build can A/B it.
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
 
-// JIT backend presets, all off (Dynarec.MD 1). Wii FASTMEM can never be on: it needs a resumable
-// DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
+// JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
+// needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
 int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }
 int get_dyn_ic_preset()        { return 0; }
@@ -165,8 +172,8 @@ int get_ifb_flush_preset()     { return 0; }
 int get_jit_align_preset()     { return 0; }
 int get_jit_cr0_preset()       { return 0; }
 int get_jit_fmov_preset()      { return 0; }
-int get_jit_fschg_preset()     { return 0; }
-int get_jit_fsqrt_preset()     { return 0; }
+int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
+int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }
 int get_jit_tfwd_preset()      { return 0; }
 
 // Self-modifying-block protection: 0=off, 1=known SMC addresses, 2=all RAM.
