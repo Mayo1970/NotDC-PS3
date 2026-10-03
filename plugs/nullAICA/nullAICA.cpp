@@ -3,6 +3,7 @@
 #include "aica.h"
 #include "aica_mem.h"
 #include "wii_audiostream.h"
+#include "ps3/ps3_aica_spe.h"
 
 aica_setts aica_settings;
 aica_init_params aica_params;
@@ -24,6 +25,8 @@ s32 FASTCALL InitAica(aica_init_params* initp)
     init_mem();
     printf("[NullAICA] InitAica: init_mem() done\n");
 
+    ps3aica_init(initp->aica_ram);   // 5.13 A1, no-op unless "SPE AICA Check" is on
+
     printf("[NullAICA] InitAica: AICA_Init()...\n");
     AICA_Init();
     printf("[NullAICA] InitAica: AICA_Init() done\n");
@@ -39,6 +42,7 @@ s32 FASTCALL InitAica(aica_init_params* initp)
 void FASTCALL TermAica()
 {
     printf("[NullAICA] TermAica\n");
+    ps3aica_term();
     wii_TermAudio();
     AICA_Term();
     term_mem();

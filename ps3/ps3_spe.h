@@ -11,6 +11,7 @@ extern bool g_spe_on;
 // S3: latched at init. Stays set if the SPE turns off; fence 0 then sends each job to the PPU replay.
 extern bool g_spe_draw;
 
+void ps3spe_sys_init();
 bool ps3spe_init();
 void ps3spe_term();
 void ps3spe_stats(double secs);

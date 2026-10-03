@@ -4,16 +4,12 @@
 #define CAIQUE_DSP_FLOAT_H
 #include <stdint.h>
 
-/* 24-bit -> float: sign, 4-bit exponent = leading sign copies (max 12), 11 mantissa bits */
+/* 24-bit -> float: sign, 4-bit exponent = leading sign copies (max 12, a clz of the 24-bit temp), 11 mantissa bits */
 static inline uint16_t dsp_pack(int32_t val) {
     int sign = (val >> 23) & 1;
     uint32_t temp = (uint32_t)(val ^ (val << 1)) & 0xFFFFFF;
-    int exponent = 0;
-    for (int k = 0; k < 12; k++) {
-        if (temp & 0x800000) break;
-        temp <<= 1;
-        exponent++;
-    }
+    int exponent = temp ? __builtin_clz(temp) - 8 : 12;
+    if (exponent > 12) exponent = 12;
     if (exponent < 12) val = (int32_t)(((uint32_t)val << exponent) & 0x3FFFFF);
     else val = (int32_t)((uint32_t)val << 11);
     val >>= 11;

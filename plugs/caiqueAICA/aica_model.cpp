@@ -82,6 +82,13 @@ void AicaModel::reset() {
     tim_phase = 0;
     kyonex_pending = false;
     lfsr = 1;
+    mpro_nz = 0;
+    memset(prog, 0, sizeof prog);   /* the decode of an all-zero MPRO */
+    stops_pending = 0;
+    keys_live = false;
+    quiet = rsilent = 0;
+    memset(isel_cnt, 0, sizeof isel_cnt);
+    isel_cnt[0] = 64;
     memset(&fr, 0, sizeof fr);
     for (int ch = 0; ch < 64; ch++) {
         for (uint32_t o = 0; o < 0x48; o += 4) slot_regwrite(ch, o);
@@ -116,7 +123,7 @@ void AicaModel::key_on(int ch) {
     set_aeg_state(ch, EG_ATTACK);
     c.AEG.a = 0x280; /* key-on level: -60 dB (tests/sgc_aeg) */
     c.AEG.off = false;
-    c.stop_in = 0;
+    if (c.stop_in) { c.stop_in = 0; stops_pending--; }
     c.ca_clr = false;
     /* R 63: level 0 from the key-on sample; attack ends on the first clock at or after it (tests/sgc_krs, eg_kprobe) */
     if (eff_rate(chr(ch, 0x10) & 0x1F, chr(ch, 0x14), chr(ch, 0x18)) >= 63) c.AEG.a = 0;
@@ -175,6 +182,12 @@ static inline uint32_t lfsr_jump(const uint32_t *row, uint32_t l) {
     for (int b = 0; b < 17; b++) o |= (uint32_t)__builtin_parity(l & row[b]) << b;
     return o;
 }
+/* n LFSR steps, 12 at a time: each new bit is b[i] ^ b[i+5] of the old state while i + 5 <= 16 */
+static inline uint32_t lfsr_adv(uint32_t l, uint32_t n) {
+    for (; n >= 12; n -= 12) l = (l >> 12) | (((l ^ (l >> 5)) & 0xFFF) << 5);
+    if (n) l = (l >> n) | (((l ^ (l >> 5)) & ((1u << n) - 1)) << (17 - n));
+    return l;
+}
 /* Noise LFOs (tests/sgc_lfo, lfo_noise): ALFO = LFSR byte 2 steps after the slot's step, PLFO = byte 67 steps
  * before its stage-A point, XOR 0x80 (offset binary; ALFO uses it unsigned) */
 static inline uint32_t lfsr_alfo_j(uint32_t l) { return lfsr_jump(lfsr_alfo_rows, l); }
@@ -202,9 +215,40 @@ void AicaModel::lfo_calc(int ch) {
     c.lfo.plfo = (uint8_t)(int8_t)pw;
 }
 
+/* t - lfo_t per-sample LFO ticks (tests/sgc_lfo hw9: no reload on a write, clamp to a shorter period, LFORE holds
+ * state 0). Ticks run one by one until the counter lies in [1, period], the rest in closed form. */
+void AicaModel::lfo_sync(int ch, uint32_t t) {
+    Slot &c = slot[ch];
+    uint32_t k = t - c.lfo_t;
+    if (!k) return;
+    c.lfo_t = t;
+    const bool lfore = (c.lfo_r1c >> 15) & 1;
+    const uint32_t sv = c.lfo.start_value;
+    const uint8_t st0 = c.lfo.state;
+    while (k && (c.lfo.counter == 0 || c.lfo.counter > sv)) {
+        if (c.lfo.counter > sv) c.lfo.counter = sv;
+        if (--c.lfo.counter == 0) { c.lfo.counter = sv; if (!lfore) c.lfo.state++; }
+        if (lfore) c.lfo.state = 0;
+        k--;
+    }
+    if (k) {
+        uint32_t wraps = 0;
+        if (k < c.lfo.counter) c.lfo.counter -= k;
+        else {
+            const uint32_t rest = k - c.lfo.counter;
+            wraps = 1 + rest / sv;
+            c.lfo.counter = sv - rest % sv;
+        }
+        c.lfo.state = lfore ? 0 : (uint8_t)(c.lfo.state + wraps);
+    }
+    if (c.lfo.state != st0) lfo_calc(ch);
+}
+
 void AicaModel::update_lfo(int ch, bool from_write) {
     Slot &c = slot[ch];
+    if (from_write) lfo_sync(ch, (uint32_t)samples);   /* the ticks so far ran with the old period and LFORE */
     uint16_t r1c = chr(ch, 0x1C);
+    c.lfo_r1c = r1c;
     int N = (r1c >> 10) & 0x1F, S = N >> 2, M = (~N) & 3, G = 128 >> S, L = (G - 1) << 2, O = L + G * (M + 1);
     c.lfo.start_value = O;   /* a write does not reload the counter (tests/sgc_lfo hw9) */
     if (!from_write) c.lfo.counter = O;
@@ -306,27 +350,25 @@ bool AicaModel::slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_
  * registers (a write between the two samples is missed, the one known difference to rtl/v1) */
 void AicaModel::coll_preview(Frame &F) {
     for (int k = 0; k < 7; k++) {
-        const Slot save = slot[k];
-        const uint32_t lf = lfsr;
-        for (int i = 0; i < k; i++) {   /* slots 0..k-1 step the LFSR before slot k does */
-            uint32_t nb = ((lfsr >> 0) ^ (lfsr >> 5)) & 1;
-            lfsr = (lfsr >> 1) | (nb << 16);
-        }
         const bool en = slot[k].enabled, keyed = slot[k].keyed_fetch;
-        const uint32_t ca_old = slot[k].CA;
-        if (en && !keyed) stream_step(k, 0);
         F.pv[k].en = en;
         F.pv[k].keyed = keyed;
-        F.pv[k].ca_old = ca_old;
+        F.pv[k].ca_old = slot[k].CA;
         F.pv[k].ca = keyed ? 0 : slot[k].CA;
+        if (!en || keyed) continue;
+        const Slot save = slot[k];
+        const uint32_t lf = lfsr;
+        lfsr = lfsr_adv(lf, k);   /* slots 0..k-1 step the LFSR before slot k does */
+        stream_step(k, 0, (uint32_t)samples);
+        F.pv[k].ca = slot[k].CA;
         slot[k] = save;
         lfsr = lf;
     }
 }
 
-/* CA walk of one sample. Decodes go to F->ops for step_render (F null: preview, no log). PCM and noise only
+/* CA walk of one sample. Decodes go to F->ops for the render pass (F null: no log). PCM and noise only
  * decode at the final position; ADPCM decodes at every one. */
-void AicaModel::stream_step(int ch, Frame *F) {
+void AicaModel::stream_step(int ch, Frame *F, uint32_t smp) {
     Slot &c = slot[ch];
     int f = fmt(ch);
     bool LPCTL = (chr(ch, 0x00) >> 9) & 1, LPSLNK = (chr(ch, 0x14) >> 14) & 1;
@@ -334,6 +376,7 @@ void AicaModel::stream_step(int ch, Frame *F) {
      * m' = m + floor(m * w' / 1024), w' = (w & ~1) >> (7 - PLFOS), inc = m' << (OCT + 4) */
     uint32_t r1c = chr(ch, 0x1C), plfos = (r1c >> 5) & 7, inc = c.update_rate;
     if (plfos) {
+        if (((r1c >> 8) & 3) != 3) lfo_sync(ch, smp);   /* the LFO before sample smp's tick */
         int32_t w = ((r1c >> 8) & 3) == 3 ? (int32_t)(int8_t)((lfsr_plfo_j(lfsr) & 0xFF) ^ 0x80) : (int32_t)(int8_t)c.lfo.plfo;
         int32_t mod = (w & ~1) >> (7 - plfos);
         uint32_t OCT = (chr(ch, 0x18) >> 11) & 0xF, FNS = chr(ch, 0x18) & 0x3FF;
@@ -398,6 +441,19 @@ static inline uint32_t eg_increment(uint32_t R, uint32_t cnt, uint32_t slow_off 
     return eg_inc[R >= 60 ? 16 : 4 + (R - 48)][cnt & 7];
 }
 
+/* Fetch stopped, AEG off at 0x3FF, FEG unable to move: until a write or a key event every clock is a no-op.
+ * The full model also needs vo latched and no collision claim, as nothing of the slot runs while skipped. */
+bool AicaModel::slot_quiet(int ch, bool render) const {
+    const Slot &c = slot[ch];
+    if (c.enabled || c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) return false;
+    if (render && (c.FEG.vo != c.FEG.v || coll_claim[ch])) return false;   /* a skipped slot latches nothing */
+    if (!c.AEG.off || c.AEG.a < 0x3FF) return false;
+    if (c.FEG.dir == 0 && !c.FEG.passed) return true;
+    if (c.FEG.state != EG_RELEASE) return false;
+    const uint32_t v = c.FEG.v, target = chr(ch, 0x3C) & 0x1FFF;
+    return c.FEG.dir > 0 ? (v == 0x1FFF || v + 1 == target) : (v == 0 || v == target);
+}
+
 /* The slot stop: fetch stops, monitor reads 0x1FFF, CA reads 0 (tests/slot_tail, ca_stop). No second stage at 0x400. */
 static inline void slot_stop(Slot &c) { c.enabled = false; c.AEG.off = true; c.CA = 0; }
 
@@ -433,7 +489,10 @@ void AicaModel::aeg_clock(int ch) {
         a += inc;
         /* At 0x3C0 arm the stop for the next sample (this one still outputs its fetch); the value saturates at
          * 0x3FF and the state is kept (tests/slot_tail, ca_stop, sgc_keys K4) */
-        if (a >= CAIQUE_STOP_A && !c.AEG.off && !c.stop_in) { if (CAIQUE_STOP_LAG) c.stop_in = CAIQUE_STOP_LAG; else slot_stop(c); }
+        if (a >= CAIQUE_STOP_A && !c.AEG.off && !c.stop_in) {
+            if (CAIQUE_STOP_LAG) { c.stop_in = CAIQUE_STOP_LAG; stops_pending++; }
+            else slot_stop(c);
+        }
         if (a > 0x3FF) a = 0x3FF;
     }
     c.AEG.a = (uint16_t)a;
@@ -447,6 +506,14 @@ void AicaModel::feg_clock(int ch) {
     Slot &c = slot[ch];
     /* keeps stepping after the fetch stop and after AEG off (tests/slot_tail tail_c) */
     if (c.keyed) return;
+    /* Pure no-op cases, skipped: never keyed (dir 0), or a release that no step size can move (held, or at a bound) */
+    if (!c.keyed_off) {
+        if (c.FEG.dir == 0 && !c.FEG.passed) return;
+        if (c.FEG.state == EG_RELEASE) {
+            const uint32_t v = c.FEG.v, target = chr(ch, 0x3C) & 0x1FFF;
+            if (c.FEG.dir > 0 ? (v == 0x1FFF || v + 1 == target) : (v == 0 || v == target)) return;
+        }
+    }
     uint16_t r40 = chr(ch, 0x40), r44 = chr(ch, 0x44);   /* live (tests/eg_latch feg_rate) */
     static const uint8_t tgt_reg[4] = {0x30, 0x34, 0x38, 0x3C};
     if (c.FEG.passed && c.FEG.state < EG_DECAY2) {
@@ -491,34 +558,40 @@ static inline int64_t ceil_shr(int64_t v, int sh) { return -((-v) >> sh); }
 
 int32_t AicaModel::lpf_step(int ch, uint32_t v, int32_t x8) {
     Slot &c = slot[ch];
+    const uint8_t q = chr(ch, 0x28) & 0x1F;
+    if (x8 == 0 && c.lpf_fix && c.fix_v == v && c.fix_q == q) return (int32_t)-(int64_t)c.lpf_low;
     int64_t k = v >= 0x1FFE ? 512 : 256 + ((v >> 1) & 0xFF);
     int sh = 24 - (int)(v >> 9);
-    int64_t damping = 2 * ceil_shr((int64_t)lpf_q128[chr(ch, 0x28) & 0x1F] * c.lpf_band, 8);
+    int64_t damping = 2 * ceil_shr((int64_t)lpf_q128[q] * c.lpf_band, 8);
     /* the high-pass difference saturates to signed 24 bits BEFORE the cutoff multiply (tests/filt_overflow) */
     int64_t high = (int64_t)x8 - c.lpf_low - damping;
     high = high < -8388608 ? -8388608 : high > 8388607 ? 8388607 : high;
     int64_t band = c.lpf_band + ((k * high) >> sh);
     int64_t low = c.lpf_low + ceil_shr(k * band, sh);
+    c.lpf_fix = x8 == 0 && (int32_t)band == c.lpf_band && (int32_t)low == c.lpf_low;
+    c.fix_v = (uint16_t)v;
+    c.fix_q = q;
     c.lpf_band = (int32_t)band;
     c.lpf_low = (int32_t)low;
     return (int32_t)-low;
 }
 
-/* V = floor(sample * (127 - a[5:0]) / 2^(7 + (a >> 6))), a in 0.09375 dB (tests/sgc_level). AEG + ALFO sum unmeasured. */
+/* V = floor(sample * (127 - a[5:0]) / 2^(7 + (a >> 6))), a in 0.09375 dB (tests/sgc_level). AEG + ALFO sum unmeasured.
+ * 32-bit: |sample| < 2^21, so the product stays under 2^28 (the SPU has no 64-bit multiply). */
 static inline int32_t att_apply(int32_t sample, uint32_t a) {
     if (a >= 0x3FF) a = 0x3FF;
-    uint32_t M = 127 - (a & 63), k = a >> 6;
-    return (int32_t)(((int64_t)sample * M) >> (7 + k));
+    int32_t M = 127 - (int32_t)(a & 63), k = (int32_t)(a >> 6);
+    return (sample * M) >> (7 + k);
 }
 /* IMXL (DISDL assumed the same): n = 15 - L, x 2^-(n>>1) x (n odd ? 3/4 : 1), one floor; L 0 is off */
-static inline int32_t send_level(int32_t v16, uint32_t L) {
+static inline int32_t send_level(int32_t v16, uint32_t L) {   /* every input is under 2^27: 32 bits suffice */
     if (L == 0) return 0;
     uint32_t n = 15 - L;
-    int64_t x = (int64_t)v16 * ((n & 1) ? 3 : 4);
-    return (int32_t)(x >> (2 + (n >> 1)));
+    int32_t x = v16 * ((n & 1) ? 3 : 4);
+    return x >> (2 + (n >> 1));
 }
 
-/* Control half of a slot's output point: the LFSR step, the values render needs, the LFO tick */
+/* Control half of a slot's output point: the LFSR step and the values render needs (the LFO ticks lazily) */
 void AicaModel::slot_control(int ch, SlotFrame &sf) {
     Slot &c = slot[ch];
     c.FEG.vo = c.FEG.v;
@@ -531,17 +604,9 @@ void AicaModel::slot_control(int ch, SlotFrame &sf) {
     sf.fv = c.FEG.v;
     sf.aeg_a = c.AEG.a;
     sf.aeg_off = c.AEG.off;
-    sf.alfo_w = c.lfo.alfo_w;
-    /* LFO counter runs every sample, never reloaded by a write, reloads on wrap; above a shortened period it is cut
-     * to it (unmeasured). LFORE holds the state at 0, not the counter (tests/sgc_lfo hw9). */
-    const bool lfore = (chr(ch, 0x1C) >> 15) & 1;
-    if (c.lfo.counter > c.lfo.start_value) c.lfo.counter = c.lfo.start_value;
-    if (--c.lfo.counter == 0) { c.lfo.counter = c.lfo.start_value; if (!lfore) c.lfo.state++; }
-    if (lfore) c.lfo.state = 0;
-    lfo_calc(ch);
 }
 
-void AicaModel::slot_render(int ch, const SlotFrame &sf, int32_t &l, int32_t &r, int32_t &d) {
+void AicaModel::slot_render(int ch, const SlotFrame &sf, uint32_t smp, int32_t &l, int32_t &r, int32_t &d) {
     Slot &c = slot[ch];
     /* a stopped slot feeds zero but its filter runs on; a noise slot outputs the LFSR byte even unkeyed (fm_1) */
     const bool noise = (chr(ch, 0x00) >> 10) & 1;
@@ -560,7 +625,8 @@ void AicaModel::slot_render(int ch, const SlotFrame &sf, int32_t &l, int32_t &r,
         /* "off" is not muted either: a = 0x3FF keeps applying to the filter tail (tests/slot_tail tail_b).
          * ALFO attenuation = (w & 0xFE) >> (7 - ALFOS); noise = the LFSR byte at this slot (tests/sgc_lfo) */
         uint32_t r1c = chr(ch, 0x1C), ws = (r1c >> 3) & 3, alfos = r1c & 7;
-        uint32_t w = ws == 3 ? (lfsr_alfo_j(sf.lfsr) & 0xFF) : sf.alfo_w;
+        if (alfos && ws != 3) lfo_sync(ch, smp);   /* the waveform before this sample's tick */
+        uint32_t w = ws == 3 ? (lfsr_alfo_j(sf.lfsr) & 0xFF) : c.lfo.alfo_w;
         uint32_t alfo = alfos ? ((w & 0xFE) >> (7 - alfos)) : 0;
         V16 = (att_apply(s16, TL * 4 + sf.aeg_a + alfo) >> 4) * 16;
     }
@@ -574,16 +640,25 @@ void AicaModel::slot_render(int ch, const SlotFrame &sf, int32_t &l, int32_t &r,
     else { l = side; r = dir; }
 }
 
+/* floor(X * Y / 4096) in 32 bits for |X| < 2^23, |Y| < 2^13: X = xh * 4096 + xl, xl unsigned (no SPU 64-bit multiply) */
+static inline int32_t mul_shr12(int32_t X, int32_t Y) { return (X >> 12) * Y + (((X & 0xFFF) * Y) >> 12); }
+
 /* DSP (measured semantics: tests/dsp_basic; see NOTES "DSP") */
 void AicaModel::dsp_step(uint64_t smp, uint32_t mdec) {
+    /* All-NOP program, no read in flight: every step only sets ACC from TEMP[MDEC_CT] and FRC_REG; nothing is stored */
+    if (mpro_nz == 0 && mem_qn == 0) {
+        const int32_t t = TEMP[mdec & 0x7F];
+        ACC = sext(mul_shr12(t, sext(FRC_REG, 13)) + t, 26);
+        nofl_pipe[0] = nofl_pipe[1] = 0;
+        mrd_even_masa = -1;
+        return;
+    }
     uint16_t rbpl = r(0x2804);
     uint32_t RBP = (rbpl & 0xFFF) * 2048u;
     uint32_t RBL = (8192u << ((rbpl >> 13) & 3)) - 1;
     for (int s = 0; s < 128; s++) {
         uint64_t gstep = smp * 128 + s;
-        uint16_t w[4] = {r(0x3400 + 16 * s), r(0x3404 + 16 * s), r(0x3408 + 16 * s), r(0x340C + 16 * s)};
-        dsp_inst_t in;
-        dsp_decode(w, &in);
+        const dsp_inst_t &in = prog[s];
 
         for (int q = 0; q < mem_qn;) { /* reads landing at this step */
             if ((uint64_t)mem_q[q].land == gstep) {
@@ -623,7 +698,7 @@ void AicaModel::dsp_step(uint64_t smp, uint32_t mdec) {
         default: Y = (Y_REG >> 4) & 0xFFF; break;
         }
         if (in.YRL) Y_REG = INPUTS;
-        ACC = sext((int32_t)(((int64_t)X * Y) >> 12) + B, 26);
+        ACC = sext(mul_shr12(X, Y) + B, 26);
 
         if (in.TWT) TEMP[(in.TWA + mdec) & 0x7F] = SHIFTED;
         if (in.FRCL) FRC_REG = in.SHIFT == 3 ? (SHIFTED & 0xFFF) : ((SHIFTED >> 11) & 0x1FFF);
@@ -689,11 +764,13 @@ static void volpan(int32_t value, uint32_t vol, uint32_t pan, int32_t &outl, int
 
 /* Slot k of sample n fetches and outputs with the envelope from its frame of n-1, then computes the envelope for
  * n+1; so a register write between two steps is a write at the hardware's sample boundary (NOTES "Session 7"). */
-void AicaModel::step_control() {
+void AicaModel::run(bool render) {
     Frame &F = fr;
     F.sample = samples;
     F.mdec = MDEC_CT;
-    F.nops = 0;
+    int32_t mixl = 0, mixr = 0;
+    uint32_t rendered = 0;
+    if (render) { CAIQUE_PROF_AT(0, 0); memset(MIXS, 0, sizeof MIXS); }
     {   /* the one-sample interval edge and the timers (cycle-model: at ph 24 of the sample; here at its start) */
         uint16_t set = 0x400;
         for (int t = 0; t < 3; t++)
@@ -701,31 +778,67 @@ void AicaModel::step_control() {
         irq.scipd |= set;
         irq.mcipd |= set;
     }
-    /* (1) the CA walk and the output point of sample n, in slot order */
-    for (int ch = 0; ch < 64; ch++) {
+    /* (1) the CA walk and the output point of sample n, in slot order. A slot's render pass reads only its own
+     * state and its SlotFrame, so it runs right after its control pass. */
+    const uint32_t l0 = lfsr;   /* slot ch sees the LFSR stepped ch times */
+    if (!render) {   /* control only: no vo latch (read by nothing), the LFSR jumps at the end */
+        for (uint64_t m = ~quiet; m; m &= m - 1) {
+            const int ch = __builtin_ctzll(m);
+            Slot &c = slot[ch];
+            if (!(c.ca_clr | c.enabled | c.keyed_fetch)) continue;
+            if (c.ca_clr) { c.ca_clr = false; c.CA = 0; }
+            if (c.enabled && !c.keyed_fetch) { lfsr = lfsr_adv(l0, ch); stream_step(ch, 0, (uint32_t)F.sample); }
+            c.keyed_fetch = false;
+        }
+        lfsr = lfsr_adv(l0, 64);
+    }
+    for (uint64_t m = render ? ~(quiet & rsilent) : 0; m; m &= m - 1) {
+        const int ch = __builtin_ctzll(m);
         Slot &c = slot[ch];
-        SlotFrame &sf = F.s[ch];
+        SlotFrame sf;
+        lfsr = lfsr_adv(l0, ch);
         if (c.ca_clr) { c.ca_clr = false; c.CA = 0; }   /* the sample after a one-shot end */
         const bool en = c.enabled, keyed = c.keyed_fetch;
         sf.en_fetch = en;
         sf.keyed = keyed;
         sf.ca_old = c.CA;
-        sf.op0 = (uint16_t)F.nops;
+        F.nops = 0;
         /* the key-on sample fetches CA 0 without advancing (tests/sgc_pitch, sgc_loop, dsp_coll) */
-        if (en && !keyed) stream_step(ch, &F);
-        else if (keyed) {
-            F.ops[F.nops].ca = 0;
-            F.ops[F.nops].flags = OP_RESET | (en ? OP_DECODE | OP_LAST : 0);
-            F.nops++;
+        if (en && !keyed) stream_step(ch, render ? &F : 0, (uint32_t)F.sample);
+        else if (keyed && render) {
+            F.ops[0].ca = 0;
+            F.ops[0].flags = OP_RESET | (en ? OP_DECODE | OP_LAST : 0);
+            F.nops = 1;
         }
         c.keyed_fetch = false;
-        sf.nop = (uint16_t)(F.nops - sf.op0);
         sf.ca = c.CA;
         slot_control(ch, sf);
+        if (!render) continue;
+        for (uint32_t i = 0; i < F.nops; i++) {
+            const RenderOp &o = F.ops[i];
+            if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
+            if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
+        }
+        if (ch >= 7) coll_claim[ch] = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, coll_word[ch]);
+        /* silent: zero input into LPOFF or a filter resting at 0 gives V16 = 0, so every output of the slot is 0 */
+        const uint16_t r28 = chr(ch, 0x28);
+        if (!sf.en_out && !((chr(ch, 0x00) >> 10) & 1) &&
+            (((r28 >> 5) & 1) || (c.lpf_fix && c.lpf_low == 0 && c.fix_v == sf.fv && c.fix_q == (r28 & 0x1F)))) {
+            rsilent |= 1ull << ch;
+            continue;
+        }
+        rsilent &= ~(1ull << ch);
+        rendered++;
+        int32_t l, rr, d;
+        slot_render(ch, sf, (uint32_t)F.sample, l, rr, d);
+        mixl += l;
+        mixr += rr;
+        MIXS[chr(ch, 0x20) & 0xF] += d;   /* IMXL a pure gain (tests/mixs_write); DSP INPUTS = MIXS << 4 */
     }
+    if (render) { lfsr = lfsr_adv(l0, 64); CAIQUE_PROF_AT(1, rendered); }
     /* (2) a stop armed by the previous envelope pass takes effect after this sample's output (tests/slot_tail) */
-    for (int ch = 0; ch < 64; ch++) {
-        if (slot[ch].stop_in && --slot[ch].stop_in == 0) slot_stop(slot[ch]);
+    for (int ch = 0; stops_pending && ch < 64; ch++) {
+        if (slot[ch].stop_in && --slot[ch].stop_in == 0) { slot_stop(slot[ch]); stops_pending--; }
     }
     /* (3) key events and the envelope for sample n+1, which takes no envelope step on a key event (tests/eg_lock keys).
      * Clock and counter are sample n+1's: MDEC_CT(n) - 2 even (tests/eg_lock, feg_track, aeg_dl0). */
@@ -734,48 +847,33 @@ void AicaModel::step_control() {
     uint32_t md = (MDEC_CT - 2) & 0xFFFF;
     bool clk = (md & 1) == eg_par;
     eg_cnt = (eg_K - (md >> 1)) & 0x3FFF;
-    for (int ch = 0; ch < 64; ch++) {
-        slot[ch].keyed = slot[ch].keyed_off = false;
+    const bool clear = keys_live;   /* keyed / keyed_off last only one sample */
+    keys_live = false;
+    /* only non-quiet slots, unless keys move */
+    const uint64_t visit = (kx || clear) ? ~0ull : ~quiet;
+    for (uint64_t m = visit; m; m &= m - 1) {
+        const int ch = __builtin_ctzll(m);
+        if (clear) slot[ch].keyed = slot[ch].keyed_off = false;
         if (kx) {
             bool on = (chr(ch, 0x00) & 0x4000) != 0;
-            if (on && slot[ch].AEG.state == EG_RELEASE) { key_on(ch); slot[ch].keyed = true; slot[ch].keyed_fetch = true; }
-            if (!on && slot[ch].AEG.state != EG_RELEASE) { key_off(ch); slot[ch].keyed_off = true; }
+            if (on && slot[ch].AEG.state == EG_RELEASE) { key_on(ch); slot[ch].keyed = true; slot[ch].keyed_fetch = true; keys_live = true; }
+            if (!on && slot[ch].AEG.state != EG_RELEASE) { key_off(ch); slot[ch].keyed_off = true; keys_live = true; }
         }
         if (clk) {
-            aeg_clock(ch);
-            feg_clock(ch);
+            if (!(slot[ch].AEG.off && slot[ch].AEG.a >= 0x3FF)) aeg_clock(ch);   /* aeg_clock's own first test */
+            if (slot[ch].FEG.dir || slot[ch].FEG.passed || slot[ch].keyed_off) feg_clock(ch);   /* else a no-op */
+            if (slot_quiet(ch, render)) quiet |= 1ull << ch;
         }
+        if (slot[ch].keyed || slot[ch].keyed_off) quiet &= ~(1ull << ch);
     }
-    coll_preview(F);
     MDEC_CT = (MDEC_CT - 1) & 0xFFFF;   /* free-running 16-bit sample counter (DSP ring, envelope clock) */
     samples++;
-}
-
-void AicaModel::step_render() {
-    const Frame &F = fr;
-    int32_t mixl = 0, mixr = 0;
-    memset(MIXS, 0, sizeof MIXS);
-    bool sent[16] = {false};
-    for (int ch = 0; ch < 64; ch++) {
-        Slot &c = slot[ch];
-        const SlotFrame &sf = F.s[ch];
-        for (uint32_t i = sf.op0; i < (uint32_t)sf.op0 + sf.nop; i++) {
-            const RenderOp &o = F.ops[i];
-            if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
-            if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
-        }
-        if (ch >= 7) coll_claim[ch] = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, coll_word[ch]);
-        int32_t l, rr, d;
-        slot_render(ch, sf, l, rr, d);
-        mixl += l;
-        mixr += rr;
-        /* every slot writes its ISEL bus every sample, IMXL a pure gain (tests/mixs_write); DSP INPUTS = MIXS << 4 */
-        uint16_t r20 = chr(ch, 0x20);
-        MIXS[r20 & 0xF] += d; sent[r20 & 0xF] = true;
-    }
+    if (!render) return;
+    CAIQUE_PROF_AT(2, 0);
+    coll_preview(F);
     /* a bus no slot points at keeps its value; SGC of sample n fills bank n&1, the DSP of n+1 reads it (tests/eg_lock mixs) */
     for (int i = 0; i < 16; i++) {
-        if (sent[i]) MIXS_bank[F.sample & 1][i] = sext(MIXS[i], 20); /* the 20-bit sum wraps, no saturation (tests/sgc_mix) */
+        if (isel_cnt[i]) MIXS_bank[F.sample & 1][i] = sext(MIXS[i], 20); /* the 20-bit sum wraps, no saturation (tests/sgc_mix) */
         MIXS[i] = MIXS_bank[F.sample & 1][i];
     }
     for (int i = 0; i < 2; i++) {
@@ -784,7 +882,9 @@ void AicaModel::step_render() {
     }
     for (int k = 0; k < 7; k++)
         coll_claim[k] = slot_fetch(k, F.pv[k].en, F.pv[k].keyed, F.pv[k].ca_old, F.pv[k].ca, coll_word[k]);
+    CAIQUE_PROF_AT(3, 0);
     dsp_step(F.sample, F.mdec);
+    CAIQUE_PROF_AT(4, 0);
     for (int i = 0; i < 16; i++) {
         uint16_t v = r(0x2000 + 4 * i);
         volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
@@ -796,6 +896,36 @@ void AicaModel::step_render() {
     if (c0 & 0x100) { mixl >>= 2; mixr >>= 2; }
     outL = (int16_t)clampi(mixl, -32768, 32767);
     outR = (int16_t)clampi(mixr, -32768, 32767);
+    CAIQUE_PROF_AT(5, 0);
+}
+
+void AicaModel::snap(CtlSnap &o) {
+    for (int ch = 0; ch < 64; ch++) lfo_sync(ch, (uint32_t)samples);
+    o.sample = (uint32_t)samples;
+    o.lfsr = lfsr;
+    o.mdec = MDEC_CT;
+    o.eg_cnt = eg_cnt;
+    for (int ch = 0; ch < 64; ch++) {
+        const Slot &c = slot[ch];
+        SlotSnap &s = o.s[ch];
+        s.CA = c.CA;
+        s.step = c.step;
+        s.a = c.AEG.a;
+        s.fv = c.FEG.v;
+        s.aeg = (uint8_t)c.AEG.state;
+        s.feg = (uint8_t)c.FEG.state;
+        s.flags = (uint8_t)(c.enabled | (c.AEG.off << 1) | (c.keyed_fetch << 2) | ((c.stop_in != 0) << 3) |
+                            (c.in_loop << 4) | (c.ca_clr << 5) | (c.FEG.passed << 6) | ((c.FEG.dir < 0) << 7));
+        s.lfo = c.lfo.state;
+        s.lfo_cnt = c.lfo.counter;
+    }
+}
+
+uint32_t AicaModel::snap_hash(const CtlSnap &o) {
+    const uint32_t *w = (const uint32_t *)&o;
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < sizeof(CtlSnap) / 4; i++) h = (h ^ w[i]) * 16777619u;
+    return h;
 }
 
 /* Register interface */
@@ -806,7 +936,9 @@ void AicaModel::write(uint32_t off, uint32_t val) {
         int ch = off >> 7;
         uint32_t o = off & 0x7F;
         uint16_t m = chan_mask(o);
+        if (o == 0x20) { isel_cnt[reg[off >> 2] & 0xF]--; isel_cnt[v & 0xF]++; }
         reg[off >> 2] = (uint16_t)((v & m) | (o == 0 ? (v & 0x8000) : 0));
+        quiet &= ~(1ull << ch);
         slot_regwrite(ch, o);
         return;
     }
@@ -830,7 +962,14 @@ void AicaModel::write(uint32_t off, uint32_t val) {
     }
     if (off >= 0x4580 && off < 0x45C0) { EFREG[(off - 0x4580) >> 2] = (int16_t)v; return; }
     if (off >= 0x45C0) return;
+    const uint16_t old = reg[off >> 2];
     reg[off >> 2] = v;
+    if (off >= 0x3400 && off < 0x3C00) {
+        mpro_nz += (v != 0) - (old != 0);
+        const uint32_t s = (off - 0x3400) >> 4;
+        const uint16_t w[4] = {r(0x3400 + 16 * s), r(0x3404 + 16 * s), r(0x3408 + 16 * s), r(0x340C + 16 * s)};
+        dsp_decode(w, &prog[s]);
+    }
     switch (off) {   /* timers and interrupt registers: as cycle-model/aica_model.cpp reg_write */
     case 0x2890: case 0x2894: case 0x2898: { const int t = (off - 0x2890) >> 2; irq.cnt[t] = (uint8_t)v; irq.pre[t] = (v >> 8) & 7; break; }
     case 0x289C: irq.scieb = v & 0x7FF; break;

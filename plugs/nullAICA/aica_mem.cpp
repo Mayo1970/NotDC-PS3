@@ -1,16 +1,13 @@
 #include "aica_mem.h"
 #include "dsp.h"
 #include "sgc_if.h"
+#include "ps3/ps3_aica_spe.h"
 
 u8* aica_reg;
 u8* aica_ram_l;
 
-// Memory map:
-// 0x0000 - 0x1FFF  Channel registers (64 channels x 128 bytes)
-// 0x2000 - 0x27FF  Upper channel area
-// 0x2800 - 0x2817  CommonData registers
-// 0x2818 - 0x2FFF  Interrupt/timer/control registers
-// 0x3000 - 0x7FFF  DSP data
+// Map: 0x0000-0x1FFF channels (64 x 128 B), 0x2000-0x27FF upper channel area, 0x2800-0x2817 CommonData,
+// 0x2818-0x2FFF interrupts / timers / control, 0x3000-0x7FFF DSP data.
 
 template<u32 sz>
 u32 ReadReg(u32 addr)
@@ -111,6 +108,9 @@ u32 FASTCALL aica_ReadMem_reg(u32 addr, u32 size)
 
 void FASTCALL aica_WriteMem_reg(u32 addr, u32 data, u32 size)
 {
+    // 5.13 A1: the caique twin gets every write, SH4 and ARM7, before nullAICA changes the register
+    if (g_aica_spe_on)
+        ps3aica_write(addr & 0x7FFF, data, size, *(u16*)&aica_reg[(addr & 0x7FFC) | 2]);
     if (size == 1)
         WriteReg<1>(addr & 0x7FFF, data);
     else

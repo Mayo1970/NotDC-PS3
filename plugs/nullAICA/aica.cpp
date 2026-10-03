@@ -2,12 +2,10 @@
 #include "sgc_if.h"
 #include "aica_mem.h"
 #include "wii/wii_audio.h"
+#include "ps3/ps3_aica_spe.h"
 #include <math.h>
 
-// config.h (pulled in transitively above) deliberately poisons BIG_ENDIAN and
-// LITTLE_ENDIAN to catch accidental use; must undef before any libogc header,
-// which legitimately defines those same names via machine/endian.h. Same
-// pattern as wii/wii_audio.cpp.
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc's machine/endian.h defines them, so undef first (as wii_audio.cpp).
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
@@ -45,13 +43,8 @@ u32 GetL(u32 witch)
     return rv;
 }
 
-// ArmInterruptChange is provided by the vbaARM plugin (arm_mem.cpp). It sets
-// the AICA interrupt-pending state which raises the ARM7 FIQ. The wrestler
-// test (and real games) program SCIEB + timers and then wait for this FIQ to
-// drive their main loop, so this MUST be wired up or the ARM7 spins in init
-// and never reaches KeyOn.
-// NOTE: declared with C++ linkage (NOT extern "C") to match the definition in
-// vbaARM/arm_mem.cpp; an extern "C" wrapper here breaks the link.
+// vbaARM/arm_mem.cpp: raises the ARM7 FIQ that drivers wait on after SCIEB + timers; without it the ARM7 never
+// reaches KeyOn. C++ linkage on purpose: an extern "C" declaration breaks the link.
 void FASTCALL ArmInterruptChange(u32 bits, u32 L);
 
 extern int g_aica_fast_preset;   // wii/main.cpp
@@ -255,10 +248,6 @@ template void WriteAicaReg<2>(u32 reg, u32 data);
 
 void AICA_Init()
 {
-    //printf("[AICA] AICA_Init: start\n");
-    //printf("[AICA] AICA_Init: sizeof(CommonData)=%d (need 0x508=%d)\n", (int)sizeof(*CommonData), 0x508);
-    //printf("[AICA] AICA_Init: sizeof(DSPData)=%d (need 0x15C8=%d)\n",   (int)sizeof(*DSPData),    0x15C8);
-
     verify(sizeof(*CommonData) == 0x508);
     verify(sizeof(*DSPData)    == 0x15C8);
     //printf("[AICA] AICA_Init: struct sizes OK\n");
@@ -293,9 +282,8 @@ void AICA_Term()
     sgc_Term();
 }
 
-// Steps one AICA sample, ticks timers, sets SAMPLE_DONE, and updates the
-// ARM7 / SH4 interrupt lines. Driven once per sample from the SH4 timeslice
-// (armUpdateARM) — see [[aica-arm-timing]].
+// One AICA sample: timers, SAMPLE_DONE, ARM7 / SH4 interrupt lines. Driven per sample from armUpdateARM
+// (SH4 timeslice), see [[aica-arm-timing]].
 void libAICA_TimeStep()
 {
     AICA_Sample();
@@ -307,18 +295,12 @@ void libAICA_TimeStep()
     update_arm_interrupts();
     UpdateSh4Ints();
 
+    if (g_aica_spe_on)
+        ps3aica_step();
+
 #if AICA_RATE_DIAG
-    // Off by default: even with the printf commented out, this ran a gettime()
-    // and a 64-bit ticks->ms division (a libgcc call on the 750) 44,100x/s.
-    //
-    // Diagnostic: measure the ACTUAL rate of libAICA_TimeStep() calls (i.e.
-    // AICA_Sample() generation) against a real hardware wall-clock timer,
-    // independent of the emulator's own SH4-cycle accounting. Should read
-    // ~44100/sec if the cycle-to-sample pipeline (armUpdateARM's
-    // AICA_SAMPLE_CYCLES accumulator) is correctly paced; a value far below
-    // that (e.g. ~4000-4500/sec) would mean AICA is being driven at roughly
-    // 1/10 the intended rate, which would explain audio sounding both
-    // pitched too low AND stretched in duration by that same factor.
+    // Off by default (a gettime() and a 64-bit divide per sample): real TimeStep calls per wall second.
+    // ~4400/s instead of 44100 would mean the AICA runs at 1/10 rate (audio low and stretched).
     static u32 sample_count = 0;
     static u64 last_check_ms = 0;
     sample_count++;

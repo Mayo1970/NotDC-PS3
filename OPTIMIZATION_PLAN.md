@@ -51,7 +51,10 @@ the SPE decoder (5.12 S2) writes the 5.10 vertex format.
   "SPE Draw" (`SpeDraw`), default OFF. See 5.12.
 - 5.13 A0 done on the PC 2026-10-03: `plugs/caiqueAICA/` (not in the PS3
   build yet), `step()` = `step_control()` + `step_render()`, bit-identical
-  to caique `5aa2376` on all cases and validators. Next: A1. See 5.13.
+  to caique `5aa2376` on all cases and validators. See 5.13.
+- 5.13 A1 built 2026-10-03, HW pending: caique control twin on the PPU, full
+  model on an SPE from the write log, snapshot check every 64 samples.
+  Toggle AUDIO -> "SPE AICA Check", default OFF. PC test: 0 mismatches.
 
 Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
 `udplog.py`), log analysis by windows with vt > 3K. Probes: IFB Probe and
@@ -379,7 +382,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC 2026-10-03 (split bit-identical); next A1 |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC 2026-10-03 (split bit-identical); A1 built, HW pending |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -1025,6 +1028,81 @@ clock by VPS.
       - For A1: the SPE can run control and render per slot to keep the op
         log at one slot (1.2 KB of LS). `step_control()` always fills the
         `Frame`; the PPU-only run can skip that.
+    - A1 built 2026-10-03, HW pending. Toggle: AUDIO -> "SPE AICA Check"
+      (`nullDC.cfg [ps3] SpeAicaCheck`), default OFF, read in `InitAica`.
+      - Model change: `step()` = `run(true)`, control and render per slot
+        (ops buffer one slot, 288 x 4 B). `step_control()` = `run(false)`:
+        no op log, no slot 0..6 fetch preview, no render. LFSR jump rows
+        are constant tables (no static constructors on the SPU). Wave RAM
+        goes through hooks with `CAIQUE_RAM_HOOKS`. Re-run of the A0 PC
+        test: still bit-identical to caique `5aa2376`.
+      - PPU (`ps3/ps3_aica_spe.cpp`): `aica_WriteMem_reg` (SH4 and ARM7)
+        feeds every register write to a control-only caique twin and to a
+        16384 x 16 B log `{sample, op, off, val, hash}`. A byte write keeps
+        nullAICA's other byte; writes to the upper halfword are dropped.
+        `libAICA_TimeStep` runs `step_control()`; every 64 samples it keeps
+        a `CtlSnap` (CA, phase, AEG, FEG, flags, LFO per slot + LFSR,
+        MDEC_CT, eg_cnt; 1296 B) and logs a CHECK with its FNV hash. The
+        bell line (5.12 style) is rung at each CHECK and every 1024 records.
+        A log full for 100 ms turns the check off.
+      - SPU (`ps3/spu/spe_aica.c`, `spe_aica_model.cpp`, `spe_aica_ram.h`):
+        the full model, stepped to each record's sample. Wave RAM by a
+        16 KB direct-mapped LS cache of `aica_ram` (DC byte a = host byte
+        a ^ 3), dropped at each CHECK. DSP ring in LS when RBL <= 32K words,
+        else the cache; DSP writes never reach main memory (A1 limit: the
+        SPU's sound is not checked). The first 4 mismatches send the SPU
+        snapshot; the PPU prints the differing fields.
+      - Own SPU thread group `nulldc_aica`; `sysSpuInitialize` is shared
+        with 5.12 (`ps3spe_sys_init`). SPU: text 31.7 KB, bss 111 KB. Link:
+        `.got` 0x99A0, 0 `r2off`.
+      - PC test before HW (WSL, all 73 cases): a control-only twin and the
+        SPU code (same cache header, swizzled RAM) fed from the log:
+        443432 checks, 0 mismatches. Case outputs still match caique.
+      - Log every ~5 s: `[aica-spe] on samples/s ppu= spu= lag= | checks=
+        bad= | writes/s= full= | ppu ctl X% N ns/sample | spu busy B%
+        misses/s= wakes/s= timeouts/s=`; mismatches print
+        `[aica-spe] MISMATCH ...` and per-slot `ppu/spu` lines.
+      - HW test: Crazy Taxi + a streamed-music game, toggle ON. Pass =
+        `bad=0`, spu samples/s = ppu samples/s, lag small. Read `spu busy`,
+        `ppu ctl %` and `aica%` on the SPEED line against a run with the
+        toggle OFF.
+    - HW 2026-10-03 run 1, Crazy Taxi (PAL), 150 MHz, Dynarec + JIT
+      Fastmem, SPE Draw OFF: the SPU thread came up, then after 3.8 s
+      `write log full for 100 ms (spu samples 48512, ppu 168868); check
+      off`. The SPU ran the full model at ~29% of real time (~3.5x too
+      slow). No mismatch count (the off message did not print it).
+      - PPU cost with the check on: `aica%` 40-48% (3 windows), against
+        5.5% after the check turned off. The control pass took ~38% of wall
+        (~8.6 us per sample), not "well under 4.5%" as estimated.
+      - Cause, from PC timing (x86, ns per sample): control 740 idle / 804
+        with 8 voices; full 3863 / 4790. The model stepped all 64 slots
+        (LFO tick + `lfo_calc`, envelope clocks) and all 128 DSP steps
+        every sample; idle slots cost as much as playing ones.
+    - Speed work 2026-10-03 (Matt: "speed up both"), all bit-exact:
+      - LFO ticks lazily (`lfo_sync`, closed form, at PLFO/ALFO use, a
+        0x1C write and a snapshot); `lfo_calc` only on a state change.
+      - `quiet` mask: a slot with fetch stopped, AEG off at 0x3FF and an
+        FEG no step can move (never keyed, held, or at a bound) is skipped
+        until a register write or a key event. FEG no-op cases skipped.
+      - LFSR jumps 12 steps at a time (`lfsr_adv`); keyed/stop loops only
+        when something is armed; `isel_cnt` replaces the per-slot bus flags.
+      - Full model: `rsilent` mask skips quiet slots whose output is 0
+        (zero input, LPOFF or filter at rest), filter fixed-point skip
+        (`lpf_fix`), slot 0..6 preview copies a slot only when it walks.
+      - DSP: MPRO decoded on write, `dsp_pack` by clz (all 2^24 inputs
+        checked), all-NOP program fast path, `X*Y >> 12` in 32 bits;
+        `att_apply` / `send_level` in 32 bits (bounds under 2^28).
+      - PC timing after (ns/sample): control 11 idle / 129 with 8 voices;
+        full 94 idle; DSP with a program on every step 3624 -> 1588.
+      - SPU section timers (`CAIQUE_PROF`): new `[aica-spe] spu % of
+        wall: slots (rendered/sample) env preview+bus dsp mix` line. The
+        log-full message now also prints the counts and mismatch reports.
+      - SPU: text 39.6 KB, bss 124 KB. Link: `.got` 0x99B0, 0 `r2off`.
+      - PC tests on the final model: all cases and validators still
+        bit-identical to caique `5aa2376`; the A1 compare (quiet control
+        twin against the skipping full model) 443432 checks, 0 mismatches.
+      - HW run 2: same settings and toggle. Read `ppu ctl %` / `aica%`,
+        `spu busy`, the `spu % of wall` split and `bad`.
     - A1: the SPE runs the full model from the write log. The PPU runs
       `step_control()` and sends a checksum per block. nullAICA still makes
       the sound. HW: mismatch count, SPE load, PPU cost.

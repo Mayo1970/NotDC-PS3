@@ -12,12 +12,19 @@ uint16_t caique_rd16(uint32_t a);
 uint16_t caique_dsp_rd16(uint32_t a, uint32_t rbp, uint32_t rbl);
 void caique_dsp_wr16(uint32_t a, uint32_t rbp, uint32_t rbl, uint16_t v);
 #endif
+#ifdef CAIQUE_PROF
+/* full-model section marks: 0 start, 1 slots, 2 envelopes, 3 preview + buses, 4 DSP, 5 mix; v = slots rendered */
+void caique_prof(int point, uint32_t v);
+#define CAIQUE_PROF_AT(p, v) caique_prof(p, v)
+#else
+#define CAIQUE_PROF_AT(p, v)
+#endif
 
 namespace caique {
 
 enum EgState { EG_ATTACK = 0, EG_DECAY1 = 1, EG_DECAY2 = 2, EG_RELEASE = 3 };
 
-/* Render-only fields: s0, s1, adpcm_quant, lpf_low, lpf_band. Everything else is control state. */
+/* Render-only fields: s0, s1, adpcm_quant, lpf_*, fix_*. Everything else is control state. */
 struct Slot {
     uint32_t CA;           /* current sample address (samples from SA) */
     uint32_t step;         /* phase fraction, 14 bits */
@@ -40,10 +47,15 @@ struct Slot {
         bool passed;       /* attack / decay 1 crossed the target: advance on the next clock */
     } FEG;
     int32_t lpf_low, lpf_band; /* filter state, 1/8 sample units; never cleared (tests/filt_reset) */
+    bool lpf_fix;              /* the last zero-input step at (fix_v, fix_q) left the state unchanged: skip repeats */
+    uint8_t fix_q;
+    uint16_t fix_v;
     struct {
         uint32_t counter, start_value;
         uint8_t state, alfo_w, alfo_shft, plfo, plfo_shft; /* alfo_w: 8-bit ALFO waveform value */
     } lfo;
+    uint32_t lfo_t;       /* LFO ticks applied (low 32 bits of samples); lfo_sync catches up in closed form */
+    uint16_t lfo_r1c;     /* register 0x1C the ticks since the last LFO write ran with */
     bool enabled;         /* sample fetch running; cleared one sample after the 0x3C0 clock, or by a one-shot end */
     uint8_t stop_in;      /* stop armed by aeg_clock, committed after the next sample's output (tests/slot_tail) */
     bool ca_clr;          /* one-shot end: CA reads 0 from the next sample (tests/oneshot) */
@@ -68,7 +80,6 @@ struct SlotFrame {
     uint32_t step;          /* phase fraction after the walk */
     uint32_t ca_old, ca;    /* CA before / after the walk (collision fetch) */
     uint16_t fv, aeg_a;     /* FEG value for the filter, AEG level */
-    uint8_t alfo_w;
     bool en_fetch, keyed;   /* enabled / keyed_fetch at the walk start */
     bool en_out, aeg_off;   /* enabled after the walk, AEG off */
 };
@@ -136,6 +147,13 @@ struct AicaModel {
     uint16_t coll_word[64];
     bool mrd_even_coll;       /* the waiting even-step MRD was in a channel's slot */
     uint16_t mrd_even_word;
+    uint32_t mpro_nz;         /* non-zero MPRO words: 0 runs the DSP's all-NOP fast path */
+    dsp_inst_t prog[128];     /* MPRO decoded on write */
+    uint32_t stops_pending;   /* slots with stop_in set */
+    bool keys_live;           /* some slot has keyed / keyed_off set */
+    uint64_t quiet;           /* slots with no control work until a register write or a key event */
+    uint64_t rsilent;         /* render: the slot's last visit output 0 with its filter at rest */
+    uint8_t isel_cnt[16];     /* slots per ISEL bus: every slot writes its bus each sample (tests/mixs_write) */
 
     Frame fr;                 /* control -> render hand-off of the current sample */
 
@@ -149,7 +167,7 @@ struct AicaModel {
     uint32_t ram_read32(uint32_t off); /* CPU read of wave RAM (updates the memory read latch) */
     void step() { run(true); }
     void step_control() { run(false); }   /* control state only; outL/outR, MIXS and the DSP do not move */
-    void snap(CtlSnap &o) const;
+    void snap(CtlSnap &o);   /* catches every LFO up first */
     static uint32_t snap_hash(const CtlSnap &o);
 
     uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
@@ -164,7 +182,7 @@ struct AicaModel {
     void update_pitch(int ch);
     void update_lfo(int ch, bool from_write);
     static uint32_t eff_rate(uint32_t rate, uint16_t r14, uint16_t r18); /* from the KRS (r14) and OCT/FNS (r18) given */
-    void stream_step(int ch, Frame *F);
+    void stream_step(int ch, Frame *F, uint32_t smp);
     void decode_sample(int ch, bool last, uint32_t CA);
     void aeg_clock(int ch);
     void feg_clock(int ch);
@@ -172,8 +190,10 @@ struct AicaModel {
     bool slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_t ca, uint16_t &word) const;
     void coll_preview(Frame &F);
     void lfo_calc(int ch);
+    void lfo_sync(int ch, uint32_t t);
+    bool slot_quiet(int ch, bool render) const;
     void slot_control(int ch, SlotFrame &sf);
-    void slot_render(int ch, const SlotFrame &sf, int32_t &l, int32_t &r, int32_t &d);
+    void slot_render(int ch, const SlotFrame &sf, uint32_t smp, int32_t &l, int32_t &r, int32_t &d);
     void dsp_step(uint64_t smp, uint32_t mdec);
     uint32_t sa_addr(int ch) const;
     int fmt(int ch) const;

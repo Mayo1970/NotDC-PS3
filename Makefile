@@ -26,12 +26,11 @@ MAKE_SELF_NPDRM := $(PS3DEV)/bin/make_self_npdrm
 SFO      := $(PS3DEV)/bin/sfo
 PKG      := $(PS3DEV)/bin/pkg
 
-# No JIT on PS3: rec_v2 builds its HOST_NO_REC paths (decoder tables, interpreter hook).
-# Wii-only parts (GX renderer, Wii pads) are replaced by ps3/.
+# rec_v2 builds its HOST_NO_REC paths; ps3/ replaces the Wii-only parts (GX renderer, Wii pads).
 # ps3/ps3gl: GL 1.1 on RSX from xashPS3; shaders are prebuilt in ps3gl_shader_data.h.
 SRC_DIRS := . cl config plugins \
             dc dc/aica dc/asic dc/gdrom dc/maple dc/mem dc/pvr dc/sh4 dc/sh4/rec_v2 \
-            plugs/nullExtDev plugs/nullAICA plugs/vbaARM plugs/ImgReader plugs/drkPvr ps3 ps3/ps3gl
+            plugs/nullExtDev plugs/nullAICA plugs/caiqueAICA plugs/vbaARM plugs/ImgReader plugs/drkPvr ps3 ps3/ps3gl
 
 SRCS := $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cpp) $(wildcard $(d)/*.c))
 SRCS := $(patsubst ./%,%,$(SRCS))
@@ -45,9 +44,10 @@ OBJS := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS) $(ASMS)))
 
 # SPU programs (ps3/spu): built with spu-gcc, embedded as data for sysSpuImageImport.
 SPU_CC     := $(PS3DEV)/spu/bin/spu-gcc
+SPU_CXX    := $(PS3DEV)/spu/bin/spu-g++
 BIN2S      := $(PS3DEV)/bin/bin2s
 SPU_CFLAGS := -O2 -Wall -ffunction-sections -fdata-sections -I$(PSL1GHT)/spu/include -Ips3/spu
-SPU_PROGS  := spe_bell
+SPU_PROGS  := spe_bell spe_aica
 OBJS       += $(patsubst %,$(BUILD)/spu/%.bin.o,$(SPU_PROGS))
 
 ifeq ($(DEBUG),1)
@@ -58,7 +58,7 @@ endif
 CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
           -mcpu=cell -mhard-float -mno-altivec \
           -fno-strict-aliasing -fsingle-precision-constant \
-          -D_PS3 -D__PS3__ -DRELEASE $(DEBUG_FLAG) -DPS3_LOG_IP=\"$(LOG_IP)\" \
+          -D_PS3 -D__PS3__ -DRELEASE -DCAIQUE_RAM_HOOKS $(DEBUG_FLAG) -DPS3_LOG_IP=\"$(LOG_IP)\" \
           -I. -Ips3 -Ips3/include -Ips3/ps3gl -Ips3/ps3gl/include -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/portlibs/ppu/include
 
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
@@ -101,6 +101,15 @@ $(BUILD)/spu/spe_bell.elf: $(SPU_SRCS_spe_bell) $(wildcard ps3/spu/*.h)
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s $(SPU_SRCS_spe_bell) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+
+# 5.13 A1: the caique model on the SPU (C++), wave RAM through an LS cache.
+SPU_SRCS_spe_aica := ps3/spu/spe_aica_model.cpp plugs/caiqueAICA/aica_model.cpp
+
+$(BUILD)/spu/spe_aica.elf: ps3/spu/spe_aica.c $(SPU_SRCS_spe_aica) $(wildcard ps3/spu/*.h plugs/caiqueAICA/*.h)
+	@mkdir -p $(dir $@)
+	@echo "SPU $@"
+	@$(SPU_CC) $(SPU_CFLAGS) -c ps3/spu/spe_aica.c -o $(BUILD)/spu/spe_aica_main.o
+	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

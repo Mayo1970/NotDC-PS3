@@ -242,19 +242,23 @@ static void ring_selftest()
 	       caught ? "SPU caught up" : "SPU NOT caught up in 10 ms");
 }
 
+// lv2 accepts this once per process; the TA SPE (5.12) and the AICA SPE (5.13) share it.
+void ps3spe_sys_init()
+{
+	if (s_spu_init_done)
+		return;
+	s32 r = sysSpuInitialize(6, 0);
+	printf("[spe] sysSpuInitialize(6,0) -> 0x%08X\n", (u32)r);
+	s_spu_init_done = true;
+}
+
 bool ps3spe_init()
 {
 	if ((!get_spe_bell_preset() && !get_spe_draw_preset()) || s_up)
 		return s_up;
 	g_spe_draw = get_spe_draw_preset() != 0;
 
-	// lv2 accepts this once per process; a second boot of the renderer skips it.
-	if (!s_spu_init_done)
-	{
-		s32 r = sysSpuInitialize(6, 0);
-		printf("[spe] sysSpuInitialize(6,0) -> 0x%08X\n", (u32)r);
-		s_spu_init_done = true;
-	}
+	ps3spe_sys_init();
 	if (!s_out)
 	{
 		s_out = (SpeOut*)memalign(128, sizeof(SpeOut) * SPE_CTX);

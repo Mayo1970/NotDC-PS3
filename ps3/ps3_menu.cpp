@@ -358,6 +358,8 @@ static Option s_audio[] = {
 	  "Runs the ARM7 once per N calls, with the cycles of all N." },
 	{ "Audio Buffers",   &g_audio_buffers_preset, OPT_CHOICE, k_audio_buf, -1, 0,0,0, NULL,
 	  "Queue depth. Higher blocks the SH4 until the mixer drains." },
+	{ "SPE AICA Check",  &g_spe_aica_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "caique AICA on an SPE, checked against the PPU. [aica-spe] log. Set before boot." },
 };
 
 static Option s_video[] = {
