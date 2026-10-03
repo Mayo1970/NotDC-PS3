@@ -31,8 +31,8 @@ Next, in this order (agreed with Matt):
 1. 5.9: done, HW 2026-10-03 (busy 57 -> 47%, VPS unchanged).
 2. 5.10: done, HW 2026-10-03 (hash 8.2 -> 1.9%, dense VPS 48.5 -> 50.7,
    no stale textures).
-3. 5.11: TA decode (19%): write the final vertex format at decode time.
-   Built 2026-10-03, HW pending.
+3. 5.11: reverted 2026-10-03 (Matt). Moving the vertex math to the decode
+   gave no net gain (decode +2.3, draw -2.2 points) and felt worse.
 
 SPE work (5.12, 5.13) is SHELVED by Matt on 2026-10-03 until 5.9-5.11 are
 done. Why this order: 5.11 sets the vertex format the SPE decoder (5.12 S2)
@@ -354,7 +354,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.8 | Vertex arrays for merged strips (VIDEO / DEBUG, `VertexArrays`) | `[x]` HW, dense VPS +6%, busy 61 -> 57%, default ON |
 | 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
-| 5.11 | TA decode writes the final vertex format | `[~]` built 2026-10-03, HW pending |
+| 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
 | 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | SHELVED 2026-10-03 (Matt) until 5.9-5.11 are done; A0 not started |
 
@@ -639,6 +639,10 @@ clock by VPS.
     vertex is far above the math, so memory stalls are the likely bulk
     (raw stream read back after the SH4 wrote it, vertex stores without
     a prefetch). Not measured.
+  - REVERTED by Matt, 2026-10-03: `ps3/ps3_rend.cpp` is back to the 5.10
+    code (checked: the type-3 decode loop disassembles as in the 5.10
+    build). Not tried: `dcbt` prefetch of the raw stream and `dcbz` on the
+    vertex lines, to test the memory-stall guess.
 - 5.12 (design agreed with Matt, 2026-09-29): SPE offload. Decode the TA
   stream on an SPE while the SH4 submits it, not at STARTRENDER.
   - Why: the PS3 has one PPE core with 2 hardware threads. The SH4 thread and

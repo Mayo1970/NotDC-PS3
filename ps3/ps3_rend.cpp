@@ -40,12 +40,12 @@ extern s32 render_vd_pending_cycles;
 #define MAX_STRIPS (16 * 1024)
 #define MAX_PARAMS (8 * 1024)
 
-// Draw form, written once at decode: ps3gl_vertex_t minus its constant fields.
+// x, y in DC screen pixels; w = eye depth (1 / the TA's 1/W).
 struct DcVertex
 {
-	float x, y, z; // x*W, y*W, W (screen pixels times eye depth)
+	float x, y, w;
+	u32 col; // DC ARGB8888
 	float u, v;
-	u32 col;       // RGBA; alpha is already 255 where the poly ignores vertex alpha
 };
 
 struct DcStrip
@@ -53,7 +53,6 @@ struct DcStrip
 	u32 first;
 	u16 count;
 	u8 list;
-	u8 parity;     // index parity of vertex 0 in its TA strip: an inf vertex splits a strip
 	u16 param;
 };
 
@@ -267,57 +266,41 @@ static inline u32 intensity_argb(float i)
 	return float_argb(s_face_a, s_face_r * i, s_face_g * i, s_face_b * i);
 }
 
-// The current poly's alpha force (apply_param's rule; a texture always binds, sizes cap at 1024).
-static u32 s_alpha_or;
-
-static inline u32 dc_col(u32 argb)
-{
-	argb |= s_alpha_or;
-	return (argb << 8) | (argb >> 24);
-}
-
 // Floor on 1/W to keep W finite. 1e-4 merged every plane past W=10000 (SC5's video backdrop failed
 // DepthMode 4 against the background); reicast has none, 1e-9 keeps x*W in float range.
 #define INV_W_FLOOR 1e-9f
 
-// reicast update_fz: drops negatives, NaN and anything at or above 1024*1024, so one rogue
-// vertex cannot pull the near plane down. Float compares: the int-union form was a load-hit-store.
+// reicast update_fz: one integer compare drops negatives, NaN and anything at or
+// above 1024*1024, so a single rogue vertex cannot pull the near plane down.
 static inline void track_inv_w(float inv_w)
 {
-	if (inv_w > s_dec->max_inv_w && inv_w < 1048576.0f)
+	union { float f; s32 i; } z, m;
+	z.f = inv_w;
+	m.f = s_dec->max_inv_w;
+	if (m.i < z.i && z.i < 0x49800000)
 		s_dec->max_inv_w = inv_w;
-}
-
-static inline void track_w_of(float w, float inv_w, bool clamped)
-{
-	if (w < s_dec->min_w) s_dec->min_w = w;
-	if (w > s_dec->max_w) s_dec->max_w = w;
-	s_stat_wtotal++;
-	if (clamped) s_stat_wclamp++;
-	track_inv_w(inv_w);
 }
 
 // Modifier volume corners carry no color, so only their depth joins the range.
 static inline void track_w(float inv_w)
 {
 	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
-	track_w_of(1.0f / safe, inv_w, safe != inv_w);
+	float w = 1.0f / safe;
+	if (w < s_dec->min_w) s_dec->min_w = w;
+	if (w > s_dec->max_w) s_dec->max_w = w;
+	s_stat_wtotal++;
+	if (safe != inv_w) s_stat_wclamp++;
+	track_inv_w(inv_w);
 }
 
-// Set by set_pos: the pending vertex is inf (Flycast is_vertex_inf), so its commit splits the strip.
-static bool s_vtx_inf;
-
 // The TA sends 1/W; the floor keeps W finite (NaN also takes the floor, as in gxRend).
-// Flycast's "1/W > 3.4e37" is W < 1/3.4e37 here (+inf 1/W gives W = 0).
 static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
 {
 	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
-	float w = 1.0f / safe;
-	v->x = x * w;
-	v->y = y * w;
-	v->z = w;
-	s_vtx_inf = !(fabsf(x) <= 1e25f) || !(fabsf(y) <= 1e25f) || w < 1.0f / 3.4e37f;
-	track_w_of(w, inv_w, safe != inv_w);
+	v->x = x;
+	v->y = y;
+	v->w = 1.0f / safe;
+	track_w(inv_w);
 }
 
 // 16-bit UVs are the top half of a float.
@@ -328,13 +311,6 @@ static inline float uv16(u32 uv)
 	return c.f;
 }
 
-// Stores the bits straight, so no int-to-float round trip through memory.
-static inline void set_uv16(DcVertex* v, u32 u, u32 vv)
-{
-	((u32*)&v->u)[0] = u << 16;
-	((u32*)&v->u)[1] = vv << 16;
-}
-
 static inline DcVertex* vtx_slot()
 {
 	if (s_dec->nvtx < MAX_VTX)
@@ -343,50 +319,13 @@ static inline DcVertex* vtx_slot()
 	return 0;
 }
 
-// Index in the current TA strip (inf vertices included), and the parity its next piece starts at.
-static u32 s_strip_idx;
-static u8 s_strip_parity;
-
-// Inline: a call inside the vertex loop stops GCC keeping the decode counters in registers.
-static inline __attribute__((always_inline)) void strip_close()
-{
-	u32 count = s_dec->nvtx - s_dec->strip_first;
-	if (count >= 3 && s_dec->nparam != 0 && s_dec->nstrip < MAX_STRIPS)
-	{
-		DcStrip& s = s_dec->strip[s_dec->nstrip++];
-		s.first = s_dec->strip_first;
-		s.count = (u16)(count > 0xFFFF ? 0xFFFF : count);
-		s.list = (u8)s_cur_list;
-		s.parity = s_strip_parity;
-		s.param = (u16)(s_dec->nparam - 1);
-		if (s_cur_list < 5)
-			s_stat_built[s_cur_list]++;
-	}
-	s_dec->strip_first = s_dec->nvtx;
-}
-
-// Keeps the vertex written at nvtx. An inf one is dropped and ends the strip piece there,
-// as Flycast makeIndex; the triangles that touch it go with it.
-static inline void vtx_commit()
-{
-	if (s_vtx_inf)
-	{
-		strip_close();
-		s_strip_parity = (u8)((s_strip_idx + 1) & 1);
-	}
-	else
-		s_dec->nvtx++;
-	s_strip_idx++;
-}
-
-// One-part vertex: position and color in one TA packet. UVs written after the commit
-// still land in the vertex: v keeps its slot.
+// One-part vertex: position and color in the same TA packet.
 #define VTX_ONE(pkt, color)                                          \
 	DcVertex* v = vtx_slot();                                        \
 	if (!v) return;                                                  \
 	set_pos(v, (pkt)->xyz[0], (pkt)->xyz[1], (pkt)->xyz[2]);        \
-	v->col = dc_col(color);                                          \
-	vtx_commit();
+	v->col = (color);                                                \
+	s_dec->nvtx++;
 
 // Two-part vertex: part A has the position, part B the color and the commit.
 #define VTX_A(pkt)                                                   \
@@ -396,12 +335,12 @@ static inline void vtx_commit()
 
 #define VTX_B(color)                                                 \
 	if (s_dec->nvtx >= MAX_VTX) return;                              \
-	s_dec->vtx[s_dec->nvtx].col = dc_col(color);                     \
-	vtx_commit();
+	s_dec->vtx[s_dec->nvtx].col = (color);                           \
+	s_dec->nvtx++;
 
 #define VTX_B_KEEP()                                                 \
 	if (s_dec->nvtx >= MAX_VTX) return;                              \
-	vtx_commit();
+	s_dec->nvtx++;
 
 struct Ps3VertexDecoder
 {
@@ -427,7 +366,6 @@ struct Ps3VertexDecoder
 		p.isp = pp->isp;
 		p.tsp = pp->tsp;
 		p.tcw = pp->tcw;
-		s_alpha_or = (!p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1)) ? 0xFF000000u : 0;
 	}
 
 	static void AppendPolyParam0(TA_PolyParam0* pp) { add_param(pp); }
@@ -452,38 +390,42 @@ struct Ps3VertexDecoder
 		s_face_g = pp->FaceColor0G; s_face_b = pp->FaceColor0B;
 	}
 
-	static void StartPolyStrip()
-	{
-		s_dec->strip_first = s_dec->nvtx;
-		s_strip_idx = 0;
-		s_strip_parity = 0;
-	}
+	static void StartPolyStrip() { s_dec->strip_first = s_dec->nvtx; }
 	static void EndPolyStrip()
 	{
+		u32 count = s_dec->nvtx - s_dec->strip_first;
 		StripCount++;
-		strip_close();
+		if (count < 3 || s_dec->nparam == 0 || s_dec->nstrip >= MAX_STRIPS)
+			return;
+		DcStrip& s = s_dec->strip[s_dec->nstrip++];
+		s.first = s_dec->strip_first;
+		s.count = (u16)(count > 0xFFFF ? 0xFFFF : count);
+		s.list = (u8)s_cur_list;
+		s.param = (u16)(s_dec->nparam - 1);
+		if (s_cur_list < 5)
+			s_stat_built[s_cur_list]++;
 	}
 
 	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); }
 	static void AppendPolyVertex1(TA_Vertex1* p) { VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
 	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); }
 	static void AppendPolyVertex3(TA_Vertex3* p) { VTX_ONE(p, p->BaseCol); v->u = p->u; v->v = p->v; }
-	static void AppendPolyVertex4(TA_Vertex4* p) { VTX_ONE(p, p->BaseCol); set_uv16(v, p->u, p->v); }
+	static void AppendPolyVertex4(TA_Vertex4* p) { VTX_ONE(p, p->BaseCol); v->u = uv16(p->u); v->v = uv16(p->v); }
 	static void AppendPolyVertex5A(TA_Vertex5A* p) { VTX_A(p); v->u = p->u; v->v = p->v; }
 	static void AppendPolyVertex5B(TA_Vertex5B* p) { VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
-	static void AppendPolyVertex6A(TA_Vertex6A* p) { VTX_A(p); set_uv16(v, p->u, p->v); }
+	static void AppendPolyVertex6A(TA_Vertex6A* p) { VTX_A(p); v->u = uv16(p->u); v->v = uv16(p->v); }
 	static void AppendPolyVertex6B(TA_Vertex6B* p) { VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
 	static void AppendPolyVertex7(TA_Vertex7* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = p->u; v->v = p->v; }
-	static void AppendPolyVertex8(TA_Vertex8* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); set_uv16(v, p->u, p->v); }
+	static void AppendPolyVertex8(TA_Vertex8* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = uv16(p->u); v->v = uv16(p->v); }
 	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); }
 	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); }
-	static void AppendPolyVertex11A(TA_Vertex11A* p) { VTX_A(p); v->col = dc_col(p->BaseCol0); v->u = p->u0; v->v = p->v0; }
+	static void AppendPolyVertex11A(TA_Vertex11A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = p->u0; v->v = p->v0; }
 	static void AppendPolyVertex11B(TA_Vertex11B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex12A(TA_Vertex12A* p) { VTX_A(p); v->col = dc_col(p->BaseCol0); set_uv16(v, p->u0, p->v0); }
+	static void AppendPolyVertex12A(TA_Vertex12A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = uv16(p->u0); v->v = uv16(p->v0); }
 	static void AppendPolyVertex12B(TA_Vertex12B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex13A(TA_Vertex13A* p) { VTX_A(p); v->col = dc_col(intensity_argb(p->BaseInt0)); v->u = p->u0; v->v = p->v0; }
+	static void AppendPolyVertex13A(TA_Vertex13A* p) { VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = p->u0; v->v = p->v0; }
 	static void AppendPolyVertex13B(TA_Vertex13B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex14A(TA_Vertex14A* p) { VTX_A(p); v->col = dc_col(intensity_argb(p->BaseInt0)); set_uv16(v, p->u0, p->v0); }
+	static void AppendPolyVertex14A(TA_Vertex14A* p) { VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = uv16(p->u0); v->v = uv16(p->v0); }
 	static void AppendPolyVertex14B(TA_Vertex14B* p) { VTX_B_KEEP(); }
 
 	static void AppendSpriteParam(TA_SpriteParam* spr)
@@ -494,12 +436,13 @@ struct Ps3VertexDecoder
 
 	// Sprite corners A,B,C arrive with UVs; D is sent without z or UV, so it completes the parallelogram.
 	// Strip order D,C,A,B makes the quad from two triangles.
-	static float s_spr_x[4], s_spr_y[4], s_spr_z[3];
+	static DcVertex s_spr[4];
+	static float s_spr_z[3];
 	static void AppendSpriteVertexA(TA_Sprite1A* sv)
 	{
-		s_spr_x[0] = sv->x0; s_spr_y[0] = sv->y0; s_spr_z[0] = sv->z0;
-		s_spr_x[1] = sv->x1; s_spr_y[1] = sv->y1; s_spr_z[1] = sv->z1;
-		s_spr_x[2] = sv->x2;
+		s_spr[0].x = sv->x0; s_spr[0].y = sv->y0; s_spr_z[0] = sv->z0;
+		s_spr[1].x = sv->x1; s_spr[1].y = sv->y1; s_spr_z[1] = sv->z1;
+		s_spr[2].x = sv->x2;
 	}
 	static void AppendSpriteVertexB(TA_Sprite1B* sv)
 	{
@@ -508,28 +451,25 @@ struct Ps3VertexDecoder
 			s_overflow++;
 			return;
 		}
-		s_spr_y[2] = sv->y2; s_spr_z[2] = sv->z2;
-		s_spr_x[3] = sv->x3; s_spr_y[3] = sv->y3;
-		float z[4] = { s_spr_z[0], s_spr_z[1], s_spr_z[2], s_spr_z[0] + s_spr_z[2] - s_spr_z[1] };
-		float u[4], v[4];
-		u[0] = uv16(sv->u0); v[0] = uv16(sv->v0);
-		u[1] = uv16(sv->u1); v[1] = uv16(sv->v1);
-		u[2] = uv16(sv->u2); v[2] = uv16(sv->v2);
-		u[3] = u[0] + u[2] - u[1];
-		v[3] = v[0] + v[2] - v[1];
-		u32 col = dc_col(s_sprite_col);
+		s_spr[2].y = sv->y2; s_spr_z[2] = sv->z2;
+		float z3 = s_spr_z[0] + s_spr_z[2] - s_spr_z[1];
+		set_pos(&s_spr[0], s_spr[0].x, s_spr[0].y, s_spr_z[0]);
+		set_pos(&s_spr[1], s_spr[1].x, s_spr[1].y, s_spr_z[1]);
+		set_pos(&s_spr[2], s_spr[2].x, s_spr[2].y, s_spr_z[2]);
+		set_pos(&s_spr[3], sv->x3, sv->y3, z3);
+		s_spr[0].u = uv16(sv->u0); s_spr[0].v = uv16(sv->v0);
+		s_spr[1].u = uv16(sv->u1); s_spr[1].v = uv16(sv->v1);
+		s_spr[2].u = uv16(sv->u2); s_spr[2].v = uv16(sv->v2);
+		s_spr[3].u = s_spr[0].u + s_spr[2].u - s_spr[1].u;
+		s_spr[3].v = s_spr[0].v + s_spr[2].v - s_spr[1].v;
 
 		static const int order[4] = { 3, 2, 0, 1 };
 		StartPolyStrip();
 		for (int i = 0; i < 4; i++)
 		{
-			int k = order[i];
-			DcVertex* d = &s_dec->vtx[s_dec->nvtx];
-			set_pos(d, s_spr_x[k], s_spr_y[k], z[k]);
-			d->u = u[k];
-			d->v = v[k];
-			d->col = col;
-			vtx_commit();
+			s_dec->vtx[s_dec->nvtx] = s_spr[order[i]];
+			s_dec->vtx[s_dec->nvtx].col = s_sprite_col;
+			s_dec->nvtx++;
 		}
 		EndPolyStrip();
 	}
@@ -579,8 +519,7 @@ struct Ps3VertexDecoder
 	static void ListInit() { reset_lists(s_dec); }
 	static void SoftReset() {}
 };
-float Ps3VertexDecoder::s_spr_x[4];
-float Ps3VertexDecoder::s_spr_y[4];
+DcVertex Ps3VertexDecoder::s_spr[4];
 float Ps3VertexDecoder::s_spr_z[3];
 
 // The decode stage replays bytes the store stage already answered for, so it
@@ -1196,12 +1135,12 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 	return s_cache_or;
 }
 
-static inline void emit_vertex(const DcVertex* v)
+static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
 {
-	u32 c = v->col;
-	glColor4ub(c >> 24, (c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+	u32 c = v->col | alpha_or;
+	glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
 	glTexCoord2f(v->u, v->v);
-	glVertex3f(v->x, v->y, v->z);
+	glVertex3f(v->x * v->w, v->y * v->w, v->w);
 }
 
 // Flycast ta_util.cpp makeIndex(): consecutive strips with the same state share one GL
@@ -1225,6 +1164,7 @@ struct StripRun
 	u32 list;
 	u32 count;              // vertices in the open GL strip
 	u32 first;              // Vertex Arrays: the run's first vertex in s_vb
+	u32 alpha_or;
 	const DcVertex* last;   // last vertex emitted
 };
 static StripRun s_run;
@@ -1237,23 +1177,30 @@ static inline bool strip_equivalent(const DcParam& a, const DcParam& b)
 	    && a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full;
 }
 
-// The decoded vertex plus ps3gl_vertex_t's constants (w = 1, no TC1). Word stores only: RSX memory
-// is cache-inhibited, and GCC's merged u1/v1 std is misaligned on odd 36-byte vertices (alignment trap).
-static inline bool vb_emit(const DcVertex* v)
+// Flycast is_vertex_inf. set_pos stores W, so its "1/W > 3.4e37" is W < 1/3.4e37 (+inf 1/W gives W = 0).
+static inline bool vertex_inf(const DcVertex* v)
+{
+	return v->x != v->x || fabsf(v->x) > 1e25f || v->y != v->y || fabsf(v->y) > 1e25f
+	    || v->w < 1.0f / 3.4e37f;
+}
+
+// emit_vertex in ps3gl_vertex_t form (z = W, w = 1, RGBA). Word stores only: RSX memory is
+// cache-inhibited, and GCC's merged u1/v1 std is misaligned on odd 36-byte vertices (alignment trap).
+static inline bool vb_emit(const DcVertex* v, u32 alpha_or)
 {
 	if (s_vb_used >= s_vb_cap)
 		return false;
-	volatile u32* o = (volatile u32*)&s_vb[s_vb_used++];
-	const u32* s = (const u32*)v;
-	o[0] = s[0];
-	o[1] = s[1];
-	o[2] = s[2];
-	o[3] = 0x3F800000u;
-	o[4] = s[3];
-	o[5] = s[4];
-	o[6] = 0;
-	o[7] = 0;
-	o[8] = s[5];
+	volatile float* o = (volatile float*)&s_vb[s_vb_used++];
+	u32 c = v->col | alpha_or;
+	o[0] = v->x * v->w;
+	o[1] = v->y * v->w;
+	o[2] = v->w;
+	o[3] = 1.0f;
+	o[4] = v->u;
+	o[5] = v->v;
+	o[6] = 0.0f;
+	o[7] = 0.0f;
+	((volatile u32*)o)[8] = (c << 8) | (c >> 24);
 	return true;
 }
 
@@ -1261,11 +1208,11 @@ static inline void run_emit(const DcVertex* v)
 {
 	if (s_vb)
 	{
-		if (!vb_emit(v))
+		if (!vb_emit(v, s_run.alpha_or))
 			return;
 	}
 	else
-		emit_vertex(v);
+		emit_vertex(v, s_run.alpha_or);
 	s_run.last = v;
 	s_run.count++;
 }
@@ -1293,14 +1240,11 @@ static void draw_strip(const DcStrip& s, u32 list)
 
 	if (!s_merge)
 	{
-		apply_param(p, list);
+		u32 alpha_or = apply_param(p, list);
 		glBegin(GL_TRIANGLE_STRIP);
 		const DcVertex* v = &s_rc->vtx[s.first];
-		// A piece split off at an odd index leads with a copy, so its triangles keep their winding.
-		if (s.parity)
-			emit_vertex(v);
 		for (u32 k = 0; k < s.count; k++, v++)
-			emit_vertex(v);
+			emit_vertex(v, alpha_or);
 		const u64 t0 = PERF_TICKS();
 		glEnd();
 		s_dt[DT_GLEND] += PERF_TICKS() - t0;
@@ -1333,7 +1277,7 @@ static void draw_strip(const DcStrip& s, u32 list)
 	else
 	{
 		run_close();
-		apply_param(p, list);
+		s_run.alpha_or = apply_param(p, list);
 		if (!s_vb)
 			glBegin(GL_TRIANGLE_STRIP);
 		s_run.first = s_vb_used;
@@ -1345,17 +1289,37 @@ static void draw_strip(const DcStrip& s, u32 list)
 		s_run.count = 0;
 	}
 
-	// Inf vertices were split off at decode, so every vertex here is drawable.
-	const DcVertex* v = &s_rc->vtx[s.first];
-	for (u32 i = 0; i < s.count; i++, v++)
+	const DcVertex* v0 = &s_rc->vtx[s.first];
+	const DcVertex* last_good = 0;
+	for (u32 i = 0; i < s.count; i++)
 	{
+		const DcVertex* v = v0 + i;
+		if (vertex_inf(v))
+		{
+			// Skip the inf run; the next good vertex restarts the strip after a degenerate join.
+			while (i < s.count - 1u)
+			{
+				if (!vertex_inf(v0 + i + 1))
+				{
+					if (last_good)
+					{
+						run_emit(last_good);
+						dupe_next = true;
+					}
+					break;
+				}
+				i++;
+			}
+			continue;
+		}
+		last_good = v;
 		if (dupe_next)
 		{
 			run_emit(v);
 			dupe_next = false;
 		}
-		// Vertex i must sit at the same parity as in its own TA strip, or its triangles flip winding.
-		if (((i ^ s.parity ^ s_run.count) & 1) ^ (u32)s_run.reversed)
+		// Vertex i must sit at the same parity as in its own strip, or its triangles flip winding.
+		if (((i ^ s_run.count) & 1) ^ (u32)s_run.reversed)
 			run_emit(v);
 		run_emit(v);
 	}
@@ -1394,7 +1358,7 @@ static void draw_tr_sorted()
 			continue;
 		float sum = 0.0f;
 		for (u32 k = 0; k < st.count; k++)
-			sum += 1.0f / s_rc->vtx[st.first + k].z;
+			sum += 1.0f / s_rc->vtx[st.first + k].w;
 		s_order[n].key = sum / st.count;
 		s_order[n].idx = i;
 		n++;
@@ -1601,7 +1565,7 @@ static void collect_diag()
 			if (p.tsp.UseAlpha) d.usealpha++;
 			if (p.tsp.IgnoreTexA) d.ignoretexa++;
 			if (p.pcw.Texture) d.fmt[p.tcw.NO_PAL.PixelFmt & 7]++;
-			// The rule the decoder applied to the vertex alpha.
+			// The same rule apply_param uses, minus the bind result.
 			bool force = !p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1);
 			if (force) d.forced++;
 			d.ct[p.pcw.Col_Type & 3]++;
@@ -1609,29 +1573,27 @@ static void collect_diag()
 			float sw0 = 1e30f, sw1 = 0.0f;
 			for (u32 k = 0; k < st.count; k++)
 			{
-				// Stored as x*W, y*W, W: divide back to screen pixels.
 				const DcVertex& v = s_rc->vtx[st.first + k];
-				float vw = v.z, vx = v.x / vw, vy = v.y / vw;
-				if (vx < sx0) sx0 = vx;
-				if (vx > sx1) sx1 = vx;
-				if (vy < sy0) sy0 = vy;
-				if (vy > sy1) sy1 = vy;
-				if (vw < sw0) sw0 = vw;
-				if (vw > sw1) sw1 = vw;
-				u32 a = v.col & 0xFF;
+				if (v.x < sx0) sx0 = v.x;
+				if (v.x > sx1) sx1 = v.x;
+				if (v.y < sy0) sy0 = v.y;
+				if (v.y > sy1) sy1 = v.y;
+				if (v.w < sw0) sw0 = v.w;
+				if (v.w > sw1) sw1 = v.w;
+				u32 a = force ? 255u : (v.col >> 24);
 				if (a < d.amin) d.amin = a;
 				if (a > d.amax) d.amax = a;
-				u32 r = v.col >> 24, g = (v.col >> 16) & 0xFF, b = (v.col >> 8) & 0xFF;
+				u32 r = (v.col >> 16) & 0xFF, g = (v.col >> 8) & 0xFF, b = v.col & 0xFF;
 				u32 mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
 				if (mx < d.cmin) d.cmin = mx;
 				if (mx > d.cmax) d.cmax = mx;
 				if (mx == 0) d.black++;
-				if (vx < d.x0) d.x0 = vx;
-				if (vx > d.x1) d.x1 = vx;
-				if (vy < d.y0) d.y0 = vy;
-				if (vy > d.y1) d.y1 = vy;
-				if (vw < d.w0) d.w0 = vw;
-				if (vw > d.w1) d.w1 = vw;
+				if (v.x < d.x0) d.x0 = v.x;
+				if (v.x > d.x1) d.x1 = v.x;
+				if (v.y < d.y0) d.y0 = v.y;
+				if (v.y > d.y1) d.y1 = v.y;
+				if (v.w < d.w0) d.w0 = v.w;
+				if (v.w > d.w1) d.w1 = v.w;
 			}
 			if ((sx1 - sx0) >= 320.0f && (sy1 - sy0) >= 240.0f)
 			{
