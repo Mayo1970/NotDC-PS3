@@ -25,7 +25,7 @@ s32 FASTCALL InitAica(aica_init_params* initp)
     init_mem();
     printf("[NullAICA] InitAica: init_mem() done\n");
 
-    ps3aica_init(initp->aica_ram);   // 5.13 A1, no-op unless "SPE AICA Check" is on
+    ps3aica_init(initp->aica_ram);   // 5.13 A1/A2, no-op unless "SPE AICA Check" or "SPE AICA Sound" is on
 
     printf("[NullAICA] InitAica: AICA_Init()...\n");
     AICA_Init();

@@ -7,6 +7,7 @@
 #include "ps3_tex.h"
 #include "ps3_rend_regs.h"
 #include "ps3_spe.h"
+#include "ps3_menu.h"
 #include "dc/pvr/pvr_if.h"
 #include <algorithm>
 #include <math.h>
@@ -2622,6 +2623,12 @@ void ThreadEnd() {}
 // Called at the start of every emulated vblank from SPG.cpp.
 void VBlank()
 {
+	// In-game menu (SELECT): the guest stops here; the menu draws with ps3gl on this thread.
+	if (ps3_menu_pending())
+	{
+		rth_wait_idle();
+		ps3_menu_ingame();
+	}
 	if (!FB_R_CTRL.fb_enable)
 		return;
 	if (!fb_needs_present())

@@ -42,7 +42,7 @@ static u32 phase;
 // replay 8-block-old audio (a 42.7 ms echo), so every slot up to the lead is written.
 #define LEAD_BLOCKS 3
 
-static volatile u32 st_in, st_out, st_blocks, st_silent, st_dropped, st_late;
+static volatile u32 st_in, st_blocks, st_silent, st_dropped, st_late;
 
 static void feeder_thread(void* arg)
 {
@@ -261,7 +261,6 @@ void wii_audio_push_sample(s16 l, s16 r)
 		ring[s + 1] = (f32)(prev_r * (s32)(OUT_RATE - phase) + r * (s32)phase) * scale;
 		__sync_synchronize();
 		ring_wr = w + 1;
-		st_out++;
 		phase += IN_RATE;
 	}
 	phase -= OUT_RATE;
@@ -271,13 +270,36 @@ void wii_audio_push_sample(s16 l, s16 r)
 
 void wii_audio_frame() {}
 
+// OPTIMIZATION_PLAN 5.13 A2: the SPU writes the frames and ring_wr itself (spu/spe_aica_snd.h); no push runs.
+void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now)
+{
+	*ring_ea = (u32)(uintptr_t)ring;
+	*frames = RING_FRAMES;
+	*wr_ea = (u32)(uintptr_t)&ring_wr;
+	*rd_ea = (u32)(uintptr_t)&ring_rd;
+	*wr_now = ring_wr;
+}
+
+// 5.13 A2 pacing of the SH4 thread, as ring_wait_space: waits until frame `end` fits. Returns the ticks waited.
+u64 ps3_audio_spu_wait(u32 end)
+{
+	if (!running || !aica_ready || settings.emulator.AudioBuffers == 0 || end - ring_rd <= RING_FRAMES)
+		return 0;
+	const u64 t0 = gettime();
+	for (int spins = 0; end - ring_rd > RING_FRAMES && spins < 2000 && aica_ready; spins++)
+		usleep(50);
+	const u64 t = gettime() - t0;
+	SndWaitTicks += t;
+	return t;
+}
+
 // Called once per second from the monitor thread.
 void ps3_audio_stats()
 {
 	if (!running)
 		return;
 	static u32 l_in, l_out, l_blocks, l_silent, l_dropped, l_late;
-	u32 in = st_in, out = st_out, blocks = st_blocks, silent = st_silent, dropped = st_dropped;
+	u32 in = st_in, out = ring_wr, blocks = st_blocks, silent = st_silent, dropped = st_dropped;
 	u32 late = st_late;
 	printf("[aud] in=%u/s out=%u/s blocks=%u silent=%u dropped=%u late=%u fill=%u\n",
 	       in - l_in, out - l_out, blocks - l_blocks, silent - l_silent,

@@ -1,6 +1,7 @@
 #include "sgc_if.h"
 #include "dsp.h"
 #include "aica_mem.h"
+#include "ps3/ps3_aica_spe.h"
 #include <math.h>
 
 // Stats-line counters (plugs/drkPvr/Renderer_if.h). Declared here rather than
@@ -1159,6 +1160,11 @@ void ReadCommonReg(u32 reg, bool byte)
         CommonData->MOEMP = 1;
         break;
     case 0x2810: case 0x2811:
+        if (g_aica_spe_snd)   // 5.13 A2: the channels run in the caique twin
+        {
+            *(u16*)&aica_reg[0x2812] = ps3aica_read_mon(0x2810, byte && reg == 0x2810);
+            break;
+        }
         {
             u32 chan = CommonData->MSLC;
             CommonData->LP  = Chans[chan].loop.looped;
@@ -1169,6 +1175,11 @@ void ReadCommonReg(u32 reg, bool byte)
         }
         break;
     case 0x2814: case 0x2815:
+        if (g_aica_spe_snd)
+        {
+            *(u16*)&aica_reg[0x2816] = ps3aica_read_mon(0x2814, false);
+            break;
+        }
         {
             const ChannelEx& ch = Chans[CommonData->MSLC];
             CommonData->CA = ch.CA;
@@ -1204,8 +1215,57 @@ extern "C" int get_cdda_preset();
 #define CDDA_FIX() (get_cdda_preset() != 0)
 void FASTCALL gdrom_get_cdda(s16* sector);
 
+// Refills the sector buffer, every 588 stereo frames.
+static void cdda_refill()
+{
+    cdda_index = 0;
+    if (CDDA_FIX())
+    {
+        // gdrom_get_cdda gives the raw Red Book sector (s16 L/R
+        // interleaved, little-endian) or silence when no track plays.
+        gdrom_get_cdda(cdda_sector);
+#ifdef WII
+        // Disc bytes are little-endian; swap each sample for the
+        // big-endian CPU.
+        u8* b = (u8*)cdda_sector;
+        for (u32 i = 0; i < sizeof(cdda_sector); i += 2)
+        {
+            u8 t = b[i]; b[i] = b[i + 1]; b[i + 1] = t;
+        }
+#endif
+    }
+    else
+    {
+        memset(cdda_sector, 0, sizeof(cdda_sector));
+    }
+
+    // Stops at the first non-zero sample, so a playing track costs almost
+    // nothing; only a silent sector is scanned whole (~75 times a second).
+    cdda_silent = true;
+    for (u32 i = 0; i < CDDA_SIZE; i++)
+    {
+        if (cdda_sector[i] != 0)
+        {
+            cdda_silent = false;
+            break;
+        }
+    }
+}
+
 void AICA_Sample()
 {
+    // 5.13 A2: the SPU makes the sound; only the CD-DA sectors go to it from here.
+    if (g_aica_spe_snd)
+    {
+        if (cdda_index >= CDDA_SIZE)
+        {
+            cdda_refill();
+            ps3aica_cdda(cdda_sector, cdda_silent);
+        }
+        cdda_index += 2;
+        return;
+    }
+
     const bool fast   = g_aica_fast_preset != 0;
     const bool dsp_on = aica_settings.DSPEnabled != 0;
 
@@ -1236,42 +1296,9 @@ void AICA_Sample()
         diag_lines = diag_dropped = diag_kon = diag_konign = diag_koff = diag_end = 0;
     }
 
-    // CDDA input — refill the sector buffer every 588 stereo frames.
+    // CDDA input
     if (cdda_index >= CDDA_SIZE)
-    {
-        cdda_index = 0;
-        if (CDDA_FIX())
-        {
-            // gdrom_get_cdda gives the raw Red Book sector (s16 L/R
-            // interleaved, little-endian) or silence when no track plays.
-            gdrom_get_cdda(cdda_sector);
-#ifdef WII
-            // Disc bytes are little-endian; swap each sample for the
-            // big-endian CPU.
-            u8* b = (u8*)cdda_sector;
-            for (u32 i = 0; i < sizeof(cdda_sector); i += 2)
-            {
-                u8 t = b[i]; b[i] = b[i + 1]; b[i + 1] = t;
-            }
-#endif
-        }
-        else
-        {
-            memset(cdda_sector, 0, sizeof(cdda_sector));
-        }
-
-        // Stops at the first non-zero sample, so a playing track costs almost
-        // nothing; only a silent sector is scanned whole (~75 times a second).
-        cdda_silent = true;
-        for (u32 i = 0; i < CDDA_SIZE; i++)
-        {
-            if (cdda_sector[i] != 0)
-            {
-                cdda_silent = false;
-                break;
-            }
-        }
-    }
+        cdda_refill();
     s32 EXTS0L = cdda_sector[cdda_index];
     s32 EXTS0R = cdda_sector[cdda_index + 1];
     cdda_index += 2;

@@ -1,5 +1,5 @@
-// OPTIMIZATION_PLAN 5.13 A1: sleeps on a reservation of the bell line, runs the AICA write log through the full
-// caique model (spe_aica_model.cpp) and compares its control snapshot with the PPU's at every CHECK record.
+// OPTIMIZATION_PLAN 5.13 A1/A1b/A2: sleeps on a reservation of the bell line, runs the AICA write log through the caique
+// model and compares its control snapshot with the PPU's at every CHECK. Sound mode: its output goes to the audio ring.
 #include <spu_intrinsics.h>
 #include <spu_mfcio.h>
 #include <sys/spu_thread.h>
@@ -12,13 +12,19 @@
 #define DEC_TICKS 79800  // 1 ms at the 79.8 MHz timebase: fallback wake
 #define REC_BATCH 64
 
-void am_init(uint32_t aram_ea);
+void am_init(const AicaSetup* su, uint64_t dbad_ea, uint64_t isabad_ea, uint64_t cdda_ea, volatile uint32_t* where);
+void am_dsp_selftest(void);
+void am_dsp_stats(uint32_t* out);
 void am_reset(void);
 void am_write(uint32_t sample, uint32_t off, uint32_t val);
 uint32_t am_check(uint32_t sample, void* snap);
+void am_cdda(uint32_t sample, uint32_t val);
+void am_snd_flush(void);
+void am_snd_stats(uint32_t* out);
 uint32_t am_samples(void);
 uint32_t am_misses(void);
 void am_prof(uint32_t* out);
+extern char _end[];
 
 static AicaBell bell;
 static AicaEcho echo;
@@ -38,6 +44,8 @@ static void put_echo(void)
 	echo.samples = am_samples();
 	echo.misses = am_misses();
 	am_prof((uint32_t*)echo.prof);
+	am_dsp_stats((uint32_t*)&echo.dsp_flags);
+	am_snd_stats((uint32_t*)&echo.snd_frames);
 	mfc_put((void*)&echo, echo_ea, sizeof(echo), TAG_ECHO, 0, 0);
 	wait_tag(TAG_ECHO);
 }
@@ -78,7 +86,12 @@ static uint32_t run_recs(uint32_t t, uint32_t head)
 			if (r->op == AICA_OP_WRITE)
 				am_write(r->sample, r->off, r->val);
 			else if (r->op == AICA_OP_CHECK)
+			{
 				do_check(r);
+				am_snd_flush();   // sound mode: the block's frames to the ring
+			}
+			else if (r->op == AICA_OP_CDDA)
+				am_cdda(r->sample, r->val);
 			else if (r->op == AICA_OP_RESET)
 				am_reset();
 		}
@@ -99,9 +112,14 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_shared)
 	bad_ea = arg_shared + offsetof(AicaShared, bad);
 	mfc_get(&setup, arg_shared + offsetof(AicaShared, setup), sizeof(setup), TAG_LOG, 0, 0);
 	wait_tag(TAG_LOG);
-	am_init(setup.aram_ea);
+	am_init(&setup, arg_shared + offsetof(AicaShared, dbad), arg_shared + offsetof(AicaShared, isabad),
+	        arg_shared + offsetof(AicaShared, cdda), &echo.phase);
 	echo.state = AICA_STATE_RUNNING;
 	echo.ls_addr = (uint32_t)&echo;
+	echo.ls_end = (uint32_t)_end;
+	put_echo();
+	// Before the first record: the PPU only queues writes meanwhile.
+	am_dsp_selftest();
 	put_echo();
 
 	spu_write_event_mask(MFC_LLR_LOST_EVENT | MFC_DECREMENTER_EVENT);

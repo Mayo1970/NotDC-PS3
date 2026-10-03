@@ -789,11 +789,7 @@ void gd_process_spi_cmd()
 			}
 			else if (param_type==4)
 			{
-				//pause audio/stop - drive goes to STANDBY, positioned at FAD 150
-				cdda.CurrAddr.FAD = cdda.StartAddr.FAD = 150;
-				cdda.playing = 0;
-				SecNumber.Status = GD_STANDBY;  // STANDBY = audio playback ended/stopped
-				GDStatus.DSC=1;
+				//pause audio -- nothing more (nullDC-v1, Reicast, Flycast): a resume continues from here
 			}
 			else
 			{

@@ -52,9 +52,55 @@ the SPE decoder (5.12 S2) writes the 5.10 vertex format.
 - 5.13 A0 done on the PC 2026-10-03: `plugs/caiqueAICA/` (not in the PS3
   build yet), `step()` = `step_control()` + `step_render()`, bit-identical
   to caique `5aa2376` on all cases and validators. See 5.13.
-- 5.13 A1 built 2026-10-03, HW pending: caique control twin on the PPU, full
-  model on an SPE from the write log, snapshot check every 64 samples.
-  Toggle AUDIO -> "SPE AICA Check", default OFF. PC test: 0 mismatches.
+- 5.13 A1 HW tested 2026-10-03: caique control twin on the PPU, full model
+  on an SPE from the write log, snapshot check every 64 samples. Toggle
+  AUDIO -> "SPE AICA Check", default OFF. Run 2 (after bit-exact speed
+  work): 96684 checks, bad=0; PPU control pass 1.5-4% of wall. With the
+  game's DSP program the SPU falls to ~65% of real time (DSP = 90% of SPU
+  wall) and the log-full wait throttles the game.
+- 5.13 A1b (DSP recompiler on the SPU) HW validated 2026-10-03, Crazy
+  Taxi: self-test PASS, 998770 checked samples with 0 mismatches. The
+  game's DSP program now takes 4-6% of the SPU (was 90%, at 65% of the
+  rate); the SPU keeps real time and no longer throttles the game. Option
+  AUDIO -> "SPE DSP JIT" (OFF / ON / CHECK, default CHECK). Audio still
+  crackles: the sound is still nullAICA, starved below full speed (A2 not
+  done).
+- 5.13 A1c (Matt 2026-10-03: "make PPU control pass cheaper") HW
+  validated 2026-10-03 (Matt: SUCCESS). Bit-exact: idle slots that cannot
+  move are skipped, and the PPU runs the control pass in batches. In game
+  `ppu ctl` 11.2 -> 5.8% of wall, dense VPS 45.5 -> 48.8, bad=0. What is
+  left is the playing voices (~7 per sample, ~200 ns each). See 5.13 A1c.
+- 5.13 A2 (Matt 2026-10-03: "Go with A2") built 2026-10-03, PC tested, HW
+  tested 2026-10-03 on three games. AUDIO -> "SPE AICA Sound"
+  (`SpeAicaSound`), default OFF, set before boot. The SPU model plays the
+  sound without the DSP (A3 adds it); nullAICA's mixer is off; 0x2810/0x2814
+  reads come from the PPU control twin; CD-DA sectors go to the SPU.
+  - Crazy Taxi: correct, `bad=0`; dense SPEED 81.4 -> 82.2%, `aica:` 10.2 ->
+    2.9%. Crackles only below full speed (Matt: "ran MUCH better").
+  - ChuChu Rocket: 22-25 voices overload the SPU (lag up to 105 ms) and the
+    PPU control pass (21% of wall). Echo on the effects, all the time (old).
+  - Looney Tunes Space Race: no music, voices or effects, one looped voice.
+    OPEN: not yet run with SPE AICA Sound OFF. See 5.13 "A2 HW".
+- Next goals (Matt 2026-10-03, after A2; order set by Matt after the menu
+  test):
+  1. NEXT: A2 at high voice counts (5.13 "A2 high voices"): SPU model speed
+     (ChuChu stage) and the PPU control pass cost (5.3-6.0 us per sample at
+     22 voices).
+  2. Then: ARM7 rate option (2.5): cycles per sample 170 (today at SH4 Clock
+     150) / 256 (Reicast, Minicast) / 512 (Flycast, real). Test: ChuChu
+     echo, and one Looney Tunes boot for its missing voices.
+- Deferred (Matt 2026-10-03: "get back to this later"): Looney Tunes Space
+  Race has no voices or effects, also with nullAICA (not A2). Music works
+  since the 3h pause fix. The ARM7 driver writes no AICA register after its
+  upload; first check: the ARM7 rate option, then `[ARMHOT]` (JIT C-Calls).
+- In-game menu (Matt 2026-10-03) HW validated 2026-10-03 (Sonic Adventure,
+  opened and closed 7 times, the game continued each time): SELECT in a game stops
+  the guest at the next vblank and shows the option pages (`ps3_menu_ingame`,
+  hooked in `VBlank()`); SELECT again resumes. Live options (`k_live_opts`)
+  act at once; any other change is saved for the next boot ("*").
+- 3h pause rule fixed 2026-10-03 (Matt: "Do it"), HW validated 2026-10-03
+  (ChuChu Rocket: the music continues after a pause). SPI_CD_SEEK parameter
+  4 keeps the position, so a resume continues the track.
 
 Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
 `udplog.py`), log analysis by windows with vt > 3K. Probes: IFB Probe and
@@ -93,7 +139,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
 | 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl` |
-| 3h GD-ROM CDDA lead-out / restart rules | OPEN |
+| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
 work is section 5, SH4-side speed.
@@ -181,6 +227,7 @@ All changes are uncommitted in the working tree. Matt commits.
 
 - 2026-09-29: see 5.13. The SPE AICA plan runs caique's measured DSP on an
   SPE, which may replace the PPC DSP JIT. Matt's decision.
+- 2026-10-03 (Matt): the DSP JIT is now 5.13 A1b, a recompiler on the SPU.
 
 - Parked by Matt on 2026-09-23. He wants a DSP JIT (PPC), not an interpreter.
   Flycast `dsp_interp.cpp` stays the reference for the semantics; its
@@ -260,6 +307,11 @@ All changes are uncommitted in the working tree. Matt commits.
   are 20 (today), 9 (Flycast rate, 504 cycles) and 2 (nullDC rate).
 - HW test: ChuChu Rocket at each setting. Compare the echo, the menu-select
   sound and SPEED. Read the ARM time on the stats line for the PPE cost.
+- 2026-10-03: a next optimization goal (Matt). Cycles per AICA sample:
+  Flycast 512 (22.58 MHz, real), Reicast/Minicast 256 (`Run(512 * 32 / 32 /
+  2)` per sample), ours `aica_sample_cycles / 20`: 226 at 200 MHz, 170 at
+  SH4 Clock 150. The ChuChu echo stays with the caique model (5.13 A2), so
+  the mixer is not the cause.
 
 ---
 
@@ -382,7 +434,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC 2026-10-03 (split bit-identical); A1 built, HW pending |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -1103,14 +1155,305 @@ clock by VPS.
         twin against the skipping full model) 443432 checks, 0 mismatches.
       - HW run 2: same settings and toggle. Read `ppu ctl %` / `aica%`,
         `spu busy`, the `spu % of wall` split and `bad`.
+    - HW 2026-10-03 run 2, Crazy Taxi (NTSC), same settings, 44 windows:
+      - Correct: 96684 checks, `bad=0`. The PPU control pass and the full
+        SPU model agree on every snapshot.
+      - Before the game loads its DSP program: real time (41-44 K
+        samples/s), `ppu ctl` 1.5-4% of wall (360-900 ns/sample, was
+        ~38% in run 1), `spu busy` 11-20%, DSP 0.4% of SPU wall.
+      - With the DSP program: SPU busy 119%, DSP 90.4% of SPU wall (slots
+        2.2, env 1.5, preview+bus 2.6, mix 2.4). The SPU makes 28844
+        samples/s; the PPU waits on the full log (`full=214`, `ppu ctl`
+        90.6%, shown as `arm:` 75-80% on the SPEED line), so the whole
+        emulator ran at ~65% SPEED. The 100 ms cut-off never fired.
+      - Design fault seen here: a slow SPU throttles the game through the
+        log-full wait. The check should stop rather than throttle.
+      - Next goal (Matt, 2026-10-03): a DSP recompiler on the SPU (see
+        A1b below). The DSP must get at least ~1.6x faster plus margin.
+      - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
+    - A1b (Matt 2026-10-03): DSP recompiler on the SPU. This is 2.3's
+      DSP JIT, moved from the PPU to the SPE. `[x]` HW validated
+      2026-10-03: see "A1b built" and "A1b HW" below.
+      - On an MPRO write the SPU (or the PPU, if LS is short) translates
+        the 128 steps into SPU code in LS once; each sample runs that code.
+        Fields become constants, most branches go; `clz` for `dsp_pack`,
+        3-4 multiply-adds for the 24x13-bit `X*Y`. LS is plain RAM: write,
+        `sync`, branch (no cache, no W^X).
+      - LS budget: ~164 KB used now, ~75 KB free after a 16 KB stack.
+        Estimate (not measured): emitter 8-15 KB, code 10-20 KB. Fallbacks:
+        a 32 KB DSP ring (RBL 64K words through the cache), or emit on the
+        PPU and DMA the code in (the PPU never runs it: no `.text` issue).
+      - Check on HW: run the recompiled DSP beside the caique interpreter
+        on the SPU and compare TEMP / MEMS / EFREG / ACC per sample, like
+        the A1 snapshot check. Then measure `spu % of wall`.
+      - Also: replace the PPU's log-full wait with a stop, so a slow SPU
+        never slows the game.
+      - A1b built 2026-10-03 (PC tested, HW pending). Option AUDIO ->
+        "SPE DSP JIT" (`nullDC.cfg [ps3] SpeDspJit`): OFF (interpreter, as
+        A1) / ON / CHECK, default CHECK. Acts only with "SPE AICA Check"
+        ON. Set before boot.
+        - Emitter `ps3/spu/spe_dsp_jit.c` (portable C, -Os on the SPU): one
+          SPU function per program, built on the SPU at the first DSP pass
+          after an MPRO or 0x2804 write or a reset. Code buffer 24 KB; a
+          program that does not fit runs on the interpreter (`fails=`).
+        - Same step order as `dsp_step()`. The read pipeline (odd reads,
+          deferred even reads, landing two steps later, the step-127 read
+          that lands at step 1 of the next sample) is fixed at compile
+          time. Only the collision bits are runtime data.
+        - A step builds ACC only if the next step reads it (SHIFTED or B),
+          so NOP runs emit nothing.
+        - X*Y as two 16x16 `mpy` (X = xh * 4096 + xl), `dsp_pack` with
+          `clz`, `dsp_unpack` with `rotma` by the exponent.
+        - TEMP, MEMS, EFREG, MIXS_bank, EXTS and coll_* stay in the model
+          (TEMP and MIXS_bank 16-aligned in the SPU build only). COEF and
+          MADRS go to pre-converted tables, one value per quadword,
+          refreshed on each write.
+        - LS ring (RBL up to 32K words, DC byte order): quadword
+          load/store. TABLE accesses and a 64K-word ring call the
+          interpreter's path (`dspjit_rd/wr`, `brasl`). A collision sends
+          the store to a spare quadword after the ring.
+        - Long-lived values in r80-r108, saved by the prologue as spu-gcc
+          does; temporaries r5-r79. Opcodes checked against spu-as.
+      - Runtime `ps3/spu/spe_dsp_check.h` (hook, tables, check, self-test,
+        ISA probe), shared with the PC test. Model change: `run()` calls
+        `caique_dsp_hook()` first and `dsp_step()` is public, both under
+        `CAIQUE_DSP_HOOK` (SPU build only). A0 re-run: all cases and
+        validators still bit-identical to caique `5aa2376`.
+      - CHECK: every 7th sample (odd: both MIXS banks) also runs the
+        interpreter from the same state, its ring writes undone after, and
+        compares TEMP, MEMS, EFREG, ACC, FRC, Y, ADRS, memval, the read
+        pipeline and the LS-ring words written. The recompiled result
+        stays. The first 2 mismatches go to the PPU in full (`dspbad` hex
+        lines, enough for a PC replay).
+      - Boot self-test on the SPU (after RUNNING, before the first record):
+        ISA probe (the 35 emitted forms on random operands against a C
+        model of the ISA), then 24 random programs x 16 samples against
+        the interpreter. A failure turns the recompiler off for the
+        session (`dsp jit self-test FAIL`).
+      - PPU: a full write log stops the check at once and prints the SPU's
+        LS echo (phase: 1 generated code, 2 interpreter, 3 compile, 4
+        self-test) and exit status.
+      - PC test, `misc/dspjit_check/` (WSL `run.sh`, then
+        `objdump_check.sh` in Git Bash): a small SPU simulator, written
+        from the ISA, runs the generated code.
+        - ISA probe: the simulator matches the C model on every form.
+        - Random programs (p = 1/4 per flag): 3000 programs x 32 samples,
+          0 mismatches, all fit in 24 KB.
+        - All 73 caique cases, recompiler checked on every sample:
+          28377429 samples, 0 mismatches, 0 simulator faults (199159
+          compiles: the cases write MPRO word by word). A1 still 443432
+          checks, 0 mismatches.
+        - spu-objdump: every probe form decodes as expected; three whole
+          programs (11311 words) decode with no unknown word.
+        - Mutation test: 13 of 14 deliberate emitter bugs fail the test;
+          the 14th (logical shift for ADRS) is equivalent under the
+          address masks.
+      - SPU image: text 63.6 KB, bss end 224 KB, ~32 KB left for the stack.
+      - Cost in the simulator: ~3570 instructions per sample on random
+        programs; the interpreter took ~100K SPU cycles per sample on HW.
+      - HW test: settings as run 2 (Dynarec ON, JIT Fastmem ON, SH4 Clock
+        150, SPE AICA Check ON), SPE DSP JIT = CHECK, Crazy Taxi into the
+        game (DSP program loaded). Pass: `dsp jit self-test PASS`, `dsp jit
+        CHECK ... bad=0`, A1 `bad=0`, spu samples/s = ppu samples/s,
+        `full=0`. Read `spu % of wall: dsp` and `jit % of wall`. Then one
+        boot with ON for the cost without the check.
+      - A1b HW 2026-10-03, Crazy Taxi (NTSC), Dynarec + JIT Fastmem, SH4
+        Clock 150, SPE AICA Check ON. Two boots, about 3 min each.
+        - Boot self-test PASS on both boots (ISA probe + 384 samples).
+        - Game DSP program: 1434 words, 79 of 128 steps emit code, no
+          slow-path access (ring in LS, no TABLE).
+        - CHECK boot: 998770 checked samples, 0 mismatches; A1 109240
+          checks, `bad=0`; `full=0` in every window.
+        - ON boot: DSP 4.1-6.4% of SPU wall (avg 5.5%) with the program;
+          generated code 5.3% at the full 44.1 kHz. Run 2's interpreter
+          took 90% of the SPU at 65% of the rate: about 25x faster. SPU
+          busy avg 35%, max 64%; the voices (slots 20-32%) and envelopes
+          (11-15%) are now the largest SPU costs. A1 `bad=0`, `full=0`,
+          SPU samples/s = PPU samples/s.
+        - No throttle: `arm:` 4.4% (run 2: 75-80%). Dense windows (vt >
+          3K): CHECK SPEED 73.8%, VPS 44.2; ON SPEED 75.8%, VPS 45.5 (the
+          check runs on the SPU, so the SH4 thread does the same work).
+        - Still on the SH4 thread: the A1 control pass, `ppu ctl` 9-15% of
+          wall in dense scenes with 5-12 voices.
+        - Audio still crackles (Matt): the sound is still nullAICA (the
+          SPU model is only checked until A2). While the game plays, 12%
+          of the output blocks are silence; 26% in windows below real time.
+    - A1c (Matt 2026-10-03: "make PPU control pass cheaper"). `[x]` HW
+      validated 2026-10-03: see "A1c HW" at the end of this block.
+      - Cause, from the A1b logs: in game `ppu ctl` took 2900-4600 ns per
+        sample, also with only 2.4 slots rendered on the SPU, whose `env`
+        was 11-20%. So most of the cost is idle slots (fetch over, never
+        quiet), not voices. The old quiet rule needed AEG off at 0x3FF and
+        the FEG in release at an exact bound.
+      - Model (shared with the SPU), all bit-exact:
+        - Quiet = fetch stopped, no flag, both envelopes frozen. Frozen AEG:
+          off at 0x3FF, or a rate-0 segment (not decay 1 at DL). Frozen
+          FEG: never keyed, rate 0, at 0 / 0x1FFF, or decay 2 / release held
+          within the smallest step of the rate.
+        - `env_skip`: an idle slot with a slow envelope (R < 44) is visited
+          only on clocks where `eg_increment` can step. A write or a key
+          event clears it.
+        - Effective rates cached per slot (`aeg_R`, `feg_R`), refreshed on
+          writes to 0x10/0x14/0x18/0x40/0x44.
+        - The envelope pass runs only on a clock or a key event.
+        - Control only: the CA loop walks a `fetching` mask; the LFSR
+          position is computed only for a noise PLFO.
+      - PPU (`ps3_aica_spe.cpp`): per sample only a counter. A write or a
+        CHECK (every 64 samples) runs the missed samples back to back. No
+        `mftb` per sample.
+      - New stats on the first `[aica-spe]` line: `live L (en E aeg A feg
+        F)` = slots not quiet per sample; en = fetching or flagged, aeg /
+        feg = idle with the AEG / only the FEG moving.
+      - PC tests (WSL): all 73 caique cases and validators identical to the
+        A1b model; A1 compare 443432 checks, 0 mismatches. Random
+        differential test, A1b model against the new one, same writes,
+        every sample compared (snapshot; full model also DAC + DSP):
+        3000 episodes, 179 M samples, 0 mismatches. 16 deliberate bugs in
+        the new rules all fail that test.
+      - PC timing, control pass (x86, ns/sample, before -> after): idle
+        21 -> 11; 8 voices 133 -> 110; 48 idle slots (D2R 0) + 8 voices
+        669 -> 121; 48 idle slots (FEG held in decay 2) + 8 voices
+        575 -> 124; 48 idle slots (slow D2R) + 8 voices 734 -> 168.
+      - SPU image: text 65.5 KB, bss end 227 KB (~29 KB stack). PPU `.got`
+        0x9AA0, 0 `r2off`.
+      - HW test: settings as A1b (Dynarec ON, JIT Fastmem ON, SH4 Clock
+        150, SPE AICA Check ON, SPE DSP JIT ON), Crazy Taxi into the game.
+        Pass: `bad=0`, `full=0`, `dsp jit` bad=0. Read `ppu ctl` % and
+        ns/sample against A1b (in game 9-15%, 2900-4600 ns), the `live`
+        split, the SPU `env` %, SPEED and VPS.
+      - A1c HW 2026-10-03, Crazy Taxi (NTSC), settings as above, ~3 min
+        (second boot; the first boot stayed in the menus). Matt: SUCCESS,
+        nothing new seen or heard.
+        - Correct: `bad=0` in every window, `full=0`, DSP JIT bad=0.
+        - In game (windows below real time), A1b -> A1c: `ppu ctl`
+          11.2 -> 5.8% of wall, 3511 -> 1715 ns/sample.
+        - `live` 6.9 slots per sample in game, all `en` (aeg 0, feg 0): no
+          idle slot costs time now. Left: the playing voices, ~200 ns per
+          voice per sample.
+        - Dense windows (vt > 3K): SPEED 75.8 -> 81.4%, VPS 45.5 -> 48.8.
+        - SPU, windows with > 1 rendered slot: env 11.0 -> 3.8%, slots
+          19.3 -> 13.7% of SPU wall (same 5.4 rendered/sample).
+        - The control pass now runs mostly inside the ARM7's register
+          writes, so on the SPEED line it moved from `aica:` to `arm:`
+          (aica 19.5 -> 10.2%, arm 4.4 -> 9.0%; sum 23.9 -> 19.2%).
+        - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
     - A1: the SPE runs the full model from the write log. The PPU runs
       `step_control()` and sends a checksum per block. nullAICA still makes
       the sound. HW: mismatch count, SPE load, PPU cost.
     - A2: nullAICA off. Reads from the PPU control pass, sound from the SPE
       through `ring`. Toggle, default OFF. HW: Crazy Taxi + a streamed-music
       game.
+      - A2 built 2026-10-03 (Matt: "Go with A2"), PC tested, HW pending.
+        Option AUDIO -> "SPE AICA Sound" (`nullDC.cfg [ps3] SpeAicaSound`),
+        default OFF, read in `InitAica`. It starts the SPU thread with or
+        without "SPE AICA Check"; the CHECK records and `bad=` stay.
+      - nullAICA: `AICA_Sample()` only refills the CD-DA sector; the
+        register file, its write path, timers and interrupts are unchanged.
+        Reads of 0x2810/0x2811 and 0x2814/0x2815 come from the PPU twin
+        (`ps3aica_read_mon`: catch up to the sample, then `read()`). A byte
+        read of 0x2810 keeps LP, as nullAICA did. No Flycast `LEA - 3` clamp
+        on CA: the model's CA is the hardware's.
+      - Model: `no_dsp` flag (A2 sets it on the SPU): no DSP pass, no EFREG
+        mix, no collision fetch. `init()` clears it, so the PC tests and A1
+        are unchanged.
+      - SPU (`spe_aica_snd.h`): per sample EXTS from the CD-DA sector,
+        `step()`, then ps3_audio.cpp's 44.1 -> 48 kHz resampler into 256 LS
+        frames. At each CHECK the frames go to `ring` by DMA (8 bytes at odd
+        ends, quadwords between), then `ring_wr` with a fenced put. Frames
+        without room (from `ring_rd`) are dropped, newest first.
+      - CD-DA: every 588 samples the PPU copies the sector into one of 8
+        slots of `AicaShared::cdda` and logs a CDDA record (a silent sector
+        has no data); the SPU DMAs it into LS at that record.
+      - Pacing: after each CHECK the SH4 thread waits (AudioBuffers >= 1,
+        100 ms cap, in SndWaitTicks) until the frames of all samples so far
+        fit the ring: `w0 + ceil(n * 160 / 147) - drops`.
+      - A full write log (or a busy CD-DA slot) waits for the SPU instead
+        of stopping; no SPU progress for 100 ms stops the SPU, and nullAICA
+        plays again.
+      - Log: `[aica-spe] sound SPU: frames/s= drops= cdda/s= reads/s= | ppu
+        wait % of wall: ring spu` instead of the dsp jit line. `[aud] out=`
+        now counts `ring_wr`, so it shows the SPU's frames (`in=` stays 0).
+      - PC test of the model change (WSL, all 73 cases, `no_dsp` off):
+        every trace (accesses + DAC output), output file and A1/A1b count
+        identical to the build before (A1 443432 checks, A1b 28377429).
+      - PC test `misc/a2_check/run.sh`: `snd_unit` (fake MFC: DMA size and
+        alignment rules, every frame against the PPU resampler, no unread
+        frame overwritten, drops, `w0` odd and across 2^32) PASS. Cases: the
+        `no_dsp` model against a full one with every EFSDL forced to 0,
+        28377429 samples, 0 output and 0 control mismatches.
+      - SPU image: text 66.5 KB, bss end 234 KB (~22 KB stack; deepest
+        path ~4 KB by `-fstack-usage`). PPU `.got` 0x9B30, 0 `r2off`.
+      - HW test: Dynarec ON, JIT Fastmem ON, SH4 Clock 150, SPE AICA Sound
+        ON. Crazy Taxi into the game, then a game with streamed or CD-DA
+        music. Pass: right sound (pitch, music, effects, no stuck notes),
+        `bad=0`, `drops=0`, `frames/s` near 48000 at full speed. Read SPEED,
+        VPS, `aica:`/`arm:` and `[aud] silent=` against A1c.
+      - A2 HW 2026-10-03, settings as above, AudioBuffers=0 (no pacing).
+        CD-DA in Matt's images: ChuChu Rocket 15 audio tracks, Looney Tunes
+        Space Race 13; Crazy Taxi, Sonic Adventure, Soul Calibur, Border
+        Down, Power Stone 2 and Space Channel 5 none.
+        - Every game: `bad=0`, `drops=0`, no fallback to nullAICA, SPU
+          samples/s = PPU samples/s. At steady full speed `silent=0`.
+        - Crazy Taxi, 207 s: dense SPEED 81.4 -> 82.2%, VPS 48.8 -> 49.3,
+          `aica:` 10.2 -> 2.9%, `arm:` 9.0 -> 9.6% (against A1c). SPU 22%
+          busy in game, lag at most 320 samples; `ppu ctl` 6.2%, about 1200
+          monitor reads/s. Silent blocks: 0.7% at >= 99% SPEED (only right
+          after a slow second), 13.4% at 85-95%, 20.9% below 85% (A1c 12.8%,
+          24.9%). Matt: small crackles in the music; "ran MUCH better".
+        - ChuChu Rocket: 2 voices in the menus (SPU 5-13%). The stage plays
+          22-25 voices: SPU 95-101% busy, up to 4659 samples (105 ms) behind;
+          the SH4 thread waits for it 12-33% of wall (CD-DA slots, log), so
+          SPEED falls to 65-90% there; `ppu ctl` 20.5-21.9% (5.3-6.0 us per
+          sample). Matt: echo on the effects, all the time (also with
+          nullAICA since 2026-09-23: 2.5 lead). CD-DA did not resume after a
+          pause: SPI_CD_SEEK parameter 4 moved to FAD 150 (nullDC4Wii only;
+          nullDC-v1, Reicast, Minicast, Flycast keep the position). Fixed.
+        - Looney Tunes Space Race: mostly full speed, SPU about 10%. Matt: no
+          music, no voices, no effects, one looped voice. Log: after boot
+          the AICA writes/s equal the monitor reads/s (about 1270/s, one
+          MSLC write and one read per driver tick) and 2 slots stay live:
+          the driver keys nothing else. 4 SPI_CD_PLAY, bursts of 11 and 39
+          SPI_CD_SEEK. OPEN: same run with SPE AICA Sound OFF; the GD-ROM
+          pause fix may change it. Also 8853 log lines of `recSh4: cache
+          80% full (warning zone)`.
+        - ChuChu Rocket, GD-ROM fix build: the music continues after a pause
+          (Matt); the echo stays. Stage: 25-31 voices, SPU 88-98% busy, up
+          to 4777 samples behind, SH4 waits 20-41% of wall, SPEED 45-79%.
+          After the overload the SPU caught up into a full ring (fill 7910
+          of 8192, AudioBuffers=0) and dropped 4765 frames once. On the
+          pause screen the twin has 0 live slots, but the SPU renders 13
+          slots per sample (25% of the SPU, no wave RAM reads): stopped
+          slots whose filter tails never settle (limit cycles) are never
+          render-silent.
     - A3: the DSP on, own toggle.
     - A4 (optional): lazy control pass.
+    - A2 high voices (NEXT, Matt 2026-10-03). ChuChu Rocket stage, 25-31
+      voices (A2 HW, run 2):
+      - SPU: 865 ns per rendered slot per sample (about 2770 SPU cycles),
+        plus about 180 ns of envelope work per live slot. 31 voices need
+        about 32 us per sample against 22.7 us of real time (142%). Target:
+        at least 2x faster per slot.
+      - PPU control pass: 236-243 ns per live slot per sample, 7.4 us per
+        sample at 31 voices (33% of real time). Target: at least 3x faster.
+      - Pause screen: 0 live slots, but 13 stopped slots render their
+        filter tails (limit cycles never settle): 25% of the SPU.
+      - Candidates, SPU first (its overload throttles the game):
+        1. Filter tails (speed trade): a stopped slot (fetch off, AEG off at
+           0x3FF) outputs at most +-8 after the attenuation; skip its
+           render. Control state and the A1 check are not affected.
+        2. `lpf_step` without int64 (bit-exact): the SPU has no 64-bit
+           multiply; split the products as `mul_shr12` does. Check the
+           spu-gcc output for `__muldi3` first.
+        3. The rest of the per-slot render path on the SPU (ADPCM decode
+           per CA step, interpolation, branches), measured per section.
+        4. PPU: closed-form CA walk for a playing slot without PLFO, n
+           samples at once between events (loop end, LPSLNK, writes, keys).
+           Bit-exact, PC differential test as A1c.
+        5. PPU: envelope clocks that cannot move a playing slot (sustain
+           with rate 0) skipped, as `env_skip` does for idle slots.
+        6. More CD-DA slots and a bigger log, so a short SPU overload does
+           not stop the SH4 thread (the 8 CD-DA slots cap the lag at 4704
+           samples; lag 4777 was seen).
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

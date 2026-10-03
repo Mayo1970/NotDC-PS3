@@ -50,6 +50,7 @@ void AicaModel::init() {
 #else
     ram = (uint8_t *)calloc(RAM_SIZE, 1);
 #endif
+    no_dsp = false;
     reset();
 }
 
@@ -86,7 +87,7 @@ void AicaModel::reset() {
     memset(prog, 0, sizeof prog);   /* the decode of an all-zero MPRO */
     stops_pending = 0;
     keys_live = false;
-    quiet = rsilent = 0;
+    quiet = rsilent = fetching = 0;
     memset(isel_cnt, 0, sizeof isel_cnt);
     isel_cnt[0] = 64;
     memset(&fr, 0, sizeof fr);
@@ -120,13 +121,15 @@ void AicaModel::key_on(int ch) {
     Slot &c = slot[ch];
     if (c.AEG.state != EG_RELEASE) return;
     c.enabled = true;
+    fetching |= 1ull << ch;
+    c.env_skip = 0;
     set_aeg_state(ch, EG_ATTACK);
     c.AEG.a = 0x280; /* key-on level: -60 dB (tests/sgc_aeg) */
     c.AEG.off = false;
     if (c.stop_in) { c.stop_in = 0; stops_pending--; }
     c.ca_clr = false;
     /* R 63: level 0 from the key-on sample; attack ends on the first clock at or after it (tests/sgc_krs, eg_kprobe) */
-    if (eff_rate(chr(ch, 0x10) & 0x1F, chr(ch, 0x14), chr(ch, 0x18)) >= 63) c.AEG.a = 0;
+    if (c.aeg_R[EG_ATTACK] >= 63) c.AEG.a = 0;
     c.FEG.state = EG_ATTACK;
     c.FEG.v = chr(ch, 0x2C) & 0x1FFF; /* FLV0 (tests/feg_probe) */
     c.FEG.dir = c.FEG.v >= (chr(ch, 0x30) & 0x1FFF) ? -1 : 1;
@@ -138,6 +141,7 @@ void AicaModel::key_on(int ch) {
 }
 
 void AicaModel::key_off(int ch) {
+    slot[ch].env_skip = 0;
     slot[ch].aeg_prev = slot[ch].AEG.state;
     slot[ch].feg_prev = slot[ch].FEG.state;
     slot[ch].feg_prev_dir = slot[ch].FEG.dir; /* a key-off clock steps the FEG the old way (tests/feg_koffdir) */
@@ -169,6 +173,20 @@ void AicaModel::update_pitch(int ch) {
     int oct = (OCT & 8) ? (int)OCT - 16 : (int)OCT;
     int sh = oct + 4;
     slot[ch].update_rate = sh >= 0 ? rate << sh : rate >> -sh;
+}
+
+/* The registers are live (tests/eg_latch): every write to one of them refreshes all eight rates */
+void AicaModel::update_rates(int ch) {
+    Slot &c = slot[ch];
+    const uint16_t r10 = chr(ch, 0x10), r14 = chr(ch, 0x14), r18 = chr(ch, 0x18), r40 = chr(ch, 0x40), r44 = chr(ch, 0x44);
+    c.aeg_R[EG_ATTACK] = (uint8_t)eff_rate(r10 & 0x1F, r14, r18);
+    c.aeg_R[EG_DECAY1] = (uint8_t)eff_rate((r10 >> 6) & 0x1F, r14, r18);
+    c.aeg_R[EG_DECAY2] = (uint8_t)eff_rate((r10 >> 11) & 0x1F, r14, r18);
+    c.aeg_R[EG_RELEASE] = (uint8_t)eff_rate(r14 & 0x1F, r14, r18);
+    c.feg_R[EG_ATTACK] = (uint8_t)eff_rate((r40 >> 8) & 0x1F, r14, r18);
+    c.feg_R[EG_DECAY1] = (uint8_t)eff_rate(r40 & 0x1F, r14, r18);
+    c.feg_R[EG_DECAY2] = (uint8_t)eff_rate((r44 >> 8) & 0x1F, r14, r18);
+    c.feg_R[EG_RELEASE] = (uint8_t)eff_rate(r44 & 0x1F, r14, r18);
 }
 
 /* LFSR jumps as GF(2) matrices, row b = the input bits whose parity is output bit b. Constant tables (caique's
@@ -272,9 +290,10 @@ void AicaModel::slot_regwrite(int ch, uint32_t o) {
         c.LSA = chr(ch, 0x08);
         c.LEA = chr(ch, 0x0C);
         break;
-    case 0x18: update_pitch(ch); break;
+    case 0x18: update_pitch(ch); update_rates(ch); break;
+    case 0x10: case 0x14: case 0x40: case 0x44: update_rates(ch); break;
     case 0x1C: update_lfo(ch, true); break;
-    default: break; /* FEG / filter registers: minicast has no FEG */
+    default: break; /* other FEG / filter registers: minicast has no FEG */
     }
 }
 
@@ -441,17 +460,73 @@ static inline uint32_t eg_increment(uint32_t R, uint32_t cnt, uint32_t slow_off 
     return eg_inc[R >= 60 ? 16 : 4 + (R - 48)][cnt & 7];
 }
 
-/* Fetch stopped, AEG off at 0x3FF, FEG unable to move: until a write or a key event every clock is a no-op.
+/* Smallest non-zero step of rate R (rows of eg_inc) */
+static inline uint32_t eg_min_inc(uint32_t R) { return R < 52 ? 1 : R < 56 ? 2 : R < 60 ? 4 : 8; }
+static const uint8_t feg_tgt_reg[4] = {0x30, 0x34, 0x38, 0x3C};   /* FLV1..FLV4: the target of each FEG state */
+
+/* No AEG clock can move the slot (no key event): off at 0x3FF, or a rate-0 segment the decay 1 -> 2 check keeps */
+bool AicaModel::aeg_frozen(int ch) const {
+    const Slot &c = slot[ch];
+    if (c.AEG.off && c.AEG.a >= 0x3FF) return true;
+    if (c.aeg_R[c.AEG.state]) return false;
+    return !(c.AEG.state == EG_DECAY1 && (c.AEG.a >> 5) == ((chr(ch, 0x14) >> 5) & 0x1F));
+}
+
+/* No FEG clock can move the slot: never keyed, rate 0, at a bound, or decay 2 / release held within one smallest
+ * step of the target (feg_clock's hold rule) */
+bool AicaModel::feg_frozen(int ch) const {
+    const Slot &c = slot[ch];
+    if (c.FEG.passed) return false;
+    if (c.FEG.dir == 0) return true;
+    const uint32_t R = c.feg_R[c.FEG.state], v = c.FEG.v;
+    if (R == 0 || v == (c.FEG.dir > 0 ? 0x1FFFu : 0u)) return true;
+    if (c.FEG.state < EG_DECAY2) return false;
+    const uint32_t t = chr(ch, feg_tgt_reg[c.FEG.state]) & 0x1FFF, mi = eg_min_inc(R);
+    return c.FEG.dir > 0 ? (v < t && v + mi >= t) : (t > 0 && v >= t && v < t + mi);
+}
+
+/* Fetch stopped and both envelopes frozen: until a write or a key event every clock is a no-op.
  * The full model also needs vo latched and no collision claim, as nothing of the slot runs while skipped. */
 bool AicaModel::slot_quiet(int ch, bool render) const {
     const Slot &c = slot[ch];
     if (c.enabled || c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) return false;
     if (render && (c.FEG.vo != c.FEG.v || coll_claim[ch])) return false;   /* a skipped slot latches nothing */
-    if (!c.AEG.off || c.AEG.a < 0x3FF) return false;
-    if (c.FEG.dir == 0 && !c.FEG.passed) return true;
-    if (c.FEG.state != EG_RELEASE) return false;
-    const uint32_t v = c.FEG.v, target = chr(ch, 0x3C) & 0x1FFF;
-    return c.FEG.dir > 0 ? (v == 0x1FFF || v + 1 == target) : (v == 0 || v == target);
+    return aeg_frozen(ch) && feg_frozen(ch);
+}
+
+/* Clocks a slow rate cannot step on: (eg_cnt - 1) & mask set makes eg_increment 0. R >= 44 can step on any clock */
+static inline uint32_t eg_skip_mask(uint32_t R) { return R < 44 ? (1u << (11 - (R >> 2))) - 1 : 0; }
+
+/* Idle slot (no fetch, no flag) with a moving envelope: a clock with (eg_cnt - 1) & mask set leaves it unchanged.
+ * Only clocks move such a slot; a write or a key event clears the mask. 0 = visit every clock. */
+uint16_t AicaModel::env_skip_mask(int ch) const {
+    const Slot &c = slot[ch];
+    if (c.enabled || c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) return 0;
+    const bool af = aeg_frozen(ch), ff = feg_frozen(ch);
+    if (af && ff) return 0;   /* frozen but not yet quiet (render conditions): check again on the next clock */
+    uint32_t m = 0x3FFF;
+    if (!af) {
+        if (c.AEG.state == EG_DECAY1 && (c.AEG.a >> 5) == ((chr(ch, 0x14) >> 5) & 0x1F)) return 0;   /* D1 -> D2 on any clock */
+        m = eg_skip_mask(c.aeg_R[c.AEG.state]);
+    }
+    if (!ff) {
+        if (c.FEG.passed) return 0;   /* the next clock changes the state */
+        const uint32_t f = eg_skip_mask(c.feg_R[c.FEG.state]);
+        if (f < m) m = f;
+    }
+    return (uint16_t)m;
+}
+
+void AicaModel::live_stats(uint32_t &live, uint32_t &en, uint32_t &aeg, uint32_t &feg) const {
+    live = en = aeg = feg = 0;
+    for (uint64_t m = ~quiet; m; m &= m - 1) {
+        const int ch = __builtin_ctzll(m);
+        const Slot &c = slot[ch];
+        live++;
+        if (c.enabled || c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) en++;
+        else if (!aeg_frozen(ch)) aeg++;
+        else if (!feg_frozen(ch)) feg++;
+    }
 }
 
 /* The slot stop: fetch stops, monitor reads 0x1FFF, CA reads 0 (tests/slot_tail, ca_stop). No second stage at 0x400. */
@@ -460,7 +535,7 @@ static inline void slot_stop(Slot &c) { c.enabled = false; c.AEG.off = true; c.C
 void AicaModel::aeg_clock(int ch) {
     Slot &c = slot[ch];
     if (c.AEG.off && c.AEG.a >= 0x3FF) return;   /* the value keeps stepping to 0x3FF after the stop (tests/slot_tail tail_b) */
-    uint16_t r10 = chr(ch, 0x10), r14 = chr(ch, 0x14);   /* live: a rewrite acts on its effect sample's clock (tests/eg_latch) */
+    uint16_t r14 = chr(ch, 0x14);   /* live: a rewrite acts on its effect sample's clock (tests/eg_latch) */
     if (c.keyed) {
         /* no step on a key-on sample, but an R 63 attack (a = 0) leaves attack on this clock (tests/eg_kprobe p5-p7) */
         if (c.AEG.state == EG_ATTACK && c.AEG.a == 0 && !((r14 >> 14) & 1)) set_aeg_state(ch, EG_DECAY1);
@@ -471,9 +546,7 @@ void AicaModel::aeg_clock(int ch) {
     /* decay 1 -> 2: the decay 1 step first, then a >> 5 == DL switches, on every decay 1 clock (tests/aeg_dl0) */
     bool was_d1 = c.AEG.state == EG_DECAY1;
     EgState rs = c.keyed_off ? c.aeg_prev : c.AEG.state;   /* key-off sample: the previous segment's rate */
-    uint32_t rate = rs == EG_ATTACK ? (r10 & 0x1F) : rs == EG_DECAY1 ? ((r10 >> 6) & 0x1F)
-                  : rs == EG_DECAY2 ? ((r10 >> 11) & 0x1F) : (r14 & 0x1F);
-    uint32_t inc = eg_increment(eff_rate(rate, r14, chr(ch, 0x18)), eg_cnt, (uint32_t)-1);
+    uint32_t inc = eg_increment(c.aeg_R[rs], eg_cnt, (uint32_t)-1);
     if (!inc) {
         if (was_d1 && (c.AEG.a >> 5) == ((r14 >> 5) & 0x1F)) set_aeg_state(ch, EG_DECAY2);
         return;
@@ -514,11 +587,9 @@ void AicaModel::feg_clock(int ch) {
             if (c.FEG.dir > 0 ? (v == 0x1FFF || v + 1 == target) : (v == 0 || v == target)) return;
         }
     }
-    uint16_t r40 = chr(ch, 0x40), r44 = chr(ch, 0x44);   /* live (tests/eg_latch feg_rate) */
-    static const uint8_t tgt_reg[4] = {0x30, 0x34, 0x38, 0x3C};
     if (c.FEG.passed && c.FEG.state < EG_DECAY2) {
         c.FEG.state = (EgState)(c.FEG.state + 1);
-        c.FEG.dir = c.FEG.v >= (chr(ch, tgt_reg[c.FEG.state]) & 0x1FFF) ? -1 : 1;
+        c.FEG.dir = c.FEG.v >= (chr(ch, feg_tgt_reg[c.FEG.state]) & 0x1FFF) ? -1 : 1;
         c.FEG.passed = false;
     }
     /* key-off sample: the old segment's rate and direction, or the next segment's when the old one had passed
@@ -527,17 +598,10 @@ void AicaModel::feg_clock(int ch) {
     int32_t dir = c.keyed_off ? c.feg_prev_dir : c.FEG.dir;
     if (c.keyed_off && c.feg_prev_passed && seg < EG_DECAY2) {
         seg = (EgState)(seg + 1);
-        dir = c.FEG.v >= (chr(ch, tgt_reg[seg]) & 0x1FFF) ? -1 : 1;
+        dir = c.FEG.v >= (chr(ch, feg_tgt_reg[seg]) & 0x1FFF) ? -1 : 1;
     }
-    uint32_t rate;
-    switch (seg) {
-    case EG_ATTACK: rate = (r40 >> 8) & 0x1F; break;
-    case EG_DECAY1: rate = r40 & 0x1F; break;
-    case EG_DECAY2: rate = (r44 >> 8) & 0x1F; break;
-    default: rate = r44 & 0x1F; break;
-    }
-    int32_t target = chr(ch, tgt_reg[c.FEG.state]) & 0x1FFF;   /* the target and the hold rule are the release's */
-    uint32_t inc = eg_increment(eff_rate(rate, chr(ch, 0x14), chr(ch, 0x18)), eg_cnt, (uint32_t)-1);
+    int32_t target = chr(ch, feg_tgt_reg[c.FEG.state]) & 0x1FFF;   /* the target and the hold rule are the release's */
+    uint32_t inc = eg_increment(c.feg_R[seg], eg_cnt, (uint32_t)-1);   /* live rates (tests/eg_latch feg_rate) */
     if (!inc || c.FEG.passed) return;
     bool C = c.FEG.v >= target;
     int32_t nv = (int32_t)c.FEG.v + dir * (int32_t)inc;
@@ -782,12 +846,15 @@ void AicaModel::run(bool render) {
      * state and its SlotFrame, so it runs right after its control pass. */
     const uint32_t l0 = lfsr;   /* slot ch sees the LFSR stepped ch times */
     if (!render) {   /* control only: no vo latch (read by nothing), the LFSR jumps at the end */
-        for (uint64_t m = ~quiet; m; m &= m - 1) {
+        for (uint64_t m = fetching; m; m &= m - 1) {
             const int ch = __builtin_ctzll(m);
             Slot &c = slot[ch];
-            if (!(c.ca_clr | c.enabled | c.keyed_fetch)) continue;
+            if (!(c.ca_clr | c.enabled | c.keyed_fetch)) { fetching &= ~(1ull << ch); continue; }   /* each flag needs a key_on, which sets the bit */
             if (c.ca_clr) { c.ca_clr = false; c.CA = 0; }
-            if (c.enabled && !c.keyed_fetch) { lfsr = lfsr_adv(l0, ch); stream_step(ch, 0, (uint32_t)F.sample); }
+            if (c.enabled && !c.keyed_fetch) {
+                if ((chr(ch, 0x1C) & 0x3E0) > 0x300) lfsr = lfsr_adv(l0, ch);   /* read only by a noise PLFO (PLFOWS 3, PLFOS > 0) */
+                stream_step(ch, 0, (uint32_t)F.sample);
+            }
             c.keyed_fetch = false;
         }
         lfsr = lfsr_adv(l0, 64);
@@ -819,7 +886,7 @@ void AicaModel::run(bool render) {
             if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
             if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
         }
-        if (ch >= 7) coll_claim[ch] = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, coll_word[ch]);
+        if (ch >= 7 && !no_dsp) coll_claim[ch] = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, coll_word[ch]);
         /* silent: zero input into LPOFF or a filter resting at 0 gives V16 = 0, so every output of the slot is 0 */
         const uint16_t r28 = chr(ch, 0x28);
         if (!sf.en_out && !((chr(ch, 0x00) >> 10) & 1) &&
@@ -849,8 +916,8 @@ void AicaModel::run(bool render) {
     eg_cnt = (eg_K - (md >> 1)) & 0x3FFF;
     const bool clear = keys_live;   /* keyed / keyed_off last only one sample */
     keys_live = false;
-    /* only non-quiet slots, unless keys move */
-    const uint64_t visit = (kx || clear) ? ~0ull : ~quiet;
+    /* only non-quiet slots on a clock, all if keys move; with neither, no flag is set and the pass is a no-op */
+    const uint64_t visit = (kx || clear) ? ~0ull : clk ? ~quiet : 0;
     for (uint64_t m = visit; m; m &= m - 1) {
         const int ch = __builtin_ctzll(m);
         if (clear) slot[ch].keyed = slot[ch].keyed_off = false;
@@ -859,10 +926,11 @@ void AicaModel::run(bool render) {
             if (on && slot[ch].AEG.state == EG_RELEASE) { key_on(ch); slot[ch].keyed = true; slot[ch].keyed_fetch = true; keys_live = true; }
             if (!on && slot[ch].AEG.state != EG_RELEASE) { key_off(ch); slot[ch].keyed_off = true; keys_live = true; }
         }
-        if (clk) {
+        if (clk && ((eg_cnt - 1) & slot[ch].env_skip) == 0) {
             if (!(slot[ch].AEG.off && slot[ch].AEG.a >= 0x3FF)) aeg_clock(ch);   /* aeg_clock's own first test */
             if (slot[ch].FEG.dir || slot[ch].FEG.passed || slot[ch].keyed_off) feg_clock(ch);   /* else a no-op */
             if (slot_quiet(ch, render)) quiet |= 1ull << ch;
+            else slot[ch].env_skip = env_skip_mask(ch);
         }
         if (slot[ch].keyed || slot[ch].keyed_off) quiet &= ~(1ull << ch);
     }
@@ -870,7 +938,7 @@ void AicaModel::run(bool render) {
     samples++;
     if (!render) return;
     CAIQUE_PROF_AT(2, 0);
-    coll_preview(F);
+    if (!no_dsp) coll_preview(F);   /* F.pv only feeds the collision words below */
     /* a bus no slot points at keeps its value; SGC of sample n fills bank n&1, the DSP of n+1 reads it (tests/eg_lock mixs) */
     for (int i = 0; i < 16; i++) {
         if (isel_cnt[i]) MIXS_bank[F.sample & 1][i] = sext(MIXS[i], 20); /* the 20-bit sum wraps, no saturation (tests/sgc_mix) */
@@ -880,12 +948,17 @@ void AicaModel::run(bool render) {
         uint16_t v = r(0x2040 + 4 * i);
         volpan(EXTS[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
-    for (int k = 0; k < 7; k++)
+    for (int k = 0; k < 7 && !no_dsp; k++)
         coll_claim[k] = slot_fetch(k, F.pv[k].en, F.pv[k].keyed, F.pv[k].ca_old, F.pv[k].ca, coll_word[k]);
     CAIQUE_PROF_AT(3, 0);
-    dsp_step(F.sample, F.mdec);
+    if (!no_dsp) {
+#ifdef CAIQUE_DSP_HOOK
+        if (!caique_dsp_hook(this, F.sample, F.mdec))
+#endif
+            dsp_step(F.sample, F.mdec);
+    }
     CAIQUE_PROF_AT(4, 0);
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 16 && !no_dsp; i++) {
         uint16_t v = r(0x2000 + 4 * i);
         volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
@@ -939,6 +1012,7 @@ void AicaModel::write(uint32_t off, uint32_t val) {
         if (o == 0x20) { isel_cnt[reg[off >> 2] & 0xF]--; isel_cnt[v & 0xF]++; }
         reg[off >> 2] = (uint16_t)((v & m) | (o == 0 ? (v & 0x8000) : 0));
         quiet &= ~(1ull << ch);
+        slot[ch].env_skip = 0;
         slot_regwrite(ch, o);
         return;
     }

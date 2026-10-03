@@ -102,14 +102,15 @@ $(BUILD)/spu/spe_bell.elf: $(SPU_SRCS_spe_bell) $(wildcard ps3/spu/*.h)
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s $(SPU_SRCS_spe_bell) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
-# 5.13 A1: the caique model on the SPU (C++), wave RAM through an LS cache.
+# 5.13 A1: the caique model on the SPU (C++), wave RAM through an LS cache. A1b: DSP recompiler (spe_dsp_jit.c).
 SPU_SRCS_spe_aica := ps3/spu/spe_aica_model.cpp plugs/caiqueAICA/aica_model.cpp
 
-$(BUILD)/spu/spe_aica.elf: ps3/spu/spe_aica.c $(SPU_SRCS_spe_aica) $(wildcard ps3/spu/*.h plugs/caiqueAICA/*.h)
+$(BUILD)/spu/spe_aica.elf: ps3/spu/spe_aica.c ps3/spu/spe_dsp_jit.c $(SPU_SRCS_spe_aica) $(wildcard ps3/spu/*.h plugs/caiqueAICA/*.h)
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -c ps3/spu/spe_aica.c -o $(BUILD)/spu/spe_aica_main.o
-	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+	@$(SPU_CC) $(SPU_CFLAGS) -Os -Iplugs/caiqueAICA -c ps3/spu/spe_dsp_jit.c -o $(BUILD)/spu/spe_dsp_jit.o
+	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -DCAIQUE_DSP_HOOK -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(BUILD)/spu/spe_dsp_jit.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

@@ -2,6 +2,7 @@
 #include "types.h"
 #include "dc/maple/maple_devs.h"
 #include "plugs/drkMapleDevices/dc_pad_bits.h"
+#include "ps3_menu.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,7 @@ u8  lt[MAX_CONTROLLERS];
 static bool ps3_pad_ok;
 // ioPadGetData does not refresh the buffer when there is no new input, so keep one per port.
 static padData ps3_pad_data[MAX_PORT_NUM];
+static bool ps3_select_down[MAX_PORT_NUM];
 static int ps3_pad_of_dc[MAX_CONTROLLERS] = { -1, -1, -1, -1 };
 
 // Last logged state per DC port, for the G4 log.
@@ -123,6 +125,11 @@ void UpdateInputState(u32 port)
 	// Never branch on len: the buffer keeps the last reported state (ioQuake3-PS3, xashPS3).
 	padData* d = &ps3_pad_data[pad];
 	ioPadGetData(pad, d);
+
+	// SELECT is no Dreamcast button: a press opens the in-game menu at the next vblank.
+	if (d->BTN_SELECT && !ps3_select_down[pad])
+		ps3_menu_request();
+	ps3_select_down[pad] = d->BTN_SELECT;
 
 	// Face buttons by position, as the Wii Sixaxis path: Cross=A, Circle=B, Square=X, Triangle=Y.
 	if (d->BTN_CROSS)    kcode[port] &= ~key_CONT_A;

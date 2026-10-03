@@ -5,6 +5,7 @@
 #include "ps3_ui.h"
 #include "ps3_video.h"
 #include "ps3_presets.h"
+#include "plugs/vbaARM/arm7_jit.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,6 +291,7 @@ static const char* k_drop[]      = { "DROP", "WAIT 1 FRAME", "WAIT", NULL };
 static const char* k_exit_fix[]  = { "OFF", "SAFE", "SAFE + WATCHDOG",
                                      "SAFE + WATCHDOG + HOST POLL", NULL };
 static const char* k_arm7[]      = { "FULL", "HALF", "QUARTER", "EIGHTH", NULL };
+static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -360,6 +362,10 @@ static Option s_audio[] = {
 	  "Queue depth. Higher blocks the SH4 until the mixer drains." },
 	{ "SPE AICA Check",  &g_spe_aica_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "caique AICA on an SPE, checked against the PPU. [aica-spe] log. Set before boot." },
+	{ "SPE DSP JIT",     &g_spe_dsp_jit_preset,   OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
+	  "DSP recompiler of SPE AICA Check. CHECK also compares it. Set before boot." },
+	{ "SPE AICA Sound",  &g_spe_aica_snd_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SPE caique AICA plays the sound, not nullAICA. No DSP yet. Set before boot." },
 };
 
 static Option s_video[] = {
@@ -763,6 +769,160 @@ static void controls_draw()
 
 	draw_footer(s_controls[s_ctl_row].help,
 	            "LEFT/RIGHT Change   X Start   O Back");
+}
+
+// -- In-game menu (SELECT) -----------------------------------------------------
+
+static volatile bool s_ingame_req;
+
+// Read on every use, so a change acts at once. Any other option is saved for the next boot only.
+static int* const k_live_opts[] = {
+	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
+	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
+	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset,
+};
+
+#define MAX_INGAME_OPTS 64
+static int s_run_val[MAX_INGAME_OPTS];    // the running emulator's values while the menu is open
+static int s_boot_val[MAX_INGAME_OPTS];   // boot-only options as saved for the next boot
+static bool s_boot_val_set;
+
+static bool option_live(const Option* o)
+{
+	for (u32 i = 0; i < sizeof(k_live_opts) / sizeof(k_live_opts[0]); i++)
+		if (o->val == k_live_opts[i])
+			return true;
+	return false;
+}
+
+// Calls fn(option, index) once per variable: two rows can share one (JIT Trace and Debug Loop).
+template<typename F> static void for_each_option(F fn)
+{
+	int k = 0;
+	for (int p = 0; p < OPT_PAGE_COUNT; p++)
+		for (int r = 0; r < s_opt_pages[p].count && k < MAX_INGAME_OPTS; r++, k++)
+		{
+			Option* o = &s_opt_pages[p].rows[r];
+			bool seen = false;
+			for (int q = 0; q <= p && !seen; q++)
+				for (int s = 0; s < (q == p ? r : s_opt_pages[q].count) && !seen; s++)
+					seen = s_opt_pages[q].rows[s].val == o->val;
+			if (!seen)
+				fn(o, k);
+		}
+}
+
+static void ingame_input(u32 pressed)
+{
+	Page* p = &s_opt_pages[s_opt_page];
+	if (pressed & MB_UP)
+		s_opt_row = (s_opt_row > 0) ? s_opt_row - 1 : p->count - 1;
+	else if (pressed & MB_DOWN)
+		s_opt_row = (s_opt_row < p->count - 1) ? s_opt_row + 1 : 0;
+	else if (pressed & MB_LEFT)
+		option_step(&p->rows[s_opt_row], -1);
+	else if (pressed & MB_RIGHT)
+		option_step(&p->rows[s_opt_row], +1);
+	else if (pressed & MB_L1)
+	{
+		s_opt_page = (s_opt_page > 0) ? s_opt_page - 1 : OPT_PAGE_COUNT - 1;
+		s_opt_row = 0;
+	}
+	else if (pressed & MB_R1)
+	{
+		s_opt_page = (s_opt_page + 1) % OPT_PAGE_COUNT;
+		s_opt_row = 0;
+	}
+}
+
+static void ingame_draw()
+{
+	char head[64], val[80];
+	Page* p = &s_opt_pages[s_opt_page];
+
+	snprintf(head, sizeof(head), "PAUSED - %s  (%d/%d)", p->title, s_opt_page + 1, OPT_PAGE_COUNT);
+	draw_header(head, NULL);
+
+	for (int i = 0; i < p->count; i++)
+	{
+		option_text(&p->rows[i], val, sizeof(val));
+		if (!option_live(&p->rows[i]))
+			strncat(val, " *", sizeof(val) - strlen(val) - 1);
+		draw_row(i, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
+	}
+
+	draw_footer(p->rows[s_opt_row].help,
+	            "LEFT/RIGHT Change   L1/R1 Page   SELECT Back to game   * Next boot");
+}
+
+void ps3_menu_request(void)
+{
+	s_ingame_req = true;
+}
+
+bool ps3_menu_pending(void)
+{
+	return s_ingame_req;
+}
+
+void ps3_menu_ingame(void)
+{
+	s_ingame_req = false;
+	// The SH4 thread runs the guest's rounding mode; the UI math wants round-to-nearest.
+	double fpscr;
+	__asm__ volatile("mffs %0" : "=f"(fpscr));
+	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+	printf("[menu] in-game menu open\n");
+
+	if (ps3ui_init())
+	{
+		layout();
+		// Boot-only rows show and edit their next-boot value; the running value comes back on close.
+		for_each_option([](Option* o, int k) {
+			s_run_val[k] = *o->val;
+			if (!s_boot_val_set)
+				s_boot_val[k] = *o->val;
+			if (!option_live(o))
+				*o->val = s_boot_val[k];
+		});
+		s_boot_val_set = true;
+		const int ccalls = g_jit_ccalls_preset;
+
+		// The SELECT still held from opening does not count as a press.
+		s_pad_prev = ~0u;
+		while (!ps3_exit_pending())
+		{
+			u32 pressed = pad_poll(16);
+			if (pressed & MB_SELECT)
+				break;
+			ingame_input(pressed);
+			if (ps3ui_begin(COL_BG))
+			{
+				ingame_draw();
+				ps3ui_end();
+			}
+			usleep(16 * 1000);
+		}
+
+		ps3_presets_save();
+		for_each_option([](Option* o, int k) {
+			if (*o->val != s_run_val[k])
+				printf("[menu] %s: %d -> %d%s\n", o->label, s_run_val[k], *o->val, option_live(o) ? "" : " (next boot)");
+			if (!option_live(o))
+			{
+				s_boot_val[k] = *o->val;
+				*o->val = s_run_val[k];
+			}
+		});
+		// The ARM7 census is compiled into its blocks: re-latch it, which also flushes the ARM7 code cache.
+		if (g_jit_ccalls_preset != ccalls)
+			arm_jit_on_reset();
+	}
+	else
+		printf("[menu] in-game menu: no UI\n");
+
+	__asm__ volatile("mtfsf 0xFF,%0" : : "f"(fpscr));
+	printf("[menu] in-game menu closed\n");
 }
 
 // -- Loop --------------------------------------------------------------------

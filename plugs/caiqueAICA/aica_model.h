@@ -19,6 +19,14 @@ void caique_prof(int point, uint32_t v);
 #else
 #define CAIQUE_PROF_AT(p, v)
 #endif
+#ifdef CAIQUE_DSP_HOOK
+namespace caique { struct AicaModel; }
+/* SPU DSP recompiler (5.13 A1b): true when it ran the DSP pass of sample smp, else dsp_step() runs */
+bool caique_dsp_hook(caique::AicaModel *m, uint64_t smp, uint32_t mdec);
+#define CAIQUE_DSP_ALIGN __attribute__((aligned(16)))   /* the recompiled code's quadword loads */
+#else
+#define CAIQUE_DSP_ALIGN
+#endif
 
 namespace caique {
 
@@ -65,6 +73,8 @@ struct Slot {
     EgState aeg_prev, feg_prev; /* the states before that key-off */
     int8_t feg_prev_dir;        /* FEG direction before that key-off (tests/feg_koffdir) */
     bool feg_prev_passed;       /* passed flag before that key-off: the clock steps the NEXT segment's way (tests/feg_koffpass) */
+    uint8_t aeg_R[4], feg_R[4]; /* eff_rate per EgState, refreshed on writes to 0x10/0x14/0x18/0x40/0x44 */
+    uint16_t env_skip;          /* idle slot: a clock with (eg_cnt - 1) & env_skip set moves neither envelope */
 };
 
 /* What the render pass does at one CA position of a slot's stream walk */
@@ -113,10 +123,10 @@ struct AicaModel {
     Slot slot[64];
 
     /* DSP state */
-    int32_t TEMP[128];  /* 24-bit */
+    int32_t TEMP[128] CAIQUE_DSP_ALIGN;  /* 24-bit */
     int32_t MEMS[32];   /* 24-bit */
     int32_t MIXS[16];   /* 20-bit SGC sum; the DSP reads one of two banks on alternate samples (tests/eg_lock mixs) */
-    int32_t MIXS_bank[2][16];
+    int32_t MIXS_bank[2][16] CAIQUE_DSP_ALIGN;
     int32_t EXTS[2];    /* 16-bit */
     int32_t EFREG[16];  /* 16-bit */
     uint32_t MDEC_CT;
@@ -152,8 +162,10 @@ struct AicaModel {
     uint32_t stops_pending;   /* slots with stop_in set */
     bool keys_live;           /* some slot has keyed / keyed_off set */
     uint64_t quiet;           /* slots with no control work until a register write or a key event */
+    uint64_t fetching;        /* control-only CA loop: every slot with enabled / ca_clr / keyed_fetch (and some idle ones) */
     uint64_t rsilent;         /* render: the slot's last visit output 0 with its filter at rest */
     uint8_t isel_cnt[16];     /* slots per ISEL bus: every slot writes its bus each sample (tests/mixs_write) */
+    bool no_dsp;              /* 5.13 A2: no DSP pass, EFREG mix or collision fetch; init() clears it, reset() keeps it */
 
     Frame fr;                 /* control -> render hand-off of the current sample */
 
@@ -169,6 +181,10 @@ struct AicaModel {
     void step_control() { run(false); }   /* control state only; outL/outR, MIXS and the DSP do not move */
     void snap(CtlSnap &o);   /* catches every LFO up first */
     static uint32_t snap_hash(const CtlSnap &o);
+    /* Slots the control pass visits: live = not quiet; en = fetch or a key/stop flag; aeg / feg = the rest, AEG moving
+     * or only the FEG moving (PPU stats) */
+    void live_stats(uint32_t &live, uint32_t &en, uint32_t &aeg, uint32_t &feg) const;
+    void dsp_step(uint64_t smp, uint32_t mdec);   /* the DSP interpreter; public for the SPU recompiler's check */
 
     uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
     uint16_t chr(int ch, uint32_t o) const { return reg[(0x80 * ch + o) >> 2]; }
@@ -180,6 +196,7 @@ struct AicaModel {
     void key_off(int ch);
     void set_aeg_state(int ch, EgState s);
     void update_pitch(int ch);
+    void update_rates(int ch);
     void update_lfo(int ch, bool from_write);
     static uint32_t eff_rate(uint32_t rate, uint16_t r14, uint16_t r18); /* from the KRS (r14) and OCT/FNS (r18) given */
     void stream_step(int ch, Frame *F, uint32_t smp);
@@ -191,10 +208,12 @@ struct AicaModel {
     void coll_preview(Frame &F);
     void lfo_calc(int ch);
     void lfo_sync(int ch, uint32_t t);
+    bool aeg_frozen(int ch) const;
+    bool feg_frozen(int ch) const;
     bool slot_quiet(int ch, bool render) const;
+    uint16_t env_skip_mask(int ch) const;
     void slot_control(int ch, SlotFrame &sf);
     void slot_render(int ch, const SlotFrame &sf, uint32_t smp, int32_t &l, int32_t &r, int32_t &d);
-    void dsp_step(uint64_t smp, uint32_t mdec);
     uint32_t sa_addr(int ch) const;
     int fmt(int ch) const;
 #ifdef CAIQUE_RAM_HOOKS

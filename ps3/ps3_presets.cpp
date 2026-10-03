@@ -56,6 +56,8 @@ int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per o
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
 int g_spe_draw_preset      = 0;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3)
 int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against a PPU control pass (5.13 A1)
+int g_spe_dsp_jit_preset   = 2;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b)
+int g_spe_aica_snd_preset  = 0;   // 1 = that SPU model makes the sound, without the DSP; nullAICA's mixer off (5.13 A2)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -104,6 +106,8 @@ static const CfgItem s_items[] = {
 	{ "SpeDoorbell",   &g_spe_bell_preset },
 	{ "SpeDraw",       &g_spe_draw_preset },
 	{ "SpeAicaCheck",  &g_spe_aica_preset },
+	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
+	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
 };
 
 void ps3_presets_load(void)
@@ -182,8 +186,10 @@ int get_vertex_array_preset()  { return g_vertex_array_preset; }
 // OPTIMIZATION_PLAN 5.12 S0 and S3, read once in InitRenderer.
 int get_spe_bell_preset()      { return g_spe_bell_preset; }
 int get_spe_draw_preset()      { return g_spe_draw_preset; }
-// OPTIMIZATION_PLAN 5.13 A1, read once in InitAica.
+// OPTIMIZATION_PLAN 5.13 A1, A1b and A2, read once in InitAica.
 int get_spe_aica_preset()      { return g_spe_aica_preset; }
+int get_spe_dsp_jit_preset()   { return g_spe_dsp_jit_preset; }
+int get_spe_aica_snd_preset()  { return g_spe_aica_snd_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
