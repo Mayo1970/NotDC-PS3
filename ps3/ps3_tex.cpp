@@ -1,6 +1,7 @@
 // PVR texture decode (twiddled, planar, stride, VQ, palette, YUV422, mipmap top level) to RGBA8,
 // cached per TCW/TSP key and revalidated once per frame by a hash of the source VRAM.
 #include "ps3_tex.h"
+#include "plugs/drkPvr/Renderer_if.h"
 #include "ps3_phase.h"
 #include "ps3_rend_regs.h"
 #include "plugs/drkPvr/drkPvr.h"
@@ -45,6 +46,11 @@ static u32 s_flag_nonsq, s_flag_mirror, s_flag_clamp;
 // Counted per bind, not per cache fill: a mirrored texture drawn every frame
 // fills once, so the fill counter cannot size the linear-layout cost.
 static u32 s_bind_total, s_bind_mirror;
+
+// 5.10 split of ps3tex_bind (timebase ticks): VRAM hash, decode + upload, ps3gl bind + params.
+static u64 s_t_hash, s_t_decode, s_t_gl;
+static u32 s_hashes;
+static u64 s_hash_bytes;
 
 static u32 s_out[1024 * 1024];
 static u32 s_tx[1024], s_ty[1024];
@@ -100,8 +106,7 @@ static inline u32 cvt8888(u32 c) { return rgba((c >> 16) & 255, (c >> 8) & 255, 
 static inline u32 clamp8(s32 v) { return v < 0 ? 0 : (v > 255 ? 255 : (u32)v); }
 
 // Two horizontal texels sharing U (in p0) and V (in p1); luma is the high byte.
-// Chroma terms depend only on the shared U/V, so compute them once per pair
-// instead of once per texel (FMV decodes this every changed frame).
+// Chroma depends only on U/V, so it is computed once per pair (FMV decodes this every frame).
 static inline void yuv_pair(u32 p0, u32 p1, u32* o)
 {
 	s32 u = (s32)(p0 & 255) - 128;
@@ -205,19 +210,68 @@ static void describe(TSP tsp, TCW tcw, TexDesc* d)
 	}
 }
 
-static u32 hash_range(u32 addr, u32 bytes, u32 h)
+// Jenkins one-at-a-time step on 64-bit words: a bijection in h and in w, so any one changed
+// word changes the lane. No multiply: the serial FNV mullw chain cost ~46 cycles per word.
+static inline u64 oaat(u64 h, u64 w)
+{
+	h += w;
+	h += h << 10;
+	h ^= h >> 6;
+	return h;
+}
+
+static u32 hash_range(u32 addr, u32 bytes, u32 seed)
 {
 	addr &= ~3u;
-	for (u32 i = 0; i < bytes; i += 4)
-		h = (h ^ vram32(addr + i)) * 16777619u;
-	return h;
+	bytes = (bytes + 3) & ~3u;
+	s_hash_bytes += bytes;
+	u64 a = seed, b = seed ^ 0x9E3779B97F4A7C15ull, c = ~(u64)seed, d = seed ^ 0xC2B2AE3D27D4EB4Full;
+
+	// A span past the end of VRAM wraps (garbage TCW): word loop with the mask.
+	if (addr + bytes > VRAM_SIZE)
+	{
+		for (u32 i = 0; i < bytes; i += 4)
+			a = oaat(a, vram32(addr + i));
+		bytes = 0;
+	}
+	// Mip offsets can leave the start 4-byte aligned only.
+	if (bytes != 0 && (addr & 4))
+	{
+		a = oaat(a, vram32(addr));
+		addr += 4;
+		bytes -= 4;
+	}
+	const u64* p = (const u64*)&PVRPARAMS.vram[addr];
+	u32 n = bytes >> 3;
+	// Four independent lanes keep the in-order PPE busy; the prefetch runs 256 bytes ahead.
+	while (n >= 16)
+	{
+		__builtin_prefetch(p + 32);
+		a = oaat(a, p[0]);  b = oaat(b, p[1]);  c = oaat(c, p[2]);  d = oaat(d, p[3]);
+		a = oaat(a, p[4]);  b = oaat(b, p[5]);  c = oaat(c, p[6]);  d = oaat(d, p[7]);
+		a = oaat(a, p[8]);  b = oaat(b, p[9]);  c = oaat(c, p[10]); d = oaat(d, p[11]);
+		a = oaat(a, p[12]); b = oaat(b, p[13]); c = oaat(c, p[14]); d = oaat(d, p[15]);
+		p += 16;
+		n -= 16;
+	}
+	while (n--)
+		a = oaat(a, *p++);
+	if (bytes & 4)
+		d = oaat(d, *(const u32*)p);
+
+	// oaat chains the lanes bijectively; fmix64 spreads all 64 bits before the fold to 32.
+	u64 h = oaat(oaat(oaat(a, b), c), d);
+	h ^= h >> 33;
+	h *= 0xFF51AFD7ED558CCDull;
+	h ^= h >> 33;
+	h *= 0xC4CEB9FE1A85EC53ull;
+	h ^= h >> 33;
+	return (u32)(h ^ (h >> 32));
 }
 
 static u32 hash_texture(const TexDesc& d)
 {
-	// FMV: the TA converter already knows exactly when a frame completes, so
-	// use its generation counter instead of re-reading the whole surface -
-	// this used to run a full src_bytes scan on every changed video frame.
+	// FMV: the YUV converter's generation counter replaces a full src_bytes scan per video frame.
 	if (d.fmt == 3)
 	{
 		u32 gen;
@@ -314,9 +368,7 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 		}
 	}
 
-	// yuv_pair() already stores alpha=255 for every texel, so forcing alpha on
-	// a YUV (FMV) surface is a no-op; skip the extra full-buffer pass it costs
-	// on every changed video frame.
+	// yuv_pair() already stores alpha 255, so a YUV (FMV) surface skips this full-buffer pass.
 	if (ignore_alpha && d.fmt != 3)
 		for (u32 i = 0; i < w * h; i++)
 			s_out[i] |= 0xFF;
@@ -357,8 +409,7 @@ void ps3tex_frame_begin()
 	}
 }
 
-// Set on the bound texture. ps3gl picks the RSX layout inside the first
-// glTexImage2D, so a new texture must get these BEFORE it is uploaded:
+// ps3gl picks the RSX layout at the first glTexImage2D, so set these before it:
 // mirrored wrap needs a linear layout and stalls the RSX on a swizzled one.
 static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v)
 {
@@ -409,13 +460,18 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 
 	if (hit && hit->checked_frame != s_frame)
 	{
+		const u64 t_h = PERF_TICKS();
 		u32 hsh = hash_texture(d);
+		s_t_hash += PERF_TICKS() - t_h;
+		s_hashes++;
 		if (hsh != hit->hash)
 		{
 			REND_PHASE(PH_TEX);
+			const u64 t_d = PERF_TICKS();
 			decode(d, tsp.IgnoreTexA);
 			glBindTexture(GL_TEXTURE_2D, hit->name);
 			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+			s_t_decode += PERF_TICKS() - t_d;
 			hit->hash = hsh;
 			s_decodes++;
 			REND_PHASE(PH_DRAW);
@@ -432,7 +488,10 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		hit->key1 = key1;
 		hit->w = d.w;
 		hit->h = d.h;
+		const u64 t_h = PERF_TICKS();
 		hit->hash = hash_texture(d);
+		s_t_hash += PERF_TICKS() - t_h;
+		s_hashes++;
 		hit->checked_frame = s_frame;
 		// Temporary G7 diagnostic, counted not printed, so the sample follows what
 		// is on screen instead of the first textures of the boot.
@@ -445,26 +504,27 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		if (tsp.FlipU || tsp.FlipV)   s_flag_mirror++;
 		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
 		REND_PHASE(PH_TEX);
+		const u64 t_d = PERF_TICKS();
 		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
 		set_tex_params(tsp, mirror_u, mirror_v);
-		// FMV is a full-screen quad re-uploaded whole every changed frame: the
-		// swizzle Morton order buys nothing here and forces an extra staging
-		// copy plus memcpy to VRAM on top of the pixel conversion (see
-		// ps3gl_texture_hint_no_swizzle in ps3gl.h). Must be set before this
-		// first glTexImage2D, since layout is fixed at allocation.
+		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy.
+		// Must be set before the first glTexImage2D: the layout is fixed at allocation.
 		if (d.fmt == 3)
 			ps3gl_texture_hint_no_swizzle();
 		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+		s_t_decode += PERF_TICKS() - t_d;
 		s_live++;
 		s_decodes++;
 		REND_PHASE(PH_DRAW);
 	}
 
 	hit->last_frame = s_frame;
+	const u64 t_g = PERF_TICKS();
 	glBindTexture(GL_TEXTURE_2D, hit->name);
 	set_tex_params(tsp, mirror_u, mirror_v);
+	s_t_gl += PERF_TICKS() - t_g;
 	return true;
 }
 
@@ -473,6 +533,18 @@ void ps3tex_reset()
 	for (u32 i = 0; i < CACHE_SLOTS; i++)
 		free_entry(s_cache[i]);
 	s_live = 0;
+}
+
+void ps3tex_split(u64* t_hash, u64* t_decode, u64* t_gl, u32* hashes, u64* hash_bytes)
+{
+	*t_hash = s_t_hash;
+	*t_decode = s_t_decode;
+	*t_gl = s_t_gl;
+	*hashes = s_hashes;
+	*hash_bytes = s_hash_bytes;
+	s_t_hash = s_t_decode = s_t_gl = 0;
+	s_hashes = 0;
+	s_hash_bytes = 0;
 }
 
 void ps3tex_stats(u32* decodes, u32* live)

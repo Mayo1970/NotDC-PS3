@@ -8,3 +8,5 @@ void ps3tex_frame_begin();
 bool ps3tex_bind(TSP tsp, TCW tcw);
 void ps3tex_reset();
 void ps3tex_stats(u32* decodes, u32* live);
+// Read and clear the window's bind split (timebase ticks) and hash volume.
+void ps3tex_split(u64* t_hash, u64* t_decode, u64* t_gl, u32* hashes, u64* hash_bytes);

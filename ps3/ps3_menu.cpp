@@ -381,6 +381,8 @@ static Option s_video[] = {
 	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
 	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs [CC] C call-outs per second from the JIT. Live." },
+	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SPE wake test at boot, [spe] counts in play. Set before boot." },
 };
 
 // OPTIMIZATION_PLAN 5.1: JIT speed paths, one A/B toggle each.

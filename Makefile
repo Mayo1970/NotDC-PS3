@@ -43,6 +43,13 @@ SRCS := $(filter-out $(EXCLUDE),$(SRCS))
 ASMS := $(wildcard ps3/*.S)
 OBJS := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS) $(ASMS)))
 
+# SPU programs (ps3/spu): built with spu-gcc, embedded as data for sysSpuImageImport.
+SPU_CC     := $(PS3DEV)/spu/bin/spu-gcc
+BIN2S      := $(PS3DEV)/bin/bin2s
+SPU_CFLAGS := -O2 -Wall -ffunction-sections -fdata-sections -I$(PSL1GHT)/spu/include -Ips3/spu
+SPU_PROGS  := spe_bell
+OBJS       += $(patsubst %,$(BUILD)/spu/%.bin.o,$(SPU_PROGS))
+
 ifeq ($(DEBUG),1)
   DEBUG_FLAG := -g -DPS3_DEBUG
 endif
@@ -87,6 +94,18 @@ $(BUILD)/ps3/ps3_fsca_table.o: ps3/ps3_fsca_table.S misc/fsca-table.bin
 	@mkdir -p $(dir $@)
 	@echo "AS $<"
 	@$(CC) $(CFLAGS) -Ips3 -c $< -o $@
+
+$(BUILD)/spu/%.elf: ps3/spu/%.c ps3/spu/%.h
+	@mkdir -p $(dir $@)
+	@echo "SPU $<"
+	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s $< -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+
+.PRECIOUS: $(BUILD)/spu/%.elf
+
+# bin2s names the symbol after the file: spe_bell.elf -> spe_bell_elf[].
+$(BUILD)/spu/%.bin.o: $(BUILD)/spu/%.elf
+	@echo "BIN2S $<"
+	@$(BIN2S) -a 64 $< | $(PREFIX)as -o $@
 
 self: $(BUILD)/$(TARGET).elf
 	$(SPRXLINK) $<

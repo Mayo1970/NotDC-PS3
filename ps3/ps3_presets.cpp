@@ -45,7 +45,7 @@ int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thr
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
-int g_vertex_array_preset  = 0;   // 1 = merged strips drawn as ranges of one vring block
+int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vring block
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -53,6 +53,7 @@ int g_jit_tfwd_preset      = 1;   // 1 = T passed from compare to branch in a re
 int g_jit_cr0_preset       = 1;   // 1 = block-ending compare branches on CR0 directly
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
+int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -98,6 +99,7 @@ static const CfgItem s_items[] = {
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
+	{ "SpeDoorbell",   &g_spe_bell_preset },
 };
 
 void ps3_presets_load(void)
@@ -172,6 +174,9 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 // OPTIMIZATION_PLAN 2.4: off draws one strip per glBegin/glEnd, the old path, so one build can A/B it.
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
 int get_vertex_array_preset()  { return g_vertex_array_preset; }
+
+// OPTIMIZATION_PLAN 5.12 S0, read once in InitRenderer.
+int get_spe_bell_preset()      { return g_spe_bell_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

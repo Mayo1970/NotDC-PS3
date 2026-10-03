@@ -11,7 +11,47 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (state at end of session 2026-09-23)
+## 0. Resume here (updated 2026-10-03)
+
+**Active work: section 5 (speed). Matt wants full speed over accuracy.**
+
+Where it stands (Crazy Taxi, dense traffic):
+- All of these are default ON and HW validated: JIT FSCHG, FSQRT, NewOps,
+  FPU PIN, T FORWARD, CR0 BRANCH (JIT SPEED page), ARM7 JIT level 5, and
+  Vertex Arrays (VIDEO / DEBUG). Build of 20:36 has all of them.
+- Matt tests with Dynarec ON, JIT Fastmem ON, SH4 Clock 150 MHz. Dynarec and
+  JIT Fastmem are still default OFF, and an install resets the settings.
+- Dense VPS 50.7 of 59.95 at 150 MHz; 21% of dense seconds at full speed
+  (after 5.10). Audio still gaps when below full speed.
+- The render thread is busy 40% of wall on the same PPE core as the SH4
+  thread. Dense split, % of wall: TA decode 19, draw 21 = vtx+other 8.5 +
+  texture bind 6.3 (gl 2.8, hash 1.9) + glEnd 3 + sort 1 + modvol 1.
+
+Next, in this order (agreed with Matt):
+1. 5.9: done, HW 2026-10-03 (busy 57 -> 47%, VPS unchanged).
+2. 5.10: done, HW 2026-10-03 (hash 8.2 -> 1.9%, dense VPS 48.5 -> 50.7,
+   no stale textures).
+3. 5.11: TA decode (19%): write the final vertex format at decode time.
+   Built 2026-10-03, HW pending.
+
+SPE work (5.12, 5.13) is SHELVED by Matt on 2026-10-03 until 5.9-5.11 are
+done. Why this order: 5.11 sets the vertex format the SPE decoder (5.12 S2)
+must write, so porting the decoder after 5.11 avoids porting it twice; 5.9
+and 5.10 shrink the render-thread work first, so the SPE gain is measured
+against the new baseline.
+- 5.12 S0 (doorbell) is HW validated and stays in the tree, default OFF
+  (VIDEO / DEBUG -> "SPE Doorbell"). Resume at S1; see 5.12.
+- 5.13 A0 is not started.
+
+Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
+`udplog.py`), log analysis by windows with vt > 3K. Probes: IFB Probe and
+JIT C-Calls (VIDEO / DEBUG) give `[IFB]`/`[CC]`/`[ARMJIT]`; the `[rend] busy=`
+`[rend] draw split %:` and `[rend] tex split %:` lines are always on.
+
+Other open items: the XMB exit always takes the "SH4 did not stop in 3 s"
+fallback (seen in every run, not new). JitCarry is broken on PS3 (5.2).
+Why the ARM7 JIT time saving did not show as SPEED: likely SMT sharing with
+the render thread (5.6).
 
 | Item | Status |
 |---|---|
@@ -112,6 +152,9 @@ All changes are uncommitted in the working tree. Matt commits.
   Our sound driver CPU runs 2.3x slower than Flycast and 10x slower than nullDC.
 
 ### 2.3 DSP  `[ ]`  PARKED
+
+- 2026-09-29: see 5.13. The SPE AICA plan runs caique's measured DSP on an
+  SPE, which may replace the PPC DSP JIT. Matt's decision.
 
 - Parked by Matt on 2026-09-23. He wants a DSP JIT (PPC), not an interpreter.
   Flycast `dsp_interp.cpp` stays the reference for the semantics; its
@@ -308,10 +351,16 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.5 | SH4 Clock 150 MHz (existing Emulation option, speed over accuracy) | `[x]` HW, dense VPS +16%, not full speed |
 | 5.6 | Render thread busy % (`[rend] busy=` line) + SPEED/VPS target vs effective clock | `[x]` HW, dense busy 61% |
 | 5.7 | Draw split (`[rend] draw split %:` line) | `[~]` built, HW pending (runs with 5.8) |
-| 5.8 | Vertex arrays for merged strips (VIDEO / DEBUG, `VertexArrays`) | `[x]` HW, dense VPS +6%, busy 61 -> 57% |
+| 5.8 | Vertex arrays for merged strips (VIDEO / DEBUG, `VertexArrays`) | `[x]` HW, dense VPS +6%, busy 61 -> 57%, default ON |
+| 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
+| 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
+| 5.11 | TA decode writes the final vertex format | `[~]` built 2026-10-03, HW pending |
+| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | SHELVED 2026-10-03 (Matt) until 5.9-5.11 are done; A0 not started |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
+Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
@@ -486,6 +535,265 @@ clock by VPS.
 - 5.7/5.8 HW 2026-09-23, boot A (Vertex Arrays OFF), dense windows, % of wall:
   draw ~42 = vtx+other ~22, param ~13 (tex bind ~12), glEnd ~5, sort ~1,
   modvol ~1; TA decode ~19. `ps3tex_bind` at ~12% is a second target.
+- 5.9 built 2026-10-03: `draw_scene()` runs `collect_diag()` only when the
+  window is over (`os_GetSeconds() - s_stat_t0 >= STAT_WINDOW_S`). A render
+  job always ends in `rth_print_stats()`, so `[rendz]` still shows the last
+  drawn frame of the window. HW: `vtx+other` must drop; `[rendz]` unchanged.
+- 5.10 built 2026-10-03, split only, no fix yet. New line after the draw
+  split: `[rend] tex split %: hash H decode D gl G other O | hash/render n=N
+  KB=K`. `hash` = `hash_texture()` (first bind of each texture per frame),
+  `decode` = decode + upload on a miss or a changed hash, `gl` = the final
+  `glBindTexture` + 4 `glTexParameteri`, `other` = cache probe + `describe()`.
+  Suspects from the code:
+  - `hash`: a serial FNV over the whole source of every texture used, every
+    frame. Each word is a dependent `xor` + `mullw`; the VRAM reads miss L2.
+    KB/render sizes it.
+  - `gl`: `ps3gl_texture_find()` is a linear scan of up to 4096 slots
+    (~64 B each, 256 KB) on every `glBindTexture`. Each
+    `glTexParameteri` also sets `t->dirty`, so every bind re-sends the RSX
+    texture commands even for the same texture and state (cost lands in
+    `glEnd`).
+- 5.9/5.10 HW 2026-10-03, Crazy Taxi, 150 MHz, Dynarec + JIT Fastmem. 16
+  dense windows (vtx/render >= 5K, avg 9.3K), 82 dense seconds (vt > 3K).
+
+  | | busy | dec | draw | param (tex) | glEnd | vtx+other | dense VPS | full-VPS secs |
+  |---|---|---|---|---|---|---|---|---|
+  | 5.8 | 57% | 19 | 38 | 13 (11.9) | 3.0 | 20.0 | 49.0 | 16% |
+  | 5.9 | 47% | 19 | 27 | 13.3 (12.4) | 3.1 | 8.6 | 48.5 | 9% |
+
+  - 5.9: `collect_diag()` cost ~11% of wall. `[rendz]` unchanged. Dense VPS
+    did not move: as with the ARM7 JIT (5.4), freed render-thread time does
+    not show as VPS.
+  - 5.10 split, % of wall: hash 8.2, gl 2.6, other 1.0, decode 0.6.
+    - hash: 135 textures and 514 KB per render, ~22 MB/s, ~46 cycles per word.
+    - gl: ~20 K binds/s at ~1.3 us each, so the ps3gl linear slot scan.
+- 5.10 fix (Matt, 2026-10-03): faster hash only, on the PPU. The SPE hash
+  waits until 5.11 is done; the ps3gl bind fix (gl 2.6%) is not chosen.
+  - `hash_range()` (`ps3/ps3_tex.cpp`): 64-bit loads, 4 independent lanes,
+    16 words per pass with `dcbt` 256 bytes ahead. Lane step = Jenkins
+    one-at-a-time (`h += w; h += h << 10; h ^= h >> 6`), no multiply in the
+    loop (checked in the disassembly: `ld` + `dcbt`, `mulld` only in the
+    final mix). The step is a bijection in h and in w, so one changed word
+    always changes the 64-bit result, as FNV did; fold to 32 bits at the end.
+  - A 4-byte-aligned start (mip offsets) takes one 32-bit head word; a span
+    past the end of VRAM keeps the masked word loop.
+  - HW test: Crazy Taxi dense, read `tex split` hash (was 8.2%) and check
+    for stale textures (FMV, menus, the in-game map).
+  - HW 2026-10-03, Crazy Taxi, same settings, 180 s, no errors in the log.
+    Same load as the 5.9 run (17 dense windows, 9.3K vtx, 513 KB hashed per
+    render).
+
+    | | busy | draw | tex | hash | dense VPS | full-VPS secs | vt 6-9K | vt 9-12K | vt 12K+ |
+    |---|---|---|---|---|---|---|---|---|---|
+    | 5.9 | 46.6% | 27.1 | 12.4 | 8.2 | 48.5 | 9% | 47.7 | 48.2 | 50.0 |
+    | hash | 40.2% | 20.8 | 6.3 | 1.9 | 50.7 | 21% | 48.5 | 50.6 | 53.4 |
+
+    Hash 4.3x faster (~11 cycles per word). Left in tex: gl 2.8, other 1.0,
+    decode 0.6. Matt: no stale textures (FMV, menus, arrow, map).
+- 5.11 built 2026-10-03 (`ps3/ps3_rend.cpp`).
+  - `DcVertex` is now the draw form, 24 bytes: x*W, y*W, W, u, v, RGBA.
+    `vb_emit` is a 6-word copy plus the 3 constant words of
+    `ps3gl_vertex_t` (w = 1, no TC1); no float math left in the draw.
+  - Alpha force (apply_param's rule) is applied at decode from the current
+    param (`s_alpha_or`). A texture always binds (sizes cap at 1024), so the
+    rule needs no bind result.
+  - Inf vertices (Flycast `is_vertex_inf`) are dropped at decode: the strip
+    is split there and each piece keeps the index parity of its first
+    vertex (`DcStrip::parity`). `draw_strip` has no per-vertex inf test.
+    Strip Merge OFF leads an odd piece with a copy of its first vertex, and
+    now drops inf vertices too. `[rendz]` x/y no longer show inf values.
+  - Decode hot path: the 1/W range test uses float compares (the int union
+    was a store + reload, a load-hit-store on the PPE); 16-bit UVs store
+    their bits straight (no int-to-float round trip).
+  - Checked offline (`split_sim2.py`, session scratchpad): 30000 random
+    strip sets with inf vertices and cull modes give the same triangles as
+    the old draw-time skip, culling taken into account; dropping the parity
+    term fails 781 of 2000; Strip Merge OFF pieces 0 of 20000 wrong.
+  - HW test: Crazy Taxi dense (`dec`, `vtx+other`, VPS) and Soul Calibur
+    (the inf path moved). Look for holes, wrong colours or alpha.
+  - HW 2026-10-03, first build, Crazy Taxi, 196 s, no faults, drop 0,
+    overflow 0. 15 dense windows, 8.6K vtx and 48 renders/s (last run:
+    9.3K, 42/s), so read it per render:
+
+    | per render | dec | vtx+other | busy | dense VPS | full-VPS secs |
+    |---|---|---|---|---|---|
+    | 5.10 | 4.60 ms | 2.02 ms | 9.57 ms | 50.7 | 21% |
+    | 5.11 a | 4.57 ms | 1.34 ms | 8.86 ms | 48.3 | 3% |
+
+    Per vertex the decode got ~8% slower (493 -> 531 ns). Cause in the
+    disassembly: `strip_close()` was an out-of-line call inside the vertex
+    loop, so GCC stopped keeping the decode counters in registers (load +
+    store per vertex). Fixed: `strip_close()` is always_inline; the loop
+    now has no call. VPS is not comparable: other scenes and load.
+  - HW 2026-10-03, build b (inline), Crazy Taxi, 182 s, no faults. Same
+    load as the 5.10 run (16 dense windows, 9.4K vtx, 214 renders/window).
+    Matt: the game felt worse.
+
+    | | busy | dec | vtx+other | dense VPS | full-VPS secs | vt 6-9K | vt 9-12K | vt 12K+ |
+    |---|---|---|---|---|---|---|---|---|
+    | 5.10 | 40.2% | 19.3 | 8.5 | 50.7 | 21% | 48.5 | 50.6 | 53.4 |
+    | 5.11 b | 40.5% | 21.6 | 6.3 | 49.9 | 14% | 49.3 | 49.5 | 49.9 |
+
+    The work moved from the draw to the decode with no net gain (decode
+    535 ns per vertex, was 493). The inline did not help. ~1600 cycles per
+    vertex is far above the math, so memory stalls are the likely bulk
+    (raw stream read back after the SH4 wrote it, vertex stores without
+    a prefetch). Not measured.
+- 5.12 (design agreed with Matt, 2026-09-29): SPE offload. Decode the TA
+  stream on an SPE while the SH4 submits it, not at STARTRENDER.
+  - Why: the PS3 has one PPE core with 2 hardware threads. The SH4 thread and
+    the render thread share it. TA decode (~19% of wall) and `vtx+other` (~20%)
+    are streaming work: raw 32-byte records in, vertices out. 6 SPEs are free.
+  - Toolchain checked: `ps3dev-latest:latest` has `spu-gcc`/`spu-g++` 7.2,
+    `spu_rules`, `libsputhread`, `libspudma`, `libspuatomic`, `libspumars`,
+    `libspurs`. Build pattern: PSL1GHT `samples/spu` (`spu/` sub-Makefile,
+    `spu.bin` linked in with `bin2o`, `sysSpuImageImport`). No code calls
+    `sysSpuInitialize` today.
+  - Samples to follow: `sputhread` (one thread that stays alive), `spudma`
+    (`mfc_get`/`mfc_put` + tag wait), `spuparallel` (fenced done word with
+    `mfc_putf`). Not used: raw SPU (`sputest`), SPU-to-SPU DMA (`spuchain`),
+    MARS, SPURS.
+  - Why it fits: the SH4 thread already copies every record into `c->raw`
+    (`ps3ta_store_sq` / `ps3ta_store_dma`); only the store FSM runs there.
+    `Ps3VertexDecoder` reads only the stream and its own state (`s_face_*`,
+    `s_sprite_col`, `s_cur_list`) and only appends to its output arrays.
+  - Notify: a lock-line reservation doorbell, not a syscall and not a PPU DMA.
+    The SPU reads a 128-byte doorbell line with `mfc_getllar` and sleeps on
+    `SPU_RdEventStat` (`MFC_LLR_LOST_EVENT`). A plain PPU store to the line
+    wakes it. The SPU then pulls the new raw range itself in chunks of 16 KB
+    or less, with double buffering.
+    - The PPU publishes in batches (~2 KB) and always at list end, LIST_INIT,
+      LIST_CONT, SOFTRESET and STARTRENDER. Cost per SQ record: one compare.
+      Cost per batch: one `lwsync` + one store.
+    - Rejected: `sysSpuThreadWriteSignal` per record (one lv2 syscall, and
+      there are ~371 K `sqw` calls/s); SPU DMA polling (line ping-pong).
+  - Design:
+    - Command ring in main memory: `{DATA_TO pos, LIST_INIT, LIST_CONT,
+      SOFT_RESET, FENCE}` + context. It carries what `cont_marks` and
+      `set_ta_context` sequence today.
+    - At each FENCE (STARTRENDER) the SPE writes the counts at that point
+      (`nvtx, nstrip, nparam, nmtri, nmvol, max_inv_w`). The arrays only
+      grow, so the render thread draws `[0, count)` while the SPE appends.
+    - LIST_INIT on a context that is still drawing: the SPE waits at that ring
+      entry. The SH4 no longer blocks in `ListInit` -> `rth_wait_decode`.
+    - Output: the SPE stages in LS, writes with `mfc_put`, then a done line
+      with `mfc_putf`. The render thread uses `lwsync` after it reads it.
+    - Raw buffers to 128-byte alignment (now `memalign(32)`).
+    - SPU float: no NaN, no Inf, no denormals, truncating rounding.
+      `clamp_byte`'s `f != f` and `set_pos`'s `inv_w >= INV_W_FLOOR` must test
+      the integer bits (`track_inv_w` already does). W may differ by 1 ULP.
+    - Side effect: `StartRender` sets the render-end IRQ delay from
+      `rc->nvtx`, which is the previous frame's count today. With early decode
+      it is the current count, so the IRQ timing changes.
+    - The store FSM stays on the PPU (list-end IRQ timing).
+  - Steps, each ends with a HW test:
+    - S0: doorbell ping. The PPU bumps a counter, the SPU echoes it. Measure
+      wake latency and PPU cost.
+    - S1: command ring + raw pull. The SPE returns a count + checksum per
+      FENCE; the PPU checks them against its own decode. No visible change.
+    - S2: decoder ported to the SPU into shadow arrays. Compare counts and
+      hashes against the PPU decode at each FENCE.
+    - S3: draw from the SPE output. Toggle, default OFF. Measure
+      `[rend] busy=` and VPS.
+  - SPE candidates, in order (from the dense Crazy Taxi split):
+
+    | # | Job | Cost now | Fit |
+    |---|---|---|---|
+    | 1 | TA decode (S0-S3) | 19% of wall, render thread | good |
+    | 2 | Strip merge + final vertex build (`run_emit`, = 5.11 on the SPE) | most of vtx+other ~20%, render thread | good; RSX vring by SPE DMA unproven, else main memory. `collect_diag` does not move (5.9) |
+    | 3 | Texture hash (`hash_texture`, serial FNV over each texture on its first bind per frame) | part of `ps3tex_bind` ~12% | good; the SPE sees every TCW/TSP and can SIMD-hash at FENCE. Split the 12% first (hash / decode / `glTexParameteri`) |
+    | 4 | Texture decode on a miss (twiddle, VQ, palette) | FMV / loading spikes | good; could write the swizzled layout directly |
+    | 5 | `present_fb_convert` | SH4 thread, each vblank, direct-FB games only | good |
+    | 6 | AICA DSP | not emulated (2.3 parked) | moved to 5.13 |
+    | 7 | AICA channel mix (`GenerateAllFast`) | 4-4.5%, SH4 thread | moved to 5.13 (control/render split solves the readback) |
+
+    Left out by Matt: the YUV FMV converter (latency-bound, less important).
+    Stay on the PPE: SH4 JIT, ARM7 JIT, MMU, memory handlers, the TA store
+    FSM, maple, GD-ROM, RSX/ps3gl calls.
+  - S0 built 2026-10-03, HW pending. Toggle: VIDEO / DEBUG -> "SPE Doorbell"
+    (`nullDC.cfg [ps3] SpeDoorbell`), default OFF, read in `InitRenderer`.
+    - `ps3/spu/spe_bell.c` (spu-gcc, embedded with `bin2s`, `sysSpuImageImport`):
+      one SPU thread, `mfc_getllar` on the bell line, sleeps on
+      `MFC_LLR_LOST_EVENT`, echoes the seq with `mfc_put`. A 1 ms decrementer
+      event is a fallback; a new seq found by it alone counts as `rescued`
+      (a lost reservation event).
+    - `ps3/ps3_spe.cpp`: boot test, 1000 pings (round-trip min/avg/max) and
+      100000 back-to-back rings against a plain store + `lwsync`. Log `[spe]`.
+    - In play: rings every 2 KB of TA data and at list end, LIST_INIT,
+      LIST_CONT, SOFTRESET, STARTRENDER (`ps3spe_note_bytes` /
+      `ps3spe_ring_event`). `[spe] rings/s handled/s wakes/s timeouts/s
+      rescued lag` follows the `[rend]` lines every 5 s.
+    - Link: `.got` 0x9630, 0 `r2off`.
+  - S0 HW 2026-10-03, Crazy Taxi, 150 MHz, Dynarec + JIT Fastmem, 3 min.
+    - Boot: `sysSpuInitialize(6,0)` = 0. Ping x1000: round trip min 0.49,
+      avg 0.52, max 8.82 us, lost 0. Ring back to back: 32.6 ns, against
+      20.0 ns for a plain store + `lwsync`.
+    - Play: 4-7 K rings/s in dense traffic, handled/s = rings/s in every
+      window (no coalescing), lag 0. PPU cost ~5 K x 33 ns = ~0.02% of a thread.
+    - Dense (vt > 3K, n=88): VPS 48.6, 13% of seconds at full VPS. The 5.8
+      run read 49.0 / 16%: within noise.
+    - `rescued` rose to 30 (~0.3/s, grows with the ring rate). Likely not
+      lost events: a ring that lands between the decrementer wake and the
+      next `getllar` also counts, and its own LLR event follows. S1 checks
+      the pending LLR bit (`spu_readchcnt(SPU_RdEventStat)`) before counting.
+    - XMB exit: "SH4 did not stop in 3 s" fallback as in every run, so
+      `TermRenderer` / `ps3spe_term` did not run; the process exit took the
+      SPU group down.
+  - Gain: 1-3 are ~45-50% of wall on the shared PPE core. The VPS gain is
+    unknown until HW: freed ARM7 time did not show as SPEED (5.4).
+  - Flycast reference: `BaseTAParser` in `flycast/core/hw/pvr/ta_vtx.cpp`
+    (parser class, not read in detail yet).
+- 5.13 (design agreed with Matt, 2026-09-29): AICA on an SPE, split like the
+  TA. A light control pass stays on the emulation thread; the SPE does the
+  sample work, the DSP and the mix.
+  - Base: caique-rtl `model/sample-model/aica_model.{h,cpp}` (~1100 lines,
+    MIT, Stefanos Kornilios Mitsis Poiitidis; keep the notice). 64 slots + DSP
+    + mixer, `write()`/`read()`/`step()` = one 44.1 kHz sample. Integer only,
+    so the SPU float limits do not apply. Checked against the console (4.29 M
+    filter samples, 89/89 envelope streams, the DSP cases).
+  - Split of `step()`. The control side never reads decoded sample data:
+    - `step_control()`, PPU: key events (KYONEX/KYONB latch), CA phase step
+      with pitch and PLFO, loop start/end, LPSLNK, one-shot end, AEG/FEG
+      clocks, slot stop at 0x3C0, LFO state, the noise LFSR (fixed steps per
+      sample; `LfsrJump` exists). Timers and interrupts stay on the PPU too.
+    - `step_render()`, SPE: wave RAM fetch, ADPCM decode, interpolation,
+      filter (`lpf_step`, `int64`), ALFO attenuation, sends, pan, MIXS, DSP,
+      EXTS/CD-DA, final mix, 44.1 -> 48 kHz into the `ring` of
+      `ps3_audio.cpp` (the feeder thread is unchanged).
+  - The SPE runs `step_control()` again from the same write log
+    (`{sample_no, off, val}` + the lock-line doorbell of 5.12); the PPU does
+    not ship per-sample state (~34 MB/s). Same integer code, both GCC 7.2, so
+    the state is identical. The PPU sends a CA/AEG checksum per block, the
+    SPE checks it.
+  - Result: 0x2810 (EG, state, LP) and 0x2814 (CA) are answered on the PPU at
+    the exact sample. No IRQ depends on the render pass (the AICA has no
+    channel-end IRQ). Only DSP-side state lags (TEMP, MEMS, MIXS, EFREG, the
+    DSP ring in wave RAM); the guest rarely reads it.
+  - Wave RAM stays in main memory. The SPE keeps a per-slot line cache
+    (~16 KB LS), refetched every block with DMA lists; that also picks up new
+    stream data from the ARM7/SH4. The DSP ring stays in LS when RBL <= 32K
+    words, else through the cache. CD-DA sectors go through a PPU ring.
+  - Cost: PPU control pass runs only for active slots (a phase add and a loop
+    compare per sample, an envelope step every other sample); estimate well
+    under today's `aica` 4-4.5%, not measured. SPE: the model steps all 64
+    slots and the full DSP per sample; estimate 40-70% of one SPE, not
+    measured; skip idle slots if needed.
+  - Later option: lazy control. Nothing in it raises an IRQ, so a slot only
+    needs to be caught up on a guest read (MSLC), a register write to it, or a
+    key event. The PPU cost then follows guest reads/writes, not the rate.
+  - Risk: the model has `int64` math (SPU emulates it, slower). Speed is still
+    paced by the SH4 clock, so audio still gaps below full speed.
+  - Steps, each ends with a test:
+    - A0: split `step()` into `step_control()` + `step_render()`. On the PC,
+      caique's own validators must give output bit-identical to `step()`.
+    - A1: the SPE runs the full model from the write log. The PPU runs
+      `step_control()` and sends a checksum per block. nullAICA still makes
+      the sound. HW: mismatch count, SPE load, PPU cost.
+    - A2: nullAICA off. Reads from the PPU control pass, sound from the SPE
+      through `ring`. Toggle, default OFF. HW: Crazy Taxi + a streamed-music
+      game.
+    - A3: the DSP on, own toggle.
+    - A4 (optional): lazy control pass.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC
