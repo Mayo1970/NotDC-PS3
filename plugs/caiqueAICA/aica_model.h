@@ -1,0 +1,189 @@
+/* caique AICA sample model (caique-rtl 5aa2376 sample-model, MIT, see LICENSE): 64 slots, DSP, mixer.
+ * step() = control + render; step_control() alone never reads render state, so the PPU can run it (5.13). */
+#pragma once
+#include <stdint.h>
+#include <string.h>
+#include "dsp_asm.h"
+
+#ifdef CAIQUE_RAM_HOOKS
+/* Wave RAM outside the model (PS3 aica_ram, SPU cache); a = byte address, 16-bit reads are even and little-endian */
+uint8_t caique_rd8(uint32_t a);
+uint16_t caique_rd16(uint32_t a);
+uint16_t caique_dsp_rd16(uint32_t a, uint32_t rbp, uint32_t rbl);
+void caique_dsp_wr16(uint32_t a, uint32_t rbp, uint32_t rbl, uint16_t v);
+#endif
+
+namespace caique {
+
+enum EgState { EG_ATTACK = 0, EG_DECAY1 = 1, EG_DECAY2 = 2, EG_RELEASE = 3 };
+
+/* Render-only fields: s0, s1, adpcm_quant, lpf_low, lpf_band. Everything else is control state. */
+struct Slot {
+    uint32_t CA;           /* current sample address (samples from SA) */
+    uint32_t step;         /* phase fraction, 14 bits */
+    uint32_t update_rate;  /* phase increment per sample, 1/2^14 sample units */
+    int32_t s0, s1;        /* samples at CA and CA+1 */
+    uint32_t LSA, LEA;
+    bool looped;
+    bool in_loop;          /* CA has reached LSA since key-on (arms the loop-end check) */
+    int32_t adpcm_quant;
+    struct {
+        uint16_t a;        /* 10-bit attenuation (TL counts 4); steps on to 0x3FF after the 0x3C0 stop (tests/slot_tail) */
+        bool off;          /* stopped: monitor reads 0x1FFF (tests/ca_stop); output is not muted, the filter tail goes on */
+        EgState state;
+    } AEG;
+    struct {
+        EgState state;
+        uint16_t v;        /* 13-bit cutoff envelope; after a step it already holds the next sample's value */
+        uint16_t vo;       /* the value this sample's filter used */
+        int8_t dir;        /* segment direction, latched when the segment starts (tests/feg_track) */
+        bool passed;       /* attack / decay 1 crossed the target: advance on the next clock */
+    } FEG;
+    int32_t lpf_low, lpf_band; /* filter state, 1/8 sample units; never cleared (tests/filt_reset) */
+    struct {
+        uint32_t counter, start_value;
+        uint8_t state, alfo_w, alfo_shft, plfo, plfo_shft; /* alfo_w: 8-bit ALFO waveform value */
+    } lfo;
+    bool enabled;         /* sample fetch running; cleared one sample after the 0x3C0 clock, or by a one-shot end */
+    uint8_t stop_in;      /* stop armed by aeg_clock, committed after the next sample's output (tests/slot_tail) */
+    bool ca_clr;          /* one-shot end: CA reads 0 from the next sample (tests/oneshot) */
+    bool keyed_fetch;     /* keyed on by the previous envelope pass: this sample's fetch does not advance */
+    bool keyed;           /* key-on sample: no envelope step (an R 63 attack still leaves attack, tests/eg_kprobe) */
+    bool keyed_off;       /* key-off sample: a clock takes one more step of the old segment, not from attack (tests/aeg_koff) */
+    EgState aeg_prev, feg_prev; /* the states before that key-off */
+    int8_t feg_prev_dir;        /* FEG direction before that key-off (tests/feg_koffdir) */
+    bool feg_prev_passed;       /* passed flag before that key-off: the clock steps the NEXT segment's way (tests/feg_koffpass) */
+};
+
+/* What the render pass does at one CA position of a slot's stream walk */
+enum { OP_RESET = 1, OP_DECODE = 2, OP_LAST = 4 };
+struct RenderOp { uint16_t ca; uint8_t flags; };
+
+/* Max CA advances in one sample: OCT 7, FNS 0x3FF, full PLFO -> (2298 << 11) + 0x3FFF over 2^14 */
+static const int MAX_OPS_PER_SLOT = 288;
+
+/* Control state one slot's render pass reads, taken at the slot's output point */
+struct SlotFrame {
+    uint32_t lfsr;          /* LFSR after this slot's step */
+    uint32_t step;          /* phase fraction after the walk */
+    uint32_t ca_old, ca;    /* CA before / after the walk (collision fetch) */
+    uint16_t fv, aeg_a;     /* FEG value for the filter, AEG level */
+    uint8_t alfo_w;
+    bool en_fetch, keyed;   /* enabled / keyed_fetch at the walk start */
+    bool en_out, aeg_off;   /* enabled after the walk, AEG off */
+};
+
+/* Control -> render hand-off of the current sample; the slot ops cover one slot at a time */
+struct Frame {
+    uint64_t sample;
+    uint32_t mdec;          /* MDEC_CT of this sample's DSP pass */
+    struct { bool en, keyed; uint32_t ca_old, ca; } pv[7];  /* next sample's fetch of slots 0..6 (coll_preview) */
+    uint32_t nops;
+    RenderOp ops[MAX_OPS_PER_SLOT];
+};
+
+/* Control state for the PPU / SPU compare (5.13 A1); same layout on both, a multiple of 16 bytes */
+struct SlotSnap {
+    uint32_t CA, step;
+    uint16_t a, fv;
+    uint8_t aeg, feg, flags, lfo;  /* flags: enabled, off, keyed_fetch, stop_in, in_loop, ca_clr, passed, dir < 0 */
+    uint32_t lfo_cnt;
+};
+struct CtlSnap {
+    uint32_t sample, lfsr, mdec, eg_cnt;
+    SlotSnap s[64];
+};
+
+struct AicaModel {
+    static const uint32_t RAM_SIZE = 2u << 20;
+    uint8_t *ram;              /* RAM_SIZE bytes; null with CAIQUE_RAM_HOOKS */
+    uint16_t reg[0x8000 / 4];  /* register file, one 16-bit value per 32-bit slot, offset >> 2 */
+
+    Slot slot[64];
+
+    /* DSP state */
+    int32_t TEMP[128];  /* 24-bit */
+    int32_t MEMS[32];   /* 24-bit */
+    int32_t MIXS[16];   /* 20-bit SGC sum; the DSP reads one of two banks on alternate samples (tests/eg_lock mixs) */
+    int32_t MIXS_bank[2][16];
+    int32_t EXTS[2];    /* 16-bit */
+    int32_t EFREG[16];  /* 16-bit */
+    uint32_t MDEC_CT;
+    int32_t ACC, FRC_REG, Y_REG;
+    uint32_t ADRS_REG;
+    uint16_t memval;          /* last word read by MRD, as seen by IWT */
+    struct { int64_t land; uint16_t val; } mem_q[4]; /* reads in flight: global step at which each lands */
+    int mem_qn;
+    int mrd_even_masa;        /* even-step MRD waiting for the next (odd) memory slot, -1 = none */
+    dsp_inst_t mrd_even;
+    uint8_t nofl_pipe[2];     /* NOFL of steps s-1, s-2 */
+
+    int16_t outL, outR;       /* DAC output of the last sample */
+    uint64_t samples;         /* samples run */
+    uint32_t lfsr;            /* noise: 17-bit LFSR x^17 + x^12 + 1, one step per slot processed */
+    /* Envelope clock ticks on even MDEC_CT, eg_cnt = eg_K - MDEC_CT/2 (mod 2^14); eg_K is a per-boot constant
+     * (6491 on the tests/eg_lock boot, changes at a reset). See tests/eg_lock, feg_track, aeg_dl0. */
+    uint32_t eg_cnt;
+    uint32_t eg_K;
+    struct { uint16_t scieb, scipd, mcieb, mcipd; uint8_t cnt[3], pre[3]; } irq;
+    uint32_t tim_phase;
+    uint32_t eg_par;           /* MDEC_CT parity the envelope clock ticks on (a 0x2804 bit 15 write may flip it, TODO 7.1) */
+    /* KYONEX only raises this; the next envelope pass reads every KYONB, events land one sample later (tests/kon_defer) */
+    bool kyonex_pending;
+    /* Slot K's fetch owns DSP step 2K - 14's wave RAM slot (tests/dsp_coll): an MWT there drops, an MRD gets
+     * coll_word. Slots 0..6 fall in the next sample's sweep. */
+    bool coll_claim[64];
+    uint16_t coll_word[64];
+    bool mrd_even_coll;       /* the waiting even-step MRD was in a channel's slot */
+    uint16_t mrd_even_word;
+
+    Frame fr;                 /* control -> render hand-off of the current sample */
+
+    AicaModel();
+    ~AicaModel();
+    void init();              /* the constructor's work, for storage that no constructor ran on (SPU) */
+    void reset();
+    void write(uint32_t off, uint32_t val);
+    uint32_t read(uint32_t off);
+    bool sh4_irq() const { return (irq.mcieb & irq.mcipd) != 0; }   /* the AICA's SH4 interrupt line (tests/timer_irq L) */
+    uint32_t ram_read32(uint32_t off); /* CPU read of wave RAM (updates the memory read latch) */
+    void step() { run(true); }
+    void step_control() { run(false); }   /* control state only; outL/outR, MIXS and the DSP do not move */
+    void snap(CtlSnap &o) const;
+    static uint32_t snap_hash(const CtlSnap &o);
+
+    uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
+    uint16_t chr(int ch, uint32_t o) const { return reg[(0x80 * ch + o) >> 2]; }
+
+  private:
+    void run(bool render);
+    void slot_regwrite(int ch, uint32_t o);
+    void key_on(int ch);
+    void key_off(int ch);
+    void set_aeg_state(int ch, EgState s);
+    void update_pitch(int ch);
+    void update_lfo(int ch, bool from_write);
+    static uint32_t eff_rate(uint32_t rate, uint16_t r14, uint16_t r18); /* from the KRS (r14) and OCT/FNS (r18) given */
+    void stream_step(int ch, Frame *F);
+    void decode_sample(int ch, bool last, uint32_t CA);
+    void aeg_clock(int ch);
+    void feg_clock(int ch);
+    int32_t lpf_step(int ch, uint32_t v, int32_t x8); /* cutoff v; input and output in 1/8 sample units */
+    bool slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_t ca, uint16_t &word) const;
+    void coll_preview(Frame &F);
+    void lfo_calc(int ch);
+    void slot_control(int ch, SlotFrame &sf);
+    void slot_render(int ch, const SlotFrame &sf, int32_t &l, int32_t &r, int32_t &d);
+    void dsp_step(uint64_t smp, uint32_t mdec);
+    uint32_t sa_addr(int ch) const;
+    int fmt(int ch) const;
+#ifdef CAIQUE_RAM_HOOKS
+    uint8_t rd8(uint32_t a) const { return caique_rd8(a); }
+    uint16_t rd16(uint32_t a) const { return caique_rd16(a); }
+#else
+    uint8_t rd8(uint32_t a) const { return ram[a]; }
+    uint16_t rd16(uint32_t a) const { return (uint16_t)(ram[a] | (ram[a + 1] << 8)); }
+#endif
+};
+
+} // namespace caique

@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <math.h>
 #include <malloc.h>
+#include <stddef.h>
+#include <string.h>
 #include <sys/thread.h>
 #include <sys/mutex.h>
 #include <sys/cond.h>
@@ -102,17 +104,46 @@ struct TaContext
 	u32 cont_marks[MAX_CONT_MARKS];
 	u32 n_cont, n_cont_done;
 	bool raw_overflow;
-	// 5.12 S1: raw bytes already sent to the SPE, and the replay's hash of [0, raw_decoded).
+	// 5.12: raw bytes already sent to the SPE, and the ring number of the last DATA that names them.
 	u32 spe_pub;
-	SpeHash spe_hash;
+	u32 spe_cmd;
+	// Vertices of the last job's lists, for the render-end IRQ delay. In S3 nvtx stays at the PPU replay's.
+	u32 rend_nvtx;
 };
 #define TA_CONTEXTS 4
+
+// 5.12 S2: the SPU decoder writes these lists in the same layout.
+static_assert(TA_CONTEXTS == SPE_CTX && MAX_VTX == SPE_MAX_VTX && MAX_STRIPS == SPE_MAX_STRIPS &&
+              MAX_PARAMS == SPE_MAX_PARAMS && MAX_MODTRI == SPE_MAX_MODTRI && MAX_MODVOL == SPE_MAX_MODVOL,
+              "SPE list sizes");
+static_assert(sizeof(DcVertex) == sizeof(SpeVtx) && offsetof(DcVertex, col) == offsetof(SpeVtx, col) &&
+              offsetof(DcVertex, u) == offsetof(SpeVtx, u), "SpeVtx layout");
+static_assert(sizeof(DcStrip) == sizeof(SpeStrip) && offsetof(DcStrip, count) == offsetof(SpeStrip, count) &&
+              offsetof(DcStrip, list) == offsetof(SpeStrip, list) && offsetof(DcStrip, param) == offsetof(SpeStrip, param),
+              "SpeStrip layout");
+static_assert(sizeof(DcParam) == sizeof(SpeParam) && sizeof(ModTri) == sizeof(SpeModTri), "SpeParam/SpeModTri layout");
+static_assert(sizeof(ModVolParam) == sizeof(SpeModVol) && offsetof(ModVolParam, cull) == offsetof(SpeModVol, cull) &&
+              offsetof(ModVolParam, volume_last) == offsetof(SpeModVol, volume_last), "SpeModVol layout");
 static TaContext s_ctx[TA_CONTEXTS];
 // s_ta is the store stage's target and belongs to the SH4 thread. s_dec (replay)
 // and s_rc (draw) belong to the render thread once it runs.
 static TaContext* s_ta = &s_ctx[0];
 static TaContext* s_dec = &s_ctx[0];
 static TaContext* s_rc = &s_ctx[0];
+
+// What the draw reads: s_rc's own lists, or the SPU's copy of them at the job's fence (5.12 S3).
+struct DrawLists
+{
+	const DcVertex* vtx;
+	const DcStrip* strip;
+	const DcParam* param;
+	const ModTri* mtri;
+	const ModVolParam* mvol;
+	u32 nvtx, nstrip, nparam, nmtri, nmvol;
+	float min_w, max_w, max_inv_w;
+	u32 mv_tris[5];
+};
+static DrawLists s_rl;
 static u32 s_cur_list;
 static u32 s_overflow;
 // TA raw-stream health: dropped records, and the high-water mark for sizing.
@@ -198,11 +229,15 @@ static void reset_lists(TaContext* c)
 	c->nmtri = 0;
 	c->nmvol = 0;
 	memset(c->mv_tris, 0, sizeof(c->mv_tris));
+	c->rend_nvtx = 0;
 }
 
 // The stored stream is per list-init, so it is cleared with the decoded lists.
 static void reset_raw(TaContext* c)
 {
+	// The SPU must have pulled the old bytes before the SH4 writes over them.
+	if (g_spe_on)
+		ps3spe_wait_cmd(c->spe_cmd);
 	c->raw_used = 0;
 	c->raw_decoded = 0;
 	c->n_cont = 0;
@@ -213,12 +248,12 @@ static void reset_raw(TaContext* c)
 		ps3spe_reset((u32)(c - s_ctx));
 }
 
-// 5.12 S1: sends the stored bytes the SPE has not seen yet.
+// 5.12: sends the stored bytes the SPE has not seen yet.
 static inline void spe_flush(TaContext* c)
 {
 	if (g_spe_on && c->raw_used > c->spe_pub)
 	{
-		ps3spe_data((u32)(c - s_ctx), c->raw, c->spe_pub, c->raw_used);
+		c->spe_cmd = ps3spe_data((u32)(c - s_ctx), c->raw, c->spe_pub, c->raw_used);
 		c->spe_pub = c->raw_used;
 	}
 }
@@ -438,9 +473,10 @@ struct Ps3VertexDecoder
 			s_stat_built[s_cur_list]++;
 	}
 
-	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); }
-	static void AppendPolyVertex1(TA_Vertex1* p) { VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
-	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); }
+	// Types without UV write 0, so every vertex field is defined (the SPE decoder compares them, 5.12 S2).
+	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); v->u = v->v = 0.0f; }
+	static void AppendPolyVertex1(TA_Vertex1* p) { VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); v->u = v->v = 0.0f; }
+	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = v->v = 0.0f; }
 	static void AppendPolyVertex3(TA_Vertex3* p) { VTX_ONE(p, p->BaseCol); v->u = p->u; v->v = p->v; }
 	static void AppendPolyVertex4(TA_Vertex4* p) { VTX_ONE(p, p->BaseCol); v->u = uv16(p->u); v->v = uv16(p->v); }
 	static void AppendPolyVertex5A(TA_Vertex5A* p) { VTX_A(p); v->u = p->u; v->v = p->v; }
@@ -449,8 +485,8 @@ struct Ps3VertexDecoder
 	static void AppendPolyVertex6B(TA_Vertex6B* p) { VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
 	static void AppendPolyVertex7(TA_Vertex7* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = p->u; v->v = p->v; }
 	static void AppendPolyVertex8(TA_Vertex8* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = uv16(p->u); v->v = uv16(p->v); }
-	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); }
-	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); }
+	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); v->u = v->v = 0.0f; }
+	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); v->u = v->v = 0.0f; }
 	static void AppendPolyVertex11A(TA_Vertex11A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = p->u0; v->v = p->v0; }
 	static void AppendPolyVertex11B(TA_Vertex11B* p) { VTX_B_KEEP(); }
 	static void AppendPolyVertex12A(TA_Vertex12A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = uv16(p->u0); v->v = uv16(p->v0); }
@@ -825,12 +861,7 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 		return;
 	s_dec = c;
 	if (c->raw_decoded == 0)
-	{
 		TileAccel.ListInit();
-		memset(&c->spe_hash, 0, sizeof(c->spe_hash));
-	}
-	if (g_spe_on && raw_end > c->raw_decoded)
-		ps3spe_hash(&c->spe_hash, c->raw + c->raw_decoded, raw_end - c->raw_decoded);
 
 	u32 pos = c->raw_decoded;
 	while (c->n_cont_done < cont_end && c->cont_marks[c->n_cont_done] <= raw_end)
@@ -1272,14 +1303,14 @@ static void run_close()
 // No GL state may change while a run is open: apply_param only runs after run_close().
 static void draw_strip(const DcStrip& s, u32 list)
 {
-	const DcParam& p = s_rc->param[s.param];
+	const DcParam& p = s_rl.param[s.param];
 	s_stat_strips[list]++;
 
 	if (!s_merge)
 	{
 		u32 alpha_or = apply_param(p, list);
 		glBegin(GL_TRIANGLE_STRIP);
-		const DcVertex* v = &s_rc->vtx[s.first];
+		const DcVertex* v = &s_rl.vtx[s.first];
 		for (u32 k = 0; k < s.count; k++, v++)
 			emit_vertex(v, alpha_or);
 		const u64 t0 = PERF_TICKS();
@@ -1292,7 +1323,7 @@ static void draw_strip(const DcStrip& s, u32 list)
 	bool dupe_next = false;
 	if (s_run.open && s_run.count != 0 && s_run.list == list &&
 	    s_run.count + s.count * 2u + 4u <= RUN_MAX_VTX &&
-	    strip_equivalent(p, s_rc->param[s_run.param]))
+	    strip_equivalent(p, s_rl.param[s_run.param]))
 	{
 		// Repeat the last vertex; one more copy flips the parity when the cull direction differs.
 		const DcVertex* last = s_run.last;
@@ -1326,7 +1357,7 @@ static void draw_strip(const DcStrip& s, u32 list)
 		s_run.count = 0;
 	}
 
-	const DcVertex* v0 = &s_rc->vtx[s.first];
+	const DcVertex* v0 = &s_rl.vtx[s.first];
 	const DcVertex* last_good = 0;
 	for (u32 i = 0; i < s.count; i++)
 	{
@@ -1365,9 +1396,9 @@ static void draw_strip(const DcStrip& s, u32 list)
 // Draws one list in submission order: opaque, punch-through, and presorted translucent.
 static void draw_list(u32 list)
 {
-	for (u32 i = 0; i < s_rc->nstrip; i++)
+	for (u32 i = 0; i < s_rl.nstrip; i++)
 	{
-		const DcStrip& s = s_rc->strip[i];
+		const DcStrip& s = s_rl.strip[i];
 		if (s.list == list)
 			draw_strip(s, list);
 	}
@@ -1388,14 +1419,14 @@ static void draw_tr_sorted()
 {
 	const u64 t_sort = PERF_TICKS();
 	u32 n = 0;
-	for (u32 i = 0; i < s_rc->nstrip; i++)
+	for (u32 i = 0; i < s_rl.nstrip; i++)
 	{
-		const DcStrip& st = s_rc->strip[i];
+		const DcStrip& st = s_rl.strip[i];
 		if (st.list != ListType_Translucent || st.count == 0)
 			continue;
 		float sum = 0.0f;
 		for (u32 k = 0; k < st.count; k++)
-			sum += 1.0f / s_rc->vtx[st.first + k].w;
+			sum += 1.0f / s_rl.vtx[st.first + k].w;
 		s_order[n].key = sum / st.count;
 		s_order[n].idx = i;
 		n++;
@@ -1410,7 +1441,7 @@ static void draw_tr_sorted()
 
 	// Merging after the sort keeps the draw order, as Flycast's per-strip sort mode does.
 	for (u32 j = 0; j < n; j++)
-		draw_strip(s_rc->strip[s_order[j].idx], ListType_Translucent);
+		draw_strip(s_rl.strip[s_order[j].idx], ListType_Translucent);
 	run_close();
 }
 
@@ -1461,12 +1492,12 @@ static inline void emit_mod_vertex(float x, float y, float inv_w)
 
 static void draw_mod_tris(u32 first, u32 count)
 {
-	if (first + count > s_rc->nmtri)
+	if (first + count > s_rl.nmtri)
 		return;
 	glBegin(GL_TRIANGLES);
 	for (u32 i = 0; i < count; i++)
 	{
-		const ModTri& t = s_rc->mtri[first + i];
+		const ModTri& t = s_rl.mtri[first + i];
 		emit_mod_vertex(t.x0, t.y0, t.z0);
 		emit_mod_vertex(t.x1, t.y1, t.z1);
 		emit_mod_vertex(t.x2, t.y2, t.z2);
@@ -1478,7 +1509,7 @@ static void draw_mod_tris(u32 first, u32 count)
 // then shade only pixels with bit 7 (Shadow polygon) and bit 0 set, at FPU_SHAD_SCALE.
 static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 {
-	if (s_rc->nmvol < 2 || s_rc->nmtri == 0)
+	if (s_rl.nmvol < 2 || s_rl.nmtri == 0)
 		return;
 
 	glDisable(GL_TEXTURE_2D);
@@ -1490,10 +1521,10 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 	glEnable(GL_STENCIL_TEST);
 
 	s32 mod_base = -1;
-	for (u32 i = 0; i + 1 < s_rc->nmvol; i++)
+	for (u32 i = 0; i + 1 < s_rl.nmvol; i++)
 	{
-		const ModVolParam& p = s_rc->mvol[i];
-		u32 count = s_rc->mvol[i + 1].first - p.first;
+		const ModVolParam& p = s_rl.mvol[i];
+		u32 count = s_rl.mvol[i + 1].first - p.first;
 		if (count == 0)
 			continue;
 		if (mod_base < 0)
@@ -1584,12 +1615,12 @@ static void collect_diag()
 		d.amin = 256; d.amax = 0;
 		d.cmin = 256; d.cmax = 0;
 		d.bigw0 = 1e30f; d.bigw1 = 0.0f;
-		for (u32 i = 0; i < s_rc->nstrip; i++)
+		for (u32 i = 0; i < s_rl.nstrip; i++)
 		{
-			const DcStrip& st = s_rc->strip[i];
+			const DcStrip& st = s_rl.strip[i];
 			if (st.list != lists[L])
 				continue;
-			const DcParam& p = s_rc->param[st.param];
+			const DcParam& p = s_rl.param[st.param];
 			d.strips++;
 			d.verts += st.count;
 			d.dm[p.isp.DepthMode & 7]++;
@@ -1610,7 +1641,7 @@ static void collect_diag()
 			float sw0 = 1e30f, sw1 = 0.0f;
 			for (u32 k = 0; k < st.count; k++)
 			{
-				const DcVertex& v = s_rc->vtx[st.first + k];
+				const DcVertex& v = s_rl.vtx[st.first + k];
 				if (v.x < sx0) sx0 = v.x;
 				if (v.x > sx1) sx1 = v.x;
 				if (v.y < sy0) sy0 = v.y;
@@ -1686,7 +1717,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	// vertex sets the range; tracking the far end let one poly at 1/W <= 0.0001 eat it.
 	union { float f; s32 i; } bz, mz;
 	bz.f = bg_inv_w;
-	mz.f = s_rc->max_inv_w;
+	mz.f = s_rl.max_inv_w;
 	float max_inv_w = (mz.i < bz.i && bz.i < 0x49800000) ? bg_inv_w : mz.f;
 	// reicast's sanity fallback: past 1024*1024 the range is garbage, not a scene.
 	if (!(max_inv_w > 0.0f) || max_inv_w > 1048576.0f)
@@ -1695,8 +1726,8 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	// and float rounding would otherwise clip it away.
 	max_inv_w *= 1.001f;
 	float n = 1.0f / max_inv_w;
-	if (s_rc->min_w < s_stat_w_lo) s_stat_w_lo = s_rc->min_w;
-	if (s_rc->max_w > s_stat_w_hi) s_stat_w_hi = s_rc->max_w;
+	if (s_rl.min_w < s_stat_w_lo) s_stat_w_lo = s_rl.min_w;
+	if (s_rl.max_w > s_stat_w_hi) s_stat_w_hi = s_rl.max_w;
 	if (n < s_stat_near_lo) s_stat_near_lo = n;
 	s_stat_bg_inv_w = bg_inv_w;
 	s_stat_bg_zw = g_rr.bg_param.isp.ZWriteDis;
@@ -1742,7 +1773,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	}
 	glEnd();
 
-	if (s_rc->nstrip != 0)
+	if (s_rl.nstrip != 0)
 	{
 		s_merge = get_strip_merge_preset() != 0;
 		// [rendz] prints only the last frame of a window, and a render job always ends in rth_print_stats.
@@ -1752,7 +1783,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		s_vb = 0;
 		if (s_merge && get_vertex_array_preset())
 		{
-			s_vb_cap = 3 * s_rc->nvtx + 4 * s_rc->nstrip + 16;
+			s_vb_cap = 3 * s_rl.nvtx + 4 * s_rl.nstrip + 16;
 			s_vb_used = 0;
 			s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
 		}
@@ -2135,22 +2166,175 @@ static void rth_print_stats()
 	s_stat_t0 = now;
 }
 
+static u32 fbits(float f)
+{
+	u32 u;
+	memcpy(&u, &f, 4);
+	return u;
+}
+
+// The first 8 mismatches, as spu/ppu word pairs.
+static void spe_report(u32 fence, u32 ctx, const char* what, u32 idx, const u32* spu, const u32* ppu, u32 words)
+{
+	static u32 s_logged;
+	if (s_logged++ >= 8)
+		return;
+	char line[256];
+	int n = snprintf(line, sizeof(line), "[spe] fence %u MISMATCH ctx=%u %s[%u] spu/ppu:", fence, ctx, what, idx);
+	for (u32 k = 0; k < words && n > 0 && n < (int)sizeof(line); k++)
+		n += snprintf(line + n, sizeof(line) - n, " %08X/%08X", spu[k], ppu[k]);
+	printf("%s\n", line);
+}
+
+// 5.12 S2: the SPU lists for this fence must equal the replay's, bit for bit.
+static void spe_compare(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
+{
+	const u64 t0 = gettime();
+	const SpeFence* r = ps3spe_wait_fence(fence);
+	if (!r)
+		return;
+	const u32 ctx = (u32)(c - s_ctx);
+	const SpeOut* o = ps3spe_out(ctx);
+	const u32 hs[] = { r->id, r->ctx, r->pos, r->ncont, r->nvtx, r->nstrip, r->nparam, r->nmtri, r->nmvol,
+	                   r->max_inv_w, r->min_w, r->max_w,
+	                   r->mv_tris[0], r->mv_tris[1], r->mv_tris[2], r->mv_tris[3], r->mv_tris[4] };
+	const u32 hp[] = { fence, ctx, raw_end, cont_end, c->nvtx, c->nstrip, c->nparam, c->nmtri, c->nmvol,
+	                   fbits(c->max_inv_w), fbits(c->min_w), fbits(c->max_w),
+	                   c->mv_tris[0], c->mv_tris[1], c->mv_tris[2], c->mv_tris[3], c->mv_tris[4] };
+	static const char* const hn[] = { "id", "ctx", "pos", "ncont", "nvtx", "nstrip", "nparam", "nmtri", "nmvol",
+	                                  "max_inv_w", "min_w", "max_w", "mv0", "mv1", "mv2", "mv3", "mv4" };
+	bool ok = true;
+	for (u32 k = 0; k < sizeof(hs) / sizeof(hs[0]) && ok; k++)
+		if (hs[k] != hp[k])
+		{
+			spe_report(fence, ctx, hn[k], 0, &hs[k], &hp[k], 1);
+			ok = false;
+		}
+	if (ok && memcmp(o->vtx, c->vtx, c->nvtx * sizeof(DcVertex)) != 0)
+		for (u32 i = 0; i < c->nvtx && ok; i++)
+			if (memcmp(&o->vtx[i], &c->vtx[i], sizeof(DcVertex)) != 0)
+			{
+				spe_report(fence, ctx, "vtx", i, (const u32*)&o->vtx[i], (const u32*)&c->vtx[i], 6);
+				ok = false;
+			}
+	for (u32 i = 0; i < c->nstrip && ok; i++)
+	{
+		const SpeStrip& a = o->strip[i];
+		const DcStrip& b = c->strip[i];
+		if (a.first != b.first || a.count != b.count || a.list != b.list || a.param != b.param)
+		{
+			const u32 ws[] = { a.first, a.count, a.list, a.param }, wp[] = { b.first, b.count, b.list, b.param };
+			spe_report(fence, ctx, "strip", i, ws, wp, 4);
+			ok = false;
+		}
+	}
+	if (ok && memcmp(o->param, c->param, c->nparam * sizeof(DcParam)) != 0)
+		for (u32 i = 0; i < c->nparam && ok; i++)
+			if (memcmp(&o->param[i], &c->param[i], sizeof(DcParam)) != 0)
+			{
+				spe_report(fence, ctx, "param", i, (const u32*)&o->param[i], (const u32*)&c->param[i], 4);
+				ok = false;
+			}
+	if (ok && memcmp(o->mtri, c->mtri, c->nmtri * sizeof(ModTri)) != 0)
+		for (u32 i = 0; i < c->nmtri && ok; i++)
+			if (memcmp(&o->mtri[i], &c->mtri[i], sizeof(ModTri)) != 0)
+			{
+				spe_report(fence, ctx, "mtri", i, (const u32*)&o->mtri[i], (const u32*)&c->mtri[i], 9);
+				ok = false;
+			}
+	for (u32 i = 0; i < c->nmvol && ok; i++)
+	{
+		const SpeModVol& a = o->mvol[i];
+		const ModVolParam& b = c->mvol[i];
+		if (a.first != b.first || a.cull != b.cull || a.depth != b.depth || a.volume_last != b.volume_last)
+		{
+			const u32 ws[] = { a.first, a.cull, a.depth, a.volume_last }, wp[] = { b.first, b.cull, b.depth, b.volume_last };
+			spe_report(fence, ctx, "mvol", i, ws, wp, 4);
+			ok = false;
+		}
+	}
+	ps3spe_result(ok, gettime() - t0);
+}
+
+static void lists_from_ctx(const TaContext* c)
+{
+	s_rl.vtx = c->vtx;
+	s_rl.strip = c->strip;
+	s_rl.param = c->param;
+	s_rl.mtri = c->mtri;
+	s_rl.mvol = c->mvol;
+	s_rl.nvtx = c->nvtx;
+	s_rl.nstrip = c->nstrip;
+	s_rl.nparam = c->nparam;
+	s_rl.nmtri = c->nmtri;
+	s_rl.nmvol = c->nmvol;
+	s_rl.min_w = c->min_w;
+	s_rl.max_w = c->max_w;
+	s_rl.max_inv_w = c->max_inv_w;
+	memcpy(s_rl.mv_tris, c->mv_tris, sizeof(s_rl.mv_tris));
+}
+
+static float bitsf(u32 u)
+{
+	float f;
+	memcpy(&f, &u, 4);
+	return f;
+}
+
+// 5.12 S3: the SPU lists for this fence, if they cover the same bytes the replay would. The SPU only
+// appends past these counts, and its RESET of the context waits for ps3spe_release after the draw.
+static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
+{
+	const u64 t0 = gettime();
+	const SpeFence* r = ps3spe_wait_fence(fence);
+	if (!r)
+		return false;
+	const u32 ctx = (u32)(c - s_ctx);
+	if (r->id != fence || r->ctx != ctx || r->pos != raw_end || r->ncont != cont_end)
+	{
+		const u32 hs[] = { r->id, r->ctx, r->pos, r->ncont }, hp[] = { fence, ctx, raw_end, cont_end };
+		spe_report(fence, ctx, "id/ctx/pos/ncont", 0, hs, hp, 4);
+		ps3spe_result(false, gettime() - t0);
+		return false;
+	}
+	const SpeOut* o = ps3spe_out(ctx);
+	s_rl.vtx = (const DcVertex*)o->vtx;
+	s_rl.strip = (const DcStrip*)o->strip;
+	s_rl.param = (const DcParam*)o->param;
+	s_rl.mtri = (const ModTri*)o->mtri;
+	s_rl.mvol = (const ModVolParam*)o->mvol;
+	s_rl.nvtx = r->nvtx;
+	s_rl.nstrip = r->nstrip;
+	s_rl.nparam = r->nparam;
+	s_rl.nmtri = r->nmtri;
+	s_rl.nmvol = r->nmvol;
+	s_rl.min_w = bitsf(r->min_w);
+	s_rl.max_w = bitsf(r->max_w);
+	s_rl.max_inv_w = bitsf(r->max_inv_w);
+	memcpy(s_rl.mv_tris, r->mv_tris, sizeof(s_rl.mv_tris));
+	ps3spe_result(true, gettime() - t0);
+	return true;
+}
+
 // Stage 1 of a job: the TA replay. It is split from the draw so the inline path
 // can still run it under the guest rounding mode, as TR2 did.
 static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 {
 	REND_PHASE(PH_TADEC);
 	double t0 = os_GetSeconds();
-	decode_pending(c, raw_end, cont_end);
+	// S3 skips the replay; a late or wrong fence replays from raw_decoded, which S3 never moves.
+	if (!(fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end)))
+	{
+		decode_pending(c, raw_end, cont_end);
+		lists_from_ctx(c);
+	}
+	c->rend_nvtx = s_rl.nvtx;
 	s_stat_t_dec += os_GetSeconds() - t0;
 	s_rc = c;
-	// The hash is copied first: once marked, the SH4 may reset this context.
-	SpeHash h;
-	if (fence)
-		h = c->spe_hash;
+	// Compared before the mark: once marked, the SH4 may reset this context and the SPU its lists.
+	if (fence && !g_spe_draw)
+		spe_compare(c, fence, raw_end, cont_end);
 	rth_mark_decoded();
-	if (fence)
-		ps3spe_check(fence, (u32)(c - s_ctx), raw_end, cont_end, &h);
 }
 
 // Stage 2: every RSX call of the job.
@@ -2171,10 +2355,10 @@ static void rth_job_draw(int type)
 	else
 	{
 		s_stat_renders++;
-		s_stat_vtx += s_rc->nvtx;
-		VertexCount += s_rc->nvtx;
+		s_stat_vtx += s_rl.nvtx;
+		VertexCount += s_rl.nvtx;
 		for (int k = 0; k < 5; k++)
-			s_stat_mv[k] += s_rc->mv_tris[k];
+			s_stat_mv[k] += s_rl.mv_tris[k];
 
 		REND_PHASE(PH_BEGINFRAME);
 		if (ps3_video_begin_frame())
@@ -2223,6 +2407,8 @@ static void rth_thread(void* arg)
 		if (type != JOB_PRESENT)
 			rth_job_decode(c, raw_end, cont_end, fence);
 		rth_job_draw(type);
+		// Before the job slot frees: the next fence's RESET may wait on this one (5.12 S3).
+		ps3spe_release(fence);
 
 		sysMutexLock(s_rmx, 0);
 		s_job_type = JOB_NONE;
@@ -2364,17 +2550,16 @@ static bool rth_run(int type, TaContext* c)
 	}
 
 	memcpy(&g_rr, &s_snap, sizeof(g_rr));
+	const u32 fence = (type != JOB_PRESENT) ? spe_fence(c) : 0;
 	if (type != JOB_PRESENT)
-	{
-		const u32 fence = spe_fence(c);
 		rth_job_decode(c, c ? c->raw_used : 0, c ? c->n_cont : 0, fence);
-	}
 	// Host FPSCR follows the SH4 rounding mode (sh4_registers.cpp); draw with round-to-nearest.
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
 	__asm__ volatile("mtfsfi 7,0" ::: "memory");
 	rth_job_draw(type);
 	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
+	ps3spe_release(fence);
 	return true;
 }
 
@@ -2473,9 +2658,9 @@ void StartRender()
 		rc = s_ta;
 	}
 
-	// gxRend.cpp StartRender() render-done timing; games pace off these IRQs. nvtx is still the previous
-	// count here (TR3 replays later), close enough for a clamped delay.
-	u32 vtx = rc->nvtx;
+	// gxRend.cpp StartRender() render-done timing; games pace off these IRQs. This is the previous
+	// job's count (TR3 replays later), close enough for a clamped delay.
+	u32 vtx = rc->rend_nvtx;
 	if (get_render_delay_preset())
 	{
 		render_isp_pending_cycles = 800000;

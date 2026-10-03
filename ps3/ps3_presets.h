@@ -46,6 +46,7 @@ extern int g_jit_cr0_preset;
 extern int g_arm7_jit_preset;
 extern int g_ifb_probe_preset;
 extern int g_spe_bell_preset;
+extern int g_spe_draw_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 
 // cfgOpen() must have run first.

@@ -39,8 +39,19 @@ the SPE decoder (5.12 S2) writes the 5.10 vertex format.
 - 5.12 S0 (doorbell) is HW validated.
 - 5.12 S1 (command ring + raw pull + fence check) is HW validated
   2026-10-03: 6050 of 6050 fences match. Same toggle, default OFF
-  (VIDEO / DEBUG -> "SPE Doorbell"). Next: S2. See 5.12.
-- 5.13 A0 is not started.
+  (VIDEO / DEBUG -> "SPE Doorbell").
+- 5.12 S2 (TA decoder on the SPU into shadow lists, bit-exact compare at
+  each FENCE) is HW validated 2026-10-03: 5362 of 5362 fences match, SPU
+  18.9% busy in dense traffic.
+- 5.12 S3 (draw from the SPU lists, no PPU replay) is HW tested 2026-10-03
+  on Crazy Taxi: all fences ok, busy 40 -> 23%, dense VPS unchanged (50.7).
+  No visual change (Matt). Soul Calibur: flicker, malformed background and a
+  black texture, also with S3 OFF, so not S3 (5.12 S3 runs 2-3). Soul
+  Calibur fight: texture decode 82-85% of wall. Toggle: VIDEO / DEBUG ->
+  "SPE Draw" (`SpeDraw`), default OFF. See 5.12.
+- 5.13 A0 done on the PC 2026-10-03: `plugs/caiqueAICA/` (not in the PS3
+  build yet), `step()` = `step_control()` + `step_render()`, bit-identical
+  to caique `5aa2376` on all cases and validators. Next: A1. See 5.13.
 
 Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
 `udplog.py`), log analysis by windows with vt > 3K. Probes: IFB Probe and
@@ -51,6 +62,19 @@ Other open items: the XMB exit always takes the "SH4 did not stop in 3 s"
 fallback (seen in every run, not new). JitCarry is broken on PS3 (5.2).
 Why the ARM7 JIT time saving did not show as SPEED: likely SMT sharing with
 the render thread (5.6).
+
+Parked by Matt 2026-10-03 (speed first, return later): Soul Calibur faults,
+not caused by S3 (5.12 S3 runs 2-3).
+- Background geometry flickers and is malformed, with S3 ON and OFF. It
+  flickers more often when the render thread is slower. Not seen on
+  2026-09-23 (before 5.8 Vertex Arrays and 5.10). First check: in the same
+  fight, turn Vertex Arrays OFF, then Strip Merge OFF (both live).
+- One texture went black for about 1 s.
+- Fight load: texture decode 82-85% of wall (~15 re-decodes and 4.7 MB
+  hashed per render, mostly pal4/pal8), VPS ~26 of 50, half the renders
+  dropped.
+- S2 compare: the SPU writes min_w = 0 where the PPU keeps a denormal
+  (`wden`); stats only, but it stops the compare of those fences.
 
 | Item | Status |
 |---|---|
@@ -355,7 +379,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | SHELVED 2026-10-03 (Matt) until 5.9-5.11 are done; A0 not started |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC 2026-10-03 (split bit-identical); next A1 |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -799,6 +823,139 @@ clock by VPS.
       full, so each ring wrap counts once (120 in this run, lag stayed 0).
       Count only real waits if it matters.
     - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
+  - S2 built 2026-10-03, HW pending. Same toggle ("SPE Doorbell").
+    - `ps3/spu/spe_dec.c`: the FifoSplitter + `Ps3VertexDecoder` in C on the
+      SPU. Parse state is global, as on the PPU. Each DATA chunk is decoded
+      as it arrives, into per-context shadow lists (`SpeOut`, 4 x 1.97 MB,
+      `memalign(128)`, layouts asserted against `DcVertex` etc.).
+    - Output: one LS window pair per list (vtx 16 KB, strip 4, param 2, mtri
+      4, mvol 1). Only final bytes go out (16-byte block + 8/4-byte tails),
+      so overlapping puts always carry the same data.
+    - Floats as bits (SPU single math truncates): `clamp_byte` in integers;
+      intensity = exact double product + `frds`; sprite D/UV adds in double;
+      1/W = `frest` + 2 double Newton steps + midpoint residual sign with
+      `dfnms`, so it equals `fdivs`. Offline check (`s2_float_check.py`,
+      session scratchpad): 0 mismatches. Disassembly: only DP ops, no `fm`.
+    - FENCE answers the counts, `max_inv_w`, `min_w`/`max_w`, `mv_tris`.
+      `spe_compare` checks them and every list entry bit for bit, before
+      `rth_mark_decoded` (closes the S1 race: the SH4 cannot reset the
+      context during the compare). First 8 mismatches print
+      `[spe] fence N MISMATCH ctx=c what[idx] spu/ppu: ...`.
+    - PPU changes: vertex types 0, 1, 2, 9, 10 write u = v = 0 (were stale
+      memory). Raw hash removed. `reset_raw` waits until the SPU has run
+      the last DATA of that context (`ps3spe_wait_cmd`, 100 ms -> SPE off).
+    - Known differences, counted in the echo: `odd` (non-vertex record in an
+      open strip: the PPU reads it as a vertex, the SPU dispatches it),
+      `bad` (reserved types: the PPU dies), `pfull` (params past 8K),
+      `wden` (1/W below FLT_MIN), `vtx_of`. With the render thread OFF the
+      replay runs in the guest rounding mode, so W/colours may differ.
+    - SPU: text 19.7 KB, bss 91.5 KB. Link: `.got` 0x9748, 0 `r2off`.
+    - Log every 5 s: `[spe] ... | spu busy B% | fences ok bad late wait ...
+      check avg max us | vtx_of odd bad pfull wden`.
+    - HW test: Crazy Taxi, toggle ON. Pass = `bad=0 late=0`, fences =
+      renders, `odd/bad/pfull/wden` 0. Read `spu busy` and `check avg`.
+      Then Soul Calibur (sprites, inf vertices, modifier volumes).
+    - HW 2026-10-03 run 1, Crazy Taxi, 150 MHz, Dynarec + JIT Fastmem,
+      ~3 min: PASS. fences = renders in every window (5362), ok 5362, bad 0,
+      late 0, gaps 0, cont_err 0, lag 0-1, odd/bad/pfull/wden/vtx_of 0.
+      Fence wait avg 0.2 us: the eager SPU decode is always done first.
+    - Dense windows (n=17, 9.5K vtx, 208 renders/window):
+
+      | | busy | dec | vtx+other | dense VPS | full-VPS secs |
+      |---|---|---|---|---|---|
+      | 5.10 | 40.2% | 19.3 | 8.5 | 50.7 | 21% |
+      | S1 ON | 43.3% | 22.0 | 8.8 | 48.5 | 9% |
+      | S2 ON | 40.5% | 19.2 | 8.6 | 48.1 | 8% |
+
+      `busy` does not hold the compare: `check avg` 1.67 ms per render
+      (~7% of wall on the render thread), which S3 drops.
+    - SPU load: 18.9% of one SPE in dense traffic (~400K vtx/s, so ~1500
+      SPU cycles per vertex, DMA waits included). Not tuned; 5 SPEs idle.
+    - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
+    - Note: a second listener from an old session took the UDP log (bound
+      with SO_REUSEADDR); stop old listeners before a run.
+  - S3 built 2026-10-03, HW pending. Toggle: VIDEO / DEBUG -> "SPE Draw"
+    (`nullDC.cfg [ps3] SpeDraw`), default OFF, read in `InitRenderer`. It
+    starts the SPE by itself; "SPE Doorbell" is not needed. With S3 ON there
+    is no PPU replay and no compare (S2 stays on "SPE Doorbell" alone).
+    - Draw view: the draw code reads `DrawLists s_rl` (pointers + counts),
+      not `s_rc`. `lists_from_ctx` fills it from the PPU lists,
+      `lists_from_spe` from `SpeOut` + the fence counts.
+    - `rth_job_decode`: wait for the fence, check `id/ctx/pos/ncont` against
+      the job, then draw from the SPU lists. A late fence (budget 20 ms in
+      S3, was 5 ms) or a wrong header replays on the PPU from `raw_decoded`.
+      S3 never moves `raw_decoded`, so that replay starts at 0 and is
+      complete. Counted in `fences ok bad late`.
+    - Release: after the draw, the render thread stores the job's fence id in
+      the bell line (`SpeBell::released`, `ps3spe_release`). The store kills
+      the SPU reservation, as a ring does. The SPU keeps the last fence per
+      context; a RESET of that context waits until `released` reaches it
+      (`wait_release`, sleeps on the LLR event). No deadlock: the next job's
+      FENCE is pushed only after this job's release.
+    - The SH4 can now wait in `reset_raw` (`ps3spe_wait_cmd`) while the SPU
+      waits for a draw: single-buffered games ListInit the context they just
+      rendered. The dead-SPU limits (ring full, raw reuse) are 1 s in S3, were
+      100 ms.
+    - IRQ timing: `StartRender` reads `rend_nvtx` (the last job's count), set
+      on both paths. `nvtx` stays the PPU replay's in S3.
+    - Not filled in S3 (PPU replay only): `built`, `wclamp`, `overflow`.
+    - Log: the `[spe]` line adds `rel waits/s`, `wait %` (SPU time blocked on
+      a release, taken out of `spu busy`) and `cmdwait` (SH4 ms in
+      `ps3spe_wait_cmd` per window).
+    - SPU: text 20.1 KB, bss 89.5 KB. Link: `.got` 0x9798, 0 `r2off`.
+    - HW test: Crazy Taxi, 150 MHz, Dynarec + JIT Fastmem, "SPE Draw" ON,
+      "SPE Doorbell" OFF. Pass = no visual change, `bad=0 late=0`, fences =
+      renders. Read `[rend] busy=`, `dec`, dense VPS, `cmdwait` and
+      `rel waits`. Then Soul Calibur (sprites, inf vertices, modifier volumes).
+    - HW 2026-10-03 run 1, Crazy Taxi, 150 MHz, Dynarec + JIT Fastmem,
+      "SPE Draw" ON, ~3 min: fences = renders in every window, ok = all,
+      bad 0, late 0, gaps 0, cont_err 0, lag 0-1, odd/bad/pfull/wden/vtx_of 0.
+      `rel waits` 0 and `cmdwait` 0: Crazy Taxi never ListInits a context
+      that is still drawing. Fence wait avg 40-440 us, max 1.1 ms (the
+      render thread now reaches the fence before the SPU ends the frame).
+      SPU busy 18-24% in dense traffic.
+    - Dense windows (n=14, 10.0K vtx, 210 renders/window); VPS over the
+      dense NTSC seconds (n=81):
+
+      | | busy | dec | vtx+other | dense VPS | full-VPS secs |
+      |---|---|---|---|---|---|
+      | 5.10 | 40.2% | 19.3 | 8.5 | 50.7 | 21% |
+      | S2 ON | 40.5% | 19.2 | 8.6 | 48.1 | 8% |
+      | S3 ON | 23.4% | 1.2 | 9.2 | 50.7 | 14% |
+
+      The render thread drops 17 points of wall, but VPS does not move: as
+      with the ARM7 JIT (5.4), the freed PPE time does not show as SH4
+      speed. The SH4 thread is the limit.
+    - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
+    - HW 2026-10-03 run 2, Soul Calibur, same settings. Matt: background
+      geometry flickers, and one texture went black for about 1 s.
+      - Fences: all ok, bad 0, late 0, gaps 0. S3 checks only the header
+        (id/ctx/pos/ncont), not the list contents. S2 was never run on Soul
+        Calibur, so the SPU lists were never compared there.
+      - `wden` 284576, all before the fight (constant after). Known
+        difference: the SPU W is 0 where the PPU keeps a denormal. Both are
+        dropped as inf vertices; the TR sort key can differ (inf against a
+        finite 1/W).
+      - In the fight: VPS 26 of 50 (PAL), RPS 13, render thread busy 94-99%,
+        job 73-136 ms. `tex split` decode 85% of wall: ~15 texture decodes
+        per render, 4.7 MB hashed per render. The SPU waits for the draw
+        (`rel waits` 13/s, 34% of its time), so the fence wait is 2-4 ms.
+        Not known if the texture decode load is new: Soul Calibur was last
+        measured on 2026-09-23 (SPEED 68.9%, before 5.10).
+      - Next: the same fight with "SPE Draw" OFF and "SPE Doorbell" ON (S2).
+        It gives the visual A/B, the bit-exact compare on Soul Calibur and
+        the texture load without S3.
+    - HW 2026-10-03 run 3, Soul Calibur, "SPE Draw" OFF, "SPE Doorbell" ON
+      (S2). Matt: the background still flickers (more often) and its
+      geometry is still malformed. So S3 is not the cause.
+      - Fight: every fence matches bit for bit (lists, counts, W range).
+      - Before the fight: 501 fences differ in `min_w` only, SPU 0 against
+        PPU 0x00200000 (a denormal W, the `wden` case). `min_w` feeds only
+        the stats line. The compare stops at the first header field, so
+        those fences did not compare the lists.
+      - Same load as S3: VPS 25.5 of 50, RPS 12.8, busy 96% (dec 5, draw 91),
+        texture decode 82% of wall, half the renders dropped. The TR list is
+        mostly palette textures (pal4 144, pal8 512 of 681 strips).
   - Flycast reference: `BaseTAParser` in `flycast/core/hw/pvr/ta_vtx.cpp`
     (parser class, not read in detail yet).
 - 5.13 (design agreed with Matt, 2026-09-29): AICA on an SPE, split like the
@@ -844,6 +1001,30 @@ clock by VPS.
   - Steps, each ends with a test:
     - A0: split `step()` into `step_control()` + `step_render()`. On the PC,
       caique's own validators must give output bit-identical to `step()`.
+      - Done 2026-10-03, `[x]` PC. Code: `plugs/caiqueAICA/` (caique-rtl
+        `5aa2376` sample-model + `dsp_asm.h`, `dsp_float.h`, MIT `LICENSE`).
+        Not in the PS3 build yet. caique-rtl itself is unchanged.
+      - Control: timers, KYONEX, CA walk, loops, LPSLNK, one-shot end, slot
+        stop, AEG/FEG, LFO, LFSR, MDEC_CT, `samples`, the slot 0..6 fetch
+        preview. Render: decode, filter, volume, sends, MIXS, collision
+        words, DSP, mix. Render-only slot fields: `s0`, `s1`,
+        `adpcm_quant`, `lpf_low`, `lpf_band`; control never reads them.
+      - Hand-off: `Frame` per sample. Per slot: LFSR after its step, phase,
+        FEG value, AEG level/off, ALFO value, CA before/after, enabled.
+        Decode ops `{ca, RESET|DECODE|LAST}`: PCM/noise one op, ADPCM one per
+        CA step (max 288 per slot per sample, so `ops` is 64 x 288 x 4 B =
+        72 KB). The key-on ADPCM reset is an op of the next sample.
+      - Test (WSL gcc 13, harness in the session scratchpad): all 73 cases +
+        eg_model, eg_replay x5, tail_cmp x3, feg_validate,
+        filt_validate_model, filt_overflow_model, mixsw_check, built against
+        the original and the split model. Every output file, exit code and
+        validator line is identical; the per-case trace hash (DAC output of
+        every sample + every register read, 204 M records) is identical.
+        Baseline gates as in tests/SUMMARY: eg_model 97/97, eg_replay 5 x
+        4/4, tail_cmp 12/12, feg_validate 9/9, filt_validate 265/265.
+      - For A1: the SPE can run control and render per slot to keep the op
+        log at one slot (1.2 KB of LS). `step_control()` always fills the
+        `Frame`; the PPU-only run can skip that.
     - A1: the SPE runs the full model from the write log. The PPU runs
       `step_control()` and sends a checksum per block. nullAICA still makes
       the sound. HW: mismatch count, SPE load, PPU cost.

@@ -95,10 +95,12 @@ $(BUILD)/ps3/ps3_fsca_table.o: ps3/ps3_fsca_table.S misc/fsca-table.bin
 	@echo "AS $<"
 	@$(CC) $(CFLAGS) -Ips3 -c $< -o $@
 
-$(BUILD)/spu/%.elf: ps3/spu/%.c ps3/spu/%.h
+SPU_SRCS_spe_bell := ps3/spu/spe_bell.c ps3/spu/spe_dec.c
+
+$(BUILD)/spu/spe_bell.elf: $(SPU_SRCS_spe_bell) $(wildcard ps3/spu/*.h)
 	@mkdir -p $(dir $@)
-	@echo "SPU $<"
-	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s $< -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+	@echo "SPU $@"
+	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s $(SPU_SRCS_spe_bell) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

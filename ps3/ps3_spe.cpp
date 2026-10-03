@@ -1,22 +1,26 @@
-// OPTIMIZATION_PLAN 5.12 S1: one SPU thread runs a command ring the SH4 thread fills at the TA batch
-// points. It pulls each raw range and answers every FENCE; the render thread checks it against its replay.
+// OPTIMIZATION_PLAN 5.12: one SPU thread runs a command ring the SH4 thread fills at the TA batch points.
+// It decodes each raw range into shadow lists and answers every FENCE; the render thread compares (S2) or draws (S3) them.
 #include "ps3_spe.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <malloc.h>
 #include <sys/spu.h>
 #include <ogc/lwp_watchdog.h>
 
 extern "C" const u8 spe_bell_elf[];
 extern "C" int get_spe_bell_preset();
+extern "C" int get_spe_draw_preset();
 
 bool g_spe_on;
+bool g_spe_draw;
 
 static SpeBell s_bell;
 static SpeEcho s_echo;
 static SpeShared s_shared;
 static SpeCmd* const s_ring = s_shared.ring;
 static SpeFence* const s_results = s_shared.results;
+static SpeOut* s_out;    // SPE_CTX shadow list sets, written by the SPU
 static u32 s_head;       // PPU copy of the bell head, so a push never loads the reserved line
 static u32 s_tail_seen;  // last SPU tail read; refreshed only when the ring looks full
 static u32 s_fence_id;
@@ -28,9 +32,10 @@ static bool s_spu_init_done;
 
 // SH4 thread counters.
 static u32 s_full_waits;
+static u64 s_cmd_wait;  // ticks spent in ps3spe_wait_cmd
 // Render thread counters (or the SH4 thread with the render thread off).
-static u32 s_fences, s_ok, s_bad, s_late, s_bad_logged;
-static u64 s_wait_sum, s_wait_max;
+static u32 s_fences, s_ok, s_bad, s_late;
+static u64 s_wait_sum, s_wait_max, s_check_sum, s_check_max;
 
 static inline const volatile SpeEcho* echo() { return &s_echo; }
 
@@ -60,6 +65,9 @@ static void dump_ls_echo(const char* why)
 
 static double tb_us(u64 ticks) { return (double)ticks * 1e6 / (double)ps3_timebase_hz; }
 
+// S3: a RESET may wait a whole draw, so the dead-SPU limits allow a long job.
+static u64 stall_ticks() { return g_spe_draw ? ps3_timebase_hz : ps3_timebase_hz / 10; }
+
 // Spins until the echo shows want, or the budget runs out; false = timed out.
 static bool wait_echo_tail(u32 want, u64 budget_ticks)
 {
@@ -88,10 +96,10 @@ static SpeCmd* ring_slot()
 		const u64 t0 = gettime();
 		while (s_head - (s_tail_seen = echo()->tail) >= SPE_RING)
 		{
-			if (gettime() - t0 > ps3_timebase_hz / 10)
+			if (gettime() - t0 > stall_ticks())
 			{
 				dump_ls_echo("ring full");
-				printf("[spe] command ring full for 100 ms; SPE off\n");
+				printf("[spe] command ring full for %u ms; SPE off\n", (u32)(stall_ticks() * 1000 / ps3_timebase_hz));
 				g_spe_on = false;
 				return 0;
 			}
@@ -115,9 +123,28 @@ static void push(u32 op, u32 ctx, u32 ea, u32 a, u32 b)
 	s_bell.head = ++s_head;
 }
 
-void ps3spe_data(u32 ctx, const u8* raw, u32 from, u32 to)
+u32 ps3spe_data(u32 ctx, const u8* raw, u32 from, u32 to)
 {
 	push(SPE_OP_DATA, ctx, (u32)(uintptr_t)(raw + from), to - from, to);
+	return s_head;
+}
+
+void ps3spe_wait_cmd(u32 cmd)
+{
+	if (!g_spe_on || (s32)(echo()->tail - cmd) >= 0)
+		return;
+	const u64 t0 = gettime();
+	while ((s32)(echo()->tail - cmd) < 0)
+	{
+		if (gettime() - t0 > stall_ticks())
+		{
+			dump_ls_echo("raw reuse");
+			printf("[spe] SPU still on the raw bytes after %u ms; SPE off\n", (u32)(stall_ticks() * 1000 / ps3_timebase_hz));
+			g_spe_on = false;
+			break;
+		}
+	}
+	s_cmd_wait += gettime() - t0;
 }
 
 void ps3spe_reset(u32 ctx) { push(SPE_OP_RESET, ctx, 0, 0, 0); }
@@ -132,56 +159,50 @@ u32 ps3spe_fence(u32 ctx, u32 pos)
 	return g_spe_on ? s_fence_id : 0;
 }
 
-void ps3spe_hash(SpeHash* h, const u8* p, u32 bytes)
+const SpeFence* ps3spe_wait_fence(u32 id)
 {
-	const u32* w = (const u32*)p;
-	u32 a0 = h->a[0], a1 = h->a[1], a2 = h->a[2], a3 = h->a[3];
-	u32 b0 = h->b[0], b1 = h->b[1], b2 = h->b[2], b3 = h->b[3];
-	for (u32 i = 0; i < bytes / 16; i++, w += 4)
-	{
-		a0 += w[0]; b0 += a0;
-		a1 += w[1]; b1 += a1;
-		a2 += w[2]; b2 += a2;
-		a3 += w[3]; b3 += a3;
-	}
-	h->a[0] = a0; h->a[1] = a1; h->a[2] = a2; h->a[3] = a3;
-	h->b[0] = b0; h->b[1] = b1; h->b[2] = b2; h->b[3] = b3;
-}
-
-void ps3spe_check(u32 id, u32 ctx, u32 pos, u32 ncont, const SpeHash* h)
-{
-	if (!id)
-		return;
 	s_fences++;
+	// S3: after a RESET that waited for a draw, the SPU still has to decode the frame.
+	const u64 budget = g_spe_draw ? ps3_timebase_hz / 50 : ps3_timebase_hz / 200;
 	const u64 t0 = gettime();
 	while ((s32)(echo()->fence - id) < 0)
 	{
-		if (gettime() - t0 > ps3_timebase_hz / 200)
+		if (gettime() - t0 > budget)
 		{
 			dump_ls_echo("late fence");
 			s_late++;
-			return;
+			return 0;
 		}
 	}
 	const u64 dt = gettime() - t0;
 	s_wait_sum += dt;
 	if (dt > s_wait_max)
 		s_wait_max = dt;
-	// Orders the result loads after the fence load; the SPU put them in the same order.
+	// Orders the result and list loads after the fence load; the SPU put them in the same order.
 	__asm__ volatile("lwsync" ::: "memory");
-	const SpeFence* r = &s_results[id % SPE_RESULTS];
-	if (r->id == id && r->ctx == ctx && r->pos == pos && r->ncont == ncont &&
-	    memcmp(&r->hash, h, sizeof(*h)) == 0)
-	{
+	return &s_results[id % SPE_RESULTS];
+}
+
+const SpeOut* ps3spe_out(u32 ctx) { return &s_out[ctx % SPE_CTX]; }
+
+void ps3spe_result(bool ok, u64 ticks)
+{
+	if (ok)
 		s_ok++;
+	else
+		s_bad++;
+	s_check_sum += ticks;
+	if (ticks > s_check_max)
+		s_check_max = ticks;
+}
+
+void ps3spe_release(u32 id)
+{
+	if (!g_spe_draw || !id)
 		return;
-	}
-	s_bad++;
-	if (s_bad_logged++ < 8)
-		printf("[spe] fence %u MISMATCH: spu id=%u ctx=%u pos=%u ncont=%u gaps=%u a0=%08X b0=%08X | "
-		       "ppu ctx=%u pos=%u ncont=%u a0=%08X b0=%08X\n",
-		       id, r->id, r->ctx, r->pos, r->ncont, r->gaps, r->hash.a[0], r->hash.b[0],
-		       ctx, pos, ncont, h->a[0], h->b[0]);
+	// The draw's list loads must complete before the SPU can see the release.
+	__asm__ volatile("lwsync" ::: "memory");
+	s_bell.released = id;
 }
 
 static void ring_selftest()
@@ -223,8 +244,9 @@ static void ring_selftest()
 
 bool ps3spe_init()
 {
-	if (!get_spe_bell_preset() || s_up)
+	if ((!get_spe_bell_preset() && !get_spe_draw_preset()) || s_up)
 		return s_up;
+	g_spe_draw = get_spe_draw_preset() != 0;
 
 	// lv2 accepts this once per process; a second boot of the renderer skips it.
 	if (!s_spu_init_done)
@@ -232,6 +254,15 @@ bool ps3spe_init()
 		s32 r = sysSpuInitialize(6, 0);
 		printf("[spe] sysSpuInitialize(6,0) -> 0x%08X\n", (u32)r);
 		s_spu_init_done = true;
+	}
+	if (!s_out)
+	{
+		s_out = (SpeOut*)memalign(128, sizeof(SpeOut) * SPE_CTX);
+		if (!s_out)
+		{
+			printf("[spe] shadow lists alloc failed (%u KB); SPE off\n", (u32)(sizeof(SpeOut) * SPE_CTX / 1024));
+			return false;
+		}
 	}
 	s32 r = sysSpuImageImport(&s_img, spe_bell_elf, SPU_IMAGE_PROTECT);
 	if (r != 0)
@@ -253,10 +284,15 @@ bool ps3spe_init()
 
 	s_bell.head = 0;
 	s_bell.quit = 0;
+	s_bell.released = 0;
 	s_head = s_tail_seen = 0;
 	s_fence_id = 0;
 	memset(&s_echo, 0, sizeof(s_echo));
 	memset(s_results, 0, sizeof(s_shared.results));
+	memset(&s_shared.setup, 0, sizeof(s_shared.setup));
+	for (u32 i = 0; i < SPE_CTX; i++)
+		s_shared.setup.out_ea[i] = (u32)(uintptr_t)&s_out[i];
+	s_shared.setup.draw = g_spe_draw;
 
 	sysSpuThreadAttribute tattr;
 	sysSpuThreadAttributeInitialize(tattr);
@@ -284,7 +320,7 @@ bool ps3spe_init()
 		ps3spe_term();
 		return false;
 	}
-	printf("[spe] SPU thread up\n");
+	printf("[spe] SPU thread up, %s\n", g_spe_draw ? "draw from SPU lists (S3)" : "compare with the PPU replay (S2)");
 	ring_selftest();
 	g_spe_on = true;
 	return true;
@@ -315,20 +351,31 @@ void ps3spe_stats(double secs)
 {
 	if (!g_spe_on || secs <= 0.0)
 		return;
-	static u32 l_head, l_bytes, l_wakes, l_timeouts;
+	static u32 l_head, l_bytes, l_wakes, l_timeouts, l_busy, l_rel_waits, l_rel_ticks;
 	const u32 head = s_head;
 	const volatile SpeEcho* e = echo();
-	const u32 bytes = e->data_bytes, wakes = e->wakes, timeouts = e->timeouts;
+	const u32 bytes = e->data_bytes, wakes = e->wakes, timeouts = e->timeouts, busy = e->busy;
+	const u32 rel_waits = e->rel_waits, rel_ticks = e->rel_ticks;
+	const u32 n = s_ok + s_bad;
 	printf("[spe] cmds/s=%.0f data KB/s=%.0f wakes/s=%.0f timeouts/s=%.0f rescued=%u lag=%u full=%u gaps=%u cont_err=%u"
-	       " | fences=%u ok=%u bad=%u late=%u wait avg %.1f max %.1f us\n",
+	       " | spu busy %.1f%% | fences=%u ok=%u bad=%u late=%u wait avg %.1f max %.1f us check avg %.0f max %.0f us"
+	       " | vtx_of=%u odd=%u bad=%u pfull=%u wden=%u | rel waits/s=%.0f wait %.1f%% cmdwait=%.1fms\n",
 	       (head - l_head) / secs, (bytes - l_bytes) / 1024.0 / secs, (wakes - l_wakes) / secs,
 	       (timeouts - l_timeouts) / secs, e->rescued, head - e->tail, s_full_waits, e->gaps, e->cont_errs,
+	       (busy - l_busy) * 100.0 / ((double)ps3_timebase_hz * secs),
 	       s_fences, s_ok, s_bad, s_late,
-	       s_ok + s_bad ? tb_us(s_wait_sum) / (s_ok + s_bad) : 0.0, tb_us(s_wait_max));
+	       n ? tb_us(s_wait_sum) / n : 0.0, tb_us(s_wait_max), n ? tb_us(s_check_sum) / n : 0.0, tb_us(s_check_max),
+	       e->vtx_of, e->odd, e->bad, e->pfull, e->wden,
+	       (rel_waits - l_rel_waits) / secs, (rel_ticks - l_rel_ticks) * 100.0 / ((double)ps3_timebase_hz * secs),
+	       tb_us(s_cmd_wait) / 1000.0);
 	l_head = head;
 	l_bytes = bytes;
 	l_wakes = wakes;
 	l_timeouts = timeouts;
+	l_busy = busy;
+	l_rel_waits = rel_waits;
+	l_rel_ticks = rel_ticks;
+	s_cmd_wait = 0;
 	s_fences = s_ok = s_bad = s_late = 0;
-	s_wait_sum = s_wait_max = 0;
+	s_wait_sum = s_wait_max = s_check_sum = s_check_max = 0;
 }
