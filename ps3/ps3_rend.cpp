@@ -102,6 +102,9 @@ struct TaContext
 	u32 cont_marks[MAX_CONT_MARKS];
 	u32 n_cont, n_cont_done;
 	bool raw_overflow;
+	// 5.12 S1: raw bytes already sent to the SPE, and the replay's hash of [0, raw_decoded).
+	u32 spe_pub;
+	SpeHash spe_hash;
 };
 #define TA_CONTEXTS 4
 static TaContext s_ctx[TA_CONTEXTS];
@@ -163,7 +166,7 @@ static bool s_job_busy;        // posted or in flight
 static bool s_job_decoded;     // this job's TA replay has finished
 static TaContext* s_job_ctx;
 static TaContext* s_busy_ctx;  // context the render thread owns right now
-static u32 s_job_raw_end, s_job_cont_end;
+static u32 s_job_raw_end, s_job_cont_end, s_job_fence;
 static u32 s_stat_dropped;
 // TR5: a vblank present the render thread was too busy to take. Unlike a dropped
 // render this loses nothing - the framebuffer is unmarked, so the next vblank retries.
@@ -205,6 +208,34 @@ static void reset_raw(TaContext* c)
 	c->n_cont = 0;
 	c->n_cont_done = 0;
 	c->raw_overflow = false;
+	c->spe_pub = 0;
+	if (g_spe_on)
+		ps3spe_reset((u32)(c - s_ctx));
+}
+
+// 5.12 S1: sends the stored bytes the SPE has not seen yet.
+static inline void spe_flush(TaContext* c)
+{
+	if (g_spe_on && c->raw_used > c->spe_pub)
+	{
+		ps3spe_data((u32)(c - s_ctx), c->raw, c->spe_pub, c->raw_used);
+		c->spe_pub = c->raw_used;
+	}
+}
+
+static inline void spe_note(TaContext* c)
+{
+	if (g_spe_on && c->raw_used - c->spe_pub >= SPE_BATCH)
+		spe_flush(c);
+}
+
+// Every byte up to pos goes out before the fence, so the SPE answer covers the whole replay.
+static inline u32 spe_fence(TaContext* c)
+{
+	if (!g_spe_on || !c)
+		return 0;
+	spe_flush(c);
+	return ps3spe_fence((u32)(c - s_ctx), c->raw_used);
 }
 
 static void reset_all_contexts()
@@ -233,6 +264,7 @@ static void set_ta_context(u32 addr)
 	addr &= 0xF00000;
 	if (s_ta->addr == addr)
 		return;
+	spe_flush(s_ta);
 	TaContext* c = find_context(addr);
 	if (!c)
 	{
@@ -699,7 +731,7 @@ static u8 ta_store_slow(Ta_Dma* d, u8 st)
 			s_store_list = pcw.ListType;
 		spg_SchedListEndIrq(s_store_list);
 		s_store_list = ListType_None;
-		ps3spe_ring_event();
+		spe_flush(s_ta);
 		return TAS_NOLIST;
 
 	case ParamType_Polygon_or_Modifier_Volume:
@@ -793,7 +825,12 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 		return;
 	s_dec = c;
 	if (c->raw_decoded == 0)
+	{
 		TileAccel.ListInit();
+		memset(&c->spe_hash, 0, sizeof(c->spe_hash));
+	}
+	if (g_spe_on && raw_end > c->raw_decoded)
+		ps3spe_hash(&c->spe_hash, c->raw + c->raw_decoded, raw_end - c->raw_decoded);
 
 	u32 pos = c->raw_decoded;
 	while (c->n_cont_done < cont_end && c->cont_marks[c->n_cont_done] <= raw_end)
@@ -824,7 +861,7 @@ void ps3ta_store_sq(u32* data)
 		c->raw_used += 32;
 		raw_note_peak(c);
 		rec = (Ta_Dma*)dst;
-		ps3spe_note_bytes(32);
+		spe_note(c);
 	}
 	else if (!c->raw_overflow)
 	{
@@ -852,7 +889,7 @@ void ps3ta_store_dma(u32* data, u32 size)
 		c->raw_used += bytes;
 		raw_note_peak(c);
 		p = (Ta_Dma*)dst;
-		ps3spe_note_bytes(bytes);
+		spe_note(c);
 	}
 	else if (!c->raw_overflow)
 	{
@@ -2100,14 +2137,20 @@ static void rth_print_stats()
 
 // Stage 1 of a job: the TA replay. It is split from the draw so the inline path
 // can still run it under the guest rounding mode, as TR2 did.
-static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end)
+static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 {
 	REND_PHASE(PH_TADEC);
 	double t0 = os_GetSeconds();
 	decode_pending(c, raw_end, cont_end);
 	s_stat_t_dec += os_GetSeconds() - t0;
 	s_rc = c;
+	// The hash is copied first: once marked, the SH4 may reset this context.
+	SpeHash h;
+	if (fence)
+		h = c->spe_hash;
 	rth_mark_decoded();
+	if (fence)
+		ps3spe_check(fence, (u32)(c - s_ctx), raw_end, cont_end, &h);
 }
 
 // Stage 2: every RSX call of the job.
@@ -2172,13 +2215,13 @@ static void rth_thread(void* arg)
 		}
 		int type = s_job_type;
 		TaContext* c = s_job_ctx;
-		u32 raw_end = s_job_raw_end, cont_end = s_job_cont_end;
+		u32 raw_end = s_job_raw_end, cont_end = s_job_cont_end, fence = s_job_fence;
 		memcpy(&g_rr, &s_job_rr, sizeof(g_rr));
 		s_job_pending = false;
 		sysMutexUnlock(s_rmx);
 
 		if (type != JOB_PRESENT)
-			rth_job_decode(c, raw_end, cont_end);
+			rth_job_decode(c, raw_end, cont_end, fence);
 		rth_job_draw(type);
 
 		sysMutexLock(s_rmx, 0);
@@ -2308,6 +2351,7 @@ static bool rth_run(int type, TaContext* c)
 		s_busy_ctx = (type == JOB_PRESENT) ? 0 : c;
 		s_job_raw_end = c ? c->raw_used : 0;
 		s_job_cont_end = c ? c->n_cont : 0;
+		s_job_fence = (type == JOB_PRESENT) ? 0 : spe_fence(c);
 		s_job_decoded = (type == JOB_PRESENT);
 		memcpy(&s_job_rr, &s_snap, sizeof(s_job_rr));
 		s_job_pending = true;
@@ -2321,7 +2365,10 @@ static bool rth_run(int type, TaContext* c)
 
 	memcpy(&g_rr, &s_snap, sizeof(g_rr));
 	if (type != JOB_PRESENT)
-		rth_job_decode(c, c ? c->raw_used : 0, c ? c->n_cont : 0);
+	{
+		const u32 fence = spe_fence(c);
+		rth_job_decode(c, c ? c->raw_used : 0, c ? c->n_cont : 0, fence);
+	}
 	// Host FPSCR follows the SH4 rounding mode (sh4_registers.cpp); draw with round-to-nearest.
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
@@ -2338,7 +2385,8 @@ bool InitRenderer()
 	{
 		if (s_ctx[i].raw)
 			continue;
-		s_ctx[i].raw = (u8*)memalign(32, TA_RAW_SIZE);
+		// 128 bytes: the SPE pulls the stream by DMA at full-line alignment.
+		s_ctx[i].raw = (u8*)memalign(128, TA_RAW_SIZE);
 		if (!s_ctx[i].raw)
 			printf("[ps3rend] TA raw buffer %u alloc failed; that context drops records\n", i);
 	}
@@ -2414,7 +2462,7 @@ void VBlank()
 void StartRender()
 {
 	SH4_PHASE(PH_RENDER);
-	ps3spe_ring_event();
+	spe_flush(s_ta);
 	snapshot_render_regs();
 	TaContext* rc = find_context(s_snap.param_base);
 	if (!rc)
@@ -2467,14 +2515,18 @@ void EndRender() {}
 void ListCont()
 {
 	set_ta_context(TA_ISP_BASE);
+	spe_flush(s_ta);
 	if (s_ta->n_cont < MAX_CONT_MARKS)
+	{
 		s_ta->cont_marks[s_ta->n_cont++] = s_ta->raw_used;
+		if (g_spe_on)
+			ps3spe_cont((u32)(s_ta - s_ctx), s_ta->raw_used);
+	}
 	else if (!s_ta->raw_overflow)
 	{
 		s_ta->raw_overflow = true;
 		s_stat_raw_of++;
 	}
-	ps3spe_ring_event();
 	// The fast store keeps no per-list-cont state: a continuation reopens the
 	// finished flags the splitter tracks, and the table does not use them.
 	if (!s_ta_fast)
@@ -2487,7 +2539,6 @@ void ListInit()
 	// reset_raw drops bytes the render thread may still be replaying.
 	rth_wait_decode(s_ta);
 	reset_raw(s_ta);
-	ps3spe_ring_event();
 	if (s_ta_fast)
 		ta_store_reset();
 	else
@@ -2497,7 +2548,9 @@ void ListInit()
 // As nullDC-v1: a soft reset keeps the lists and the stored bytes.
 void SoftReset()
 {
-	ps3spe_ring_event();
+	spe_flush(s_ta);
+	if (g_spe_on)
+		ps3spe_soft();
 	if (s_ta_fast)
 		ta_store_reset();
 	else

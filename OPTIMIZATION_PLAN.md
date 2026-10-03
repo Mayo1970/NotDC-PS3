@@ -34,13 +34,12 @@ Next, in this order (agreed with Matt):
 3. 5.11: reverted 2026-10-03 (Matt). Moving the vertex math to the decode
    gave no net gain (decode +2.3, draw -2.2 points) and felt worse.
 
-SPE work (5.12, 5.13) is SHELVED by Matt on 2026-10-03 until 5.9-5.11 are
-done. Why this order: 5.11 sets the vertex format the SPE decoder (5.12 S2)
-must write, so porting the decoder after 5.11 avoids porting it twice; 5.9
-and 5.10 shrink the render-thread work first, so the SPE gain is measured
-against the new baseline.
-- 5.12 S0 (doorbell) is HW validated and stays in the tree, default OFF
-  (VIDEO / DEBUG -> "SPE Doorbell"). Resume at S1; see 5.12.
+SPE work resumed 2026-10-03 (Matt), after 5.9-5.11. 5.11 was reverted, so
+the SPE decoder (5.12 S2) writes the 5.10 vertex format.
+- 5.12 S0 (doorbell) is HW validated.
+- 5.12 S1 (command ring + raw pull + fence check) is HW validated
+  2026-10-03: 6050 of 6050 fences match. Same toggle, default OFF
+  (VIDEO / DEBUG -> "SPE Doorbell"). Next: S2. See 5.12.
 - 5.13 A0 is not started.
 
 Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
@@ -745,6 +744,61 @@ clock by VPS.
       SPU group down.
   - Gain: 1-3 are ~45-50% of wall on the shared PPE core. The VPS gain is
     unknown until HW: freed ARM7 time did not show as SPEED (5.4).
+  - S1 built 2026-10-03, HW pending. Same toggle ("SPE Doorbell").
+    - Ring: 4096 x 16-byte `SpeCmd` in main memory; the bell line now holds
+      the ring head. Ops: DATA (ctx, ea, bytes, to), RESET (ctx), CONT (ctx,
+      mark), SOFT, FENCE (ctx, id, raw end), NOP. The SPU fetches up to 64
+      entries per DMA and puts its tail in the echo after each batch. A full
+      ring makes the PPU wait (`full=`); full for 100 ms turns the SPE off.
+    - PPU hooks (`ps3_rend.cpp`): `spe_note` sends DATA every 2 KB per
+      context (`TaContext::spe_pub`); `spe_flush` at list end, context
+      switch, LIST_CONT (then CONT with the mark), SOFTRESET (then SOFT) and
+      STARTRENDER; `reset_raw` sends RESET. `rth_run` sends a FENCE only for
+      a job it takes (dropped renders get none).
+    - SPU: DATA pulls the range in 16 KB chunks, double buffered, and adds
+      it to a per-context hash: 4 word lanes, `a += w; b += a` (one quadword
+      per step). FENCE puts a 64-byte `SpeFence` (id, pos, ncont, gaps,
+      hash), then the echo with `mfc_putf`.
+    - Check: `decode_pending` hashes `[raw_decoded, raw_end)` the same way on
+      the PPU (scalar, before the replay). After `rth_mark_decoded`,
+      `ps3spe_check` waits up to 5 ms for the fence and compares pos, ncont
+      and the 8 hash words. The PPU hash adds to `dec` while the toggle is ON.
+    - `rescued` fix: a new head found after a decrementer wake counts only if
+      no LLR lost event is pending (`spu_stat_event_status`).
+    - Raw buffers now `memalign(128)`.
+    - Log: `[spe] ping`/`push` at boot; every 5 s `[spe] cmds/s data KB/s
+      wakes/s timeouts/s rescued lag full gaps cont_err | fences ok bad late
+      wait avg max`. The first 8 mismatches print `[spe] fence N MISMATCH`.
+    - Known race: if the SPU lags past the replay and a LIST_INIT on that
+      context, it pulls the new bytes and reports a mismatch. Expected never
+      (the SPU runs µs behind, the replay ms). S2 must close it.
+    - Link: `.got` 0x96D8, 0 `r2off`.
+    - HW 2026-10-03 runs 1-2: the SPU hung at the first FENCE. The LS dump
+      (`[spe] STALL`, `dump_ls_echo`) showed the result put to EA 0x40: the
+      SPU `main` gets only 3 thread arguments, `arg3` arrives as 0. Fixed:
+      ring and results share one block (`SpeShared`), passed in `arg2`.
+      The LS dump stays (first late fence or full ring, at most 3).
+    - HW test: Crazy Taxi, toggle ON. Pass = `bad=0 late=0 gaps=0
+      cont_err=0`, `fences` = renders, no VPS loss against the S0 run.
+    - HW 2026-10-03 run 3 (fixed build), Crazy Taxi, 150 MHz, Dynarec + JIT
+      Fastmem, 189 s: PASS. 29 windows, fences = renders in every window
+      (6050), ok 6050, bad 0, late 0, gaps 0, cont_err 0, lag 0, rescued 0
+      (the S0 count was 30: the fix holds). Fence wait avg 0.2-0.3 us, max
+      0.7 us: the SPU is always done before the replay ends. Peak 7253
+      cmds/s and 16.8 MB/s of TA data.
+    - Cost of the check (PPU hash in `dec`), 16 dense windows, same load as
+      5.10 (9.2K vtx, 216 renders/window):
+
+      | | busy | dec | vtx+other | dense VPS | full-VPS secs |
+      |---|---|---|---|---|---|
+      | 5.10 | 40.2% | 19.3 | 8.5 | 50.7 | 21% |
+      | S1 ON | 43.3% | 22.0 | 8.8 | 48.5 | 9% |
+
+      S1 is a check only, so this is overhead, not the S2/S3 result.
+    - `full=` over-counts: `s_tail_seen` only refreshes when the ring looks
+      full, so each ring wrap counts once (120 in this run, lag stayed 0).
+      Count only real waits if it matters.
+    - XMB exit: the "SH4 did not stop in 3 s" fallback again (not new).
   - Flycast reference: `BaseTAParser` in `flycast/core/hw/pvr/ta_vtx.cpp`
     (parser class, not read in detail yet).
 - 5.13 (design agreed with Matt, 2026-09-29): AICA on an SPE, split like the

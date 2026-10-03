@@ -1,41 +1,25 @@
 #pragma once
-// OPTIMIZATION_PLAN 5.12 S0: SPE doorbell. Set before boot with "SPE Doorbell" (VIDEO / DEBUG).
+// OPTIMIZATION_PLAN 5.12 S1: SPE command ring. Set before boot with "SPE Doorbell" (VIDEO / DEBUG).
 #include "types.h"
 #include "spu/spe_bell.h"
 
-// Bytes of TA data between two rings, as the S1 batch size.
+// Bytes of TA data between two DATA commands.
 #define SPE_BATCH 2048
 
-extern SpeBell g_spe_bell;
-extern u32 g_spe_seq;      // PPU copy of the bell seq, so a ring never loads the reserved line
-extern u32 g_spe_pending;  // TA bytes since the last ring
 extern bool g_spe_on;
 
 bool ps3spe_init();
 void ps3spe_term();
 void ps3spe_stats(double secs);
 
-static inline void ps3spe_ring()
-{
-	__asm__ volatile("lwsync" ::: "memory");
-	g_spe_bell.seq = ++g_spe_seq;
-}
+// SH4 thread only: each call writes one ring entry and rings the bell.
+void ps3spe_data(u32 ctx, const u8* raw, u32 from, u32 to);
+void ps3spe_reset(u32 ctx);
+void ps3spe_cont(u32 ctx, u32 pos);
+void ps3spe_soft();
+u32 ps3spe_fence(u32 ctx, u32 pos);
 
-// List end, LIST_INIT, LIST_CONT, SOFTRESET, STARTRENDER.
-static inline void ps3spe_ring_event()
-{
-	if (g_spe_on)
-	{
-		g_spe_pending = 0;
-		ps3spe_ring();
-	}
-}
-
-static inline void ps3spe_note_bytes(u32 n)
-{
-	if (g_spe_on && (g_spe_pending += n) >= SPE_BATCH)
-	{
-		g_spe_pending = 0;
-		ps3spe_ring();
-	}
-}
+// Same sums as the SPU; bytes is a multiple of 16 and p starts the stream at a lane-0 word.
+void ps3spe_hash(SpeHash* h, const u8* p, u32 bytes);
+// Waits for the SPU answer to fence id and compares it with the PPU's own replay.
+void ps3spe_check(u32 id, u32 ctx, u32 pos, u32 ncont, const SpeHash* h);
