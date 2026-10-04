@@ -8,7 +8,10 @@
 #include "ps3_rend_regs.h"
 #include "ps3_spe.h"
 #include "ps3_menu.h"
+#include "ps3_presets.h"
+#include "ps3_tasplit.h"
 #include "dc/pvr/pvr_if.h"
+#include "dc/sh4/sh4_sqw.h"
 #include <algorithm>
 #include <math.h>
 #include <malloc.h>
@@ -795,18 +798,26 @@ static u8 ta_store_slow(Ta_Dma* d, u8 st)
 	}
 }
 
-// One table lookup per 32-byte record. The state carries across calls, so a
-// 64-byte record split over two SQ or DMA blocks resumes by itself.
+// The table entry for state st and a record whose first word is pcw. ParaType is bits 31..29 and
+// obj_ctrl the low byte, in both endians.
+static inline u32 ta_fsm_entry(u32 st, u32 pcw)
+{
+	return s_fsm[(st << 8) | ((pcw >> 24) & 0xE0) | ((pcw >> 2) & 0x1F)];
+}
+
+// One record at p: the next state. A list open or close takes ta_store_slow.
+static inline u32 ta_fsm_step(u32 st, u32 pcw, Ta_Dma* p)
+{
+	const u32 e = ta_fsm_entry(st, pcw);
+	return (e & TAS_SLOW) ? ta_store_slow(p, (u8)(e & 7)) : e;
+}
+
+// The state carries across calls, so a 64-byte record split over two SQ or DMA blocks resumes by itself.
 static void ta_store_fsm_run(Ta_Dma* p, u32 words)
 {
 	u32 st = s_fsm_state;
 	for (u32 i = 0; i < words; i++, p++)
-	{
-		// ParaType is bits 31..29 and obj_ctrl the low byte, in both endians.
-		u32 full = p->pcw.full;
-		u32 e = s_fsm[(st << 8) | ((full >> 24) & 0xE0) | ((full >> 2) & 0x1F)];
-		st = (e & TAS_SLOW) ? ta_store_slow(p, (u8)(e & 7)) : e;
-	}
+		st = ta_fsm_step(st, p->pcw.full, p);
 	s_fsm_state = (u8)st;
 }
 
@@ -880,10 +891,14 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 	c->raw_decoded = raw_end;
 }
 
-// On overflow the store splitter still runs, over the source bytes, so the guest
-// keeps getting its list-end interrupts; only the replay copy is dropped.
-void ps3ta_store_sq(u32* data)
+// On overflow the store stage still runs over the source bytes, so list ends still interrupt; only the
+// replay copy is dropped. flat (5.17): one inline FSM step on the PCW read before the copy, not from it.
+template<bool probe, bool flat>
+static inline void store_sq(u32* data)
 {
+	if (probe)
+		g_ta_split.t_store = ta_stamp();
+	const u32 pcw = data[0];
 	TaContext* c = s_ta;
 	Ta_Dma* rec = (Ta_Dma*)data;
 	if (c->raw && c->raw_used + 32 <= TA_RAW_SIZE)
@@ -900,13 +915,108 @@ void ps3ta_store_sq(u32* data)
 		c->raw_overflow = true;
 		s_stat_raw_of++;
 	}
-	if (s_ta_fast)
+	if (probe)
+		g_ta_split.t_copy = ta_stamp();
+	if (!s_ta_fast)
 	{
-		ta_store_fsm_run(rec, 1);
-		return;
+		verify(TaStore.TaCmd != 0);
+		TaStore.TaCmd(rec, rec);
 	}
-	verify(TaStore.TaCmd != 0);
-	TaStore.TaCmd(rec, rec);
+	else if (flat)
+		s_fsm_state = (u8)ta_fsm_step(s_fsm_state, pcw, rec);
+	else
+		ta_store_fsm_run(rec, 1);
+	if (probe)
+	{
+		g_ta_split.t_fsm = ta_stamp();
+		g_ta_split.hit = 1;
+	}
+}
+
+// A 5.17 sample takes the stamped copy; the other blocks run the same code without stamps.
+void ps3ta_store_sq(u32* data)
+{
+	if (g_ta_split.armed)
+		store_sq<true, false>(data);
+	else
+		store_sq<false, false>(data);
+}
+
+// The flat path's flushes: TA SQ Direct and TA Fast Store ON, and TA polygon data, which is area 4
+// below 8 MB, as TAWriteSQ decides. YUV and direct VRAM keep the old path.
+static inline bool sqw_flat_target(u32 dest)
+{
+	if (!g_ta_sq_direct_preset || !s_ta_fast)
+		return false;
+	const u32 area = (dest & 0x20) ? CCN_QACR1.Area : CCN_QACR0.Area;
+	return area == 4 && (dest & 0x01800000) == 0;
+}
+
+// The rare cases of do_sqw_nommu. It reaches them by tail calls, so its fast path needs no stack frame.
+// The old path; do_sqw_nommu has already counted the flush for the probe.
+static __attribute__((noinline)) void sqw_chain(u32 dest)
+{
+	CCALL(CC_SQW);
+	do_sqw_target<false>(dest);
+}
+
+// A 5.17 sample, stamped from here on whichever path the flush takes.
+static __attribute__((noinline)) void sqw_sampled(u32 dest)
+{
+	const u64 t_entry = ta_stamp();
+	CCALL(CC_SQW);
+	if (sqw_flat_target(dest))
+	{
+		store_sq<true, true>((u32*)&sq_both[dest & 0x20]);
+		TaCalls++;
+	}
+	else
+	{
+		g_ta_split.armed = 1;   // ps3ta_store_sq stamps the store if the old path reaches it
+		do_sqw_target<false>(dest);
+	}
+	ta_split_leave(t_entry);
+}
+
+// No raw buffer yet, or it is full.
+static __attribute__((noinline)) void sqw_flat_general(u32* data)
+{
+	store_sq<false, true>(data);
+	TaCalls++;
+}
+
+// After the copy: an SPE batch is due, or the record opens or closes a list.
+static __attribute__((noinline)) void sqw_finish(u32 pcw, Ta_Dma* rec)
+{
+	spe_note(s_ta);
+	s_fsm_state = (u8)ta_fsm_step(s_fsm_state, pcw, rec);
+	TaCalls++;
+}
+
+// The JIT's PREF target without the MMU. TA SQ Direct ON: a TA polygon flush runs here in one flat body,
+// not through TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq (plan 5.17); everything else takes the old path.
+void FASTCALL do_sqw_nommu(u32 dest)
+{
+	if (++g_ta_split.calls == g_ta_split.next)
+		return sqw_sampled(dest);
+	if (!sqw_flat_target(dest))
+		return sqw_chain(dest);
+	CCALL(CC_SQW);
+	u32* data = (u32*)&sq_both[dest & 0x20];
+	TaContext* c = s_ta;
+	if (!c->raw || c->raw_used + 32 > TA_RAW_SIZE)
+		return sqw_flat_general(data);
+	// The PCW comes from the source, so the FSM never reloads the copy it just stored.
+	const u32 pcw = data[0];
+	u8* dst = c->raw + c->raw_used;
+	memcpy(dst, data, 32);
+	c->raw_used += 32;
+	raw_note_peak(c);
+	const u32 e = ta_fsm_entry(s_fsm_state, pcw);
+	if ((e & TAS_SLOW) || (g_spe_on && c->raw_used - c->spe_pub >= SPE_BATCH))
+		return sqw_finish(pcw, (Ta_Dma*)dst);
+	s_fsm_state = (u8)e;
+	TaCalls++;
 }
 
 void ps3ta_store_dma(u32* data, u32 size)

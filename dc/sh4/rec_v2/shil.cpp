@@ -1,57 +1,24 @@
-/*
-    SH4 Intermediate Language (SHIL) — analysis helpers and canonical
-    opcode instantiation.
-
-    Changes vs original:
-    - Fixed dead-write detection logic (was comparing write-ord >= read-ord
-      which is backwards; a dead write happens when the *next* write comes
-      before any read of the previously written register).
-    - Fixed the liveness sentinel: the "never read" marker was 0xFFFFFFFF
-      compared as u32, which reads as the *newest* possible read and hid the
-      most common dead write of all (written twice, never read). Arrays are
-      now s32 with a -1 sentinel.
-    - Dead writes are only removed for ops on a purity whitelist
-      (shil_op_is_pure). readm can hit MMIO where the read itself has*/
-      //       hardware side effects; pref/writem/sync_*/ftrv/fsca all do work the
-      /*
-      register liveness cannot see.
-    - AnalyseBlock is now ACTIVE by default behind the SHIL_DCE switch; set
-      SHIL_DCE to 0 to restore the original disabled behaviour for A/B.
-    - Per-block printf removed (it flooded the console and skewed the very
-      speed comparison it was meant to support); optional periodic summary
-      behind SHIL_DCE_STATS, off by default.
-*/
+// SHIL block analysis (AnalyseBlock), canonical opcode instantiation, mac.l/mac.w and the JIT C-call census.
+// AnalyseBlock runs plan 5.21's passes (shil_opt.h); the older write-after-write pass below stays off.
 
 #include "types.h"
 #include "shil.h"
 #include "decoder.h"
+#include "ngen.h"
+#include "shil_opt.h"
 #include "ccall_census.h"
 #include <stdio.h>
 
-// ---------------------------------------------------------------------------
-// Dead-code elimination master switch (A/B kill switch).
-//   1 = pass active
-//   0 = pass compiled out, identical to the original shipping behaviour
-// Bisect a regression by setting this back to 0 and rebuilding.
-// ---------------------------------------------------------------------------
+// Old write-after-write pass (A/B switch, off): 1 compiles it in.
 #define SHIL_DCE 0
 
-// Set to 1 to print a periodic "blocks / ops removed" summary. Off by default
-// so a speed A/B runs with zero console output (printf on the compile path
-// would itself skew the comparison).
+// 1 prints a periodic "blocks / ops removed" line; off, as a printf on the compile path skews a speed A/B.
 #define SHIL_DCE_STATS 0
 
-// ---------------------------------------------------------------------------
-// Per-register liveness tracking — only compiled when DCE is active.
-// ---------------------------------------------------------------------------
 #if SHIL_DCE
 
-// SIGNED, with -1 meaning "never read"/"never written". The original used u32
-// with a 0xFFFFFFFF sentinel, which made "never read" compare as the *newest*
-// possible read (0xFFFFFFFF < prevW is always false) — so a register that was
-// written twice and never read, the single most common dead write, was never
-// detected. That sentinel bug is why the pass looked useless enough to leave
-// switched off.
+// Signed with -1 = "never": as u32, 0xFFFFFFFF read as the newest read and hid the commonest dead write
+// (written twice, never read).
 static s32 RegisterWrite[sh4_reg_count];
 static s32 RegisterRead [sh4_reg_count];
 
@@ -59,27 +26,8 @@ static u32 fallback_blocks = 0;
 static u32 total_blocks    = 0;
 static u32 REMOVED_OPS     = 0;
 
-// Only ops that are pure register->register computation may be deleted.
-// Everything else can carry effects this register-liveness analysis cannot
-// see, and deleting one would be silent corruption rather than a speedup:
-//   readm              - may target MMIO, where the *read* has hardware effects
-//   writem / pref      - store to guest memory / trigger a store-queue burst
-//   sync_sr/sync_fpscr - call UpdateSR/UpdateFPSCR, can switch register banks
-//   ifb                - interpreter fallback, arbitrary effects
-//   jdyn / jcond       - control flow
-//   ftrv / fsca        - write their destination through a pointer, so the
-//                        rd liveness above does not describe what they touch
-//   div32u/s/p2        - multi-register division helpers
-//   adc/sbc/negc/      - two-output ops: RegWriteInfo() decides deadness one
-//   addv/subv            register at a time, so a dead T with a LIVE value
-//                        would still mark the whole op dead. Kept off the
-//                        whitelist until that is fixed (the same latent
-//                        hazard applies to div32u/s and mul_u64/s64, which
-//                        predate this).
-//   div1               - also read-modify-writes SR.Q, which no shil param
-//                        describes
-// Whitelist rather than blacklist on purpose: a future shil op defaults to
-// "not deletable" instead of silently becoming a correctness bug.
+// Only pure register ops may go: readm can hit MMIO, writem/pref/sync_*/ifb/jumps and ftrv/fsca do work liveness
+// cannot see, and two-output ops (carry ops, div32*, mul64) are judged one register at a time here.
 static bool shil_op_is_pure(shilop op)
 {
     switch (op)
@@ -116,10 +64,8 @@ static void RegReadInfo(const shil_param& p, s32 ord)
         RegisterRead[p._reg + i] = ord;
 }
 
-// Record the ordinal of the instruction that *writes* each sub-register of p.
-// BUG FIX vs original: condition was inverted.
-// A write is dead when no read occurred between the previous write and this
-// new write, i.e. RegisterRead[r] < RegisterWrite[r].
+// Record the writer of each sub-register of p. A write is dead when no read came between the previous
+// write and this one (RegisterRead[r] < RegisterWrite[r]); the original had the test inverted.
 static void RegWriteInfo(shil_opcode* ops, const shil_param& p, s32 ord)
 {
     if (!p.is_reg())
@@ -131,14 +77,10 @@ static void RegWriteInfo(shil_opcode* ops, const shil_param& p, s32 ord)
         const s32 prevW = RegisterWrite[r];
         const s32 prevR = RegisterRead[r];
 
-        // prevW < 0        -> no earlier write, nothing can be dead
-        // prevR < prevW    -> no read since that write (prevR == -1, i.e.
-        //                     never read at all, is correctly covered here)
+        // prevW < 0: no earlier write. prevR < prevW: no read since it (prevR == -1, never read, included).
         if (prevW >= 0 && prevR < prevW && shil_op_is_pure(ops[prevW].op))
         {
-            // Per-opcode logging removed: fires on every dead write found,
-            // which floods console output across thousands of blocks and
-            // would itself skew any speed comparison.
+            // No per-op log: it floods the console and skews the speed comparison.
             ops[prevW].Flow = 1;
         }
         RegisterWrite[r] = ord;
@@ -147,22 +89,50 @@ static void RegWriteInfo(shil_opcode* ops, const shil_param& p, s32 ord)
 
 #endif // SHIL_DCE
 
-// ---------------------------------------------------------------------------
-// Dead-code elimination pass (Write-after-Write without intervening Read).
-//
-// Scope and assumptions (both inherited from the original design):
-//   * Block-local only. The last write to a register within a block is never
-//     removed, so state handed to the next block stays correct.
-//   * Assumes no precise mid-block exceptions — if an op faults partway
-//     through a block, a removed earlier write would leave stale state
-//     visible to the handler. Consistent with how the rest of rec_v2 works.
-// Controlled by SHIL_DCE above.
-// ---------------------------------------------------------------------------
+extern "C" int get_jit_constprop_preset();
+extern "C" int get_jit_dve_preset();
+
+// Plan 5.21: constant propagation, then dead value elimination, each on its own JIT SPEED toggle.
+static void shil_opt_run(DecodedBlock* blk)
+{
+    const bool cp  = get_jit_constprop_preset() != 0;
+    const bool dve = get_jit_dve_preset() != 0;
+    if (!cp && !dve)
+        return;
+
+    shil_opt_stats.blocks++;
+    shil_opt_stats.ops_in += blk->oplist.size();
+    if (cp)
+    {
+        ngen_features f;
+        ngen_GetFeatures(&f);
+        shil_constprop(blk, !f.OnlyDynamicEnds);
+    }
+    if (dve)
+        shil_dead_values(blk);
+    shil_opt_stats.ops_out += blk->oplist.size();
+}
+
+// [cprop] line, once per stats window while a 5.21 toggle is on and blocks were compiled since the last one.
+static void shil_opt_dump()
+{
+    static u32 last_blocks;
+    if ((!get_jit_constprop_preset() && !get_jit_dve_preset()) || shil_opt_stats.blocks == last_blocks)
+        return;
+    last_blocks = shil_opt_stats.blocks;
+    const ShilOptStats& s = shil_opt_stats;
+    printf("[cprop] cp=%d dve=%d blocks=%u ops %u -> %u | fold=%u imm=%u shift=%u chain=%u readm=%u"
+           " jdyn=%u pref=%u late=%u | dve=%u\n",
+           get_jit_constprop_preset(), get_jit_dve_preset(), s.blocks, s.ops_in, s.ops_out,
+           s.fold, s.imm, s.shift, s.chain, s.readm, s.jdyn, s.pref, s.late, s.dve);
+}
+
+// Old pass: block-local, never removes a block's last write, and assumes no precise mid-block exceptions
+// (as the rest of rec_v2 does). Controlled by SHIL_DCE.
 void AnalyseBlock(DecodedBlock* blk)
 {
-#if !SHIL_DCE
-    return;
-#else
+    shil_opt_run(blk);
+#if SHIL_DCE
     memset(RegisterWrite, 0xFF, sizeof(RegisterWrite));  // -1 as s32
     memset(RegisterRead,  0xFF, sizeof(RegisterRead));   // -1 as s32
 
@@ -175,10 +145,7 @@ void AnalyseBlock(DecodedBlock* blk)
         shil_opcode* op = &blk->oplist[i];
         op->Flow = 0;
 
-        // An interpreter fallback can read and write any register, including
-        // ones this analysis believes are dead. Bail on the whole block —
-        // the purity whitelist only stops us deleting the ifb itself, not
-        // the writes feeding it.
+        // An ifb reads and writes any register: bail on the whole block, not just the ifb itself.
         if (op->op == shop_ifb)
         {
             ++fallback_blocks;
@@ -191,16 +158,12 @@ void AnalyseBlock(DecodedBlock* blk)
         RegReadInfo(op->rs2, i);
         RegReadInfo(op->rs3, i);
 
-        // shop_div1 reads AND writes SR.Q/SR.M through sr_status, which no
-        // shil param carries (rs1/rs2/rs3 are already Rn/Rm/T). Declare the
-        // read explicitly or the div0s that set Q/M up looks dead as soon as
-        // a second division in the same block writes sr_status again.
+        // div1 reads SR.Q/M through sr_status, which no param carries: without this, a second division's
+        // write makes the div0s that set Q/M look dead.
         if (op->op == shop_div1)
             RegReadInfo(shil_param(reg_sr_status), i);
 
-        // Same shape for mac.l/mac.w: rd/rd2 are MACL/MACH, but they are
-        // ACCUMULATORS — read as well as written — and no param says so. Two
-        // macs in a row would otherwise make the first one's write look dead.
+        // mac.l/mac.w accumulate into MACL/MACH, which they also read: two macs in a row look dead otherwise.
         if (op->op == shop_mac_l || op->op == shop_mac_w)
         {
             RegReadInfo(shil_param(reg_macl), i);
@@ -232,28 +195,17 @@ void AnalyseBlock(DecodedBlock* blk)
 #endif // SHIL_DCE
 }
 
-// ---------------------------------------------------------------------------
-// Forward declarations expected by canonical implementations.
-// ---------------------------------------------------------------------------
+// Forward declarations the canonical implementations need.
 void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
 void UpdateFPSCR();
 bool UpdateSR();
 
 #include "dc/sh4/ccn.h"
-#include "ngen.h"
 #include "dc/sh4/sh4_registers.h"
 
-// ---------------------------------------------------------------------------
-// mac.l / mac.w — the single implementation, declared in shil.h. Both the
-// canonical shil bodies and the Wii backend's rare S==1 path call these, so
-// there is exactly one copy of the saturation rules.
-//
-// Transcribed from the SH-4 manual pseudocode. Note what it does NOT do: the
-// old interpreter's mac.l had `verify(sr.S == 0)` (a hard die) and its mac.w
-// printed a line and then skipped the instruction entirely, post-increments
-// included.
-// ---------------------------------------------------------------------------
+// mac.l / mac.w, the one copy of the SH-4 manual's saturation rules (canonical bodies and the S==1 JIT path).
+// The old interpreter died on mac.l with S set and skipped mac.w entirely, post-increments included.
 extern "C" void sh4_mac_l(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs)
 {
     CCALL(CC_MAC_SAT);
@@ -285,9 +237,8 @@ extern "C" void sh4_mac_w(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs)
 
     if (srs & 2)
     {
-        // 32-bit saturation. MACH is NOT touched (the "MACH LSB is an overflow
-        // flag" behaviour belongs to SH-1/SH-DSP, not this core). Overflow only
-        // when both addends share a sign and the sum flips it.
+        // 32-bit saturation, MACH untouched (its LSB overflow flag is SH-1/SH-DSP, not this core). Overflow
+        // only when both addends share a sign and the sum flips it.
         const u32 dest = (s32)oldl < 0 ? 1u : 0u;
         const u32 src  = ((s32)prod < 0 ? 1u : 0u) + dest;
         const u32 ans  = ((s32)res0 < 0 ? 1u : 0u) + dest;
@@ -307,11 +258,7 @@ extern "C" void sh4_mac_w(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs)
     mach = res2;
 }
 
-// ---------------------------------------------------------------------------
-// C call-out census (JIT_CCALLS preset). See ccall_census.h for the rationale.
-// Storage lives here rather than in wii/main.cpp so that dc/ stays linkable on
-// its own; the Wii menu and game_presets write g_jit_ccalls_preset directly.
-// ---------------------------------------------------------------------------
+// C call-out census (JIT_CCALLS preset, see ccall_census.h). The storage lives here so dc/ links on its own.
 extern "C"
 {
 	u32 g_ccall[CC_COUNT] = { 0 };
@@ -324,18 +271,14 @@ extern "C"
 	int g_jit_ccalls_preset = 0;
 }
 
-// SH4 physical areas. 1 is PVR VRAM, 3 is system RAM, 4 is the TA / texture
-// upload FIFO; the rest are rare enough that their names are only here so an
-// unexpected hit is recognisable rather than a bare number.
-// Which side of the JIT boundary a call-out came from. "tramp" is a
-// back-patched fastmem trampoline, "codecache" is ordinary emitted code, and
-// "other" is the emulator's own C code -- which is where the bulk of the
-// system-RAM writes turned out to live (block transfers, not the dynarec).
+// Which side of the JIT a call-out came from: a fastmem trampoline, emitted code, or the emulator's own C code
+// (where most system-RAM writes turned out to live: block transfers).
 static const char* const s_ccall_src_name[CCS_COUNT] =
 {
 	"from:tramp", "from:codecache", "from:other",
 };
 
+// SH4 physical areas: 1 PVR VRAM, 3 system RAM, 4 TA / texture FIFO; the rest are named so a rare hit reads.
 static const char* const s_ccall_area_name[CCA_COUNT] =
 {
 	"a0:boot/reg", "a1:VRAM", "a2", "a3:RAM",
@@ -359,6 +302,9 @@ static const char* const s_ccall_name[CC_COUNT] =
 
 extern "C" void ccall_census_dump(double seconds, double vbs)
 {
+	// The stats window calls this every second, so plan 5.21's [cprop] line rides on it.
+	shil_opt_dump();
+
 	if (!g_jit_ccalls_preset || seconds <= 0.0)
 		return;
 

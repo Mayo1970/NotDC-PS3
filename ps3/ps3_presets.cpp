@@ -45,6 +45,7 @@ int g_jit_ifb_group        = -1;
 int g_jit_ifb_lomask       = 0;
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
+int g_ta_sq_direct_preset  = 0;   // 1 = a PREF to TA polygon data runs one flat store function (5.17)
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vring block
@@ -53,6 +54,11 @@ int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
 int g_jit_tfwd_preset      = 1;   // 1 = T passed from compare to branch in a register
 int g_jit_cr0_preset       = 1;   // 1 = block-ending compare branches on CR0 directly
+int g_jit_sq_store_preset  = 0;   // 1 = stores before a PREF write the store queue inline (5.17 Step 3)
+int g_jit_ftrv_preset      = 0;   // 1 = ftrv/fipr without FPR copies, ftrv sums interleaved, fldi from a table (5.20)
+int g_jit_constprop_preset = 0;   // 1 = constants in r0-r15 fold into immediates and drop ops (5.21)
+int g_jit_dve_preset       = 0;   // 1 = ops whose results are never read are dropped (5.21)
+int g_jit_cycle_check_preset = 2; // 0 old, 1 exit out of line, 2 also no poll on forward-only ends (5.22, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
@@ -99,6 +105,7 @@ static const CfgItem s_items[] = {
 	{ "JitIfbLoMask",  &g_jit_ifb_lomask },
 	{ "RenderThread",  &g_render_thread_preset },
 	{ "TaFastStore",   &g_ta_fast_preset },
+	{ "TaSqDirect",    &g_ta_sq_direct_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "StripMerge",    &g_strip_merge_preset },
 	{ "VertexArrays",  &g_vertex_array_preset },
@@ -107,6 +114,11 @@ static const CfgItem s_items[] = {
 	{ "JitFpuPin",     &g_fpu_pin_preset },
 	{ "JitTfwd",       &g_jit_tfwd_preset },
 	{ "JitCr0",        &g_jit_cr0_preset },
+	{ "JitSqStore",    &g_jit_sq_store_preset },
+	{ "JitFtrv",       &g_jit_ftrv_preset },
+	{ "JitConstProp",  &g_jit_constprop_preset },
+	{ "JitDve",        &g_jit_dve_preset },
+	{ "JitCycleCheck", &g_jit_cycle_check_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -260,6 +272,11 @@ int get_hotblocks_preset()     { return 0; }
 int get_ifb_flush_preset()     { return 0; }
 int get_jit_align_preset()     { return 0; }
 int get_jit_cr0_preset()       { return g_jit_cr0_preset; }
+int get_jit_sq_store_preset()  { return g_jit_sq_store_preset; }
+int get_jit_ftrv_preset()      { return g_jit_ftrv_preset; }
+int get_jit_constprop_preset() { return g_jit_constprop_preset; }
+int get_jit_dve_preset()       { return g_jit_dve_preset; }
+int get_jit_cycle_check_preset() { return g_jit_cycle_check_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }

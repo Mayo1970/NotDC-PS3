@@ -1,5 +1,8 @@
 #include "ta.h"
 #include "Renderer_if.h"	// TaTicks / TaCalls / PERF_TICKS — see the split doc there
+#include "ps3/ps3_tasplit.h"
+#include "ps3/ps3_presets.h"
+#include <stdio.h>
 
 // Tile Accelerator (TA) state machine for PowerVR2 (Dreamcast) emulation
 // Handles DMA and Store Queue writes, dispatches polygon/vertex/control params
@@ -12,14 +15,92 @@ namespace TASplitter
 
 using namespace TASplitter;
 
-// Store Queue path: single 32-byte write (e.g. via SQ registers)
-// TR1: the record is only copied here; ps3ta_store_sq runs the store-stage
-// splitter so the list-end interrupts still fire on time.
+TaSplit g_ta_split = { 0, 64, 0, 0, 0, 0, 0 };
+static u32 s_split_gap = 64;           // calls the next sample stands for
+static u32 s_split_seed = 0x9E3779B9u;
+static u64 s_split_sum[4];             // in, copy, fsm, out, in timebase ticks
+static u32 s_split_taken, s_split_n, s_split_long, s_split_calls0;
+static u64 s_dma_ticks;
+static u32 s_dma_calls, s_dma_blocks;
+
+// A preempted sample, or one across the Cell timebase carry bug, is longer than this (~20 us): dropped.
+#define TA_SPLIT_MAX_TICKS 1600
+
+// do_sqw exit of a sampled call. TaTicks takes the store part (copy + FSM) for the calls it stands for.
+void ta_split_leave(u64 t_entry)
+{
+    const u64 t_exit = gettime();
+    TaSplit& g = g_ta_split;
+    g.armed = 0;
+    s_split_taken++;
+    const u32 weight = s_split_gap;
+    // Gaps of 48..79 calls, so the sample cannot lock onto a repeating record pattern.
+    s_split_seed = s_split_seed * 1664525u + 1013904223u;
+    s_split_gap = 48 + (s_split_seed >> 27);
+    g.next = g.calls + s_split_gap;
+    if (!g.hit)
+        return;     // the flush went to RAM, VRAM or the YUV converter
+    g.hit = 0;
+    const u64 d[4] = { g.t_store - t_entry, g.t_copy - g.t_store, g.t_fsm - g.t_copy, t_exit - g.t_fsm };
+    for (int i = 0; i < 4; i++)
+    {
+        if (d[i] > TA_SPLIT_MAX_TICKS)
+        {
+            s_split_long++;
+            return;
+        }
+    }
+    for (int i = 0; i < 4; i++)
+        s_split_sum[i] += d[i];
+    s_split_n++;
+    TaTicks += (d[1] + d[2]) * weight;
+}
+
+// Per sample, ns: in = do_sqw entry to the store, copy, fsm, out = to do_sqw's exit (one body with TA SQ
+// Direct). Each segment holds one mftb; "path" takes 4 of them out and scales to the TA flushes per second.
+void ta_split_dump(double seconds)
+{
+    const u32 calls = g_ta_split.calls - s_split_calls0;
+    s_split_calls0 = g_ta_split.calls;
+    const double tick_ns = 1e9 / (double)ps3_timebase_hz;
+    const int reads = 4096;
+    const u64 m0 = gettime();
+    for (int i = 0; i < reads; i++)
+        (void)gettime();
+    const double mftb_ns = (double)(gettime() - m0) * tick_ns / (reads + 1);
+
+    double seg[4] = { 0.0, 0.0, 0.0, 0.0 };
+    double sum = 0.0, path = 0.0;
+    if (s_split_n)
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            seg[i] = (double)s_split_sum[i] * tick_ns / s_split_n;
+            sum += seg[i];
+        }
+        const u32 hits = s_split_n + s_split_long;
+        const double ta_per_s = calls / seconds * hits / s_split_taken;
+        path = (sum - 4.0 * mftb_ns) * ta_per_s / 1e9 * 100.0;
+    }
+    printf("[ta-split] sq=%.0fk/s n=%u/%u long=%u ns: in %.1f copy %.1f fsm %.1f out %.1f = %.1f mftb %.1f"
+           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d sqst=%u\n",
+           calls / seconds / 1000.0, s_split_n, s_split_taken, s_split_long,
+           seg[0], seg[1], seg[2], seg[3], sum, mftb_ns, path,
+           s_dma_calls, s_dma_blocks, (double)s_dma_ticks * tick_ns / 1e9 / seconds * 100.0,
+           g_ta_sq_direct_preset, g_jit_sq_sites);
+
+    for (int i = 0; i < 4; i++)
+        s_split_sum[i] = 0;
+    s_split_taken = s_split_n = s_split_long = 0;
+    s_dma_ticks = 0;
+    s_dma_calls = s_dma_blocks = 0;
+}
+
+// One 32-byte SQ block. ps3ta_store_sq copies it and runs the store stage, so list ends interrupt on
+// time; its TaTicks come from the 5.17 samples, so no block pays a bracket.
 void libPvr_TaSQ(u32* data)
 {
-    const u64 _t0 = PERF_TICKS();
     ps3ta_store_sq(data);
-    TaTicks += PERF_TICKS() - _t0;
     TaCalls++;
 }
 
@@ -31,8 +112,12 @@ void libPvr_TaDMA(u32* data, u32 size)
 
     const u64 _t0 = PERF_TICKS();
     ps3ta_store_dma(data, size);
-    TaTicks += PERF_TICKS() - _t0;
+    const u64 dt = PERF_TICKS() - _t0;
+    TaTicks += dt;
     TaCalls++;
+    s_dma_ticks += dt;
+    s_dma_calls++;
+    s_dma_blocks += size;
 }
 
 namespace TASplitter

@@ -296,6 +296,7 @@ static const char* k_arm7[]      = { "FULL", "HALF", "QUARTER", "EIGHTH", NULL }
 static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
 static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
+static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -387,6 +388,8 @@ static Option s_video[] = {
 	  "TA decode and RSX drawing on their own thread. Takes effect on boot." },
 	{ "TA Fast Store",   &g_ta_fast_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
+	{ "TA SQ Direct",    &g_ta_sq_direct_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A store-queue flush to the TA runs in one flat function, not 4 calls. Live." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
 	  "What a render does when the render thread is busy. DROP loses the frame." },
 	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -421,6 +424,16 @@ static Option s_jit[] = {
 	  "Branches take the T bit from a register, not memory. Takes effect on boot." },
 	{ "JIT CR0 BRANCH",  &g_jit_cr0_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A block-ending compare branches on CR0 directly. Takes effect on boot." },
+	{ "JIT SQ STORES",   &g_jit_sq_store_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Stores before a PREF write the store queue inline. Takes effect on boot." },
+	{ "JIT FTRV",        &g_jit_ftrv_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ftrv and fipr skip FPR copies; ftrv sums run side by side. Takes effect on boot." },
+	{ "JIT CONSTPROP",   &g_jit_constprop_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Known r0-r15 values become immediates; ops on them go away. Takes effect on boot." },
+	{ "JIT DEAD VALUES", &g_jit_dve_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Ops whose results are never read are dropped. Takes effect on boot." },
+	{ "JIT CYCLE CHECK", &g_jit_cycle_check_preset, OPT_CHOICE, k_cycle,   0, 0,0,0, NULL,
+	  "Exit out of line; LOOPS ONLY polls only where a loop can close. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -794,7 +807,7 @@ static int* const k_live_opts[] = {
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
-	&g_aica_kyonb_preset,
+	&g_aica_kyonb_preset, &g_ta_sq_direct_preset,
 };
 
 #define MAX_INGAME_OPTS 64

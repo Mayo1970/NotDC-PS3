@@ -51,11 +51,8 @@ struct TaStoreDecoder
 };
 
 
-// -- TR4: table-driven store stage --------------------------------------------
-// The splitter above walks a switch and a function pointer for every 32-byte
-// record. The store stage only needs the record size and the list state, so one
-// table lookup per record replaces it (TArender.MD TR4, libswirl's ta_fsm).
-// A state says what the next 32-byte word means.
+// -- TR4: table-driven store stage. The store only needs record size and list state, so one table
+// lookup per 32-byte record replaces the splitter (libswirl ta_fsm); a state says what the next word is.
 enum
 {
 	TAS_NOLIST = 0,  // no list open; a header must open one
@@ -69,9 +66,8 @@ enum
 };
 #define TAS_SLOW 0x80
 
-// Indexed (state << 8) | (ParaType << 5) | (obj_ctrl >> 2). UV_16bit, Gouraud
-// and Shadow never change a record's size, so the key drops them and ParaType
-// owns bit 5 alone; without the mask a sprite would alias a 16-bit-UV polygon.
+// Indexed (state << 8) | (ParaType << 5) | (obj_ctrl >> 2). UV_16bit/Gouraud/Shadow never change a
+// record's size, so the key drops them; without the mask a sprite aliases a 16-bit-UV polygon.
 static u8 s_fsm[TAS_COUNT * 256];
 static u8 s_fsm_state = TAS_NOLIST;
 static u32 s_store_list = ListType_None;
@@ -174,6 +170,7 @@ static u8 ta_store_slow(Ta_Dma* d, u8 st)
 			s_store_list = pcw.ListType;
 		spg_SchedListEndIrq(s_store_list);
 		s_store_list = ListType_None;
+		spe_flush(s_ta);
 		return TAS_NOLIST;
 
 	case ParamType_Polygon_or_Modifier_Volume:
@@ -200,17 +197,25 @@ static u8 ta_store_slow(Ta_Dma* d, u8 st)
 	}
 }
 
-// One table lookup per 32-byte record. The state carries across calls, so a
-// 64-byte record split over two SQ or DMA blocks resumes by itself.
+// The table entry for state st and a record whose first word is pcw. ParaType is bits 31..29 and
+// obj_ctrl the low byte, in both endians.
+static inline u32 ta_fsm_entry(u32 st, u32 pcw)
+{
+	return s_fsm[(st << 8) | ((pcw >> 24) & 0xE0) | ((pcw >> 2) & 0x1F)];
+}
+
+// One record at p: the next state. A list open or close takes ta_store_slow.
+static inline u32 ta_fsm_step(u32 st, u32 pcw, Ta_Dma* p)
+{
+	const u32 e = ta_fsm_entry(st, pcw);
+	return (e & TAS_SLOW) ? ta_store_slow(p, (u8)(e & 7)) : e;
+}
+
+// The state carries across calls, so a 64-byte record split over two SQ or DMA blocks resumes by itself.
 static void ta_store_fsm_run(Ta_Dma* p, u32 words)
 {
 	u32 st = s_fsm_state;
 	for (u32 i = 0; i < words; i++, p++)
-	{
-		// ParaType is bits 31..29 and obj_ctrl the low byte, in both endians.
-		u32 full = p->pcw.full;
-		u32 e = s_fsm[(st << 8) | ((full >> 24) & 0xE0) | ((full >> 2) & 0x1F)];
-		st = (e & TAS_SLOW) ? ta_store_slow(p, (u8)(e & 7)) : e;
-	}
+		st = ta_fsm_step(st, p->pcw.full, p);
 	s_fsm_state = (u8)st;
 }

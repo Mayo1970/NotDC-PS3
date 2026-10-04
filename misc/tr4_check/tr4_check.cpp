@@ -1,5 +1,5 @@
-// Host-only cross-check for TArender TR4: the table store stage must walk the
-// TA stream exactly as the FIFO splitter does. Not part of the PS3 build.
+// Host-only cross-check for TArender TR4 and plan 5.17: the table store stage and the flat SQ path
+// must walk the TA stream exactly as the FIFO splitter does. Not part of the PS3 build.
 #include "plugs/drkPvr/ta.h"
 #include <vector>
 #include <cstdio>
@@ -18,6 +18,11 @@ static std::vector<u32> g_expect;
 
 struct TaStoreDecoder;
 extern FifoSplitter<TaStoreDecoder, false> TileAccel;
+
+// A list end flushes the raw stream to the SPE (5.12); there is no SPE here.
+struct TaContext;
+static TaContext* s_ta;
+static void spe_flush(TaContext*) {}
 
 #include "misc/tr4_check/extracted.inc"
 
@@ -139,6 +144,20 @@ static void run_fsm(std::vector<u32>& irq, std::vector<u32>& blocks)
 	}
 }
 
+// do_sqw_nommu's flat path (plan 5.17): one record per flush, the table entry first, the slow step on TAS_SLOW.
+static void run_flat(std::vector<u32>& irq, u32 total)
+{
+	g_irq = &irq;
+	ta_store_reset();
+	for (u32 r = 0; r < total; r++)
+	{
+		Ta_Dma* rec = (Ta_Dma*)&g_words[r * 8];
+		const u32 pcw = g_words[r * 8];
+		const u32 e = ta_fsm_entry(s_fsm_state, pcw);
+		s_fsm_state = (u8)((e & TAS_SLOW) ? ta_fsm_step(s_fsm_state, pcw, rec) : e);
+	}
+}
+
 int main()
 {
 	TaStore.Init();
@@ -165,18 +184,18 @@ int main()
 			w += n;
 		}
 
-		std::vector<u32> a, b;
+		std::vector<u32> a, b, c;
 		run_split(a, blocks);
 		run_fsm(b, blocks);
+		run_flat(c, total);
 
-		// Both walkers must fire exactly the interrupts the stream asks for. A
-		// walker that loses record alignment reads a payload word, whose PCW is a
-		// planted End_Of_List, and fires one interrupt too many.
-		if (a != g_expect || b != g_expect)
+		// Every walker must fire exactly the interrupts the stream asks for. One that loses record
+		// alignment reads a payload word, whose PCW is a planted End_Of_List, and fires one too many.
+		if (a != g_expect || b != g_expect || c != g_expect)
 		{
 			if (fails < 3)
-				printf("seed %u MISMATCH: split=%u fsm=%u expected=%u\n",
-				       seed, (u32)a.size(), (u32)b.size(), (u32)g_expect.size());
+				printf("seed %u MISMATCH: split=%u fsm=%u flat=%u expected=%u\n",
+				       seed, (u32)a.size(), (u32)b.size(), (u32)c.size(), (u32)g_expect.size());
 			fails++;
 		}
 	}

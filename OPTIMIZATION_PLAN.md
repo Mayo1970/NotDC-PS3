@@ -13,6 +13,35 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-04)
 
+**Next (Matt 2026-10-04: "5.18 for measurements, and we'll think from
+there"), in a new session: 5.18, the JIT hot-block profile.** It changes no
+speed by itself: it measures where the SH4 thread's JIT time goes, then Matt
+picks the fix. Steps in 5.18. Candidates it ranks: 5.24 (`mfcr` ->
+`mfocrf`; the load-hit-stores of `float`, `ftrc`, `flds`, `fsts`), 5.23
+(`fmov.s @Rn+` pairs) and whatever the dumps show.
+- State at the end of the 2026-10-04 evening session (a08941d5):
+  - 5.21 HW: correct (Matt), same-load VPS +0.2% (noise). "JIT CONSTPROP"
+    and "JIT DEAD VALUES" stay default OFF.
+  - 5.22 HW: LOOPS ONLY +1.9% at the same load against 5.21; Matt: "boot B
+    played normally". "JIT CYCLE CHECK" defaults to LOOPS ONLY since the
+    package of 22:44 (Matt: "Set LOOPS only as default").
+  - Since the 5.17 Step 1 run: +13.5% at the same load (dense VPS 48.4 at
+    vt 9.5K -> 54.2 at vt 9.6K). Full speed (59.95) needs ~10.6% more.
+  - Settings of the last runs (an install resets them): Dynarec ON, JIT
+    Fastmem ON, SH4 Clock 200 (default), VIDEO / DEBUG -> TA SQ Direct ON,
+    JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD VALUES ON,
+    JIT CYCLE CHECK LOOPS ONLY (default). The five ON options are still
+    default OFF: Matt's call.
+  - Reference log for 5.18: `run522b2.txt` (the LOOPS ONLY boot) in the
+    scratchpad of session a08941d5, with `bins.py`, `vtbins.py` and
+    `longcomments.py` (the comment-length check).
+  - UDP: the listener of session daecf347 (PID 5656, msys2 python) still
+    holds port 18194 and appends to `ps3log_517_run3.txt` in that session's
+    scratchpad (3539212 bytes at the end of this session). Stop it and start
+    a new one, or read that file after the offset.
+  - Every Crazy Taxi boot shows ~33 s at RPS 0 and VPS 60 before gameplay
+    (after the intro). It is normal, not a hang.
+
 **Active: 5.15 SPE ARM7 (Matt 2026-10-04, after 5.14 boot 3: "It sounded
 the same. Let's apply 2.").** The ARM7, nullAICA's registers and the caique
 control twin run on an SPU; the SH4 thread only queues commands. Built
@@ -26,11 +55,90 @@ AICA Sound ON, so the popping is plan 6.6's crackle, not 5.15. Lag cap back
 to 256, test option removed: package of 19:03 (HW: dense VPS 54.8, driving
 49.5 fps against 42.6 before 5.15; Matt: popping lower, still there).
 
-**Next (Matt 2026-10-04, in a new session): 5.17 TA store off the SH4
-thread and 5.18 JIT hot-block profile.** Dense Crazy Taxi needs ~9% more
-SH4-thread speed for 60 VPS (54.8 -> 59.95). Also saved: 5.16 (SPE Draw
-check, one boot) and 5.19 (SH4 Clock below 150, last resort). Plan 6.6 when
-Matt says.
+**5.21 (Matt 2026-10-04: "It's time for 5.21"), HW tested, no gain.** Minicast M3 +
+M4, constant propagation + dead value elimination on SHIL. Built and PC
+tested 2026-10-04, package of 22:06: JIT SPEED -> "JIT CONSTPROP" and "JIT
+DEAD VALUES", both default OFF, set before boot. PC: `misc/constprop_check/`
+(real headers, SHIL interpreter, PPC-form validator, fuzzer) PASS on 1.6 M
+blocks; 31 of 31 planted bugs fail it. HW 2026-10-04 (Crazy Taxi, both ON):
+log clean, SHIL ops -2.9%, same-load VPS +0.2% (within noise); Matt:
+"geometry and sound looked right". See 5.21 "HW".
+
+**5.22 (Matt 2026-10-04: "Yes, do it"), HW validated, LOOPS ONLY default.** Block-entry cycle check:
+COLD EXIT puts the exit out of line, LOOPS ONLY also drops the poll on
+blocks whose end cannot close a loop. Built 2026-10-04, package of 22:27,
+JIT SPEED -> "JIT CYCLE CHECK" (default OLD, set before boot). HW
+2026-10-04 (Crazy Taxi, one boot per mode): logs clean; same-load VPS
++0.8% with COLD EXIT and +1.9% with LOOPS ONLY against the 5.21 run
+(+13.5% since the 5.17 Step 1 run). Matt: "boot B played normally". LOOPS
+ONLY is the default since the package of 22:44. See 5.22 "HW".
+
+**Earlier next (Matt 2026-10-04: "Save the 2nd option ... and we get back
+to it in a cleaner session"): 5.21 in a new session.** 5.21 = Minicast M3 +
+M4, constant propagation + dead value elimination. Build its PC fuzzer
+first (port Minicast's `tests/constprop_test.cpp` to WSL as
+`misc/constprop_check/`, with a PPC-form validator); see 5.21 for the PS3
+rules. Then 5.22.
+- State at the end of the 2026-10-04 session: 5.17 Steps 1-3 and 5.20 are
+  built and HW tested on Crazy Taxi (dense VPS 48.4 -> 53.5, +11.1% at the
+  same load, SH4 200). Three options, all still default OFF: VIDEO / DEBUG
+  -> "TA SQ Direct" (live), JIT SPEED -> "JIT SQ STORES" and "JIT FTRV"
+  (both set before boot). Sonic Adventure with the first two ON: looked
+  right (Matt). Soul Calibur with all three ON: log clean, still
+  render-bound (texture decode), visual check by Matt pending (5.20 "HW").
+  Default ON: Matt's call.
+- Tools from that session (scratchpad of session daecf347): `split517.py`
+  (`[ta-split]` by vt bin and `direct=`), `vtbins.py` (same-load VPS of two
+  logs, 1K vt bins), logs `ps3log_517_run1.txt` (Step 1), `run2` (Step 2),
+  `run3` (boot 1 Step 3, boot 2 Sonic Adventure, boot 3 5.20).
+
+**Earlier next (Matt 2026-10-04, in a new session): 5.17 TA store off the
+SH4 thread and 5.18 JIT hot-block profile.** Dense Crazy Taxi needs ~9%
+more SH4-thread speed for 60 VPS (54.8 -> 59.95). Also saved: 5.16 (SPE
+Draw check, one boot) and 5.19 (SH4 Clock below 150, last resort). Plan 6.6
+when Matt says.
+
+**Active: 5.17 (Matt 2026-10-04: "Let's start with 5.17 TA").** Step 1
+(`[ta-split]` probe, package of 19:33) HW done 2026-10-04: the C side of
+the SQ path costs ~252 ns per TA flush, 9.5% of wall in dense Crazy Taxi
+(SH4 200); the call chain is 47% of it. See 5.17 "Step 1 HW". Step 2
+(option 1, Matt: "let's do option 1") built and PC tested 2026-10-04,
+package of 20:20: VIDEO / DEBUG -> "TA SQ Direct", live, default OFF. HW
+2026-10-04 (Crazy Taxi, ON): no wrong geometry, no hangs; dense VPS 48.4
+-> 50.5, +3.2% at the same load. See 5.17 "Step 2 HW". Step 3 (Matt: "Do
+the Step 3 then") built and PC tested 2026-10-04, package of 20:49: JIT
+SPEED -> "JIT SQ STORES", default OFF, set before boot. HW 2026-10-04
+(Crazy Taxi, both ON): log clean, dense VPS 51.5, +4.2% at the same load
+against Step 2 and +6.7% against Step 1; Matt's verdict pending. See 5.17
+"Step 3 HW".
+
+**Order after the Minicast JIT review (2026-10-04; Matt: "Can you update
+the OPTIMIZATION PLAN, then?").** Review notes: 5.20-5.24.
+1. 5.17 Step 2, option 1: the call-chain fix (one flat TA store function
+   that the JIT's PREF calls directly). HW 2026-10-04: +3.2% VPS, clean.
+2. 5.17 Step 3 (Minicast M2): the JIT side of the SQ path (the guest's
+   stores before each PREF). Built + PC tested 2026-10-04 (JIT SPEED ->
+   "JIT SQ STORES", default OFF), package of 20:49. HW: +4.2% VPS, clean log.
+3. 5.20 (Minicast M1): ftrv with known w, interleaved MAC chains. Built +
+   PC tested 2026-10-04 (JIT SPEED -> "JIT FTRV", default OFF; the known-w
+   pass is not built), package of 21:05. HW: +3.8% VPS (same load), log clean.
+4. 5.21 (Minicast M3 + M4): constant propagation + dead value elimination.
+   Built + PC tested 2026-10-04 (JIT SPEED -> "JIT CONSTPROP", "JIT DEAD
+   VALUES", default OFF), package of 22:06. HW: log clean, same-load VPS
+   +0.2% (noise).
+5. 5.22 (Minicast M5): cycle check out of line, then backward-only.
+   Built 2026-10-04 (JIT SPEED -> "JIT CYCLE CHECK"), package of 22:27.
+   HW: COLD EXIT +0.8%, LOOPS ONLY +1.9% (same load, against 5.21).
+   LOOPS ONLY is the default since 2026-10-04 (Matt).
+6. 5.18 (hot-block profile): next, in a new session (Matt 2026-10-04). It
+   ranks 5.23, 5.24 and other patterns before anything else is built.
+One change per HW run, each behind its own toggle, default OFF until HW
+validated, at SH4 200. Reference: the 5.17 Step 1 run (dense SPEED 80.7%,
+VPS 48.4). 5.18 (hot-block profile) stays open; it ranks 5.21 and 5.22.
+
+**Rule (Matt 2026-10-04): HW tests run with SH4 Clock 200 MHz (the
+default), since most games won't like the 150 MHz underclock.** Do not
+compare VPS with runs at 150 MHz (e.g. the 19:03 run's dense VPS 54.8).
 
 5.14 Sound thread (second PPU thread) works but is a FAILURE on speed: dense
 VPS 52.9 -> 51.6, the SH4 thread ~10% slower from SMT (see 5.14 "Boot 3").
@@ -505,9 +613,14 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
 | 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[ ]` |
-| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[ ]` next (Matt), new session |
-| 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[ ]` next (Matt), new session |
+| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF |
+| 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[ ]` next (Matt 2026-10-04: "5.18 for measurements, and we'll think from there"), new session |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]` |
+| 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[~]` HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean; Soul Calibur pending |
+| 5.21 | Minicast M3 + M4: constant propagation (no memory baking) + dead value elimination | `[x]` HW, correct, no gain, default OFF; built + PC tested 2026-10-04 ("JIT CONSTPROP", "JIT DEAD VALUES", default OFF; fuzzer PASS 1.6 M blocks, 31/31 mutants fail), package of 22:06; HW 2026-10-04: Crazy Taxi log clean, SHIL ops -2.9%, same-load VPS +0.2% (noise); geometry and sound right (Matt) |
+| 5.22 | Minicast M5: cycle check out of line, then only on backward branches | `[x]` HW, LOOPS ONLY default since 2026-10-04 (Matt); built 2026-10-04 ("JIT CYCLE CHECK": OLD / COLD EXIT / LOOPS ONLY, default OLD), package of 22:27; HW 2026-10-04: logs clean, same-load VPS +0.8% (COLD EXIT), +1.9% (LOOPS ONLY) against 5.21 |
+| 5.23 | Minicast M6: `fmov.s @Rn+` pair fusion | `[ ]` not scheduled (low) |
+| 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[ ]` not scheduled |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -2090,6 +2203,125 @@ clock by VPS.
     and after the FSM; print the split once per stats window (`[ta-split]`).
     Take `TaTicks` from the same samples, so the measurement stops costing 2
     mftb per call.
+  - Step 1 built 2026-10-04 (Matt: "Let's start with 5.17 TA"), package of
+    19:33. No warnings, `.got` 0xA238, 0 r2off.
+    - `do_sqw` counts every SQ flush; about 1 in 64 (random gap 48-79, so
+      the sample cannot lock onto a record pattern) is a sample with 5 mftb:
+      `do_sqw` entry, `ps3ta_store_sq` entry, after the copy, after the FSM,
+      `do_sqw` exit. A 4th and 5th point split the call chain from the copy
+      (suspect c against a). Code: `ps3/ps3_tasplit.h`, `ta_split_leave` /
+      `ta_split_dump` in `plugs/drkPvr/ta.cpp`, `store_sq<probe>` in
+      `ps3_rend.cpp` (the unsampled body is the old one).
+    - `libPvr_TaSQ` lost its bracket (2 mftb per block). The stats line's
+      `ta%` is now (copy + fsm) of each sample x the calls it stands for,
+      plus the DMA brackets (unchanged, one per batch). Disassembly: the
+      unsampled path gained ~18 simple instructions (counter step, flag
+      test, one more saved register) and lost the 2 mftb.
+    - Line, once a second after the stats line: `[ta-split] sq=Nk/s n=A/B
+      long=C ns: in I copy P fsm F out O = S mftb M | sq path X% | dma
+      calls=D blocks=K Y%`.
+      - sq: SQ flushes per second, all targets. n: samples used / taken
+        (taken - used - long = flushes to RAM, VRAM or YUV). long: samples
+        over 20 us (preempted, or the Cell timebase carry bug), dropped.
+      - in: `do_sqw` entry to `ps3ta_store_sq` entry (QACR address,
+        `TAWriteSQ`, `libPvr_TaSQ`, 3 calls). copy: memcpy, `raw_note_peak`,
+        `spe_note`. fsm: `ta_store_fsm_run`, list ends included. out: the 3
+        returns back to `do_sqw`'s exit (`TaCalls++` included).
+      - Every segment holds one mftb. mftb: cost of one back-to-back read
+        (4096 reads per window). sq path: (S - 4 mftb) x TA flushes/s, % of
+        wall, the C side of the SQ path. dma: TA DMA calls, 32-byte blocks
+        and bracket time in the window (Crazy Taxi's vt/s is above its TA
+        calls/s, so part of its geometry may come by DMA).
+      - Not measured: the JIT side (the 8 guest stores into `sq_both` through
+        the vmem table, the PREF's call into `do_sqw` and its return).
+    - HW test: install the package; set Dynarec ON, JIT Fastmem ON, SPE
+      AICA Sound ON, SPE ARM7 ON (an install resets them); leave SH4 Clock
+      at 200, the default (Matt's rule 2026-10-04); Crazy Taxi dense
+      traffic, ~3 min. Listener: session scratchpad `ps3log_517_run1.txt`.
+      Read: the segment split in dense windows and the DMA share. Dense VPS
+      has no 200 MHz baseline with these settings (54.8 was at 150).
+  - Step 1 HW 2026-10-04, package of 19:33, Crazy Taxi, SH4 200, Dynarec +
+    JIT Fastmem, SPE AICA Sound + SPE ARM7 ON, IFB Probe ON (as 19:03).
+    153 s, no fault (the XMB exit took the old 3 s fallback). 74 dense
+    windows (vt > 3K): SPEED 80.7%, VPS 48.4, RPS 48.1, vt 9.5K, render
+    thread busy 44-59%. Script: session scratchpad `split517.py`.
+    - SQ flushes 507K/s: 75% go to the TA (~380K/s), 25% to other targets
+      (RAM, direct VRAM or YUV; not timed).
+    - Per TA flush, raw ns (each segment holds one mftb): in 66.7, copy
+      72.9, fsm 90.0, out 81.7 = 311.3. One mftb costs 14.9 ns (~48 PPU
+      cycles). Net: in 51.8, copy 58.0, fsm 75.1, out 66.8 = ~252 ns (~800
+      cycles). The call chain (in + out, ~119 ns) is 47% of it.
+    - sq path: 9.5% of wall in dense windows, 11.4% at vt 12K+. The old
+      `ta%` held only copy + fsm; the chain was in the "JIT and its C calls"
+      share.
+    - DMA: ~146 calls/s, 129K blocks/s (~25% of the TA blocks), 0.67% of
+      wall = ~52 ns per block for the same copy + FSM work in one batch. So
+      about 200 of the ~252 ns of an SQ flush is per-call overhead.
+    - The old bracket's 2 mftb cost ~30 ns per flush (~1.1% of wall); gone.
+    - ~150 instructions per flush through 4 calls, ~5 cycles each. Likely
+      causes (not measured one by one): SMT with the render thread,
+      dependent TOC and global loads, load-hit-store on the stack restores
+      (`ta_store_fsm_run` saves r24-r31 and restores them ~30 instructions
+      later) and on the PCW read just after the copy stored it.
+    - Step 2 proposal = option 1 (2026-10-04: first in the order after the
+      Minicast review; build when Matt says): the call-chain fix, as one
+      flat TA store function that the JIT's PREF calls directly: the copy
+      into the raw buffer, one FSM step on the PCW already in a register,
+      the counters; no nested call and no stack frame on the common path.
+      Other SQ targets, the MMU path and list ends keep today's code.
+  - Step 2 built 2026-10-04 (Matt: "let's do option 1"), package of 20:20.
+    No warnings, `.got` 0xA278, 0 r2off.
+    - Option VIDEO / DEBUG -> "TA SQ Direct" (`TaSqDirect`), default OFF
+      until HW validated, live (`k_live_opts`).
+    - `ps3_driver.cpp` is not touched (Matt's JIT work; also its 167 long
+      comments): the JIT's PREF already calls `do_sqw_nommu`, which now
+      lives in `ps3_rend.cpp`. The `do_sqw` template moved to
+      `dc/sh4/sh4_sqw.h`, split into `do_sqw_target` and the probed
+      `do_sqw` (interpreters and `do_sqw_mmu`, unchanged).
+    - ON, TA polygon flush (area 4 below 8 MB, TA Fast Store ON): one body,
+      no stack frame, no call (~85 instructions, one red-zone spill): the
+      probe counter, the target test, the census count, the 32-byte copy,
+      the peak, one FSM table step on the PCW read from `sq_both` before
+      the copy, `TaCalls++`. Rare cases leave by tail calls: a sample
+      (`sqw_sampled`), no raw buffer or full (`sqw_flat_general`), an SPE
+      batch due or a list open/close (`sqw_finish`), another target or the
+      option OFF (`sqw_chain`: census + `do_sqw_target`, the old path).
+    - OFF: the Step 1 path, plus the counter step moved to the top and one
+      tail call (~4 instructions).
+    - Probe: same line plus `| direct=N` (the option at print time). In a
+      flat sample, "in" = target test + census, "out" = `TaCalls++`.
+    - PC (WSL): `misc/tr4_check/run.sh` now builds in WSL (the docker image
+      it named is gone) and walks every stream also with the flat path's
+      per-record step (`ta_fsm_entry`, `ta_fsm_step` on TAS_SLOW): PASS,
+      200000 streams, 8.39M records, 0 failures. Three mutants (index mask,
+      slow step skipped, the next record's PCW) all FAIL. The flat target
+      test equals the old address logic on 65536 cases (all QACR pairs x
+      dest bits 5, 23-25).
+    - For Step 3: the flat body reads the 32 bytes from `sq_both`; when the
+      JIT writes the guest's stores straight into the raw buffer, the copy
+      goes and the PCW read stays.
+    - HW test: settings as Step 1 (SH4 200) plus TA SQ Direct ON; Crazy
+      Taxi dense traffic. For a same-session A/B, switch the option in the
+      in-game menu (SELECT) every ~60 s of dense driving; each `[ta-split]`
+      line carries `direct=`. Read: sum and sq path per flush, `ta%`, dense
+      VPS by vt bin, ON against OFF; no missing geometry; list ends still
+      on time (no hangs). Log `ps3log_517_run2.txt`, script `split517.py`
+      (bins by `direct`).
+  - Step 2 HW 2026-10-04, package of 20:20, Crazy Taxi, settings as Step 1
+    (SH4 200), TA SQ Direct ON for the whole run (no OFF segments). Matt:
+    "No wrong geometry nor hangs. The performance was greater". 183 s; the
+    XMB exit took the old 3 s fallback.
+    - 70 dense windows: SPEED 84.2% (Step 1 run: 80.7%), VPS 50.5 (48.4),
+      `ta%` 5.3 (6.9).
+    - Same load, 1K vt bins against the Step 1 run (script `vtbins.py`):
+      every bin up, weighted +3.2% VPS; the heaviest bins gain most (10-11K
+      +4.0%, 12-13K +7.1%, 14-15K +12.4%), as they have the most flushes.
+    - Probe, sampled flat flush (raw ns): in 94.6, copy 68.4, fsm 48.2, out
+      33.4 = 244.6 (Step 1: 311.3); sq path 7.2% (9.5%). A sample runs
+      `sqw_sampled`, a cold copy of the code (about 1 call in 64: I-cache
+      and branch history), so its "in" is inflated. The VPS gain is the
+      better measure: about 3-4 points of wall freed.
+    - Default still OFF; Matt decides default ON and other games.
   - Step 2, fix by the split:
     - Copy / LHS: when QACR points at the TA (area 4), the JIT writes the
       guest's SQ stores straight into the next 32-byte slot of the TA raw
@@ -2104,6 +2336,80 @@ clock by VPS.
   - Checks: PC: the stored raw stream and the list-end events stay identical
     (FSM equivalence on recorded streams). HW: Crazy Taxi dense VPS and `ta`
     %, no missing geometry; Soul Calibur; one game that feeds the TA by DMA.
+  - Step 3 (Minicast M2, after option 1): the JIT side of the SQ path.
+    - Facts (code read 2026-10-04): a guest store to the SQ area
+      (0xE0000000-0xE3FFFFFF) fails the JitFastmem RAM guard (region 7) and
+      runs its cold fragment: the `_vmem_MemInfo_ptr` table load, `slw` +
+      `srw` (variable shifts are microcoded on the PPE, 12+ cycles each),
+      the `stwx` into `sq_both`, and 2 taken branches (to the cold code and
+      back). 507K flushes/s x 4-8 stores = 2-4M stores/s: est. 2-4% of
+      wall. Not measured.
+    - Minicast (`sq_pref`, option `opt_sqw_on_pref`, default OFF; it comes
+      from Reicast's `unstable_opt`): a store whose address register a
+      later `pref` in the block uses is taken as an SQ store and goes to
+      `sq_both` with no address check. Unsafe: `pref` also prefetches RAM.
+    - PS3 form: the guess only picks the shape. An inline check
+      (`addr >> 26 == 0x38`), then `stwx` (`stfs` for a pinned FR) into
+      `sq_both + (addr & 0x3C)` (pairs: `addr & 0x38`). Any other address,
+      and byte or word stores, take today's path, so it is always correct.
+    - Option 1 sets the final form: with a flat PREF function, the stores
+      can go straight into the TA raw buffer (Step 2's copy / LHS idea),
+      which also removes the copy.
+    - Checks: PC: the same `sq_both` bytes as the canonical path for every
+      address class. HW: Crazy Taxi dense VPS, no missing geometry.
+  - Step 3 built 2026-10-04 (Matt: "Do the Step 3 then"), package of 20:49.
+    `.got` 0xA2A0, 0 r2off; `ps3_driver.cpp` has its 7 old warnings (the HEAD
+    file gives the same 7), no new one.
+    - Option JIT SPEED -> "JIT SQ STORES" (`JitSqStore`), default OFF until
+      HW validated, takes effect on boot; `[jitcfg]` prints `sqst=`.
+    - JitFastmem path only (fastmem OFF stays the baseline). A 32-bit or
+      pair store (`flags` 4 or 8) whose base register (`rs1`) a later
+      `shop_pref` in the block also uses (`sq_store_guess`) gets
+      `emit_sq_store` (`ps3/ps3_jit_sq.h`): `rlwinm r0 = addr >> 26`,
+      `cmplwi 0x38`, `bne` cold, then `rlwinm` (`& 0x3C`, pairs `& 0x38`) +
+      `addis` + `stw`/`stfs` with the low half of `&sq_both` as the
+      displacement: 6-7 instructions, no taken branch, no table, no
+      microcoded shift. Any other address takes the cold path, which runs
+      the `_vmem` table tier (RAM, VRAM and the SQ too) and the C call, so
+      every address stays correct.
+    - Not the "final form" above: the SQ keeps its contents after a PREF,
+      and a game may rewrite only some words before the next one, so the
+      stores still go to `sq_both`; the flat PREF path copies them.
+    - `[ta-split]` adds `sqst=N`: store sites given the SQ shape since boot.
+    - PC (WSL): `misc/sqstore_check/run.sh` runs the emitted code on a small
+      PPC64 model (rlwinm, cmpli, bc, addis, stw, stfs; 64-bit registers
+      with a garbage upper half) against the canonical SQ write, for all 4
+      shapes x 6 register choices as `ps3_driver.cpp` passes them: PASS,
+      4.8M cases (2.23M SQ addresses), 0 failures; also checks that no
+      other register changes. Six mutants (compare 0x39, shift 5, second
+      word +8, SQ1 bit dropped, no carry in `ha`, branch on EQ) all FAIL.
+    - Comment rule: `ps3_driver.cpp` had 167 comment blocks over 2 lines;
+      all trimmed to 2 lines (1279 -> ~300 lines). Code identity checked:
+      the object file's instructions differ only in 44 `li` line numbers
+      (verify/die), and every data section is the same.
+    - HW test: settings as Step 2 plus JIT SQ STORES ON (set before boot),
+      TA SQ Direct ON; Crazy Taxi dense traffic. Read `sqst=` (> 0, else
+      the guess matched nothing), dense VPS by vt bin against the Step 2
+      run (`vtbins.py`), no missing or broken geometry. Log
+      `ps3log_517_run3.txt`.
+  - Step 3 HW 2026-10-04, package of 20:49, Crazy Taxi, settings as Step 2
+    plus JIT SQ STORES ON, TA SQ Direct ON for the whole run. 147 s, log
+    clean (the XMB exit took the old 3 s fallback). Matt's visual check and
+    verdict: pending.
+    - `sqst` 55 in the BIOS (its SQ copies to RAM), 229-232 in the game.
+    - 68 dense windows: SPEED 86.0% (Step 2: 84.2%, Step 1: 80.7%), VPS
+      51.5 (50.5, 48.4), `ta%` 5.9.
+    - Same load (1K vt bins): +4.2% VPS against Step 2 (9 of 11 bins up),
+      +6.7% against Step 1.
+    - Probe: the sampled flush's copy segment rose 68.4 -> 81.6 ns raw in
+      every bin. Likely a load-hit-store: the guest's SQ stores now come a
+      few instructions before the PREF, so the flat path's loads of
+      `sq_both` hit stores still in flight. A lead for a next step.
+    - Sonic Adventure, same package and settings, ~12 min: Matt "Sonic
+      Adventure looked right". Log clean: in-game SPEED 99.6%, VPS 59.7
+      (RPS ~29, the game's 30 fps); `sqst` 7674 (it also copies RAM through
+      the SQ: 61% of its SQ flushes go to the TA); the code cache clears on
+      the game's code loads, no fault.
 - 5.18 JIT hot-block profile, then fixes.
   - Facts: ~92% of the SH4 thread is recompiled code and its C calls. 5.0's
     lesson: removing C calls or interpreter fallbacks did not move SPEED; the
@@ -2127,10 +2433,309 @@ clock by VPS.
   - Step 3: fix the top pattern first, each behind a JIT SPEED toggle
     (default OFF until HW validated); measure dense VPS after each.
   - Expected: unknown before the profile; most of the SH4 time is here.
+  - Notes for the session that does it (2026-10-04 evening):
+    - Matt: "5.18 for measurements, and we'll think from there". Build Step
+      1, run Step 2, report the ranking; Matt picks what to build next.
+    - The JIT now has 5.17 Step 3 (SQ stores), 5.20 (ftrv/fipr), 5.21
+      (SHIL passes) and 5.22 (cycle check). Profile with the settings of
+      the last runs (section 0), so the dumps show the code that runs.
+    - Patterns to count in the dumps, weighted by entries: `mfcr` (set* and
+      `tst` results kept in a register, `fcmp`, `cmp/str`; 5.24),
+      load-hit-stores (`float` has two, `ftrc`, `flds`/`fsts` one each,
+      pinned-FR bounces in memory ops; 5.24), `fmov.s @Rn+` pairs (5.23),
+      fastmem shapes per block (7 instructions per access), `ror` by a
+      constant (4 instructions for one `rotlwi`), cold paths and C calls.
+    - The probe counts block entries, not time: rank by entries x PPC
+      bytes, and remember that a microcoded op or a load-hit-store costs
+      far more than its bytes.
 - 5.19 SH4 Clock below 150. The option allows 150-200 MHz (`ps3_menu.cpp`).
   A lower floor (e.g. 120-140) buys VPS, but the guest gets fewer cycles per
   frame, so heavy scenes drop more of the game's own frames (already at 150:
   dense 46.6 fps at 54.8 VPS). Last resort, Matt's call.
+- 5.20-5.24 Minicast JIT review (2026-10-04, Matt: "Can you investigate the
+  JIT optimizations that Minicast has? ... I'd like to port them"). Code
+  read only, nothing built. Minicast
+  (`E:\Users\Matteo\Desktop\Dreamcast\minicast`) is a Reicast fork for the
+  MiSTer (ARM Cortex-A9). skmp's July 2026 JIT work is in
+  `libswirl/hw/sh4/dyna/shil.cpp`, `regalloc.h` and
+  `jit/backend/arm32/rec_arm.cpp`; `libswirl.cpp` `InitSettings` has the
+  defaults. Our rec_v2 has the same nullDC base, so the SHIL passes map to
+  `dc/sh4/rec_v2/shil.cpp` (`AnalyseBlock`). Our backend has none of them.
+  - Item map: M1 = 5.20, M2 = 5.17 Step 3, M3 + M4 = 5.21, M5 = 5.22,
+    M6 = 5.23. Not taken (section 4): M7 fallthrough, the register
+    allocator work, XMTRX kept in registers, the Linux perf map.
+  - PPE facts used below: `fmadds` has a 10-cycle latency and issues one
+    per cycle (CellPerformance); variable shifts (`slw`/`srw`/`sraw`) are
+    microcoded, 12+ cycles (cbloom, Per Vognsen); `mfcr` over all fields
+    is microcoded, `mfocrf` for one field is fast; a load-hit-store costs
+    ~40+ cycles.
+- 5.20 (M1) ftrv with known w + interleaved MAC chains.
+  - Minicast (`ftrv_known_w`, option `opt_fipr_w`, default ON; commits
+    ca2109a, 19eafde): the `fldi0`/`fldi1` that sets w just before an
+    in-place `ftrv` is dropped, and the ftrv gets `FTRV_W_ZERO` /
+    `FTRV_W_ONE`. The emitter skips the fourth column for w=0 and uses a
+    plain add for w=1. It runs the 4 output sums side by side, column by
+    column.
+  - Ours (`ps3/ps3_driver.cpp` `shop_ftrv`): out[0] is finished before
+    out[1] starts, so the 16 FP ops form one dependent chain, ~160 cycles;
+    the input vector is copied with 4 `fmr`. Side by side: ~40-50 cycles.
+    Each `fldi` is `li` + `stw` + `lfs` on the same slot (`ppc_sh_store`
+    with FPU PIN) = one load-hit-store.
+  - PS3 form: 4 interleaved chains that write the pinned outputs (copy v1-v3
+    aside first, write v0 last); the matrix columns load under the previous
+    column's FMAs (xf is not pinned). `fldi` loads its constant with `lfs`
+    from a 2-entry table {0.0f, 1.0f}. `fipr`: read the pinned operands in
+    place, no `fmr` copies.
+  - Results: the interleave is bit-exact (each sum keeps its order). w=1:
+    `fadds` equals `fmadds` with 1.0 (m*1.0 is exact). w=0: skipping the
+    column differs only for -0 and NaN/Inf matrix entries.
+  - Expected: est. 1-3% of wall in dense Crazy Taxi, if most vertices pass
+    one ftrv; more if the game also transforms normals. Not measured.
+  - Files: `ps3/ps3_driver.cpp` (`shop_ftrv`, `shop_fipr`, float immediate
+    in `shop_mov32`), `dc/sh4/rec_v2/shil.cpp` (pass), `shil.h` (flags),
+    toggle in `ps3/ps3_presets.*` + `ps3/ps3_menu.cpp` (JIT SPEED, set
+    before boot).
+  - Checks: PC: random vectors and matrices through the old and new emit
+    order (bit-exact for the interleave). HW: Crazy Taxi dense VPS, no
+    geometry fault; Soul Calibur.
+  - Built 2026-10-04 (Matt: "While you continue the plan I'll try Sonic
+    Adventure"), package of 21:05. `.got` 0xA2B0, 0 r2off, no new warning.
+    - Option JIT SPEED -> "JIT FTRV" (`JitFtrv`), default OFF until HW
+      validated, takes effect on boot; `[jitcfg]` prints `ftrv=`.
+    - The PS3 form only, all bit-exact (`ps3/ps3_jit_fv.h`):
+      - ftrv: v1-v3 copied aside (3 `fmr`), then 4 columns of 4 `lfs` + 4
+        independent `fmuls`/`fmadds` straight into the pinned outputs, v0's
+        sum last. Was 4 `fmr` in, 4 dependent chains of 4, 4 `fmr` stash and
+        4 `fmr` out. Not pinned (FPU PIN OFF): the same order in f4-f7,
+        then `stfs`. Used only when the vector is updated in place and
+        XMTRX is the unpinned, contiguous xf bank (`ftrv_v2_ok`).
+      - fipr: pinned operands read in place (was 8 `fmr`); the sum stays in
+        f0, as rd is the first vector's fourth element.
+      - fldi0 / fldi1 into a pinned FR: one `lfs` from a 2-entry table (was
+        `li` + `stw` + `lfs` on the same slot: a load-hit-store).
+    - Not built: Minicast's known-w pass (drop the fldi, skip or add the 4th
+      column). With the table fldi it would save one instruction for w=1,
+      and for w=0 it is not exact (-0, NaN/Inf matrix entries).
+    - PC (WSL): `misc/fv_check/run.sh` runs the emitted code on a PPC float
+      model (lfs, stfs, fmr, fmuls, fmadds with PPC NaN precedence A, B, C)
+      against the old order: PASS, 800000 cases (pinned, memory and mixed
+      vectors; fipr with FVm == FVn), 0 failures; it also checks that no
+      other FPR or context word changes. Six mutants (fmuls roles, v0
+      written first, no v1-v3 copies, matrix transposed, fipr roles, fipr
+      writing an input) all FAIL.
+    - HW test: settings as the 5.17 Step 3 run plus JIT FTRV ON (set before
+      boot); Crazy Taxi dense traffic: dense VPS by vt bin against the Step
+      3 run (`vtbins.py`), no geometry fault; then Soul Calibur.
+  - HW 2026-10-04, package of 21:05, Crazy Taxi, settings as the 5.17 Step
+    3 run plus JIT FTRV ON (`ps3log_517_run3.txt`, boot 3). Log clean (the
+    XMB exit took the old 3 s fallback). Matt's visual check: pending.
+    - 65 dense windows: SPEED 89.2% (Step 3 run: 86.0%), VPS 53.5 (51.5).
+    - Same load (1K vt bins): +3.8% VPS against the Step 3 run (10 of 12
+      bins up), +8.3% against Step 2, +11.1% against Step 1.
+    - Soul Calibur, same package, all three options ON (`run3`, boot 4),
+      78 s: log clean (the old XMB fallback only), `sqst` 703. The fight
+      stays render-bound, as before: VPS ~28 of 50, RPS ~9-10, render
+      thread busy 81-97% with texture decode 69-85% of wall, the SH4 waiting
+      ~1.6 s per 5 s window. So no speed reading here; Matt's visual check
+      pending (its old faults, flicker and one black texture, are parked).
+- 5.21 (M3 + M4) constant propagation + dead value elimination.
+  - Minicast (`constprop`, option `opt_constprop` 1 = safe, the default;
+    commits 6e0fa3c, 96ebdba, 67e5949): a forward walk tracks constant
+    r0-r15 and folds ALU ops. It moves constants into immediate slots,
+    turns `shld`/`shad` by a constant into `shl`/`shr`/`sar`, merges shift
+    chains (`shll16` + `shll8`), gives a `readm` with a constant base the
+    immediate-address form, turns a `jdyn` with a constant target into a
+    static end, and drops a `pref` to a non-SQ constant. Constants are
+    written back before an op that needs the register and at block end.
+    Level 2 also bakes memory reads; that needs SMC page locks (Reicast
+    mprotect), so not on the PS3. This is a new pass, not Reicast's old
+    `constprop` ("crashes on ip", `Optimization.md` 2.4).
+    `dead_value_elim` (commit 8b558b7, always on): backward liveness; it
+    removes pure ops whose outputs are overwritten before any read, and
+    takes everything as live at block end.
+  - PS3 value: medium, unknown until 5.18 profiles the hot code. Main gain:
+    `shld`/`shad` by a constant (e.g. `mov #-5,r1; shad r1,r0`) becomes one
+    `rlwinm`/`srawi`; today it is ~14 instructions with 2 microcoded
+    shifts. A constant address skips the 7-instruction fastmem shape.
+    Section 4 lists Flycast's SSA pass as "do not take" (JIT work measured
+    at 0-3%); this pass is smaller and aims at the PPE microcode cost.
+  - PS3 rules: `rs3` immediates must fit s16 (`shop_readm` / `shop_writem`
+    verify it). Promote constant addresses only for integer destinations of
+    1, 2 or 4 bytes (a float destination would bounce through memory).
+    Keep the block's last compare as the last op (block-end write-backs go
+    before it), or JIT CR0 and T FORWARD stop working. `ifb` writes back
+    r0-r15, `sync_sr` writes back r0-r7. Dead value elimination must see
+    our hidden operands: `div1` reads and writes SR.Q/M (`sr_status`),
+    `mac_l`/`mac_w` read MACL/MACH; `ifb`, `sync_sr` and `sync_fpscr` are
+    barriers.
+  - PC test first: port Minicast's `tests/constprop_test.cpp` (backend-form
+    validator, directed tests, differential fuzzer: random blocks run with
+    `shil_canonical.h` before and after the passes; registers, the memory
+    write trace and the exit target must match) to WSL as
+    `misc/constprop_check/`, with a PPC-form validator.
+  - Files: `dc/sh4/rec_v2/shil.cpp`, `driver.cpp`, `decoder.h` (static end
+    from `jdyn`), `ps3/ps3_driver.cpp` (any immediate form it lacks),
+    toggle.
+  - Built 2026-10-04 (Matt: "It's time for 5.21"), package of 22:06. Build
+    clean (the 7 old warnings only), `.got` 0xA328, 0 r2off.
+    - Two options, JIT SPEED page, both default OFF, set before boot:
+      "JIT CONSTPROP" (`JitConstProp`) and "JIT DEAD VALUES" (`JitDve`).
+      `[jitcfg]` prints `cprop=` and `dve=`. While one is ON, a `[cprop]`
+      line per stats window (only after new compiles) gives the totals since
+      boot: blocks, SHIL ops in -> out, and the count of each change (fold,
+      imm, shift, chain, readm, jdyn, pref, late, dve).
+    - The passes are in the new `dc/sh4/rec_v2/shil_opt.h`; `AnalyseBlock`
+      (`shil.cpp`) runs them. No `driver.cpp`, `decoder.h` or backend change
+      was necessary: every form the pass makes already exists in
+      `ps3_driver.cpp`.
+    - Constant propagation (Minicast's safe level, no memory read at compile
+      time): it folds ALU ops, compares, `ext`, `not`, `neg`, `swap.b`,
+      `cmp/str` and the 16/32-bit multiplies on known r0-r15. A known
+      operand goes to the immediate slot the backend has (rs2 of
+      add/sub/and/or/xor/shifts/mul/test/set*; commutative ops and `seteq`/
+      `test` swap a known rs1 there). `shld`/`shad` by a known count become
+      `shl`/`shr`/`sar` (or 0). Shift chains on one register merge. A
+      `readm` with a known address takes the immediate-address form
+      (addis + load) for integer destinations of 1, 2 and 4 bytes; a known
+      r0 index becomes an s16 displacement. A `jdyn` to a known target
+      becomes a static end (not with JitSafe / JitDynEnds). A `pref` to a
+      known non-SQ address goes away. Pending constants are written back
+      before `ifb` (r0-r15), `sync_sr` (r0-r7), any op that reads them as a
+      register, and at block end; on a BET_Cond block the end write-backs go
+      before the last op when it only writes sr_T and reads none of them
+      (JIT CR0 / T FORWARD), else after it (`late`).
+    - Dead value elimination: backward liveness, everything live at block
+      end; pure register ops whose results are all overwritten before a read
+      go. `ifb`, `sync_sr`, `sync_fpscr` are barriers; `div1` reads
+      `sr_status`, `mac.l`/`mac.w` read MACH:MACL.
+    - One fix to Minicast's pass found on the way: a full rotation (`swap.w`
+      twice) re-read the first `ror`'s source through the constant state,
+      which is wrong when that register got a new constant in between.
+      Ours moves the value the emitted code still holds.
+    - The old disabled write-after-write pass (`SHIL_DCE 0`) stays as it was.
+  - PC test 2026-10-04 (WSL): `misc/constprop_check/run.sh [seed] [blocks]`
+    compiles the real `shil_opt.h`, `shil.h` and `decoder.h` (no mocks). It
+    has a SHIL interpreter of our ops (incl. adc/sbc/negc/addv/subv/div1/
+    cmpstr/mac, float and vector ops as data moves), a validator of
+    `ps3_driver.cpp`'s operand forms, 16 directed tests and a fuzzer of the
+    decoder's shapes (all block ends, delay slots, ifb, sync_sr/fpscr,
+    division, mac, tas.b, stc.l SR, GBR, PC-relative, float pairs). Each
+    block runs before and after the passes from 3 start states; registers,
+    banks, the memory read and write trace, the ifb / sync checkpoints and
+    the exit must match. PASS: 8 seeds x 200000 blocks, 0 failures (88% of
+    blocks get smaller; every transform fires).
+    `misc/constprop_check/mutate.py` plants 31 bugs one at a time: all 31
+    FAIL, 30 also with the fuzzer alone (the one left, `mov32` of any float
+    constant, has no decoder shape; a directed test catches it).
+  - HW test steps (package of 22:06):
+    1. Settings as the 5.20 run (an install resets them): Dynarec ON, JIT
+       Fastmem ON, SH4 Clock 200, VIDEO / DEBUG -> TA SQ Direct ON, JIT
+       SPEED -> JIT SQ STORES ON, JIT FTRV ON. Then JIT SPEED -> JIT
+       CONSTPROP ON and JIT DEAD VALUES ON. Reboot the emulator.
+    2. UDP listener on port 18194. The listener of the 5.17 session (PID
+       5656) still runs and appends to its `ps3log_517_run3.txt`; this run
+       starts after byte 2548073.
+    3. Crazy Taxi, dense traffic, as long as the 5.20 run. Check: no hang,
+       no wrong geometry, sound as before; the log has `cprop=1 dve=1` and
+       `[cprop]` lines.
+    4. Analysis: same-load VPS against the 5.20 run (`vtbins.py`), the
+       `[cprop]` totals.
+    5. On a fault: JIT DEAD VALUES OFF first, then JIT CONSTPROP OFF, one
+       boot each.
+  - HW 2026-10-04, package of 22:06, Crazy Taxi, 149 s, settings as the
+    5.20 run plus both options ON (`[jitcfg]` ... `cprop=1 dve=1`). Log
+    clean (the old XMB 3 s fallback only). Log: this session's scratchpad,
+    `run521.txt`. Matt: "geometry and sound looked right".
+    - `[cprop]` at the end: 20934 blocks, SHIL ops 155978 -> 151379
+      (-2.9%); fold 741, imm 5231, shift 169, chain 421, readm 62, jdyn 4,
+      pref 1, late 16, dve 714.
+    - 66 dense windows (vt > 3K): SPEED 90.4% (5.20 run: 89.2%), VPS 54.2
+      (53.5), but at a lower mean load (vt 9.0K against 9.5K).
+    - Same load (1K vt bins, `vtbins.py` against the 5.20 run): +0.2% VPS,
+      within noise (bins 8-11K +0.4 to +1.5%, 7-8K -1.4%). No measurable
+      gain in Crazy Taxi: the ops it removes are mostly single `li`/`mr`.
+- 5.22 (M5) cycle check.
+  - Minicast (`opt_cyclecheck_backwards_only`, default OFF; commit
+    c524f7a): only blocks with a backward static branch poll; the others
+    only subtract. It also skips the poll on dynamic ends, so a loop closed
+    only by `jmp`/`rts` would never poll. Do not copy that part.
+  - Ours (`ngen_Begin`): every block runs `addic.` and a `bc` that is taken
+    in the common case (it jumps over the exit `li` + `b`).
+  - PS3 form, two steps: (a) put the exit out of line, so the common path
+    falls through (every block); (b) forward static ends (static jump,
+    static call, cond with a forward branch target) use `addi` only;
+    dynamic, interrupt and backward ends keep the poll.
+  - Expected: low, unknown (one taken branch per block entry).
+  - Checks: HW: Crazy Taxi dense VPS; a game with tight wait loops boots;
+    the in-game menu (SELECT) and the XMB exit still work.
+  - Note from 5.21: JIT CONSTPROP can turn a `jdyn` into a static end
+    (Minicast marks these `static_from_constprop`, so its backward-only
+    check still polls them). Decide forward / backward from the target
+    address, not from the end type.
+  - Built 2026-10-04 (Matt: "Yes, do it"), package of 22:27, both steps
+    behind one option: JIT SPEED -> "JIT CYCLE CHECK" (`JitCycleCheck`),
+    set before boot: OLD (default, the old shape), COLD EXIT (step a),
+    LOOPS ONLY (steps a + b). `[jitcfg]` prints `cyc=`; with COLD EXIT or
+    LOOPS ONLY a `[cyc]` line (per stats window, after new compiles) gives
+    the blocks compiled with and without the poll since boot.
+    - COLD EXIT: `addic.` + a not-taken `blt` to the exit (`li next_pc` +
+      `b loop_do_update_write`), which ngen_Compile places first in the
+      block's cold area (verify: within the 16-bit reach).
+    - LOOPS ONLY: a block polls only if its end can close a loop: a static
+      jump, static call or conditional end whose BranchBlock is at or below
+      its start, or any dynamic or interrupt end; the others only `addi`.
+      NextBlock is always above the start, and a 5.21 static end is judged
+      by its address like any other. Along blocks without the poll the start
+      address only rises, so every loop polls once per turn; an exit can
+      come up to one forward chain later (the cycle count stays exact, and
+      the update loop runs back to back to catch up).
+    - No PC test: the plan lists HW checks only; the shapes reuse emitter
+      forms the JIT already runs (`blt`, `addi` with a negative immediate,
+      MarkLabel as in FlushCold).
+  - HW test steps (package of 22:27):
+    1. Settings as the 5.21 run (5.20 settings plus JIT CONSTPROP and JIT
+       DEAD VALUES ON), so only the new option changes.
+    2. Boot A: JIT CYCLE CHECK -> COLD EXIT. Crazy Taxi, dense traffic,
+       ~150 s. Open and close the in-game menu (SELECT) once. Exit to the
+       XMB.
+    3. Boot B: JIT CYCLE CHECK -> LOOPS ONLY. The same.
+    4. Check: boot to the game (BIOS and loading screens are wait loops),
+       no hang, menu and XMB exit work, `[jitcfg]` `cyc=1` / `cyc=2`.
+    5. Analysis: same-load VPS of each boot against the 5.21 run
+       (`vtbins.py`), the `[cyc]` counts.
+    The 5.17 listener (PID 5656) still appends to `ps3log_517_run3.txt`;
+    this run starts after byte 2848377.
+  - HW 2026-10-04, package of 22:27, Crazy Taxi, settings as the 5.21 run.
+    Logs in this session's scratchpad: `run522a.txt` (boot A),
+    `run522b2.txt` (boot B; a first boot B, `run522b.txt`, ended before the
+    gameplay by mistake). Both logs clean (the old XMB 3 s fallback only),
+    the same boot sequence as the 5.21 run (intro, ~33 s without renders,
+    then gameplay).
+    - Boot A, COLD EXIT (`cyc=1`), 144 s: 64 dense windows, VPS 54.6 at
+      SPEED 91.1% (mean vt 9.3K). Same load: +0.8% against the 5.21 run.
+    - Boot B, LOOPS ONLY (`cyc=2`), 143 s: `[cyc]` poll=9962 nopoll=11085
+      (53% of the blocks skip the poll). 64 dense windows, VPS 54.2 at SPEED
+      90.5% (mean vt 9.6K). Same load: +1.9% against the 5.21 run (bins
+      7-10K +1.8 to +4.1%), +0.9% against boot A.
+    - Since the 5.17 Step 1 run (VPS 48.4 at vt 9.5K): +13.5% at the same
+      load.
+    - Matt: "boot B played normally". Then (Matt: "Set LOOPS only as
+      default"): `JitCycleCheck` defaults to 2 (LOOPS ONLY), package of
+      22:44.
+- 5.23 (M6) `fmov.s @Rn+` pair fusion. Minicast `fuse_readm_pairs`
+  (option `opt_readm_pairs`, default OFF): `readm f; add rn,4; readm f`
+  becomes one paired load. On our fastmem path it saves one guard + address
+  (~6 instructions) per pair. The second word can cross the 16 MB RAM end
+  (our window has no mirror past it). Many games use `fschg` + 64-bit moves
+  instead. Not scheduled.
+- 5.24 PPE codegen seen during the review (not Minicast). Not scheduled.
+  - Compares read CR0 with `mfcr` (`emit_cr0_bit_to_rarg0`): `set*` and
+    `tst` when the block-end CR0 path does not apply, `fseteq`/`fsetgt`
+    always. `mfcr` is microcoded over all fields; `mfocrf rD,0x80` reads
+    CR0 fast.
+  - `flds`/`fsts` (FPUL <-> FR), `float` and `ftrc` go through memory: one
+    load-hit-store each. `float` has two, because it also builds its magic
+    constant in the same slot; a constant table removes that one.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC
@@ -2622,3 +3227,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | Naomi, network, savestates | out of scope |
 | SSA optimizer (`dyna/ssa.cpp`) | JIT work measured at 0-3% (`Optimization.md` 4) |
 | CHD/CUE, reios | Reicast and Minicast have them too |
+| Minicast fallthrough (M7) | our link sites are 3 words and cold code sits between blocks; almost no case to fall through |
+| Minicast register allocator work, XMTRX kept in registers | we pin r0-r15 (not r11) and fr0-fr15; no free FPRs for the matrix |
+| Minicast constprop level 2 (memory baking) | needs SMC page locks (mprotect) |
+| Minicast perf map | needs Linux `perf` |

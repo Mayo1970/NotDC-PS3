@@ -30,6 +30,8 @@ extern "C" void ccall_census_dump(double seconds, double vbs);
 void arm_jit_census_dump(double seconds);
 // [arm7s] ARM7 and AICA timer activity (plugs/nullAICA/aica.cpp), always on.
 void aica_arm7s_dump(double wall_s);
+// [ta-split] TA store path split (plugs/drkPvr/ta.cpp, plan 5.17), always on.
+void ta_split_dump(double seconds);
 
 // Host-side exit-combo poll (EXIT FIX = 3): driven by the scanline counter, which runs whatever the
 // guest does, so a game that stops polling Maple (or never fires vblank) can still be exited.
@@ -355,6 +357,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
+                ta_split_dump(tdiff);
                 snd_thread_stats();
                 arm_spe_stats(tdiff);
 #endif

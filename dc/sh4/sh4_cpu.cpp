@@ -36,7 +36,6 @@ void cpu_iWarn(u32 op, const char* info)
 #include "dc/mem/mmu.h"
 #include "sh4_cpu_misc.h"
 
-// Out-of-line entry points the recompiler takes the address of.
+// The recompiler's PREF target with the MMU on; the one without is in ps3/ps3_rend.cpp (plan 5.17).
 void FASTCALL do_sqw_mmu(u32 dst)   { do_sqw<true>(dst); }
-void FASTCALL do_sqw_nommu(u32 dst) { do_sqw<false>(dst); }
 

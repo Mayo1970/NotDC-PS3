@@ -1,6 +1,5 @@
 #pragma once
-#include "dc/mem/mmu.h"
-#include "dc/pvr/pvr_if.h"
+#include "dc/sh4/sh4_sqw.h"	// do_sqw; not with the opcode bodies, which sh4_cached.cpp includes at block scope
 // SH4 interpreter opcode prelude: decode + memory macros shared by the plain
 // handlers (sh4_cpu.cpp) and the cached engine (sh4_cached.cpp).
 
@@ -54,38 +53,4 @@ static INLINE u32 branch_target_s12(u32 op)
 	return GetSImm12(op) * 2 + next_pc + 2;
 }
 
-// Store-queue flush helper. Lives here, not with the opcode bodies, because
-// sh4_cached.cpp includes those inside a function and a template cannot be
-// declared at block scope.
-// STORE QUEUE OPERATIONS
-// Store Queue Write helper - template for MMU on/off
-template<bool mmu_on>
-INLINE void FASTCALL do_sqw(u32 Dest)
-{
-	CCALL(CC_SQW);
-	u32* sq = (u32*)&sq_both[Dest & 0x20];
-	u32 Address;
-
-	if (mmu_on)
-	{
-		Address = mmu_TranslateSQW(Dest & 0xFFFFFFE0);
-	}
-	else
-	{
-		const u32 QACR = ((Dest & 0x20) == 0) ? CCN_QACR0.Area : CCN_QACR1.Area;
-		Address = (Dest & 0x03FFFFE0) | (QACR << 26);
-	}
-
-	if (((Address >> 26) & 0x7) == 4)  // Area 4 - Tile Accelerator
-	{
-		TAWriteSQ(Address, sq);
-	}
-	else
-	{
-		WriteMemBlock_nommu_ptr(Address, sq, 32);  // 8 * 4 bytes
-	}
-}
-
 extern bool sh4_sleeping;
-void FASTCALL do_sqw_mmu(u32 dst);
-void FASTCALL do_sqw_nommu(u32 dst);

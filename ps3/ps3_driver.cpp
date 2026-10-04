@@ -1,47 +1,5 @@
-/*
-	wii dynarec
-	based on the mips one !
-
-	PPC/Wii calling rules:
-	Registers:
-		32 32-bit gprs
-			r0     volatile, temp
-			r1     stack pointer, grows down
-			r2     TOC (what ?) Pointer (who cares)
-		    r3:10  volatile, first 8 params.r3 is also return value
-		    r11    volatile (used as 'environment' pointers for calls by ptr .. what?)
-		    r12    volatile (used for ming (mingw ?) & magic as well as linking)
-		    r13:31 preserved (19 of em)
-		
-		32 64-bit fprs (single, vector or double)
-		    f0     volatile, scratch
-			f1:4   volatile, params, return
-			f5:13  volatile, params
-			f14:31 preserved (18 of em)
-		LR  Link 
-		XER (exception register)
-		FPSCR
-		CR (CR0:1;CR5:7 volatile, CR2:4 preserved)
-
-	When calling 
-
-	Call stack: 
-		Return is stored on the link register and its saved at a specific location on function entry
-		lr is stored on sp+4
-		stack grows towards zero
-
-	Improvements over original:
-	  - BUG FIX: GPR restore loop in ngen_mainloop used ppc_r14+i instead of ppc_r13+i,
-	             causing r13 to never be restored and r32 (invalid) to be written. Fixed.
-	  - BUG FIX: ppc_lip<T> template overload was missing the destination register 'D'
-	             parameter — it silently dropped it. Fixed signature to ppc_lip(u32 D, T*).
-	  - Use static_cast<> instead of C-style casts for ppc_finvalid/ppc_rinvalid sentinels.
-	  - Use snprintf instead of sprintf to guard against buffer overrun in dynarec filename.
-	  - Removed redundant fflush(f) before fclose(f) (fclose already flushes).
-	  - Fixed BET_StaticCall/BET_StaticJump: added proper braces around debug-log block
-	    so indentation reflects actual control flow.
-	  - Minor formatting/whitespace consistency improvements; no logic changes.
-*/
+// SH4 -> PPC dynarec (nullDCe's Wii one, ported to the PS3's 64-bit ELFv1 ABI). r0, r3-r12 and f0-f13
+// are volatile; r13-r31 and f14-f31 are saved, which is why pinned SH4 registers live there.
 #include "types.h"
 #include <stddef.h>	// offsetof — used for jit_scratch context slot addressing
 #include <math.h>	// sqrtf — fsqrt/fsrra native call targets
@@ -58,10 +16,10 @@
 // wii/wii_fastmem.h: PPC-MMU fastmem, not portable to GameOS (Dynarec.MD 3.4)		// PPC-MMU fastmem (FASTMEM preset)
 #include "emitter/PPCEmit/ppc_emitter.h"
 #include "ps3/ps3_jitmem.h"
+#include "ps3/ps3_jit_sq.h"
+#include "ps3/ps3_jit_fv.h"
 
-// wii_driver.cpp defines its own higher-level wrappers for these names.
-// Undefine any macros from ppc_emitter.h that would clash with the
-// local function definitions below.
+// ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
 #  undef ppc_li
 #endif
@@ -135,18 +93,15 @@ void ppc_li(u32 D,u32 imm)
 			ppc_ori(D,D,(u16)imm);
 		}
 
-		// addis sign-extends on PPC64, so any constant with bit 31 set lands as
-		// 0xFFFFFFFF_xxxxxxxx. Harmless for the w-form SH4 arithmetic, poison at
-		// a C call: ELFv1 makes the CALLER extend a u32 argument, and every
-		// Dreamcast RAM address starts 0x8C.
+		// addis sign-extends on PPC64: a constant with bit 31 set gets 0xFFFFFFFF above it. Harmless for w-form
+		// arithmetic, poison at a C call (ELFv1: the caller extends u32 args, and RAM addresses start 0x8C).
 		if (imm & 0x80000000)
 			ppc_clrldi32(D,D);
 	}
 }
 
-// ELFv1: C cannot call a raw code address - a function pointer is a descriptor.
-// Generated code has no descriptor, so entering the cache from C needs one built
-// by hand, with our own TOC (Dynarec.MD 3.2).
+// ELFv1: a C function pointer is a descriptor, and generated code has none, so entering the cache from C
+// needs one built by hand, with our own TOC (Dynarec.MD 3.2).
 static struct { u64 entry; u64 toc; u64 env; } s_enter_opd;
 
 static void ppc_enter_code(void* code)
@@ -166,9 +121,7 @@ static void ppc_stdu(u32 S,s32 d,u32 A) { ppc_emit(0xF8000001 | (S<<21) | (A<<16
 static void ppc_ld(u32 D,s32 d,u32 A)   { ppc_emit(0xE8000000 | (D<<21) | (A<<16) | (u32)(d & 0xFFFC)); }
 static void ppc_ldx(u32 D,u32 A,u32 B)  { ppc_emit(0x7C00002A | (D<<21) | (A<<16) | (B<<11)); }
 
-// =======================
-// JUMP OFFSET CALCULATION
-// =======================
+// ---- Jump offset calculation ----
 
 snat ppc_jdiff_raw(void* dst)
 {
@@ -209,9 +162,8 @@ void ppc_call_and_jump(void* code)
 	ppc_bcctrx(BO_ALWAYS,BI_CR0_EQ,0);  // bctr
 }
 
-// ELFv1: a C function pointer is an OPD descriptor, so branching to it would
-// land in .opd data. DynarecCodeEntry* is also a function pointer but points at
-// generated code, so the type alone cannot tell them apart - hence the _c names.
+// ELFv1: a C function pointer is an OPD descriptor; branching to it lands in .opd data. DynarecCodeEntry*
+// points at generated code, and the type cannot tell the two apart, hence the _c names.
 static void* c_entry(void* fn)
 {
 	return (void*)(uintptr_t)ps3_opd_entry(fn);
@@ -254,9 +206,7 @@ void* loop_do_update_write;
 void (*loop_code)() ;
 void (*ngen_FailedToFindBlock)();
 
-// Defined below — emits the addis half of an absolute address into rD and
-// returns the low 16-bit displacement. Forward-declared so the block-check
-// guard in ngen_Begin() can use it.
+// Emits the addis half of an absolute address into rD and returns the low 16-bit displacement.
 u32 ppc_addr_high(u32 rD,void* ptr);
 void ppc_sh_store(u32 D,u32 sh4_reg);	// defined below; ngen_Begin's pc trace needs it
 
@@ -267,32 +217,12 @@ struct
 {
 	bool has_jcond;
 
-	// T-FORWARDING. The SH4's commonest shape by far is a flag producer
-	// (cmp/tst/dt) immediately followed by a consumer (bt/bf, or the shop_jcond
-	// of a delay-slot branch). sr_T is not pinned — GetIntReg only covers
-	// r0..r15 minus r11 — so the producer stored T to the context and the
-	// consumer loaded it straight back:
-	//     stw r3,0x118(r30)      <- producer (value still in rarg0!)
-	//     lwz r3,0x118(r30)      <- consumer, same address, same register
-	// which is a load-hit-store stall on Broadway to recover a value that never
-	// left the register. Set true by binop_end when it has just written sr_T,
-	// and cleared before EVERY shil op, so it can only ever describe the
-	// immediately preceding one — no cross-op liveness reasoning needed, and no
-	// way for an intervening op to have clobbered rarg0 behind our back.
-	// The store stays: sr_T is architectural state a later block may read.
+	// T-FORWARDING: a T producer (cmp/tst/dt) leaves T in rarg0; set by binop_end, cleared before every op, so
+	// the next op can skip reloading the T just stored (a load-hit-store). The store stays: later blocks read T.
 	bool t_in_rarg0;
 
-	// JIT_CR0. Set before each shil op: true only when this op is the block's
-	// LAST, the block exits on sr_T (BET_Cond_0/1), and this op is what writes
-	// sr_T. A T producer seeing it leaves its condition in CR0 and emits
-	// nothing, and ngen_End branches on that CR0 bit directly.
-	//
-	// "Last op" is the whole safety argument: the only code that can run
-	// between the compare and the branch is ngen_End's own, so no emitter can
-	// clobber CR0 behind our back and there is no liveness to track. A version
-	// that let the condition survive intervening ops would need every CR0
-	// writer in this file to invalidate it, and missing one is a silent
-	// wrong-branch — deliberately not attempted here.
+	// JIT_CR0: true only for the block's last op, when the block exits on sr_T and this op writes it: CR0 keeps
+	// the condition for ngen_End's branch. Last op only, so nothing in between can clobber CR0.
 	bool t_exit_cr0;     // this op may hand its condition to ngen_End
 	bool cr0_live;       // it did; cr0_bit/cr0_invert describe it
 	u32  cr0_bit;        // BI_CR0_xx index holding the condition
@@ -310,28 +240,51 @@ struct
 } compile_state;
 u32 last_block;
 
-// JIT_TFWD preset (main.cpp): forward sr_T from rarg0 to the branch that
-// consumes it instead of storing then immediately reloading it. See the
-// t_in_rarg0 comment in compile_state.
+// JIT_TFWD preset: forward sr_T from rarg0 to the branch that consumes it (see compile_state.t_in_rarg0).
 extern "C" int get_jit_tfwd_preset();
 
 // JIT_FSQRT preset (ps3_presets.cpp): inline fsqrts for fsqrt/fsrra instead of a C call.
 extern "C" int get_jit_fsqrt_preset();
 
-// JIT_CR0 preset (main.cpp): let a block-ending compare leave its answer in
-// CR0 and have the conditional exit branch on it directly, instead of moving
-// the bit into a GPR only to compare it back to 0/1. See emit_t_to_cr0().
+// JIT_CR0 preset: a block-ending compare leaves its answer in CR0 for the exit branch (see emit_t_to_cr0).
 extern "C" int get_jit_cr0_preset();
 
 // JIT_FSCHG preset (ps3_presets.cpp): fschg only flips FPSCR.SZ, so shop_sync_fpscr just
 // keeps old_fpscr in step and skips the UpdateFPSCR() call (and its mtfsfi).
 extern "C" int get_jit_fschg_preset();
 
-// JIT_FMOV preset (main.cpp): extend FPU_PIN "Phase B" (direct lfs/stfs to a
-// pinned FR, no GPR bounce) to the FASTMEM shapes in shop_readm/shop_writem.
-// Needs the matching float shapes in rec_fastmem_patch() below, which is why
-// it is a separate switch from fpu_pin rather than part of it.
+// JIT_FMOV preset: FPU_PIN's direct lfs/stfs on the fastmem shapes. A separate switch from fpu_pin, since
+// rec_fastmem_patch() must decode those float shapes too.
 extern "C" int get_jit_fmov_preset();
+
+// JIT SQ STORES (plan 5.17 Step 3): store-queue shape for stores before a PREF; sites compiled since boot.
+extern "C" int get_jit_sq_store_preset();
+u32 g_jit_sq_sites;
+
+// JIT FTRV (plan 5.20): ftrv/fipr without FPR copies, ftrv's sums interleaved, fldi from a table.
+extern "C" int get_jit_ftrv_preset();
+
+// Plan 5.21's SHIL passes (dc/sh4/rec_v2/shil_opt.h), for the [jitcfg] line.
+extern "C" int get_jit_constprop_preset();
+extern "C" int get_jit_dve_preset();
+
+// JIT CYCLE CHECK (plan 5.22): 0 old (bge over the exit), 1 exit out of line, 2 also no poll on forward-only ends.
+extern "C" int get_jit_cycle_check_preset();
+static ppc_label* s_cycle_exit;	// this block's blt to its out-of-line exit, patched after ngen_End
+static u32 s_cycle_poll, s_cycle_nopoll;	// blocks compiled with and without the poll, for the [cyc] line
+
+// A block polls if its end can close a loop: a static target at or below its start, or a dynamic or interrupt
+// end. Ends without the poll only reach higher starts, so every loop still polls once per turn.
+static bool cycle_poll_needed(const DecodedBlock* b)
+{
+	switch (b->BlockType)
+	{
+	case BET_StaticJump: case BET_StaticCall: case BET_Cond_0: case BET_Cond_1:
+		return b->BranchBlock <= b->start;
+	default:
+		return true;
+	}
+}
 
 // Forward decls: GPR/FPR allocation maps + flush/reload (defined later in this file).
 ppc_ireg GetIntReg(u32 reg);
@@ -341,20 +294,14 @@ void reg_reload_all();
 void reg_flush_all_fpu();
 void reg_reload_all_fpu();
 
-// =======================
-// BLOCK BEGIN/END
-// =======================
+// ---- Block begin/end ----
 
 void ngen_Begin(DecodedBlock* block,bool force_checks)
 {
 	compile_state.Reset();
 
-	// Bring-up only: publish this block's guest pc to memory at EVERY entry, so
-	// the heartbeat names the last block actually executed. Without it next_pc
-	// updates once per timeslice, which cannot locate a fault inside a static
-	// chain. The counter separates the two ways the log looks identical: a dead
-	// SH4 thread freezes it, a spin keeps it climbing. rarg0/rarg1 are scratch
-	// at block entry.
+	// Bring-up: store the guest pc at every block entry, so the heartbeat names the last block run (next_pc
+	// moves per timeslice); the counter tells a dead SH4 thread (frozen) from a spin. rarg0/rarg1 are free.
 	if (get_debug_loop())
 	{
 		u32 lo=ppc_addr_high(ppc_rarg1,(void*)&g_jit_blocks_entered);
@@ -366,43 +313,8 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 		ppc_sh_store(ppc_rarg0,reg_nextpc);
 	}
 
-	// ---------------------------------------------------------------------
-	// Block-check guard (self-modifying code protection)
-	//
-	// force_checks comes from DoCheck() in driver.cpp, which is gated on the
-	// JIT_SBP preset. When set, re-read this block's SH4 source at entry and
-	// compare it against what was there at compile time. A mismatch means the
-	// game overwrote its own code, so the translation is stale — bail to
-	// rdv_BlockCheckFail, which clears the cache (dropping the statically
-	// patched links along with it) and recompiles from live memory.
-	//
-	// WHAT IS COMPARED, AND WHY IT IS NO LONGER ONE BYTE
-	//
-	// This used to load a single BYTE. That is far too weak for the case the
-	// guard exists to catch. Marvel vs Capcom 2 loads code overlays into a
-	// six-slot module cache at 0CE30000..0CE58000 and jumps into them; the next
-	// stage reloads DIFFERENT modules to the SAME six addresses. Every block
-	// compiled from stage 1's module is then stale, and this compare is the
-	// only thing between the game and executing stage 1's translation of stage
-	// 2's code.
-	//
-	// A block starts at a function entry far more often than not, and SH4
-	// prologues are stereotyped — 2FE6 / 2FD6 / 2F32 (mov.l Rm,@-R15) and 4F22
-	// (sts.l pr,@-R15) dominate. Two unrelated modules agree on the first BYTE
-	// of a block entry very often, so the guard passed and the stale block ran.
-	// The byte compare was close to useless exactly where it mattered.
-	//
-	// Now: the whole first INSTRUCTION (16 bits, 256x stronger) and the whole
-	// LAST instruction of the block. Both are halfword loads against a 16-bit
-	// immediate, so the cost over the old version is one lhz + cmpli + branch —
-	// no 32-bit constant to materialise. Checking the tail as well as the head
-	// is what catches a replacement sharing a prologue but diverging later,
-	// which is the normal case for two modules of the same engine.
-	//
-	// Emitted BEFORE the cycle decrement so a stale block never bills cycles.
-	// rarg0/rarg1 are scratch at block entry (rarg0 is next_pc, which the
-	// cycle-underflow path below overwrites anyway), so both are free here.
-	// ---------------------------------------------------------------------
+	// Self-modifying code guard (force_checks, JIT_SBP): compare the block's first and last SH4 instructions
+	// with compile time (MvC2 overlays reuse addresses); a mismatch bails to rdv_BlockCheckFail before billing.
 	if (force_checks && ngen_BlockCheckFail_stub)
 	{
 		const u32 code_sz = block->sh4_code_size ? block->sh4_code_size : 2;
@@ -450,25 +362,39 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 		}
 	}
 
-	ppc_addic(ppc_cycles,ppc_cycles,-block->cycles,1);
-	
-	ppc_label* jdst=ppc_CreateLabel();
-	ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);
+	const int cc=get_jit_cycle_check_preset();
+	s_cycle_exit=0;
+	if (cc>=2 && !cycle_poll_needed(block))
+	{
+		ppc_addi(ppc_cycles,ppc_cycles,-block->cycles);
+		s_cycle_nopoll++;
+	}
+	else if (cc>=1)
+	{
+		// The exit goes out of line (ngen_Compile, after ngen_End): the common path falls through a not-taken blt.
+		ppc_addic(ppc_cycles,ppc_cycles,-block->cycles,1);
+		s_cycle_exit=ppc_CreateLabel();
+		ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);
+		s_cycle_poll++;
+	}
+	else
+	{
+		ppc_addic(ppc_cycles,ppc_cycles,-block->cycles,1);
 
-	ppc_li(ppc_next_pc,block->start);
-	ppc_jump(loop_do_update_write);
+		ppc_label* jdst=ppc_CreateLabel();
+		ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);
 
-	jdst->MarkLabel();
+		ppc_li(ppc_next_pc,block->start);
+		ppc_jump(loop_do_update_write);
 
-	// No GPR reload here: pinned regs (r14..r28) hold the authoritative SH4 GPR
-	// values continuously across blocks, so there is nothing to re-read. They are
-	// loaded once in the mainloop prologue and only resynced with memory around
-	// shop_ifb / the canonical fallback.
+		jdst->MarkLabel();
+	}
+
+	// No GPR reload: pinned r14..r28 hold the SH4 GPRs across blocks, loaded once in the mainloop prologue and
+	// resynced only around shop_ifb and the canonical fallback.
 }
 
-// =====================
-// MEMORY ACCESS HELPERS
-// =====================
+// ---- Memory access helpers ----
 
 // Static GPR allocation master switch. Full rationale at reg_flush_all().
 // Must be defined before the first use below; set to 0 for all-memory mode.
@@ -487,15 +413,8 @@ void ppc_sh_load(u32 D,u32 sh4_reg)
 		return;
 	}
 #endif
-	// FPU_PIN landmine: shop_readm/writem/mov64 read/write ANY sh4_reg's raw
-	// bit pattern through this generic helper, including FR-typed ones (e.g.
-	// the fmov.s/fmov.d memory paths, which bounce the value through a GPR
-	// since PPC750 has no direct GPR<->FPR move). If fr[] is pinned, the
-	// authoritative bits live in a PPC FPR, not Sh4cntx.fr[] memory — so a
-	// bare lwz here would read stale data. Fix: flush the pinned FPR to its
-	// memory slot first, THEN read it back as an integer. One extra insn,
-	// only on this int<->pinned-float crossing (the pure-float fast path
-	// via ppc_sh_load_f32 never pays it).
+	// FPU_PIN: readm/writem/mov64 move FR bit patterns through here; a pinned FR's bits are in its FPR, not
+	// Sh4cntx.fr[], so flush the FPR to its slot before the integer load.
 	if (get_fpu_pin_preset())
 	{
 		ppc_freg rf=GetFloatReg(sh4_reg);
@@ -514,12 +433,8 @@ void ppc_sh_load(u32 D,shil_param prm)
 	verify(prm.is_reg());
 	ppc_sh_load(D,prm._reg);
 }
-// Resolve a register source to the PPC reg an instruction can read directly:
-// the pinned reg if `prm` is statically allocated, else load it into scratch
-// `D` and return D. Lets single-instruction ops (cmp, and, add, ...) read
-// pinned sources in place and skip the redundant `mr D,pinned` move. ONLY for
-// ops whose dest is a scratch reg (or that don't write the source) — never when
-// the op would clobber the pinned reg it just read.
+// The PPC reg holding an SH4 source: its pinned reg, or scratch D after a load. Only for ops that do not
+// write the pinned reg they read (single-instruction ops with a scratch dest).
 static u32 src_or_load(u32 sh4_reg,u32 D)
 {
 #if STATIC_GPR_ALLOC
@@ -587,9 +502,7 @@ void ppc_sh_store(u32 D,u32 sh4_reg)
 		return;
 	}
 #endif
-	// FPU_PIN: symmetric fix to ppc_sh_load above. Write the raw bits to
-	// memory as before, then reload the pinned FPR from that same slot so
-	// it picks up the new value instead of going stale.
+	// FPU_PIN: after the raw store, reload the pinned FPR from that slot so it does not go stale.
 	if (get_fpu_pin_preset())
 	{
 		ppc_freg rf=GetFloatReg(sh4_reg);
@@ -639,17 +552,8 @@ void ppc_sh_store_f32(u32 D,shil_param prm)
 	ppc_sh_store_f32(D,prm._reg);
 }
 
-// --- Vector float element access -------------------------------------------
-// For a float param (scalar FMT_F32, or vector FMT_V4/FMT_V16), prm._reg/_imm
-// holds the BASE fr/xf register index. Element i lives at offset(base)+i*4 in
-// the context, and reg_fr_0..reg_fr_15 / reg_xf_0..reg_xf_15 are contiguous
-// (sh4_if.h), so prm._reg+i is always the correct absolute register index.
-// These load/store the i-th single-precision element.
-//
-// FPU_PIN preset: only fr[] is pinned (GetFloatReg returns invalid for the
-// xf[] range — there aren't enough non-volatile PPC FPRs left to pin both
-// banks), so an FV4/FV16 base in xf (e.g. ftrv's XMTRX operand) naturally
-// falls through to memory here, unaffected.
+// Element i of a float param is at offset(base)+i*4, as fr/xf registers are contiguous. Only fr[] is
+// pinned (no FPRs left for xf), so an xf base (ftrv's XMTRX) always uses memory here.
 u32 ppc_fvec_ofs(shil_param prm,u32 i)
 {
 	return Sh4cntx.offset(prm._reg) + i*4;
@@ -683,9 +587,7 @@ void ppc_fvec_store(u32 fs,shil_param prm,u32 i)
 	ppc_stfs(fs,ppc_contex,ppc_fvec_ofs(prm,i));
 }
 
-// ==========================
-// CALLING CONVENTION ADAPTER
-// ==========================
+// ---- Calling convention adapter ----
 
 struct CC_PS
 {
@@ -760,9 +662,7 @@ void ngen_CC_Call(shil_opcode*op,void* function)
 	ppc_call_c(function);
 }
 
-// =================
-// BINARY OPERATIONS
-// =================
+// ---- Binary operations ----
 
 void binop_start(shil_opcode* op)
 {
@@ -787,32 +687,14 @@ void binop_end(shil_opcode* op)
 {
 	ppc_sh_store(ppc_rarg0,op->rd);
 
-	// ppc_sh_store reads rarg0, never writes it, so for an unpinned dest like
-	// sr_T the value is still sitting in rarg0 for the next op to use. Gating
-	// the flag HERE gates the whole optimisation: with JIT_TFWD off it never
-	// gets set, and both consumers fall back to their original reload.
+	// ppc_sh_store leaves rarg0 intact, so an unpinned dest like sr_T is still in rarg0 for the next op. With
+	// JIT_TFWD off the flag is never set, and both consumers reload as before.
 	compile_state.t_in_rarg0 = get_jit_tfwd_preset() &&
 		op->rd.is_reg() && op->rd._reg==reg_sr_T;
 }
 
-// ---------------------------------------------------------------------------
-// Shadow-register-aware operand resolution (for SINGLE-instruction ops only).
-//
-// With static GPR allocation, an operand that is a pinned SH4 reg already lives
-// in a PPC register, so the op can read/write it in place instead of bouncing
-// through rarg0/rarg1. binop3_start() resolves rs1/rs2/rd into the PPC regs the
-// op should use:
-//   bop_a = source reg for rs1   (pinned reg, or rarg0 holding a loaded/imm value)
-//   bop_b = source reg for rs2   (pinned reg, or rarg1 holding a loaded/imm value)
-//   bop_d = dest reg for rd      (pinned reg, or rarg0 scratch)
-//
-// SAFETY: only valid for ops emitted as a SINGLE PPC instruction (add, sub,
-// and, or, xor, shl, shr, sar, mul_i32). Such an instruction reads both sources
-// then writes the dest atomically, so bop_d may safely alias bop_a or bop_b.
-// Multi-instruction ops (mul_u16/64, ror, shld, shad, set*, conversions) must
-// NOT use this — they clobber scratch mid-sequence; they keep using
-// binop_start()/binop_end() with the rarg0/rarg1 scratch window.
-// ---------------------------------------------------------------------------
+// binop3_start: rs1/rs2/rd as pinned regs or rarg0/rarg1 scratch (bop_a, bop_b, bop_d). Only for
+// single-instruction ops, which read both sources before writing, so bop_d may alias a source.
 u32 bop_d, bop_a, bop_b;
 
 // Resolve rs1 -> bop_a (source) and rd -> bop_d (dest). Shared by the plain
@@ -887,9 +769,7 @@ void binop_end_fpu(shil_opcode* op)
 	ppc_sh_store_f32(ppc_farg0,op->rd);
 }
 
-// =================
-// UNARY OPERATIONS
-// =================
+// ---- Unary operations ----
 
 // Unary integer: loads rs1 -> rarg0, operation writes rarg0, stores rarg0 -> rd
 void unop_start(shil_opcode* op)
@@ -911,9 +791,7 @@ void unop_end(shil_opcode* op)
 	ppc_sh_store(ppc_rarg0,op->rd);
 }
 
-// Shadow-register-aware unary resolution (SINGLE-instruction ops only:
-// neg, not, ext_s8, ext_s16). Same safety rule as binop3_*: the op must be one
-// PPC instruction so bop_d may alias bop_a. Sets bop_a (source) / bop_d (dest).
+// As binop3_*, for single-instruction unary ops (neg, not, ext_s8, ext_s16): bop_d may alias bop_a.
 void unop3_start(shil_opcode* op)
 {
 	verify(!op->rs1.is_null() && !op->rd.is_null());
@@ -962,16 +840,8 @@ void unop_end_fpu(shil_opcode* op)
 	ppc_sh_store_f32(ppc_farg0,op->rd);
 }
 
-// ---------------------------------------------------------------------------
-// FPU_PIN: shadow-register-aware FLOAT operand resolution, mirroring the
-// integer binop3_*/unop3_* scheme. Only for ops emitted as a SINGLE PPC FP
-// instruction (fadds/fsubs/fmuls/fdivs/fabs/fneg/fmadds): such an instruction
-// reads all sources then writes the dest atomically, so fop_d may safely
-// alias a source. All of fr[0..15] is pinned when the preset is on, so the
-// scalar arithmetic ops (operands always fr) collapse to ONE instruction;
-// fpul/xf operands resolve to a scratch load exactly as before. With the
-// preset off this degenerates to the legacy lfs/lfs/op/stfs sequence.
-// ---------------------------------------------------------------------------
+// FPU_PIN float operands, as binop3_*: single-instruction FP ops read pinned fr in place, so fop_d may
+// alias a source; fpul/xf use scratch loads. With the preset off this is the old lfs/lfs/op/stfs.
 u32 fop_d, fop_a, fop_b;
 
 // Resolve a float source: its pinned FPR (read in place, no copy), or load
@@ -1016,9 +886,7 @@ static void fbop_end(shil_opcode* op)
 		ppc_sh_store_f32(ppc_farg0,op->rd);
 }
 
-// Resolve a float DEST to the FPR an op should write: the pinned FPR if rd is
-// pinned (write in place, no trailing store), else `scratch`. Pair with
-// fdst_store() which stores only when scratch was used.
+// A float dest's FPR: the pinned one (written in place) or scratch; fdst_store() stores only from scratch.
 static u32 fdst_reg(shil_param rd,u32 scratch)
 {
 	if (get_fpu_pin_preset())
@@ -1035,13 +903,8 @@ static void fdst_store(shil_param rd,u32 reg,u32 scratch)
 		ppc_sh_store_f32(scratch,rd);
 }
 
-// Minimal float register->register move between two SH4 float regs (fmov
-// FRm,FRn and each word of fmov.d / DR<->XD). Emits the fewest instructions
-// for however the two ends are allocated:
-//   both pinned  -> fmr        (or nothing when identical)
-//   src pinned   -> stfs       (dst is xf/memory)
-//   dst pinned   -> lfs        (src is xf/memory)
-//   both memory  -> lfs f0 + stfs f0   (== legacy path; also the preset-off case)
+// Float reg-to-reg move in the fewest instructions: fmr if both pinned, stfs/lfs if one is, else lfs f0 +
+// stfs f0 (also the preset-off path).
 static void fmove_reg(u32 dst_reg,u32 src_reg)
 {
 	ppc_freg sd=get_fpu_pin_preset()?GetFloatReg(src_reg):ppc_finvalid;
@@ -1063,40 +926,16 @@ static void fmove_reg(u32 dst_reg,u32 src_reg)
 	}
 }
 
-// ===================================================
-// COMPARE -> BOOLEAN (branchless CR0 bit extraction)
-// ===================================================
-//
-// SH4 set* ops produce a full 0/1 u32 in rd. We compare rarg0,rarg1 into CR0
-// (signed cmp or unsigned cmpl) then extract the desired CR0 bit into rarg0:
-//
-//   mfcr  rarg0          ; rarg0[CR0 field] = LT GT EQ SO at bits 0..3
-//   rlwinm rarg0,rarg0,(bit+1),31,31  ; rotate wanted bit to position 31, mask to 1
-//
-// CR0 occupies the top 4 bits of CR (bit 0=LT,1=GT,2=EQ,3=SO). After mfcr the
-// LT bit is in word-bit 0, so the bit for BI_CR0_xx index 'b' sits at word-bit
-// 'b'. A left-rotate of (b+1) brings it to bit 31; mask MB=ME=31 keeps just it.
+// ---- Compare -> boolean ----
+// SH4 set* ops want 0/1: mfcr, then rlwinm rotates CR0 bit b (IBM: LT 0, GT 1, EQ 2) by b+1 into bit 31.
 static void emit_cr0_bit_to_rarg0(u32 cr0_bit_index)
 {
 	ppc_mfcr(ppc_rarg0);
 	ppc_rlwinmx(ppc_rarg0,ppc_rarg0,cr0_bit_index+1,31,31,0);
 }
 
-// JIT_CR0: hand a block-ending compare's condition straight to ngen_End.
-//
-// The SH4's commonest shape is a flag producer immediately followed by a
-// conditional branch on it. The compare has already set CR0 correctly, and the
-// legacy path then spends mfcr + rlwinm (+ xori) + stw + cmpi rebuilding that
-// same bit so ngen_End can compare it against 0/1 — five or six instructions,
-// one of them the CR-reading mfcr, to recover something the CPU already knew.
-//
-// When this returns true the caller has emitted NOTHING beyond its compare and
-// must NOT call binop_end(): ngen_End does both halves of the job instead. It
-// branches on the CR0 bit directly, and writes sr_T as a per-path CONSTANT —
-// which is exact, not an assumption: on the path that takes BranchBlock T is
-// (BlockType&1) by definition, and on the other path it is the complement. So
-// the architectural T a later block might read is still written, and no
-// cross-block liveness analysis is needed to justify dropping the mfcr.
+// JIT_CR0: a block-ending compare leaves T in CR0; true means the caller emits nothing more, and ngen_End
+// branches on CR0 and writes sr_T as each path's constant (T == (BlockType&1) on the branch path).
 static bool emit_t_to_cr0(u32 cr0_bit_index,bool invert)
 {
 	if (!compile_state.t_exit_cr0)
@@ -1108,29 +947,8 @@ static bool emit_t_to_cr0(u32 cr0_bit_index,bool invert)
 	return true;
 }
 
-// ---------------------------------------------------------------------------
-// JIT_CARRY: SH4 T bit <-> PPC XER.
-//
-// TWO BIT NUMBERINGS ARE IN PLAY HERE, and mixing them is the easy mistake.
-// PowerPC documents SPR and CR fields in IBM numbering (bit 0 = MSB), so
-// XER[SO]=0, XER[OV]=1, XER[CA]=2, CR0[LT,GT,EQ,SO]=0..3. rlwinm's SH/MB/ME
-// are IBM-numbered too. The SH4 flags we are moving them to/from are described
-// in ordinary value numbering: sr_T is value bit 0, SR.Q is value bit 8, SR.M
-// is value bit 9.
-//
-// To land value bit `b` in value bit 0:      rlwinm rD,rS,32-b,31,31
-// To take value bit 0 back up to value bit b: rlwimi rD,rS,b,31-b,31-b
-//
-// So XER[CA] (IBM 2 = value 29) extracts with SH=3 and is written with SH=29,
-// which is also what emit_cr0_bit_to_rarg0 does for CR0 (index k is IBM, so
-// value bit 31-k, so SH = k+1). SR.Q (value 8) needs SH=24 / SH=8 + MB=ME=23 —
-// NOT 9 and 8. Getting that pair wrong is silent: the value comes out right
-// and only Q/T are corrupted.
-//
-// These are the sequences Evoca uses in seta-gx's SH2 recompiler, retargeted:
-// there SR (T included) is pinned in a GPR so the T traffic is register-only,
-// here sr_T is always memory-resident, which costs the lwz/stw pair below.
-// ---------------------------------------------------------------------------
+// JIT_CARRY: SH4 T <-> XER[CA]. rlwinm/rlwimi use IBM bit numbers (0 = MSB): CA (value bit 29) extracts
+// with SH=3, writes with SH=29; SR.Q (value bit 8) uses SH=24 and SH=8, MB=ME=23. Wrong pairs fail silently.
 
 // XER[CA] = sr_T (optionally inverted, for the borrow-polarity ops). `t` is a
 // scratch GPR that must not alias either operand of the following adde/subfe.
@@ -1162,10 +980,8 @@ static void emit_ov_to_T(u32 t)
 	ppc_sh_store(t,reg_sr_T);
 }
 
-// Resolve the destination of a carry op. rd is always an SH4 GPR here, so it
-// is pinned unless it is r11. Safe for the single-instruction shapes below
-// (adde/subfe/subfze/addo/subfo read both sources then write the dest), which
-// is why the dest may alias a source.
+// Dest of a carry op: pinned unless r11. adde/subfe/subfze/addo/subfo read both sources before writing,
+// so the dest may alias a source.
 static u32 carry_dest(shil_opcode* op)
 {
 	ppc_ireg d=GetIntReg(op->rd._reg);
@@ -1178,15 +994,8 @@ static void carry_dest_store(shil_opcode* op,u32 d)
 		ppc_sh_store(ppc_rarg3,op->rd);
 }
 
-// Compare rs1 against rs2 into CR0. cmp/cmpl/cmpi/cmpli can read ANY register,
-// so when an operand already lives in a pinned PPC reg we compare it in place
-// and skip the move into rarg0/rarg1 — only spilled operands (or immediates
-// that don't fit the cmp-immediate forms) need a scratch load. Folds a small
-// immediate rs2 into cmpi/cmpli (signed uses cmpi+s16, unsigned cmpli+u16).
-//
-// The follow-on emit_cr0_bit_to_rarg0 does mfcr rarg0, which clobbers ONLY
-// rarg0 (scratch) and never the pinned source regs, so comparing in place is
-// safe regardless of which operands were elided.
+// Compare rs1 with rs2 into CR0, pinned operands in place, small immediates folded (cmpi s16, cmpli u16).
+// The following mfcr writes only rarg0, so comparing pinned regs in place is safe.
 static void emit_cmp_into_cr0(shil_opcode* op,bool is_signed)
 {
 	// rs1 in a pinned reg -> use it directly; else load into rarg0 scratch.
@@ -1245,47 +1054,26 @@ void ngen_CC_Finish(shil_opcode* op)
 }
 void DoStatic(u32 pc)
 {
-	// MUST be exactly 3 instructions (12 bytes): ngen_LinkBlock_Static_stub
-	// computes its patch site as LR-12, i.e. the START of this sequence, and
-	// overwrites it with a direct `b compiled_target`. ppc_li is variable
-	// length (1 insn when the value fits s16 OR its low half is 0 — e.g. a
-	// block at 0x8C010000), which would make the stub patch the instruction
-	// BEFORE the sequence — in a BET_Cond end, that is the other exit path's
-	// branch. So emit the fixed addis+ori pair unconditionally.
+	// Exactly 12 bytes: ngen_LinkBlock_Static_stub patches LR-12 with `b target`. ppc_li can be 1 instruction
+	// (e.g. a block at 0x8C010000), which would patch the other exit's branch, so always addis + ori.
 	ppc_addis(ppc_rarg0,0,pc>>16);
 	ppc_ori(ppc_rarg0,ppc_rarg0,(u16)pc);
 	ppc_call(ngen_LinkBlock_Static_stub);
 }
 
-// ====================================
-// ngen_End: Block Exit Code Generation
-// ====================================
+// ---- ngen_End: block exit code ----
 
 void ngen_End(DecodedBlock* block)
 {
-	// No blanket GPR flush here: the pinned PPC registers (r14..r28) are the
-	// authoritative copy of the SH4 GPRs and stay live across straight-line
-	// block transitions (static/dynamic jumps just flow into the next block).
-	// The exception is the interrupt path (BET_*Intr) below, which calls
-	// UpdateINTC -> Do_Exception (reads r[15], swaps the register bank); that
-	// case brackets the call with reg_flush_all()/reg_reload_all() locally.
-	// shop_ifb and the canonical fallback similarly self-bracket.
+	// No GPR flush: pinned r14..r28 stay live across block transitions. The BET_*Intr path (UpdateINTC reads
+	// r[15], swaps banks) brackets its call itself, as do shop_ifb and the canonical fallback.
 	switch(block->BlockType)
 	{
 	case BET_Cond_0:
 	case BET_Cond_1:
 		{
-			//printf("COND %d\n",block->BlockType&1);
-			//die("not supported");
-			// JIT_CR0: the block's last op left its condition in CR0 and
-			// emitted nothing. Branch on that bit, and write sr_T as the
-			// constant each path implies.
-			//
-			//   T == (BlockType&1)  =>  BranchBlock
-			//   T = cr0_invert ? !bit : bit
-			// so BranchBlock is taken when
-			//   bit == (cr0_invert ? !want : want)
-			// and on that path T is `want`, on the other it is `!want`.
+			// JIT_CR0: the last op left its condition in CR0. BranchBlock is taken when bit == (cr0_invert ? !want :
+			// want), want = BlockType&1; sr_T gets want on that path and !want on the other.
 			if (compile_state.cr0_live && !compile_state.has_jcond)
 			{
 				const u32  want      = block->BlockType & 1;
@@ -1313,9 +1101,7 @@ void ngen_End(DecodedBlock* block)
 			}
 			else if (compile_state.t_in_rarg0)
 			{
-				// The block's last op was the compare that produced T, and
-				// nothing has run since — it is still in rarg0. Skip reloading
-				// the value we stored two instructions ago (see t_in_rarg0).
+				// The compare that produced T was the block's last op, so T is still in rarg0 (see t_in_rarg0).
 				reg=ppc_rarg0;
 			}
 			else
@@ -1342,38 +1128,8 @@ void ngen_End(DecodedBlock* block)
 		//mov reg,djump
 		ppc_ori(ppc_rarg0,ppc_djump,0);  // mr rarg0, djump
 
-		// ---- DYN_IC preset: per-site monomorphic inline cache ----------------
-		// Both dispatch paths below end in `bctr` through a table entry: ~9
-		// instructions and two dependent loads, with an indirect branch the
-		// 750CL cannot predict. But most dynamic exits are monomorphic — the
-		// SH4 `JSR @Rn` to a fixed callee, and especially the JSR->RTS;NOP
-		// trampoline idiom that dominates 3D inner loops. For those, the target
-		// never changes, so the table lookup re-derives a constant every time.
-		//
-		// So we put a 4-instruction guard in front of it, self-patched with the
-		// target this site actually took the first time it ran:
-		//
-		//     xoris  rarg1, djump, hi(pc)   ; rarg1 = djump ^ (hi<<16)
-		//     cmplwi cr0, rarg1, lo(pc)     ; ==0 iff djump == pc  (32-bit cmp,
-		//     bne    generic                ;  two insns, no immediate load)
-		//     b      target                 ; direct, statically predicted
-		//   generic:
-		//     <bcache / cache[] path, unchanged>
-		//
-		// Until it is patched, all four slots branch to `generic`, so a site is
-		// always correct, just slow. Slot 0 is `bl` to the fill stub, which
-		// compiles the target, rewrites the four words, and jumps into it.
-		//
-		// Staleness: the baked `b target` is exactly as safe as the direct `b`
-		// DoStatic() patches in, and for the same reason — every invalidation
-		// path is a FULL cache clear (see rdv_BlockCheckFail in driver.cpp),
-		// which destroys these sites along with the code they point at.
-		//
-		// Monomorphic only: a site is patched once and never re-patched, so a
-		// polymorphic site (typically BET_DynamicRet — one callee returning to
-		// many callers) settles into paying 3 extra ALU/branch ops in front of
-		// the normal lookup. That is why mode 1 leaves RTS alone; mode 2 opts
-		// it in for A/B.
+		// DYN_IC: per-site monomorphic inline cache. A 4-instruction guard (xoris/cmplwi/bne/b target), patched
+		// with the first target; before that, and on a miss, the generic lookup. Every invalidation is a full clear.
 		{
 			const int ic = get_dyn_ic_preset();
 			const bool ic_here = ngen_LinkBlock_Dynamic_IC_stub &&
@@ -1393,23 +1149,8 @@ void ngen_End(DecodedBlock* block)
 
 		if (get_bcache_preset())
 		{
-			// ---- BCACHE preset: flat single-cache-line dispatch ----
-			// bm_bcache[] holds {addr, code} pairs value-mirrored from cache[]
-			// (blockmanager.cpp), so the hit path touches ONE data cache line
-			// (the 8-byte entry) instead of two (cache[] pointer + the heap
-			// DynarecBlock it points at) and drops the lookups++ read-modify-
-			// write. Policy note: the flat path does not feed the replacement
-			// counters, so a bucket-colliding block steals the slot after +3
-			// slow-path hits — the two then alternate, each getting the fast
-			// path most of the time, instead of one paying bm_GetCode forever.
-			//
-			//   off   = ((addr>>2)&16383)*8 = (addr<<1) & 0x1FFF8  (one rlwinm)
-			//   entry = &bm_bcache[off/8];
-			//   if (entry->addr == addr) goto entry->code;
-			//   else goto loop_no_update;             // full bm_GetCode
-			//
-			// Invariant (blockmanager.h): addr != 0xFFFFFFFF => code valid, so
-			// no separate code==0 test. addr stays in rarg0 for the miss path.
+			// BCACHE: bm_bcache[] holds {addr, code} pairs mirrored from cache[], so a hit touches one 8-byte entry at
+			// (addr<<1) & 0x1FFF8; addr != 0xFFFFFFFF means code is valid. addr stays in rarg0 for a miss.
 			verify(sizeof(BlockCacheFlatEntry)==8 && BM_BLOCKLIST_COUNT==16384);
 
 			ppc_rlwinmx(ppc_rarg1,ppc_rarg0,1,15,28,0);	// rarg1 = (addr<<1) & 0x1FFF8
@@ -1426,19 +1167,8 @@ void ngen_End(DecodedBlock* block)
 		}
 		else
 		{
-			// Inline bm_GetCode's fast path (bm_CheckCache) before falling back
-			// to the loop_no_update machinery:
-			//   idx    = (addr>>2) & (16384-1);
-			//   cached = cache[idx];                  // DynarecBlock*
-			//   if (cached->addr==addr && cached->code) { cached->lookups++;
-			//       goto cached->code; }
-			//   else goto loop_no_update;             // full bm_GetCode
-			//
-			// cache[] holds POINTERS, 8 bytes each on PS3, so the byte offset is
-			// idx*8 = ((addr>>2)&16383)<<3 = (addr<<1) & 0x1FFF8 (one rlwinm).
-			// The Wii used idx*4 with lwzx; at 64-bit that reads half a pointer
-			// and the following load faults on a wild address.
-			// addr stays in rarg0 for the miss path (bm_GetCode arg).
+			// Inline bm_CheckCache: cache[(addr>>2)&16383] holds 8-byte pointers, so the offset is (addr<<1)&0x1FFF8,
+			// not the Wii's *4; a hit needs addr and code, else loop_no_update. addr stays in rarg0 for bm_GetCode.
 			verify(sizeof(cache[0])==8);
 			ppc_rlwinmx(ppc_rarg1,ppc_rarg0,1,15,28,0);	// rarg1 = (addr<<1) & 0x1FFF8
 			u32 lo=ppc_addr_high(ppc_rarg2,(void*)&cache[0]);
@@ -1456,11 +1186,7 @@ void ngen_End(DecodedBlock* block)
 			ppc_label* miss2=ppc_CreateLabel();
 			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq miss
 
-			// hit: lookups++ (keeps bm_GetCode's cache-replacement policy fed)
-			// NOTE: must NOT use r0 as the addi target/source -- `addi rD,r0,imm`
-			// treats rA=r0 as literal 0 (it's how ppc_li is built), so
-			// `addi r0,r0,1` would emit `r0 = 0 + 1 = 1`, never incrementing the
-			// loaded value. Use rarg1 (dead after the cache[idx] load above).
+			// Hit: lookups++ feeds the cache-replacement policy. Not in r0: `addi rD,r0,imm` reads r0 as literal 0.
 			ppc_lwz(ppc_rarg1,ppc_rarg2,offsetof(DynarecBlock,lookups));
 			ppc_addi(ppc_rarg1,ppc_rarg1,1);
 			ppc_stw(ppc_rarg1,ppc_rarg2,offsetof(DynarecBlock,lookups));
@@ -1477,9 +1203,7 @@ void ngen_End(DecodedBlock* block)
 
 	case BET_StaticIntr:
 	case BET_DynamicIntr:
-		// Gated like the BET_StaticJump trace below: printf goes to /ndclog.txt
-		// on the SD card, and JIT_NEWOPS makes BET_StaticIntr common (every
-		// ldc/ldc.l to SR now ends a block this way instead of falling back).
+		// Gated like the BET_StaticJump trace: with JIT_NEWOPS every ldc/ldc.l to SR ends a block here.
 		if (get_debug_loop() == 1)
 		{
 			printf("BET: Interrupt !\n");
@@ -1496,9 +1220,7 @@ void ngen_End(DecodedBlock* block)
 				reg=ppc_djump;
 			}
 			ppc_sh_store(reg,reg_nextpc);
-			// UpdateINTC -> Do_Exception reads r[15] (sgr=r[15]) and swaps the
-			// register bank (sr.RB=1; UpdateSR). Pinned GPRs must be coherent in
-			// memory for the read, and re-read afterwards to pick up the swap.
+			// UpdateINTC -> Do_Exception reads r[15] and swaps the register bank: flush pinned GPRs before, reload after.
 			reg_flush_all();
 			ppc_call_c(&UpdateINTC);
 			reg_reload_all();
@@ -1523,11 +1245,8 @@ void ngen_End(DecodedBlock* block)
 	}
 }
 
-// f14:f29 — fr[0..15] only. xf[] is NOT pinned: fr[16] already claims all 16
-// of the PPC EABI's callee-saved FPRs available after reserving f0 (scratch)
-// and f1-f13 (call-arg/return volatiles used throughout this file); only
-// f30/f31 are left, nowhere near enough for another 16-wide bank. See the
-// FPU_PIN comment block above reg_flush_all_fpu() for the full rationale.
+// f14..f29 = fr[0..15] only: those 16 use up the callee-saved FPRs after f0 (scratch) and f1-f13 (args);
+// f30/f31 cannot hold the xf bank.
 ppc_freg GetFloatReg(u32 reg)
 {
 	if (reg>=reg_fr_0 && reg<=reg_fr_15)
@@ -1550,42 +1269,8 @@ ppc_ireg GetIntReg(u32 reg)
 
 	return ppc_rinvalid;
 }
-// ============================================================================
-// Static GPR allocation
-//
-// A fixed subset of SH4 integer registers is pinned to PPC callee-saved GPRs
-// (r14..r28) for the whole emulation session. The mapping is block-invariant
-// (no per-block colouring) — GetIntReg() defines it. SH4 r0..r15 (except r11,
-// which is skipped because the recompiler needs a volatile temp window) map to
-// r14..r28.
-//
-// Memory image vs register:
-//   * The pinned PPC regs are the AUTHORITATIVE copy of the SH4 GPRs for the
-//     whole JIT run. They are loaded once in the mainloop prologue and stay
-//     live across blocks; Sh4cntx.r[] may be stale at any point.
-//   * Sh4cntx.r[] is made coherent on demand only around code paths that read
-//     or write context GPRs directly, each self-bracketing flush -> call ->
-//     reload.
-//
-// Why we don't blanket flush/reload around ReadMem/WriteMem:
-//   r14..r28 are callee-saved under the PPC EABI, so an ordinary C call
-//   preserves them, and ReadMem/WriteMem touch only guest memory, not SH4
-//   context GPRs.
-//
-// The flush/reload points are:
-//   * shop_ifb              — interpreter handler reads/writes arbitrary GPRs
-//   * canonical fallback    — e.g. sync_sr -> UpdateSR (SR.RB bank swap)
-//   * BET_*Intr block end   — UpdateINTC -> Do_Interrupt (reads r[15], bank swap)
-//   * mainloop UpdateSystem — CONDITIONAL: the split UpdateSystem_no_event()
-//                             runs the GPR-free peripheral cascade + pending
-//                             check unflushed every timeslice; only when it
-//                             reports a pending interrupt do we flush, call
-//                             UpdateSystem_handle_event(), and reload.
-//
-// STATIC_GPR_ALLOC (defined near the top of this file) can be set to 0 to
-// disable the whole scheme (all accesses go through memory, as before) —
-// useful for A/B debugging.
-// ============================================================================
+// Static GPR allocation: SH4 r0..r15 but r11 live in callee-saved r14..r28 all run, so C calls keep them.
+// Sh4cntx.r[] is synced only around shop_ifb, the canonical fallback, BET_*Intr and a pending interrupt.
 
 void reg_flush_all()
 {
@@ -1610,36 +1295,8 @@ void reg_reload_all()
 #endif
 }
 
-// ============================================================================
-// FPU_PIN preset (default OFF) — pins fr[0..15] to PPC f14..f29 for the whole
-// session, the same scheme as STATIC_GPR_ALLOC but for the FPU file. xf[]
-// stays memory-resident (see GetFloatReg's comment).
-//
-// Unlike GPR pinning, this is a RUNTIME preset (get_fpu_pin_preset()), not a
-// compile-time #define: it's new and unproven, so it needs to be A/B-able on
-// a shipped binary the way fastmem/bcache are, not just via recompile.
-//
-// Bracket points (mirrors reg_flush_all/reg_reload_all's list above, plus one
-// FPU-specific case):
-//   * shop_ifb              — interpreter handler reads/writes arbitrary FRs
-//   * canonical fallback    — any un-natived shil op may touch fr[]/xf[]
-//     directly (memory), including through ppc_sh_addr's &Sh4cntx.fr[n]
-//     pointers handed to CPT_ptr canonical params — flushing here keeps
-//     those pointers valid
-//   * shop_sync_fpscr       — UpdateFPSCR() -> ChangeFP() swaps
-//     fr_hex[i]<->xf_hex[i] IN MEMORY on an FPSCR.FR toggle (sh4_registers.cpp);
-//     pinned fr must be flushed before the call (so the swap sees current
-//     values) and reloaded after (fr[] now holds the new front bank)
-//
-// NOT bracketed: BET_*Intr (UpdateINTC -> Do_Exception). Real SH4 interrupts
-// bank-swap GPRs (SR.RB) but never fr[]/xf[] — only an explicit FPSCR.FR
-// write does that, which is shop_sync_fpscr's job above.
-//
-// The memory-bounce fix for shop_readm/writem/mov64 (which touch fr[] bit
-// patterns through the generic int ppc_sh_load/ppc_sh_store, not these FPU
-// helpers) lives centrally in those two functions — see their FPU_PIN
-// comments earlier in this file.
-// ============================================================================
+// FPU_PIN (runtime preset): fr[0..15] live in f14..f29, xf[] in memory. Flushed around shop_ifb, the
+// canonical fallback and shop_sync_fpscr (ChangeFP swaps fr/xf in memory); not BET_*Intr (no FP bank).
 
 void reg_flush_all_fpu()
 {
@@ -1662,63 +1319,8 @@ void reg_reload_all_fpu()
 	}
 }
 
-// ============================================================================
-// IFB_FLUSH preset + IFB_PROBE — narrowing the shop_ifb register bracket
-// ============================================================================
-// shop_ifb hands ONE 16-bit SH4 opcode to its interpreter handler
-// (OpDesc[op]->oph). Because that handler could in principle read or write any
-// guest register through Sh4cntx, the emitter has always bracketed the call
-// with a FULL register-file spill: reg_flush_all() (15 stw) + reg_reload_all()
-// (15 lwz), plus reg_flush_all_fpu()/reg_reload_all_fpu() (16 stfs + 16 lfs)
-// when FPU_PIN is on. That is 30 memory ops — 62 with FPU_PIN — around an
-// opcode that in practice touches two registers.
-//
-// Same shape as the fschg/sync_fpscr bug (a C call-out doing a whole-file
-// spill for almost nothing) that was worth +12-13% on Wii, and it lands on a
-// hot set. Only 28 opcodes reach ifb on this build, but they include div1,
-// addc/subc/addv/subv, negc, rotcl/rotcr, cmp/str, xtrct, swap.b, mac.l/mac.w
-// and tas.b. div1 is the expensive one: the SH4 has no divide instruction, so
-// every 32-bit software divide is ~32x div1 (+ rotcl), i.e. on the order of
-// 2000 memory ops of pure bracket per division under the full-spill code.
-//
-// What makes a narrower bracket safe: of the whole SH4 context, ONLY r0..r15
-// (minus r11) and fr[0..15] are ever register-resident. sr, gbr, vbr, mac,
-// fpul, fpscr, pr and the banked copies are always memory-authoritative, so a
-// handler touching only those needs no bracket at all. The bracket therefore
-// has to cover exactly the GPRs (and FPRs) that handler reads or writes.
-//
-// This is a CLOSED ALLOW-LIST, not a mask-derived guess: an opcode is narrowed
-// only if it is named below with its exact register set. Everything else keeps
-// the full bracket — trapa, sleep, illegal instructions, and every FPU op that
-// fell back because FPSCR.PR selected double precision. Default-deny: an
-// unlisted opcode is slow, never wrong, and a future opcode reaching ifb
-// inherits the safe path automatically.
-//
-// TWO INDEPENDENT AXES. The bracket is not one decision but two — "which GPRs
-// does this handler touch?" and "does it touch the float file at all?" — and
-// they do not correlate. Collapsing them into a single "spill everything"
-// sentinel (the first version of this code) made three groups overpay:
-//
-//   lds Rn,FPSCR      GPRs: just Rn      float: YES (ChangeFP swaps banks)
-//   ldc Rn,SR         GPRs: ALL (bank)   float: no  (SR has no FP bank bit;
-//                                                    SR.FD disables, not swaps)
-//   fcnvds / fcnvsd   GPRs: none         float: YES
-//
-// An [IFB] probe run measured `lds Rn,FPSCR` at 265k/s during BIOS boot — 98.5%
-// of all fallbacks in that phase — paying a 30-op GPR spill for a handler that
-// writes no GPR at all. So ifb_bracket() returns the two axes separately.
-//
-// Entries are matched on the (mask, rez) PAIR from the opcode table rather
-// than on a hand-written mask, so if sh4_opcode_list.cpp is ever retuned the
-// pair simply stops matching and that opcode falls back to the full bracket.
-//
-// Exception caveat: a narrowed handler that raised an SH4 exception mid-op
-// would bank-swap memory while our un-flushed pinned regs held the old values.
-// That is why every opcode that can deliberately raise (trapa/sleep/illegal,
-// the SR/FPSCR writers) stays on the full path. The remainder only fault the
-// same way an ordinary shop_readm/shop_writem can, which this backend already
-// assumes cannot touch context GPRs (see reg_flush_all()'s comment above).
-// ============================================================================
+// IFB_FLUSH: shop_ifb spills only the GPRs its handler touches, and the float file only if it can change
+// it. Closed allow-list on (mask, rez); anything unlisted, or able to raise an exception, spills all.
 
 // Opcode-table mask constants (private copies of the #defines in
 // sh4_opcode_list.cpp, which are not exported in the header).
@@ -1738,10 +1340,7 @@ struct IfbBracket
 	bool fpu;	// also spill fr[0..15] (only costs anything when FPU_PIN is on)
 };
 
-// The GPR mask is the UNION of the handler's read and write sets: flushing a
-// register it only reads is required (it must see a live value), and reloading
-// one it never wrote just re-reads what we stored, so one mask drives both
-// directions.
+// One GPR mask both ways: the union of the read and write sets (an extra reload only re-reads the store).
 static IfbBracket ifb_bracket(u16 sh4op)
 {
 	const sh4_opcodelistentry* d = OpDesc[sh4op];
@@ -1782,19 +1381,11 @@ static IfbBracket ifb_bracket(u16 sh4op)
 	if (IFB_IS(IFB_M_IMM8,0xCE00)) IFB_B(R0,false)	// xor.b #imm,@(R0,GBR)
 	if (IFB_IS(IFB_M_IMM8,0xCF00)) IFB_B(R0,false)	// or.b  #imm,@(R0,GBR)
 
-	// --- FPSCR writers: Rn only, but the float file must be spilled -------
-	// UpdateFPSCR -> ChangeFP() swaps fr_hex[i]<->xf_hex[i] IN MEMORY on an
-	// FPSCR.FR toggle, so pinned fr[] must be written out before the call and
-	// re-read after. Neither handler writes any GPR — it only sources the new
-	// FPSCR value from Rn (post-incrementing it in the .l form).
+	// FPSCR writers: Rn only, but ChangeFP() swaps fr/xf in memory on an FR toggle, so the float file spills.
 	if (IFB_IS(IFB_M_N,0x406A)) IFB_B(Rn,true)	// lds Rn,FPSCR
 	if (IFB_IS(IFB_M_N,0x4066)) IFB_B(Rn,true)	// lds.l @Rn+,FPSCR
 
-	// --- SR writers: full GPR bank, but the float file is untouched -------
-	// UpdateSR() bank-swaps r0..r7 <-> r0_bank..r7_bank in memory on an SR.RB
-	// toggle, so every pinned GPR has to be coherent across the call. SR has no
-	// FP bank bit — SR.FD disables the FPU, it does not swap fr[]/xf[] — so the
-	// 32 float ops the old single-sentinel path emitted here were pure waste.
+	// SR writers: UpdateSR() swaps the GPR bank in memory on SR.RB, so all GPRs; SR has no FP bank bit.
 	if (IFB_IS(IFB_M_N,0x400E)) IFB_B(IFB_GPR_ALL,false)	// ldc Rn,SR
 	if (IFB_IS(IFB_M_N,0x4007)) IFB_B(IFB_GPR_ALL,false)	// ldc.l @Rn+,SR
 
@@ -1823,9 +1414,7 @@ static u32 ifb_bracket_memops(const IfbBracket& b)
 	return n;
 }
 
-// Flush/reload only the GPRs named in `gprs`. r11 is never pinned (GetIntReg
-// returns invalid — the emitter keeps it as a volatile temp window), so it is
-// already memory-coherent and drops out of the loop on its own.
+// Flush/reload only the GPRs in `gprs`. r11 is never pinned, so it is always memory-coherent.
 static void reg_flush_mask(u32 gprs)
 {
 #if STATIC_GPR_ALLOC
@@ -1853,19 +1442,8 @@ static void reg_reload_mask(u32 gprs)
 #endif
 }
 
-// ---------------------------------------------------------------------------
-// IFB_PROBE — per-opcode execution counters
-//
-// Answers "is shop_ifb hot enough to be worth narrowing?" before committing to
-// the A/B. Sites are keyed on the OpDesc[] ENTRY, not the raw opcode word, so
-// all n/m variants of e.g. div1 collapse into one row and the table stays tiny
-// (233 table entries exist in total; far fewer than 64 ever reach ifb).
-//
-// The counters live outside the code cache, so they survive recSh4_ClearCache()
-// and keep accumulating across recompiles. ifb_probe_dump() is called once a
-// second from the SPG stats block and resets them, so the numbers it prints are
-// per-second rates.
-// ---------------------------------------------------------------------------
+// IFB_PROBE: per-opcode shop_ifb counters, keyed on the OpDesc[] entry (all n/m variants in one row);
+// ifb_probe_dump() prints and resets them once a second, so they are per-second rates.
 #define IFB_SITE_MAX 64
 struct IfbSite
 {
@@ -1942,11 +1520,8 @@ extern "C" void ifb_probe_dump(double seconds)
 			narrowed += s.hits;
 	}
 
-	// Header states the preset actually in force. The old header did not, so a
-	// log could not tell an ifb_flush=on run from an off one — which made the
-	// first A/B unverifiable. Note both presets are read at CODEGEN time, so
-	// this reflects what the compiled blocks were built with only if the preset
-	// was set before the game launched.
+	// Name the presets in force, so an A/B log is verifiable. Read at codegen, so it matches the blocks only
+	// if set before the game launched.
 	printf("[IFB] flush=%s fpu_pin=%s  %.2fs  total %u (%.0f/s)  narrowable %u (%.1f%%)  bracket memops/s: full %.0f -> sel %.0f (-%.1f%%)\n",
 		get_ifb_flush_preset()?"ON":"OFF",
 		get_fpu_pin_preset()?"ON":"OFF",
@@ -1978,30 +1553,8 @@ extern "C" void ifb_probe_dump(double seconds)
 	fflush(stdout);
 }
 
-// ---------------------------------------------------------------------------
-// JIT_HOTBLOCKS probe (wii/main.cpp preset)
-//
-// Counts executions per compiled block, and once a second prints the hottest
-// ones with their codegen density — PPC bytes emitted per SH4 opcode — then
-// dumps the SH4 source and the generated PPC of the top block so the real
-// hot-path codegen can be READ instead of guessed at.
-//
-// Costs 4 instructions at each block entry, so it is a diagnostic: leave it off
-// for timing runs. The table is allocated lazily, so nothing costs MEM1 while
-// the preset is off, and it is dropped whenever the code cache is flushed —
-// every recorded ppc_start points into the cache that just went away.
-//
-// OBSERVER EFFECT: the counters live in their OWN dense u32 array, not inside
-// the descriptor struct. ChuChu runs 5-10M block entries/s, so the emitted
-// load/increment/store is touched millions of times a second; with the counter
-// embedded in a 24-byte struct the working set was HOT_MAX*24 = 384 KB, past
-// Broadway's 256 KB L2, and a good share of those accesses went to main memory.
-// Split out, the hot array is HOT_MAX*4 = 64 KB and eight counters share a
-// 32-byte line, so consecutively-compiled blocks (which tend to run together)
-// share lines. The descriptors stay fat but are only touched at compile time
-// and once a second by the dump. This matters because SPEED% in a hotblocks-on
-// log is only worth comparing if the probe's own cost is small and stable.
-// ---------------------------------------------------------------------------
+// JIT_HOTBLOCKS: per-block entry counts; once a second the hottest blocks with PPC bytes per SH4 op, and
+// dumps of the top and worst ones. 4 instructions per entry (diagnostic); dense counter array for cache.
 extern "C" int get_hotblocks_preset();
 
 struct HotBlock
@@ -2014,19 +1567,15 @@ struct HotBlock
 	u32 ppc_cold;	// bytes of out-of-line mem slow paths FlushCold() appended
 };
 
-// ChuChu compiles ~10k blocks between cache clears; at 2048 the first run left
-// 7894 untracked, which biases the census toward whatever compiled first.
-// Descriptors 16384 * 20 B = 320 KB + counters 64 KB, allocated only when the
-// preset is on.
+// ~10k blocks compile between cache clears in ChuChu; 2048 left most untracked. 16384 * 20 B plus 64 KB
+// of counters, allocated only with the preset on.
 #define HOT_MAX 16384
 static HotBlock* s_hb = 0;
 static u32* s_hb_hits = 0;	// dense counter array, indexed in step with s_hb
 static u32 s_hb_n = 0;
 static u32 s_hb_overflow = 0;
-// Blocks already disassembled this session, so each distinct hot shape is
-// dumped exactly once no matter which scene it turns hot in. Deliberately NOT
-// cleared by hotblocks_reset(): a cache clear recompiles the same pc, and
-// re-dumping identical code would just bury the new shapes.
+// Blocks already dumped this session, so each hot shape is dumped once; not cleared by hotblocks_reset(),
+// since a cache clear recompiles the same pc.
 #define HOT_DUMP_MAX 16
 static u32 s_hb_dumped[HOT_DUMP_MAX];
 static u32 s_hb_dumped_n = 0;
@@ -2045,9 +1594,7 @@ extern "C" void hotblocks_reset()
 	s_hb_overflow = 0;
 }
 
-// Compile time: claim a slot for this block. Returns its index, or -1 if
-// unavailable — the caller needs the index to reach both the descriptor and
-// the counter, which live in separate arrays.
+// Compile time: claim a slot for this block, or -1. The index reaches both the descriptor and the counter.
 static s32 hotblocks_slot(DecodedBlock* block)
 {
 	if (!get_hotblocks_preset())
@@ -2135,6 +1682,14 @@ static bool hotblocks_dump_once(const HotBlock& h)
 
 extern "C" void hotblocks_dump(double seconds)
 {
+	// The stats window calls this every second, so plan 5.22's [cyc] line rides on it (after new compiles only).
+	static u32 cyc_last;
+	if (get_jit_cycle_check_preset() && s_cycle_poll+s_cycle_nopoll!=cyc_last)
+	{
+		cyc_last=s_cycle_poll+s_cycle_nopoll;
+		printf("[cyc] mode=%d blocks: poll=%u nopoll=%u\n", get_jit_cycle_check_preset(), s_cycle_poll, s_cycle_nopoll);
+	}
+
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
 
@@ -2192,17 +1747,8 @@ extern "C" void hotblocks_dump(double seconds)
 	if (s_hb_overflow)
 		printf("[HOT]   (%u blocks did not fit the %u-entry table)\n", s_hb_overflow, (u32)HOT_MAX);
 
-	// Full disassembly of the #1 block and of the worst codegen density among
-	// the hot ones — usually different blocks, since #1 tends to be a tight
-	// well-compiled loop while whatever burns the most PPC per SH4 op hides
-	// further down (ChuChu's 8C1074E6: 4 ops -> 288 B, 72 B/op, at 8.7% of
-	// entries in the HEAVY scene only).
-	//
-	// Dump each distinct pc once, rather than spending a fixed budget. A
-	// "2 dumps per session" budget was wrong: it spent itself on the first two
-	// [HOT] lines after boot — menus — so a block that only turns hot later in
-	// gameplay could never be dumped at all, which is exactly why 8C1074E6 kept
-	// being missed despite the preset being on the whole time.
+	// Dump the #1 block and the worst B/op among the hot ones (usually different), each pc once: a fixed
+	// budget spent itself on boot menus (ChuChu's 8C1074E6, 72 B/op, is hot only in the heavy scene).
 	if (tn)
 	{
 		// #1 by hits is contextual only, so it gets a small fixed budget and
@@ -2223,12 +1769,7 @@ extern "C" void hotblocks_dump(double seconds)
 			}
 		}
 
-		// Only ever dump a NEW worst. Dumping every distinct worst-of-the-second
-		// spent the whole budget on ordinary blocks from the boot/menu scenes,
-		// so the actual outlier — 8C1074E6 at 72 B/op, which only turns hot in
-		// the heavy scene — was never reached. Requiring each dump to beat the
-		// previous worst converges on the outlier instead, and is self-limiting
-		// because B/op has to strictly increase each time.
+		// Only a new worst: requiring each dump to beat the last converges on the outlier and limits itself.
 		if (worst_bop > s_hb_worst_bop)
 		{
 			s_hb_worst_bop = worst_bop;
@@ -2254,9 +1795,30 @@ static void ppc_fsqrts(u32 D,u32 B) { ppc_emit(0xEC00002C | (D<<21) | (B<<11)); 
 static const f32 s_fsrra_one = 1.0f;
 static f32 rec_fsrra(f32 x)  { CCALL(CC_FSRRA); return 1.0f / sqrtf(x); }
 
-// =====================
-// OPERATION COMPILATION
-// =====================
+// JIT FTRV (plan 5.20): fldi0 / fldi1 constants, and FV elements as ps3_jit_fv.h takes them.
+static const u32 s_fldi_tab[2] = { 0x00000000, 0x3F800000 };
+static FvElem fv_elem(u32 sh4_reg)
+{
+	FvElem e;
+	const ppc_freg rf=get_fpu_pin_preset() ? GetFloatReg(sh4_reg) : ppc_finvalid;
+	e.reg=rf!=ppc_finvalid ? (u32)rf : FV_MEM;
+	e.ofs=Sh4cntx.offset(sh4_reg);
+	return e;
+}
+
+// emit_ftrv wants the vector updated in place and XMTRX as the unpinned, contiguous xf bank.
+static bool ftrv_v2_ok(shil_opcode* op)
+{
+	if (op->rd._reg!=op->rs1._reg)
+		return false;
+	const u32 x=Sh4cntx.offset(op->rs2._reg);
+	for (u32 k=0;k<16;k++)
+		if (GetFloatReg(op->rs2._reg+k)!=ppc_finvalid || Sh4cntx.offset(op->rs2._reg+k)!=x+4*k)
+			return false;
+	return true;
+}
+
+// ---- Operation compilation ----
 
 // FASTMEM (Dynarec.MD 3.4), preset `JitFastmem`. Fault-free variant: main RAM
 // is inlined, every other region goes to the cold fragment. No DSI handler.
@@ -2296,10 +1858,8 @@ static inline bool fm_on()
 	return s_fm_ok && get_jit_fastmem_preset()!=0;
 }
 
-// CR0 "lt" <=> main RAM in any P0-P3 mirror. Region bits 31..29 and area bits
-// 28..26 are adjacent, so one rotate lands both; region 7 (P4) is excluded so
-// 0xEC and the store queue still take the generic path.
-// Scratch is r0 only: the cold path must still see the original address.
+// CR0 lt <=> main RAM in any P0-P3 mirror (region and area bits rotated together); region 7 (P4, store
+// queue) takes the generic path. Scratch is r0 only: the cold path needs the original address.
 static void fm_emit_guard(u32 areg)
 {
 	ppc_rlwinmx(ppc_r0,areg,3,29,2,0);	// r0 = (area<<29) | region
@@ -2307,9 +1867,8 @@ static void fm_emit_guard(u32 areg)
 	ppc_cmpli(ppc_cr0,ppc_r0,7,0);		// < 7: area 3 and region != 7
 }
 
-// rT = mem_b.data + (addr & 0x00FFFFFF), sub-word swizzle folded in. Emitted
-// only past the guard branch, and rlwinm zero-extends so a poisoned upper half
-// (6.2 bug 5) cannot reach the host access.
+// rT = mem_b.data + (addr & 0xFFFFFF), sub-word swizzle folded in; rlwinm zero-extends, so a poisoned
+// upper half (6.2 bug 5) cannot reach the host access.
 static void fm_emit_addr(u32 rT,u32 areg,u32 sz)
 {
 	ppc_rlwinmx(rT,areg,0,8,31,0);		// 16 MB mirror mask
@@ -2318,25 +1877,8 @@ static void fm_emit_addr(u32 rT,u32 areg,u32 sz)
 		ppc_xori(rT,rT,4-sz);
 }
 
-// ── Cold-out-of-line slow paths for memory ops ──────────────────────────────
-// The mem fast path is the common case (direct RAM/VRAM access). To keep it a
-// straight fall-through with a SINGLE not-taken branch, we emit:
-//
-//     <addr/ptr setup>
-//     cmpi ptr,0
-//     beq  cold        ; forward, PREDICTED NOT-TAKEN -> fast path falls through
-//     <fast access>
-//   done:              ; (next op continues here, no branch on the fast path)
-//     ...rest of block...
-//   ngen_End
-//   cold:              ; emitted out-of-line, AFTER the block tail (never
-//     <slow MMIO call>   ;  fall-through reached; only via the beq)
-//     b done           ; backward unconditional, jumps into the normal stream
-//
-// Each fast path registers a ColdFrag describing its slow body; FlushCold()
-// emits them after ngen_End and back-patches the forward beq (16-bit) to the
-// cold entry. The `b done` is a backward branch with a known target, emitted
-// directly via ppc_bx(void*,LK) (no patch needed).
+// Cold paths: the fast path falls through past one not-taken branch; FlushCold() emits each ColdFrag after
+// ngen_End, patches the forward branch to it, and ends it with `b done` back into the block.
 struct ColdFrag
 {
 	ppc_label* beq;     // the forward beq site to patch to the cold entry
@@ -2346,14 +1888,8 @@ struct ColdFrag
 	u8         rdreg;   // read: destination reg (rrv0 or pinned)
 	u8         datareg; // write: data reg (rarg1 or pinned)
 	u8         areg;    // address source reg (rarg0 or pinned)
-	// FPU_PIN Phase B: when the read dest / write source is a pinned FR the
-	// fast path uses lfs/stfs straight to/from the FPR (no GPR bounce). The
-	// slow C path still deals in ints, so it bounces through the FR's own
-	// context slot: read = ReadMem->rrvN->stw fofs->lfs fdreg; write =
-	// stfs fdreg->fofs->lwz->WriteMem. fdreg==0xFF marks the plain int path
-	// (must be set on EVERY registration — s_cold is reused, stale otherwise).
-	// For pairs, the second FR is fdreg+1 and its slot is fofs+4 (fr[] is
-	// contiguous and GetFloatReg maps fr[n]->f14+n).
+	// FPU_PIN: a pinned-FR fast path uses lfs/stfs; the C path bounces through the FR's slot (fofs; pairs
+	// fdreg+1 at fofs+4). 0xFF = int path; set on every registration, as s_cold is reused.
 	u8         fdreg;   // pinned FPR for the float bounce, or 0xFF = int path
 	u16        fofs;    // context byte offset of the FR's memory slot
 	void*      fuct;    // slow C function (ReadMem*/WriteMem*); 0 -> default by sz
@@ -2361,22 +1897,14 @@ struct ColdFrag
 	// generic _vmem table tier first and only then falls back to the C call.
 	u8         vmem_tier;
 };
-// Sized so it cannot overflow within one block: ngen_Compile bails when
-// emit_FreeSpace() < 16KB, so a block emits < 4096 PPC insns; each mem op's
-// fast path is >=7 insns, capping mem ops well under 1024.
+// Cannot overflow: a block emits < 4096 instructions (ngen_Compile needs 16 KB free) and a mem op >= 7.
 static ColdFrag s_cold[1024];
 static u32      s_cold_n;
 
 static void ColdReset() { s_cold_n = 0; }
 
-// Generic _vmem_MemInfo_ptr tier for one memory op:
-//   iirf = _vmem_MemInfo_ptr[addr>>24]; ptr = iirf & ~0x1F;
-//   if (ptr) { sh=iirf&0x1F; a=(addr<<sh)>>sh; if (sz<4) a^=4-sz; *(T*)(ptr+a); }
-// Entries are void* (8 B here, 4 on the Wii) and big-endian puts a sub-4 GB
-// pointer's low word at +4, hence the *8 index and the +4 base bias.
-// Emits the MMIO test, a forward branch out, then the direct access, and
-// returns that branch's label for the caller to point at its own slow path.
-// areg/datareg and rarg0 survive to the branch, so the slow path can use them.
+// _vmem table tier: iirf = MemInfo[addr>>24], ptr = iirf & ~0x1F, access at ptr + ((addr<<sh)>>sh); 8-byte
+// entries, BE low word at +4. Returns the MMIO branch's label; areg/datareg/rarg0 survive to it.
 static ppc_label* emit_vmem_tier(const ColdFrag& c)
 {
 	const bool fdirect = c.fdreg!=0xFF;
@@ -2512,10 +2040,7 @@ static void FlushCold()
 	for (u32 i = 0; i < s_cold_n; i++)
 	{
 		ColdFrag& c = s_cold[i];
-		// The forward beq uses a 16-bit (B-form) displacement. Cold fragments sit
-		// after the block tail; for a normal (<32KB) block this is in range, but
-		// guard against silent truncation -> wrong target on a pathologically
-		// large block. (ngen_Compile bails blocks needing >16KB, so this holds.)
+		// The forward branch has a 16-bit displacement; ngen_Compile's 16 KB limit keeps cold code in range.
 		snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
 		verify(beq_disp >= 0 && beq_disp < 32768);
 		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
@@ -2603,69 +2128,8 @@ static void FlushCold()
 	s_cold_n = 0;
 }
 
-// ============================================================================
-// FASTMEM (PPC-MMU) — JIT side.  MMU/page-table/DSI-handler side is in
-// wii/wii_fastmem.cpp; the FASTMEM preset (default OFF) gates everything.
-//
-// When active, shop_readm/shop_writem emit BRANCHLESS direct accesses
-// through the low-EA window instead of the inline _vmem-table lookup:
-//
-//     rlwinm  rEA, rADDR, 0,3,31      ; EA = sh4_addr & 0x1FFFFFFF
-//     [xori   rEA, rEA, 4-sz]         ; BE sub-word swizzle (sz<4)
-//     l/st    ..., 0(rEA)             ; ONE access, no compare, no branch
-//
-// RAM (4 mirrors), VRAM (64-bit path) and AICA wave RAM are page-mapped, so
-// those never fault. Anything else (MMIO, SQ-after-masking, BIOS, VRAM
-// 32-bit path, TA FIFO, OC-RAM...) takes a DSI; rec_fastmem_patch() below
-// decodes the faulting site and overwrites the access instruction with a
-// `b trampoline` into s_fm_pool, then the DSI handler RETRIES the PC. The
-// slow path therefore always runs in normal context (interrupts enabled) —
-// MMIO with side effects such as GD-ROM DMA file I/O stays safe. After the
-// one-time patch a site costs the same as the legacy cold path, while
-// never-faulting sites stay at 2-4 instructions.
-//
-// The shapes are FIXED and the EA scratch register doubles as the shape
-// discriminator for the fault-time decoder — any change to the emission in
-// shop_readm/shop_writem MUST be mirrored here:
-//
-//   scalar read : rlwinm r4 / [xori r4] / lbz|lha|lwz rD,0(r4) [/ extsb rD]
-//   pair   read : rlwinm r5 / lwz r3,0(r5) / lwz r4,4(r5)
-//   scalar write: rlwinm r5 / [xori r5] / stb|sth|stw rS,0(r5)
-//   pair   write: rlwinm r4 / stw r5,0(r4) / stw r6,4(r4)
-//
-// JIT_FMOV adds four FLOAT variants of the same four shapes, used when the
-// value's SH4 register is a pinned FR (FPU_PIN) so the access can name the
-// FPR directly instead of bouncing through a GPR and the context slot:
-//
-//   scalar read : rlwinm r4 / lfs  fD,0(r4)
-//   pair   read : rlwinm r5 / lfs  fD,0(r5)  / lfs  fD+1,4(r5)
-//   scalar write: rlwinm r5 / stfs fS,0(r5)
-//   pair   write: rlwinm r4 / stfs fS,0(r4)  / stfs fS+1,4(r4)
-//
-// Scratch registers and displacements are identical to the integer shapes —
-// only the opcode differs (lfs 48 / stfs 52 vs lwz 32 / stw 36) — so the
-// decoder's existing read/write and scalar/pair discrimination is untouched.
-// Float shapes are always 4 bytes wide, hence no xori and no andi mask.
-//
-// The rlwinm never clobbers the address register, so the trampoline can
-// pass the ORIGINAL SH4 address (recovered from the decoded rlwinm source
-// field) to the generic ReadMem/WriteMem dispatchers — this is what keeps
-// P4/SQ correct even though masking folds 0xE0000000 onto 0x00000000.
-//
-// Store-queue writes are the geometry hot path and used to hit the inline
-// table lookup, so a write site whose first fault lands in the area-0
-// image (DAR < 0x04000000 — where masked SQ addresses land) gets an
-// inlined "SQ? -> direct sq_both store" fast path ahead of the generic
-// call. Every trampoline ends in a generic path, so polymorphic sites are
-// always correct, merely slower.
-//
-// LIMITATION (harmless): if only the SECOND word of a pair faults (a
-// non-8-aligned fmov.d straddling a region edge), the original address is
-// gone and the trampoline dispatches on the MASKED EA+4. That is identical
-// for every normal region and can only differ for P4/SQ — which cannot
-// straddle-fault, because SQ is fully unmapped and the FIRST word always
-// faults there.
-// ============================================================================
+// FASTMEM (Wii PPC-MMU, kept for reference; the PS3 has no resumable DSI): branchless rlwinm-EA accesses
+// whose faults rec_fastmem_patch() turns into trampolines. Fixed shapes: the EA register tells the decoder.
 
 extern u8 CodeCache[];
 extern "C" int get_fastmem_preset();	// main.cpp: 0=off (default), 1=on
@@ -2676,32 +2140,22 @@ static inline bool fastmem_on()
 	return false;
 }
 
-// Trampoline pool. MEM1 .bss like CodeCache, so `b` reach (±32 MB) always
-// holds (checked at emit time anyway). Reset together with the block cache:
-// patched sites die with their blocks, so their trampolines must too.
+// Trampoline pool in .bss like CodeCache, so `b` reaches it; reset with the block cache, as sites die.
 #define FM_POOL_SIZE (128*1024)
 static u8  s_fm_pool[FM_POOL_SIZE] __attribute__((aligned(32)));
 static u32 s_fm_pool_used   = 0;
 static u32 s_fm_patch_count = 0;
 
-// Exception-context diagnostics. printf/stdio is FORBIDDEN anywhere in the
-// resumable DSI path (hardware lesson from the 2026-07-19 MMU experiment:
-// newlib's stdout lock can invoke the thread scheduler with EE=0 and
-// deadlock after the line is emitted). Failures leave a record here for
-// the panic screen / post-mortem instead, and the patch ring below can be
-// inspected from a RAM dump; the cumulative count is printed from NORMAL
-// context on each cache clear (rec_fastmem_reset_pool).
+// DSI-path failure records: no printf in exception context (newlib's lock can deadlock with EE=0);
+// rec_fastmem_reset_pool prints the counts from normal context.
 static volatile u32 s_fm_fail_pc, s_fm_fail_insn, s_fm_fail_dar;
 static volatile u32 s_fm_fail_reason;	// 1=pc outside cache 2=pool full 3=undecodable 4=branch range
 #define FM_RING 32
 static u32 s_fm_ring[FM_RING];		// last FM_RING patched site PCs
 static u32 s_fm_ring_n;
 
-// JIT_FMOV tripwire. The preset needs BOTH fpu_pin and fastmem to be on to do
-// anything, and silently emits the legacy GPR bounce otherwise — exactly the
-// way to waste a hardware A/B run on a switch that never engaged. This counts
-// float shapes actually emitted and announces the first one, so the log says
-// plainly whether the thing under test is in the build that ran.
+// JIT_FMOV tripwire: counts the float shapes emitted and announces the first, so a log shows whether the
+// switch engaged (it needs both fpu_pin and fastmem).
 static u32 s_fm_float_sites = 0;
 static void fm_note_float_site()
 {
@@ -2710,13 +2164,7 @@ static void fm_note_float_site()
 		printf("[fmov] JIT_FMOV active: emitting lfs/stfs fastmem shapes\n");
 }
 
-// Float sites that actually FAULTED and got a trampoline built. Emitted-vs-
-// patched is the distinction that matters: emitting a float shape exercises
-// nothing but the emitter, while a patch is the only proof that the DSI
-// decoder and its trampolines — the exception-context code, where a mis-decode
-// is a panic rather than a slow path — have been down the float path at all.
-// A log showing thousands of float shapes emitted and ZERO patched means the
-// risky half of JIT_FMOV is still untested, however well the game ran.
+// Float sites that faulted and got a trampoline: only these prove the DSI decoder's float path ran.
 static u32 s_fm_float_patches = 0;
 
 static void rec_fastmem_reset_pool()
@@ -2740,10 +2188,8 @@ static void rec_fastmem_reset_pool()
 	s_fm_float_patches = 0;
 }
 
-// --- minimal raw-word emitter --------------------------------------------
-// Deliberately independent of the global emit_ptr/LastAddr state: this runs
-// INSIDE the DSI handler and must not disturb an in-progress compilation.
-// (Also: integer code only — MSR.FP is off in the exception context.)
+// Raw-word emitter for the DSI handler: independent of emit_ptr (a compile may be in progress), integer
+// only (MSR.FP is off there).
 static u32* fm_p;
 static void fm_w(u32 i)                            { *fm_p++ = i; }
 static u32  fm_dform(u32 op6,u32 rt,u32 ra,u32 dd) { return (op6<<26)|(rt<<21)|(ra<<16)|(dd&0xFFFF); }
@@ -2757,10 +2203,8 @@ static bool fm_branch(void* target,u32 lk)
 	return true;
 }
 
-// SQ fast-path address: reg = &sq_both[(areg & 0x3F) ^ swz]  (same layout as
-// the _vmem direct block: BE u32 words, sub-word swizzle folded into addr).
-// (NB: the scratch register parameter must not be called `r` —
-// sh4_registers.h #defines that to Sh4cntx.r.)
+// reg = &sq_both[(areg & 0x3F) ^ swz], the _vmem block layout. The parameter must not be named `r`
+// (sh4_registers.h #defines it).
 static void fm_sq_addr(u32 reg,u32 areg,u32 swz)
 {
 	fm_w(0x54000000|(areg<<21)|(reg<<16)|(0<<11)|(26<<6)|(31<<1));	// rlwinm reg,areg,0,26,31
@@ -2773,14 +2217,8 @@ static void fm_sq_addr(u32 reg,u32 areg,u32 swz)
 	fm_w(fm_dform(14,reg,reg,(u32)lo));				// addi  reg,reg,lo
 }
 
-// JIT_FMOV: context byte offset of the pinned FR named by a float shape's
-// register field. GetFloatReg maps fr[n] -> f14+n and fr[] is contiguous, so
-// the slot follows from the register number alone — which matters because this
-// runs in exception context, where Sh4Context::offset() (a switch through
-// Sh4_int_GetRegisterPtr plus verify()) is not callable. `pair` additionally
-// requires fD+1 to be inside the pinned bank, so a mis-decode can never make
-// the trampoline write past fr[15]. Returns -1 when the register is outside
-// the bank (no emitted shape does that; this is the belt-and-braces check).
+// Context offset of the pinned FR in a float shape (f14+n = fr[n]); usable in exception context, unlike
+// Sh4Context::offset(). -1 outside the bank, so a mis-decode cannot write past fr[15].
 static int fm_fr_ofs(u32 fd,bool pair)
 {
 	const u32 lastf = pair ? (u32)(ppc_f14+14) : (u32)(ppc_f14+15);
@@ -2789,9 +2227,8 @@ static int fm_fr_ofs(u32 fd,bool pair)
 	return (int)(SH4CTX_OFS_FR + (fd-(u32)ppc_f14)*4);
 }
 
-// Locate the governing `rlwinm rEA, rADDR, 0,3,31` within the 3 insns
-// before the fault site; returns rADDR (which still holds the ORIGINAL
-// SH4 address — the shapes never clobber it) or -1 if absent (not ours).
+// The rlwinm rEA,rADDR,0,3,31 within 3 instructions before the fault: rADDR (still the original SH4
+// address), or -1 if absent.
 static int fm_find_areg(u32* site,u32 ea_reg)
 {
 	for (int back=1;back<=3;back++)
@@ -2803,11 +2240,8 @@ static int fm_find_areg(u32* site,u32 ea_reg)
 	return -1;
 }
 
-// Decode the faulting fastmem site at pc, build its trampoline, patch the
-// site. Returns 0 on success; nonzero makes the DSI handler chain to the
-// libogc panic screen. Called from WiiFastmem_HandleDSI (exception context:
-// interrupts off, FPU off — keep this integer-only and printf-free except
-// on the failure/debug paths).
+// Decode the faulting site, build its trampoline, patch the site; nonzero chains to the panic screen.
+// Exception context: integer only, no printf except on failure paths.
 #if PS3_FASTMEM_DSI  // no GameOS equivalent; kept for reference only
 int rec_fastmem_patch(unsigned int pc)
 {
@@ -2868,9 +2302,7 @@ int rec_fastmem_patch(unsigned int pc)
 	}
 	else if (op6==32 && ra==ppc_rarg2 && rt==ppc_rrv0 && dd==0)
 	{
-		// --- pair read, first word: lwz r3,0(r5). Address still in r3
-		// (the pair shape always sources rarg0), so ReadMem64 needs no
-		// setup and returns r3:r4 = high:low exactly as the shape does.
+		// Pair read, first word (lwz r3,0(r5)): the address is still in r3, so ReadMem64 needs no setup.
 		if (fm_find_areg(site,ra)==ppc_rarg0)
 		{
 			ok=fm_branch((void*)ReadMem64,1);
@@ -2955,24 +2387,8 @@ int rec_fastmem_patch(unsigned int pc)
 			ok&=fm_branch(site+1,0);
 		}
 	}
-	// ---- JIT_FMOV float shapes (lfs op6=48 / stfs op6=52) -------------------
-	// Same EA scratch registers and displacements as the integer shapes above
-	// — the opcode alone tells them apart — so the read/write and scalar/pair
-	// discrimination is unchanged. rt is an FPR number here, not a GPR.
-	//
-	// These cases are deliberately NOT gated on get_jit_fmov_preset(): a site
-	// is only ever EMITTED with the preset on, but if the preset were flipped
-	// off while blocks compiled under it are still in the cache, gating here
-	// would turn a perfectly valid site into an undecodable one — a panic
-	// instead of a slow path. A decoder must accept everything the emitter can
-	// produce, unconditionally.
-	//
-	// The slow C dispatchers deal in integers, so each trampoline bounces
-	// through the FR's OWN context slot (fm_fr_ofs) — the one place that is
-	// safe to clobber, since it is the slot the FR would flush to anyway.
-	// f14..f31 are callee-saved under the PPC EABI, so a pinned FR survives
-	// the ReadMem/WriteMem call; that is why the pair straddle cases need none
-	// of the save/restore their integer counterparts do.
+	// JIT_FMOV float shapes (lfs/stfs): same EA registers as the integer ones. Not gated on the preset, as a
+	// site outlives the switch; trampolines bounce through the FR's own slot (f14-f31 survive the C call).
 	else if (op6==48 && ra==ppc_rarg1 && dd==0)
 	{
 		// --- scalar float read: lfs fD,0(r4)  (fmov.s, always 4 bytes).
@@ -2990,9 +2406,7 @@ int rec_fastmem_patch(unsigned int pc)
 	}
 	else if (op6==48 && ra==ppc_rarg2 && dd==0)
 	{
-		// --- pair float read, first word: lfs fD,0(r5). Address is still in
-		// r3 (the pair shape always sources rarg0), so ReadMem64 needs no
-		// setup; it returns r3:r4 = word[addr]:word[addr+4] -> fD:fD+1.
+		// Pair float read, first word: ReadMem64's r3:r4 = word[addr]:word[addr+4] go to fD:fD+1.
 		int fofs=fm_fr_ofs(rt,true);
 		if (fm_find_areg(site,ra)==ppc_rarg0 && fofs>=0)
 		{
@@ -3021,9 +2435,7 @@ int rec_fastmem_patch(unsigned int pc)
 	}
 	else if (op6==52 && ra==ppc_rarg2 && dd==0)
 	{
-		// --- scalar float write: stfs fS,0(r5), with the same inlined SQ
-		// fast path the integer scalar write gets. sz is always 4 here, so
-		// there is no sub-word swizzle and no andi mask.
+		// Scalar float write (stfs fS,0(r5)) with the integer write's inline SQ path; sz is 4: no swizzle, no mask.
 		int areg=fm_find_areg(site,ra);
 		int fofs=fm_fr_ofs(rt,false);
 		if (areg>=0 && fofs>=0)
@@ -3049,9 +2461,8 @@ int rec_fastmem_patch(unsigned int pc)
 	}
 	else if (op6==52 && ra==ppc_rarg1 && dd==0)
 	{
-		// --- pair float write, first word: stfs fS,0(r4). Address still in
-		// r3; WriteMem64(u32,u64) wants r3 + r5:r6, so only the data moves.
-		// fmov.d bursts into the SQ are THE geometry path, hence the inline.
+		// Pair float write, first word: WriteMem64 wants r3 + r5:r6, so only the data moves; fmov.d SQ bursts are
+		// the geometry path, hence the inline.
 		int fofs=fm_fr_ofs(rt,true);
 		if (fm_find_areg(site,ra)==ppc_rarg0 && fofs>=0)
 		{
@@ -3119,6 +2530,22 @@ int rec_fastmem_patch(unsigned int pc)
 }
 #endif  // PS3_FASTMEM_DSI
 
+// A store whose base register a later PREF in the block also uses is taken as a store-queue store.
+// The guess only picks the code shape: emit_sq_store still tests the address.
+static bool sq_store_guess(DecodedBlock* block,size_t i)
+{
+	const shil_opcode& st=block->oplist[i];
+	if (!st.rs1.is_reg())
+		return false;
+	for (size_t j=i+1;j<block->oplist.size();j++)
+	{
+		const shil_opcode& o=block->oplist[j];
+		if (o.op==shop_pref && o.rs1.is_reg() && o.rs1._reg==st.rs1._reg)
+			return true;
+	}
+	return false;
+}
+
 // ngen_CompileBlock: Main Block Compilation Loop
 DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 {
@@ -3126,15 +2553,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	if (emit_FreeSpace() < 16384) // 16*1024
 		return 0;
 
-	// JIT_ALIGN preset: pad the entry to the next 32-byte L1 line so every
-	// block start (hence every branch/link target landing on one) begins on a
-	// clean cache-line boundary. CodeCache itself is 32-byte aligned, so the
-	// low 5 bits of emit_GetCCPtr() equal the intra-line offset. The padding
-	// sits between the previous block's tail — which ALWAYS ends in an
-	// unconditional branch (ngen_End) or a cold fragment's `b done`, never a
-	// fall-through — and this entry, so the nops are never executed; they also
-	// fall within the line the previous block's flush already rounds up to, so
-	// no extra I-cache handling is needed. <=7 nops/block against a 6 MB cache.
+	// JIT_ALIGN: pad the block entry to a 32-byte line. The nops follow an unconditional branch, so they never
+	// run, and they sit in the line the previous flush already covers.
 	if (get_jit_align_preset())
 	{
 		while (((u32)(uintptr_t)emit_GetCCPtr() & 31) != 0)
@@ -3146,10 +2566,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
 	ngen_Begin(block,force_checks);
 
-	// JIT_HOTBLOCKS: bump this block's execution counter. Emitted AFTER
-	// ngen_Begin so it counts real body executions — past the SMC check and the
-	// cycle-underflow exit — at a point where rarg0/rarg1 are still scratch
-	// (same reasoning as the block-check guard inside ngen_Begin).
+	// JIT_HOTBLOCKS: count real body entries (after the SMC check and the cycle exit); rarg0/rarg1 are free.
 	const s32 hb = hotblocks_slot(block);
 	if (hb>=0)
 	{
@@ -3163,18 +2580,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	{
 		shil_opcode* op=&block->oplist[i];
 
-		// T-FORWARDING: latch whether the PREVIOUS op left sr_T in rarg0, then
-		// clear, so this op starts clean and only its own binop_end can set the
-		// flag again. Anything that runs between a producer and a consumer
-		// therefore invalidates the forward automatically.
+		// T-FORWARDING: latch whether the previous op left sr_T in rarg0, then clear it, so any op in between
+		// cancels the forward.
 		const bool t_prev = compile_state.t_in_rarg0;
 		compile_state.t_in_rarg0 = false;
 
-		// JIT_CR0: may THIS op hand its condition to the block exit in CR0?
-		// Only when it is the last op (nothing can run in between and clobber
-		// CR0), the block exits on sr_T, and this op is the one writing sr_T.
-		// has_jcond means the exit tests a computed value in ppc_djump instead,
-		// so the CR0 path must stay out of its way.
+		// JIT_CR0: only the last op, on a block that exits on sr_T, writing sr_T; has_jcond exits test ppc_djump.
 		compile_state.t_exit_cr0 =
 			get_jit_cr0_preset() &&
 			!compile_state.has_jcond &&
@@ -3191,11 +2602,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				bool isram=false;
 				verify(op->rs1.is_imm() || op->rs1.is_r32i());
 
-				// Land the loaded value DIRECTLY in rd's pinned PPC register when
-				// possible, so the trailing ppc_sh_store(rrv0,rd) becomes a
-				// store-to-self (elided) instead of an `ori rN,r3,0` move. The slow
-				// MMIO call returns in rrv0, so that path copies rrv0->rdreg once.
-				// 64-bit pair loads keep the rrv0:rrv1 ABI (handled below).
+				// Load straight into rd's pinned reg when possible, so the trailing store is elided; the MMIO call returns
+				// in rrv0 and copies once. Pairs keep the rrv0:rrv1 ABI.
 				u32 rdreg = ppc_rrv0;
 #if STATIC_GPR_ALLOC
 				if (op->flags!=8)
@@ -3209,20 +2617,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				// branch below). Defaults to rarg0 (the const/imm + pair paths).
 				u32 areg = ppc_rarg0;
 
-				// FPU_PIN Phase B: when the destination is a pinned FR, load the
-				// value STRAIGHT into the FPR (lfs/lfsx) instead of into a GPR and
-				// then bouncing it through memory. Only for RUNTIME addresses
-				// (rs1 reg): a compile-time-known address is either resolved to a
-				// direct RAM pointer or dispatched through a C call that returns
-				// in a GPR, so neither wants a float shape.
-				// fmov.s = flags 4 scalar (rd float); fmov.d = flags 8 pair
-				// (rd, rd+1 both pinned fr). xf-based pairs (unpinned) fall back.
-				//
-				// JIT_FMOV extends this to the fastmem path. Those shapes are
-				// FIXED — rec_fastmem_patch() decodes them at DSI time — so the
-				// float variants only get EMITTED while the preset is on, but
-				// the decoder accepts them unconditionally (see the comment on
-				// its float cases: a site outlives the switch that made it).
+				// FPU_PIN: a pinned FR dest loads straight into the FPR (runtime addresses; flags 4 scalar, 8 pair with
+				// both fr pinned). JIT_FMOV adds the fastmem shapes, which the DSI decoder accepts unconditionally.
 				bool fdirect=false;
 				u32  fd0=0, fd1=0, fofs=0;
 				if (get_fpu_pin_preset() && op->rs1.is_reg()
@@ -3270,12 +2666,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				}
 				else
 				{
-					// `areg` is the address SOURCE for the fast-path index/mask ops.
-					// For a plain @Rn (rs3 null) with rs1 pinned, source the address
-					// straight from its pinned reg -- no `ori rarg0,pinned,0` mov.
-					// The fast path only READS areg (writing scratch), and the slow
-					// path materializes rarg0 from it. Any offset (imm/reg) needs a
-					// mutated address, so fall back to pre-loading rarg0 as before.
+					// areg: a plain @Rn uses rs1's pinned reg directly (no mr); an offset needs the address in rarg0.
 					areg = ppc_rarg0;
 					if (op->rs3.is_imm())
 					{
@@ -3313,18 +2704,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 				if (!isram && fastmem_on())
 				{
-					// ---- FASTMEM: branchless access through the MMU window.
-					// Shapes are FIXED — rec_fastmem_patch() decodes them at
-					// DSI time (the EA scratch register is the shape
-					// discriminator), so keep emission and decoder in sync.
+					// FASTMEM: branchless access through the MMU window. Fixed shapes (the DSI decoder reads the EA
+					// register), so keep emission and decoder in sync.
 					if (op->rs1.is_imm())
 					{
-						// Compile-time-known MMIO (fuct set above, address
-						// already materialized in rarg0): call the handler
-						// directly — never emit a faulting access for a
-						// constant MMIO address. This is strictly cheaper
-						// than the legacy always-miss 0x8C compare + cold
-						// branch pair (think SB_ISTNRM poll loops).
+						// Compile-time-known MMIO: call the handler directly, never a faulting access (cheaper than the old 0x8C
+						// compare + cold branch, e.g. SB_ISTNRM polls).
 						void* f=fuct;
 						if (!f) f=(op->flags==1)?(void*)ReadMem8:(op->flags==2)?(void*)ReadMem16:(void*)ReadMem32;
 						ppc_call_c(f);
@@ -3334,17 +2719,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					}
 					else if (op->flags==8)
 					{
-						// Pair (fmov.d): address is always pre-loaded in
-						// rarg0. EA scratch MUST be rarg2. word[addr]->rrv0
-						// (high), word[addr+4]->rrv1 (low), matching the
-						// ReadMem64 slow path register-for-register.
+						// Pair: address in rarg0, EA scratch must be rarg2; word[addr] -> rrv0, word[addr+4] -> rrv1, as ReadMem64.
 						ppc_rlwinmx(ppc_rarg2,ppc_rarg0,0,3,31,0);	// EA = addr & 0x1FFFFFFF
 						if (fdirect)
 						{
-							// JIT_FMOV: straight into the pinned FPRs. Same EA
-							// scratch (rarg2) and same displacements, so the
-							// decoder tells this from the integer pair only by
-							// the opcode (lfs vs lwz).
+							// JIT_FMOV: straight into the pinned FPRs; same EA register and displacements, only the opcode differs.
 							fm_note_float_site();
 							ppc_lfs(fd0,ppc_rarg2,0);		// fault site A
 							ppc_lfs(fd1,ppc_rarg2,4);		// fault site B
@@ -3359,9 +2738,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					{
 						const u32 sz=op->flags;
 						verify(sz==1||sz==2||sz==4);
-						// Scalar: EA scratch MUST be rarg1. areg (pinned or
-						// rarg0) still holds the original SH4 address at the
-						// load — the fault decoder relies on that.
+						// Scalar: EA scratch must be rarg1; areg keeps the original SH4 address for the fault decoder.
 						ppc_rlwinmx(ppc_rarg1,areg,0,3,31,0);	// EA = addr & 0x1FFFFFFF
 						if (sz<4)
 							ppc_xori(ppc_rarg1,ppc_rarg1,4-sz);	// BE sub-word swizzle
@@ -3436,28 +2813,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				}
 				else if (!isram)
 				{
-					// Inline the _vmem_readt fast path (direct RAM/VRAM) for
-					// runtime addresses. The MMIO path falls back to the C
-					// dispatcher. Same shapes as emit_vmem_tier(); kept inline
-					// so a fastmem-OFF run stays the untouched baseline.
-					//
-					// _vmem_MemInfo_ptr is void*[], 8 B per entry on PS3 (4 on the Wii),
-				// and BE puts a sub-4 GB pointer's low word at +4 - hence *8 and the
-				// +4 base bias, so one lwzx still fetches the whole value.
-				//   iirf = _vmem_MemInfo_ptr[addr>>24];
-					//   ptr  = iirf & ~0x1F;
-					//   if (ptr) { sh=iirf&0x1F; a=(addr<<sh)>>sh;
-					//              if (sz<4) a^=4-sz; rv=*(T*)(ptr+a); }
-					//   else  rv = ReadMem<sz>(addr);   // slow
-					//
-					// addr is in rarg0 on entry. Scratch: r0, rarg1, rarg2.
+					// Inline _vmem_readt: iirf = MemInfo[addr>>24] (8-byte entries, low word at +4), ptr = iirf & ~0x1F,
+					// rv = *(ptr + ((addr<<sh)>>sh)), MMIO -> ReadMem. Inline so fastmem OFF stays the baseline.
 					if (op->flags==8)
 					{
-						// 64-bit pair load (fmov.d / sz=1 pair fmov). Replicates
-						// the BE *(u64*)p load of _vmem_readt<u64>: the u64 is
-						// returned in r3:r4 = high:low, so word[addr] -> rrv0
-						// (-> rd) and word[addr+4] -> rrv1 (-> rd+1), matching
-						// the ReadMem64 slow path register-for-register.
+						// Pair load: the BE u64 comes back as rrv0:rrv1 = word[addr]:word[addr+4], as ReadMem64.
 						ppc_rlwinmx(ppc_r0,ppc_rarg0,11,21,28,0);	// (addr>>24)*8
 						u32 lo=ppc_addr_high(ppc_rarg1,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
 						if (lo) ppc_addi(ppc_rarg1,ppc_rarg1,lo);
@@ -3469,9 +2829,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						ppc_label* cold=ppc_CreateLabel();
 						ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt cold (MMIO)
 
-						// --- fast direct path (fall-through) ---
-						// shift count = iirf directly (ptr >=0x40-aligned -> iirf's
-						// low 6 bits, which slw/srw use, equal the 5-bit shift field).
+						// Direct path: the shift is iirf itself (ptr is 64-byte aligned, so its low 6 bits are the shift field).
 						ppc_slwx(ppc_rarg0,ppc_rarg0,ppc_rarg1,0);
 						ppc_srwx(ppc_rarg0,ppc_rarg0,ppc_rarg1,0);	// mirror mask
 						if (fdirect)
@@ -3500,21 +2858,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						const u32 sz=op->flags;
 						verify(sz==1||sz==2||sz==4);
 
-						// Fast path for the CACHED main-RAM window only (P1, top byte
-						// 0x8C -> 0x8C000000..0x8CFFFFFF = 16 MB of mem_b). This is the
-						// overwhelmingly common data region; MMIO, uncached mirrors and
-						// every other region fall to the cold path.
-						//
-						//   if ((addr>>24)==0x8C) {
-						//       native = addr + (mem_b.data - 0x8C000000);   // 1 addis
-						//       if (sz<4) native ^= 4-sz;                    // BE swizzle
-						//       rv = *(T*)native;                            // 1 load
-						//   } else rv = ReadMem<sz>(addr);                   // cold
-						//
-						// mem_b.data is 64 KB-aligned and set by _vmem_reserve() during
-						// init (BEFORE any block compiles), and 0x8C000000 is 64 KB-
-						// aligned too, so the delta's low 16 bits are 0 -> a single
-						// addis (adds delta>>16 << 16) forms the exact native address.
+						// Fast path for P1 main RAM only (addr>>24 == 0x8C): native = addr + (mem_b.data - 0x8C000000), one
+						// addis since both are 64 KB aligned; any other region takes the cold path.
 						const u32 delta   = (u32)(uintptr_t)mem_b.data - 0x8C000000u;
 						const u32 delta_hi= (delta>>16)&0xFFFF;		// low 16 of delta are 0
 
@@ -3529,12 +2874,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						// --- fast direct RAM path (fall-through) ---
 						// native = addr + delta  (single addis). rarg0 = native addr.
 						ppc_addis(ppc_rarg0,areg,delta_hi);
-						// areg is a 64-bit PPC reg holding a w-form SH4 value, so its
-						// upper half is whatever extsb/extsh/srawi last left there.
-						// The 0x8C test above is an rlwinm and only reads the low 32
-						// bits, so a poisoned address passes the guard and then faults
-						// this raw host load. addis is 64-bit; the low 32 bits are the
-						// address we want, so drop the rest.
+						// areg's upper half is whatever extsb/extsh/srawi left (poison); the 0x8C test reads only the low word,
+						// so drop the high one before the addis builds a host address.
 						ppc_clrldi32(ppc_rarg0,ppc_rarg0);
 						// big-endian sub-word swizzle folded into the address
 						// (fdirect is float sz==4 only, so it never swizzles)
@@ -3566,10 +2907,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					}
 				}
 
-				// FPU_PIN direct path already landed the value in the pinned
-				// FPR(s) via lfs/lfsx, so skip the GPR->context stores entirely.
-				// (fdirect is only ever set on the legacy runtime path above; the
-				// fastmem / const-imm / int paths keep rdreg and store normally.)
+				// FPU_PIN's direct path already loaded the pinned FPR(s); fdirect is only set on the runtime path.
 				if (!fdirect)
 				{
 					ppc_sh_store(rdreg,op->rd);
@@ -3584,15 +2922,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_writem:
 			{
-				// Compute the FULL effective address first, THEN load the data.
-				// (The old order loaded data first; the rs3 register-index path
-				// uses rarg3 as scratch, which CLOBBERED the 64-bit data low
-				// word for indexed pair stores like "fmov.d FRm,@(R0,Rn)".)
-				//
-				// `areg` is the address SOURCE for the scalar fast-path index/mask
-				// ops. For a plain @Rn (rs3 null) with rs1 pinned we source it
-				// straight from the pinned reg (no `ori rarg0,pinned,0` mov); the
-				// fast path only reads areg, the slow path materializes rarg0.
+				// Full address first, then the data: the rs3 register-index path uses rarg3 as scratch, which clobbered a
+				// pair store's low word (fmov.d FRm,@(R0,Rn)). areg: a plain @Rn reads rs1's pinned reg in place.
 				u32 areg = ppc_rarg0;
 				if (op->rs3.is_imm())
 				{
@@ -3626,13 +2957,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					die("invalid rs3");
 				}
 
-				// FPU_PIN Phase B (symmetric to shop_readm): when the data source
-				// is a pinned FR, store STRAIGHT from the FPR (stfs/stfsx) instead
-				// of bouncing it into a GPR first. fmov.s = flags 4 scalar,
-				// fmov.d = flags 8 pair. JIT_FMOV extends it to fastmem, whose
-				// float shapes rec_fastmem_patch() learned — see the shop_readm
-				// gate above. Unlike the read side there is no rs1 check: a
-				// store's address is always a runtime register here.
+				// FPU_PIN: a pinned FR source stores straight from the FPR (flags 4 scalar, 8 pair); JIT_FMOV adds the
+				// fastmem shapes. No rs1 check: a store's address is always a runtime register here.
 				bool fdirect=false;
 				u32  fs0=0, fs1=0, fofs=0;
 				if (get_fpu_pin_preset() && (!fastmem_on() || get_jit_fmov_preset()))
@@ -3652,12 +2978,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					}
 				}
 
-				// Scalar data operand: if rs2 is pinned, the fast path can store
-				// DIRECTLY from its pinned PPC reg (the fast path only reads the
-				// data reg, never clobbers it), so we skip the pre-split
-				// ppc_sh_load(rarg1,rs2) mov and load rarg1 only on the slow MMIO
-				// path (where the WriteMem ABI requires data in rarg1). The 64-bit
-				// pair keeps the rarg2:rarg3 ABI as before.
+				// A pinned rs2 is stored straight from its reg (the fast path only reads it); rarg1 is loaded only on the
+				// MMIO path, which WriteMem needs. Pairs keep the rarg2:rarg3 ABI.
 				u32 datareg = ppc_rarg1;
 				if (fdirect)
 				{
@@ -3681,12 +3003,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 				if (fastmem_on())
 				{
-					// ---- FASTMEM: branchless store through the MMU window.
-					// Shapes are FIXED — rec_fastmem_patch() decodes them at
-					// DSI time (EA scratch register = shape discriminator).
-					// areg/datareg (or rarg0 + rarg2:rarg3 for pairs) still
-					// hold the original values at the store — the fault
-					// decoder and trampolines rely on that.
+					// FASTMEM: branchless store through the MMU window; fixed shapes, and areg/datareg (pairs: rarg0,
+					// rarg2:rarg3) still hold their values at the store for the fault decoder.
 					if (op->flags==8)
 					{
 						// Pair: address in rarg0, data in rarg2:rarg3 =
@@ -3710,10 +3028,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					{
 						const u32 sz=op->flags;
 						verify(sz==1||sz==2||sz==4);
-						// Scalar: EA scratch MUST be rarg2. No data masking
-						// needed on the direct path — stb/sth store the low
-						// byte/halfword by definition (the trampoline's C
-						// call path re-applies the andi like ColdFrag does).
+						// Scalar: EA scratch must be rarg2; stb/sth store the low byte/halfword, so no data mask (the
+						// trampoline's C path masks).
 						ppc_rlwinmx(ppc_rarg2,areg,0,3,31,0);	// EA = addr & 0x1FFFFFFF
 						if (sz<4)
 							ppc_xori(ppc_rarg2,ppc_rarg2,4-sz);	// BE sub-word swizzle
@@ -3732,8 +3048,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				}
 				else if (fm_on())
 				{
-					// FASTMEM: main RAM inline, everything else out of line.
-					// The store queue is region 7, so it keeps the table path.
+					// FASTMEM: main RAM inline, everything else out of line. 5.17 Step 3: a guessed
+					// store-queue store tests for the SQ inline instead; the cold path takes the rest.
 					ColdFrag& c=s_cold[s_cold_n++];
 					c.kind=(op->flags==8)?3:2;
 					c.sz=(u8)((op->flags==8)?4:op->flags);
@@ -3742,75 +3058,69 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 					c.vmem_tier=1;
 
-					fm_emit_guard(areg);
-					c.beq=ppc_CreateLabel();
-					ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
-
-					if (op->flags==8)
+					if (get_jit_sq_store_preset() && (op->flags==4 || op->flags==8) && sq_store_guess(block,i))
 					{
-						// Pair: address in rarg0, data in rarg2:rarg3, so the
-						// native address goes to rarg1.
-						fm_emit_addr(ppc_rarg1,ppc_rarg0,4);
-						if (fdirect)
-						{
-							ppc_stfs(fs0,ppc_rarg1,0);
-							ppc_stfs(fs1,ppc_rarg1,4);
-						}
-						else
-						{
-							ppc_stw(ppc_rarg2,ppc_rarg1,0);
-							ppc_stw(ppc_rarg3,ppc_rarg1,4);
-						}
+						// A pair keeps its address in rarg0 (areg) and data in rarg2:rarg3; EA in rarg1.
+						const bool pair=op->flags==8;
+						const u32 sqb=(u32)(uintptr_t)sq_both;
+						verify((sqb&63)==0 && (uintptr_t)sq_both<0x7FFF0000u);
+						c.beq=emit_sq_store(areg,pair?ppc_rarg1:ppc_rarg2,pair,fdirect,
+						                    fdirect?fs0:(pair?(u32)ppc_rarg2:datareg),
+						                    fdirect?fs1:(u32)ppc_rarg3,sqb);
+						g_jit_sq_sites++;
 					}
 					else
 					{
-						const u32 sz=op->flags;
-						// stb/sth store the low byte/halfword, so no data mask.
-						fm_emit_addr(ppc_rarg2,areg,sz);
-						if (fdirect)
-							ppc_stfs(fs0,ppc_rarg2,0);
-						else if (sz==1)
-							ppc_stb(datareg,ppc_rarg2,0);
-						else if (sz==2)
-							ppc_sth(datareg,ppc_rarg2,0);
+						fm_emit_guard(areg);
+						c.beq=ppc_CreateLabel();
+						ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
+
+						if (op->flags==8)
+						{
+							// Pair: address in rarg0, data in rarg2:rarg3, so the
+							// native address goes to rarg1.
+							fm_emit_addr(ppc_rarg1,ppc_rarg0,4);
+							if (fdirect)
+							{
+								ppc_stfs(fs0,ppc_rarg1,0);
+								ppc_stfs(fs1,ppc_rarg1,4);
+							}
+							else
+							{
+								ppc_stw(ppc_rarg2,ppc_rarg1,0);
+								ppc_stw(ppc_rarg3,ppc_rarg1,4);
+							}
+						}
 						else
-							ppc_stw(datareg,ppc_rarg2,0);
+						{
+							const u32 sz=op->flags;
+							// stb/sth store the low byte/halfword, so no data mask.
+							fm_emit_addr(ppc_rarg2,areg,sz);
+							if (fdirect)
+								ppc_stfs(fs0,ppc_rarg2,0);
+							else if (sz==1)
+								ppc_stb(datareg,ppc_rarg2,0);
+							else if (sz==2)
+								ppc_sth(datareg,ppc_rarg2,0);
+							else
+								ppc_stw(datareg,ppc_rarg2,0);
+						}
 					}
 
 					c.done=emit_GetCCPtr();
 				}
 				else
-				// Inline the _vmem_writet fast path (direct RAM/VRAM) for runtime
-				// addresses. MMIO falls back to the C call. Same shapes as
-				// emit_vmem_tier(); kept inline so a fastmem-OFF run stays the
-				// untouched baseline.
-				//
-				// _vmem_MemInfo_ptr is void*[], 8 B per entry on PS3 (4 on the Wii),
-				// and BE puts a sub-4 GB pointer's low word at +4 - hence *8 and the
-				// +4 base bias, so one lwzx still fetches the whole value.
-				//   iirf = _vmem_MemInfo_ptr[addr>>24];
-				//   ptr  = iirf & ~0x1F;
-				//   if (ptr) { sh=iirf&0x1F; a=(addr<<sh)>>sh;
-				//              if (sz<4) a^=4-sz; *(T*)(ptr+a)=data; }
-				//   else  WriteMem<sz>(addr,data);   // slow
-				//
-				// On entry rarg0=addr, rarg1=data (or rarg2:rarg3 = high:low for
-				// 64-bit). addr/data MUST survive to the slow call.
+				// Inline _vmem_writet, as the read side (iirf, ptr, (addr<<sh)>>sh, MMIO -> WriteMem). rarg0 = addr,
+				// rarg1 = data (pairs rarg2:rarg3 = high:low); both must survive to the slow call.
 				if (op->flags==8)
 				{
-					// 64-bit pair store (fmov.d / sz=1 pair fmov). Data is in
-					// rarg2:rarg3 (r5:r6) = high:low — exactly the EABI registers
-					// WriteMem64(u32,u64) wants, so the slow path needs no moves.
-					// Direct path replicates the BE *(u64*)p store of
-					// _vmem_writet<u64>: word[addr]=high, word[addr+4]=low.
-					// Lookup may only use r0/rarg1 as scratch.
+					// Pair store: data in rarg2:rarg3 = high:low, WriteMem64's registers; word[addr] = high, word[addr+4] =
+					// low. The lookup may use only r0 and rarg1.
 					ppc_rlwinmx(ppc_r0,ppc_rarg0,11,21,28,0);	// (addr>>24)*8
 					u32 lo=ppc_addr_high(ppc_rarg1,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
 					if (lo) ppc_addi(ppc_rarg1,ppc_rarg1,lo);
 					ppc_lwzx(ppc_rarg1,ppc_rarg1,ppc_r0);		// rarg1 = iirf
-					// Extract shift first. NOTE: ppc_andi is the RECORD form (andi.)
-					// and clobbers CR0, so the MMIO compare MUST come AFTER it (and
-					// before the rlwinm overwrites iirf in rarg1).
+					// The shift first: andi. writes CR0, so the MMIO compare must follow it (and precede the rlwinm on rarg1).
 					ppc_andi(ppc_r0,ppc_rarg1,0x1F);		// r0 = shift (clobbers CR0)
 					ppc_cmpli(ppc_cr0,ppc_rarg1,0x20,0);		// iirf < 0x20 ? (sets CR0 last)
 					ppc_rlwinmx(ppc_rarg1,ppc_rarg1,0,0,26,0);	// rarg1 = ptr (≠r0; Rc=0)
@@ -3847,9 +3157,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					const u32 sz=op->flags;
 					verify(sz==1||sz==2||sz==4);
 
-					// r0 = (addr>>24)*8   (byte index into the void* table).
-					// areg is the address source (rarg0, or rs1's pinned reg for a
-					// plain @Rn); the index + mirror-mask READ it, writing scratch.
+					// r0 = (addr>>24)*8; areg (rarg0 or rs1's pinned reg) is only read.
 					ppc_rlwinmx(ppc_r0,areg,11,21,28,0);
 					// rarg2 = &_vmem_MemInfo_ptr
 					u32 lo=ppc_addr_high(ppc_rarg2,(void*)((u8*)&_vmem_MemInfo_ptr[0]+4));
@@ -3866,17 +3174,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ppc_label* cold=ppc_CreateLabel();
 					ppc_bcx(BO_TRUE,BI_CR0_LT,0,0,0);		// blt cold (MMIO)
 
-					// --- fast direct path (fall-through) ---
-					// eff = (addr<<sh)>>sh into r0 (free after the index above);
-					// shift count is iirf in rarg2 directly (ptr >=0x40-aligned ->
-					// iirf's low 6 bits == the 5-bit field, no andi needed).
+					// Direct path: r0 = (addr<<sh)>>sh, the shift being iirf in rarg2 (ptr is 64-byte aligned, no andi).
 					ppc_slwx(ppc_r0,areg,ppc_rarg2,0);		// r0 = addr<<sh (reads areg)
 					ppc_srwx(ppc_r0,ppc_r0,ppc_rarg2,0);		// r0 = (addr<<sh)>>sh
 					if (sz<4)
 						ppc_xori(ppc_r0,ppc_r0,4-sz);		// big-endian sub-word swizzle
-					// *(T*)(ptr+eff) = data  (ptr=rarg3, eff=r0, data=datareg).
-					// datareg is rs2's pinned reg (read-only here) or rarg1.
-					// (fdirect is float sz==4 only, so it never swizzles.)
+					// *(ptr + eff) = data, ptr in rarg3, eff in r0; datareg is rs2's pinned reg or rarg1 (fdirect: sz 4 only).
 					if (fdirect)
 						ppc_stfsx(fs0,ppc_rarg3,ppc_r0);	// FPU_PIN: straight from the FPR
 					else if (sz==1)
@@ -3899,9 +3202,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			{
 				const u16 sh4op=(u16)op->rs3._imm;
 
-				// IFB_PROBE: bump this opcode's counter. rarg0/rarg1 are
-				// scratch at a shil-op boundary, and this runs before the
-				// bracket so it cannot disturb a flushed value.
+				// IFB_PROBE: count this opcode; rarg0/rarg1 are free at an op boundary, and this runs before the bracket.
 				if (get_ifb_probe_preset())
 				{
 					u32* slot=ifb_probe_slot(sh4op);
@@ -3914,11 +3215,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					}
 				}
 
-				// IFB_FLUSH: spill only what this opcode's handler actually
-				// touches, on both axes independently — the GPRs named by its
-				// allow-list entry, and the float file only if it can disturb
-				// fr[]/xf[]. Preset off => the legacy everything-spill, which
-				// is also what an unlisted opcode gets.
+				// IFB_FLUSH: spill only what this opcode's handler touches (its GPRs; the float file if it can change it);
+				// preset off, or an unlisted opcode, spills everything.
 				IfbBracket br={IFB_GPR_ALL,true};
 				if (get_ifb_flush_preset())
 					br=ifb_bracket(sh4op);
@@ -3969,10 +3267,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		case shop_jcond:
 			{
 				compile_state.has_jcond=true;
-				// Delay-slot branches capture T here, before the delay slot runs.
-				// When the compare that produced it is the op right before this
-				// one, it is still in rarg0 — take it from there instead of
-				// reloading the value we just stored.
+				// Delay-slot branches capture T before the slot; if the compare was the previous op, T is still in rarg0.
 				if (t_prev && op->rs1.is_reg() && op->rs1._reg==reg_sr_T)
 					ppc_ori(ppc_djump,ppc_rarg0,0);		// mr djump,rarg0
 				else
@@ -3985,12 +3280,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				verify(op->rd.is_r64());
 				verify(op->rs1.is_r64());
 
-				// mov64 is always a float pair (FMT_F64: fmov.d / DR<->XD moves).
-				// Under FPU_PIN move each word register-to-register (fmr) instead
-				// of bouncing both words through GPRs + memory. fmove_reg emits
-				// the minimal form per word and, with the preset off, degenerates
-				// to the legacy lfs f0/stfs f0 scratch bounce (no GPR round-trip,
-				// which is also strictly fewer insns than the old code).
+				// mov64 is a float pair (fmov.d, DR<->XD): fmove_reg per word, fmr when pinned, else the f0 bounce.
 				fmove_reg(op->rd._reg,   op->rs1._reg);
 				fmove_reg(op->rd._reg+1, op->rs1._reg+1);
 			}
@@ -4000,15 +3290,20 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			{
 				verify(op->rd.is_r32());
 
-				// fmov FRm,FRn (both float): move register-to-register. fmove_reg
-				// picks fmr / stfs / lfs / scratch-bounce by how each end is
-				// allocated. The MIXED cases (flds FRm,FPUL = float->int, fsts
-				// FPUL,FRn = int->float, or imm->float) fall through to the GPR
-				// path below, where the pinning-aware ppc_sh_load/ppc_sh_store
-				// already bounce a pinned FR through its memory slot correctly.
+				// fmov FRm,FRn: fmove_reg. The mixed int/float cases (flds, fsts, imm) take the GPR path below, whose
+				// ppc_sh_load/store bounce a pinned FR through its slot.
 				if (op->rd.is_r32f() && op->rs1.is_r32f())
 				{
 					fmove_reg(op->rd._reg,op->rs1._reg);
+					break;
+				}
+
+				// 5.20: fldi0/fldi1 into a pinned FR load the constant from a table (li + stw + lfs was a load-hit-store).
+				if (get_jit_ftrv_preset() && get_fpu_pin_preset() && op->rd.is_r32f() && op->rs1.is_imm() &&
+				    (op->rs1._imm==0 || op->rs1._imm==0x3F800000) && GetFloatReg(op->rd._reg)!=ppc_finvalid)
+				{
+					u32 lo=ppc_addr_high(ppc_rarg0,(void*)&s_fldi_tab[op->rs1._imm ? 1 : 0]);
+					ppc_lfs(GetFloatReg(op->rd._reg),ppc_rarg0,lo);
 					break;
 				}
 
@@ -4046,11 +3341,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// Single-instruction binops — read/write pinned regs directly (binop3).
-		// Single-instruction binops. When rs2 is a small immediate we fold it
-		// straight into the PPC immediate-form instruction, skipping the
-		// ppc_li(rarg1,imm) materialisation. addi/subi use a SIGNED 16-bit
-		// field; andi./ori/xori use UNSIGNED 16-bit.
+		// Single-instruction binops on pinned regs (binop3); a small immediate rs2 folds into the immediate form
+		// (addi/subi signed 16-bit, andi./ori/xori unsigned).
 		case shop_add:
 			bop_resolve_a_d(op);
 			if (op->rs2.is_imm_s16())
@@ -4135,11 +3427,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			break;
 
 
-		// Single-instruction FP binops: with FPU_PIN, fbop_resolve reads pinned
-		// fr operands in place and writes a pinned fr dest in place, collapsing
-		// the whole op to ONE instruction (was lfs/lfs/op/stfs). Preset off ->
-		// fop_a/fop_b are farg0/farg1 scratch loads and fbop_end stores back,
-		// exactly the legacy binop_start_fpu/binop_end_fpu sequence.
+		// FPU_PIN: one instruction on pinned fr (fbop_resolve/fbop_end); preset off, the old lfs/lfs/op/stfs.
 		case shop_fadd: fbop_resolve(op); ppc_faddsx(fop_d,fop_a,fop_b,0); fbop_end(op); break;
 		case shop_fsub: fbop_resolve(op); ppc_fsubsx(fop_d,fop_a,fop_b,0); fbop_end(op); break;
 		case shop_fmul: fbop_resolve(op); ppc_fmulsx(fop_d,fop_a,fop_b,0); fbop_end(op); break;
@@ -4163,11 +3451,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			binop_end(op);
 			break;
 
-		// --- 64-bit multiply: low -> rd (macl) / high -> rd2 (mach) -----------
-		// NOTE: the decoder puts the high word in op->rd2 (reg_mach), NOT in
-		// op->rd._reg+1. reg_mach actually PRECEDES reg_macl in the enum, so
-		// rd._reg+1 == reg_pr — the old code corrupted PR and never wrote mach,
-		// which broke booting.
+		// mul_u64: low -> rd (macl), high -> rd2 (mach). Not rd+1: reg_mach precedes reg_macl, so rd+1 is PR.
 		case shop_mul_u64:
 			// 64-bit unsigned product of two 32-bit values.
 			binop_start(op);
@@ -4186,10 +3470,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			ppc_sh_store(ppc_rarg2,op->rd2);
 			break;
 
-		// --- 32-bit division (matched ROTCL/DIV1 idiom): quo->rd, rem->rd2 ----
-		// Broadway has hardware divide; remainder = dividend - quo*divisor.
-		// Division by zero gives an undefined register result on PPC (no trap),
-		// which is fine — matched sequences are compiler-generated divisions.
+		// Matched ROTCL/DIV1 idiom: hardware divide, remainder = dividend - quo*divisor. Divide by zero is
+		// undefined, not a trap; these are compiler-generated divisions.
 		case shop_div32u:
 			binop_start(op);				// rarg0=dividend, rarg1=divisor
 			ppc_divwux(ppc_rarg2,ppc_rarg0,ppc_rarg1,0,0);	// quo = divwu
@@ -4208,10 +3490,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			ppc_sh_store(ppc_rarg3,op->rd2);
 			break;
 		case shop_div32p2:
-			// rd = T ? a : a-b  (non-restoring remainder fixup).
-			// PRECONDITION: T (rs3) is 0/1 — guaranteed because the decoder
-			// emits "and T,quo,1" immediately before this op. mask = T-1 maps
-			// 0 -> 0xFFFFFFFF (apply b) and 1 -> 0 (keep a). Branchless.
+			// rd = T ? a : a-b (non-restoring fixup); T is 0/1 (the decoder emits and T,quo,1), so mask = T-1.
 			binop_start(op);				// rarg0=a, rarg1=b
 			ppc_sh_load(ppc_rarg2,op->rs3);			// T
 			ppc_addi(ppc_rarg2,ppc_rarg2,-1);		// mask = T-1
@@ -4222,9 +3501,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		// --- Shifts with dynamic SH4 semantics (branchless) -------------------
 		case shop_ror:
-			// rd = rotr(r1, r2&31). PPC rotates left; rotl by (32-(r2&31)).
-			// rlwnm rotate amount is taken from rB[27:31] (mod 32), so passing
-			// 32 when (r2&31)==0 is harmless (32 mod 32 == 0).
+			// rotr by rotating left 32-(r2&31); rlwnm uses rB mod 32, so 32 for a zero count is harmless.
 			binop_start(op);
 			ppc_rlwinmx(ppc_rarg1,ppc_rarg1,0,27,31,0);	// rarg1 = r2 & 0x1F
 			ppc_subfic(ppc_rarg1,ppc_rarg1,32);			// rarg1 = 32 - (r2&31)
@@ -4232,12 +3509,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			binop_end(op);
 			break;
 		case shop_shld:
-			// SH4 logical dynamic shift (branchless):
-			//   left  = r1 << (r2 & 0x1F)
-			//   rcnt  = (-r2) & 0x1F ;  if rcnt==0 force 32 so srw yields 0
-			//   right = r1 >> rcnt
-			//   res   = (r2 >= 0) ? left : right
-			// (When r2<0 and (r2&31)==0 SH4 yields 0; srw by 32 gives 0.)
+			// shld, branchless: r2 >= 0 ? r1 << (r2&31) : r1 >> ((-r2)&31), a right count of 0 forced to 32 so srw
+			// gives 0 (as SH4 does).
 			{
 				binop_start(op);				// rarg0=r1, rarg1=r2
 				// left = r1 << (r2 & 0x1F)
@@ -4261,11 +3534,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 		case shop_shad:
-			// SH4 arithmetic dynamic shift (branchless):
-			//   left  = r1 << (r2 & 0x1F)
-			//   rcnt  = (-r2) & 0x1F ;  if rcnt==0 force 31 (sign fill)
-			//   right = (s32)r1 >> rcnt
-			//   res   = (r2 >= 0) ? left : right
+			// shad, branchless: r2 >= 0 ? r1 << (r2&31) : (s32)r1 >> ((-r2)&31), a count of 0 forced to 31 (sign fill).
 			{
 				binop_start(op);				// rarg0=r1, rarg1=r2
 				ppc_rlwinmx(ppc_rarg2,ppc_rarg1,0,27,31,0);	// r2 & 0x1F
@@ -4288,11 +3557,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- Carry / overflow arithmetic (JIT_CARRY preset) -------------------
-		// All of these used to be shop_ifb call-outs because SHIL had no way to
-		// say "produce a value AND the new T bit". Scratch budget: sources go
-		// to rarg0/rarg1, the T<->XER shuffle uses rarg2, the dest is a pinned
-		// GPR or rarg3 — no two of those can alias.
+		// JIT_CARRY ops (were shop_ifb): sources in rarg0/rarg1, the T<->XER shuffle in rarg2, the dest pinned or
+		// rarg3, so none alias.
 
 		case shop_adc:		// addc Rm,Rn : Rn = Rn + Rm + T ; T = carry
 			{
@@ -4308,9 +3574,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_sbc:		// subc Rm,Rn : Rn = Rn - Rm - T ; T = borrow
 			{
-				// subfe d,b,a computes ~b + a + CA = a - b - 1 + CA, so CA
-				// carries the INVERTED T going in and comes back as "no
-				// borrow" — hence invert on both ends.
+				// subfe d,b,a = a - b - 1 + CA: CA carries the inverted T in and returns "no borrow", so invert both ends.
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 b=src_or_load(op->rs2,ppc_rarg1);
 				u32 d=carry_dest(op);
@@ -4358,10 +3622,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_cmpstr:	// cmp/str Rm,Rn : T = any byte lane is equal
 			{
-				// Classic has-zero-byte test on (Rn ^ Rm):
-				//   x = (t - 0x01010101) & ~t ; rotl 1 ; & 0x01010101 ; != 0
-				// The mask has its MSB clear, so the `and.` result can never be
-				// negative and CR0[GT] is exactly "non-zero".
+				// Has-zero-byte test on Rn ^ Rm: (t - 0x01010101) & ~t, rotl 1, & 0x01010101; the mask's MSB is clear,
+				// so CR0[GT] is exactly "non-zero".
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 b=src_or_load(op->rs2,ppc_rarg1);
 
@@ -4378,9 +3640,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_swaplb:	// swap.b Rm,Rn : swap the two LOW bytes
 			{
-				// rlwimi rotate n places source bit (i+n)%32 into dest bit i:
-				// bits 16..23 come from 24..31 (n=8), 24..31 from 16..23 (n=24).
-				// Built in scratch so a dest that aliases the source is safe.
+				// rlwimi rotates source bit (i+n)%32 into dest bit i: bits 16-23 from 24-31 (n=8), 24-31 from 16-23
+				// (n=24). Built in scratch, so a dest that aliases the source is safe.
 				u32 s=src_or_load(op->rs1,ppc_rarg0);
 				ppc_rlwinmx(ppc_rarg1,s,0,0,15,0);	// keep the upper half
 				ppc_rlwimix(ppc_rarg1,s,8,16,23,0);
@@ -4391,17 +3652,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_div1:		// div1 Rm,Rn : one non-restoring division step
 			{
-				// q_new = q ^ oldQ ^ CA ^ 1, where q = MSB(Rn) before the
-				// shift and CA is the carry out of the unified add:
-				//     sel  = oldQ ^ M          (1 => add Rm, 0 => subtract)
-				//     rmx  = sel ? Rm : ~Rm    (mask = sel-1)
-				//     cin  = !sel
-				//     Rn   = ((Rn<<1)|T) + rmx + cin
-				// The M term cancels out of the usual `q ^ M ^ carry ^ !sel`
-				// because sel already carries it. T = (q_new == M).
-				//
-				// Rm is captured into rmx BEFORE Rn is shifted, so `div1 Rn,Rn`
-				// behaves like the hardware.
+				// div1: sel = oldQ ^ M, Rn = ((Rn<<1)|T) + (sel ? Rm : ~Rm) + !sel, q_new = q ^ oldQ ^ CA ^ 1, T = (q_new
+				// == M). Rm is read before Rn shifts, so div1 Rn,Rn works.
 				const u32 t0=ppc_rarg0;		// SR.status, live to the end
 				const u32 t1=ppc_rarg1;		// M, live to the T test
 				const u32 t2=ppc_rarg2;		// oldQ, then general scratch
@@ -4458,20 +3710,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- Multiply-accumulate (JIT_MAC preset) -----------------------------
-		// mac.l / mac.w. The two @Rm+/@Rn+ reads are NOT here — the decoder
-		// issues them as ordinary shop_readm ops (DM_MAC), which is most of the
-		// win: on the old shop_ifb path they went through the interpreter's
-		// ReadMem and never saw fastmem. What is left is the 64-bit accumulate.
-		//
-		// Shape, identical for both widths:
-		//     r3..r7 = a, b, old MACL, old MACH, SR.status   (kept live)
-		//     r8..r11 = the S==0 result, stored unconditionally
-		//     then, only if SR.S is set, call sh4_mac_l/w with r3..r7 to redo
-		//     it properly from the ORIGINAL accumulator and overwrite.
-		// Passing the old accumulator to the helper instead of letting it read
-		// the context is what lets the store happen before the test, so the
-		// common path needs one conditional branch and no unconditional one.
+		// JIT_MAC: the @Rm+/@Rn+ reads are ordinary shop_readm ops (DM_MAC). The S==0 result is stored first;
+		// only with SR.S set does sh4_mac_l/w redo it from the old accumulator.
 		case shop_mac_l:
 		case shop_mac_w:
 			{
@@ -4483,10 +3723,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_sh_load(ppc_rarg3,reg_mach);		// old MACH
 				ppc_sh_load(ppc_rarg4,op->rs3);			// SR.status
 
-				// Product, sign-extended to 64 bits. mac.w's operands are
-				// already sign-extended 16-bit values (shop_readm size 2 emits
-				// lha), so mullw gives the whole signed product and the high
-				// word is just its sign.
+				// mac.w operands are already sign-extended (lha), so mullw gives the signed product; its sign is the high word.
 				ppc_mullwx(ppc_rarg5,ppc_rarg0,ppc_rarg1,0,0);
 				if (is_l)
 					ppc_mulhwx(ppc_rarg6,ppc_rarg0,ppc_rarg1,0);
@@ -4498,9 +3735,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_sh_store(ppc_rarg7,op->rd);			// -> MACL
 				ppc_sh_store(ppc_r11,op->rd2);			// -> MACH
 
-				// SR.S is value bit 1. Saturation mode is vanishingly rare —
-				// rare enough that the old interpreter died on it — so this is
-				// a predicted-not-taken forward branch over a call.
+				// SR.S (value bit 1) is rare, so a predicted-not-taken branch over the call.
 				ppc_andi(ppc_r0,ppc_rarg4,2);
 				ppc_label* done=ppc_CreateLabel();
 				ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq -> done
@@ -4516,10 +3751,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// (set*/test do their own operand load + immediate folding internally.)
 		case shop_test:	// rd = (r1 & r2) == 0
 			{
-				// and./andi. read any reg and write a scratch dest (rarg0), so we
-				// can source pinned rs1/rs2 in place and skip the loading mr's. The
-				// result (CR0) goes through mfcr->rarg0; rarg0 as the and dest is
-				// dead-on-arrival so clobbering a pinned source is impossible.
+				// and./andi. read pinned rs1/rs2 in place and write scratch rarg0, which mfcr then reads.
 				u32 a1=src_or_load(op->rs1,ppc_rarg0);
 
 				if (op->rs2.is_imm_u16())
@@ -4529,9 +3761,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					u32 b;
 					if (op->rs2.is_imm()) { ppc_li(ppc_rarg1,op->rs2._imm); b=ppc_rarg1; }
 					else b=src_or_load(op->rs2,ppc_rarg1);
-					// `and.` sets CR0 from the FULL 64-bit result, but SH4 tst is a
-					// 32-bit test and pinned regs carry poison above bit 31: a zero
-					// low word with dirty high words gave T=0 instead of T=1.
+					// Not `and.`: it sets CR0 from 64 bits, and pinned regs carry poison above bit 31 (a zero low word read
+					// as non-zero, T=0 instead of 1).
 					ppc_andx(ppc_rarg0,a1,b,0);
 					ppc_cmpli(ppc_cr0,ppc_rarg0,0,0);		// cmplwi rarg0,0 -> CR0 from the low word
 				}
@@ -4558,9 +3789,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		case shop_fabs: fuop_resolve(op); ppc_fabsx(fop_d,fop_a,0); fbop_end(op); break;
 		case shop_fneg: fuop_resolve(op); ppc_fnegx(fop_d,fop_a,0); fbop_end(op); break;
 
-		// --- Float comparisons (rd is an integer 0/1) -------------------------
-		// fcmpu reads any FPR, so pinned operands compare in place; only rd
-		// (an int reg) goes through rarg0 as before.
+		// Float compares: fcmpu reads pinned FPRs in place; only the 0/1 result goes through rarg0.
 		case shop_fseteq:
 			{
 				u32 a=fsrc_or_load(op->rs1,ppc_farg0);
@@ -4580,11 +3809,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- Float<->int conversion -------------------------------------------
-		// All conversions bounce integer<->double bit patterns through the
-		// per-context jit_scratch slot (8 bytes, 8-aligned), addressed via
-		// ppc_contex. This avoids relying on a stack red zone (the devkitPPC
-		// EABI does not guarantee one below sp).
+		// Float<->int conversions bounce bit patterns through the context's 8-byte jit_scratch slot, not a red zone.
 		case shop_cvt_f2i_t:	// (s32)truncate(f)
 			{
 				// rs1 float read in place (pinned) or into farg0; rd is int.
@@ -4598,9 +3823,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			break;
 		case shop_cvt_i2f_n:	// (float)(s32)  round-to-nearest
 		case shop_cvt_i2f_z:	// (float)(s32)  (s32->f32 is identical for both modes here)
-			// Classic PPC s32->double magic-constant trick:
-			//   d = bitcast(0x43300000_00000000 | (u32)(r1 ^ 0x80000000)) - 0x4330000080000000.0
-			// d is the exact (double)(s32)r1; frsp narrows to single.
+			// s32 -> double: bitcast(0x43300000_00000000 | (r1 ^ 0x80000000)) - 0x4330000080000000.0 is exact; frsp
+			// narrows to single.
 			{
 				unop_start(op);					// rarg0 = r1
 				u32 so = (u32)offsetof(Sh4Context, jit_scratch);
@@ -4624,21 +3848,15 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- FMAC: rd = rs1 + rs2 * rs3  (scalar) -----------------------------
-		// fmadds(D,A,B,C) = A*C + B  ->  rs2*rs3 + rs1.  Single instruction, so
-		// under FPU_PIN read all three pinned sources in place and write the
-		// pinned dest in place (was 3 lfs + op + stfs). NOTE for SH4 fmac, rd
-		// aliases rs3 (== FR0-accumulate form is different; here rd is a real
-		// fr), and fmadds reads A,B,C before writing D, so aliasing is safe.
+		// fmac: rd = rs1 + rs2*rs3 as one fmadds on pinned operands; fmadds reads A, B, C before writing D, so
+		// aliasing is safe.
 		case shop_fmac:
 			{
 				u32 a=fsrc_or_load(op->rs1,ppc_f0);	// addend (rs1)
 				u32 b=fsrc_or_load(op->rs2,ppc_f1);
 				u32 c=fsrc_or_load(op->rs3,ppc_f2);
 				u32 d=fdst_reg(op->rd,ppc_f0);
-				// fmaddsx(D,A,B,C) = A*C + B. Want d = rs2*rs3 + rs1 = b*c + a,
-				// so A=b, C=c, B=a -> fmaddsx(d, b, a, c). (Matches the legacy
-				// fmaddsx(f0,f1,f0,f2) = f1*f2 + f0 arg pattern D,rs2,rs1,rs3.)
+				// fmaddsx(D,A,B,C) = A*C + B, so d = b*c + a is fmaddsx(d, b, a, c).
 				ppc_fmaddsx(d,b,a,c,0);			// d = b*c + a
 				fdst_store(op->rd,d,ppc_f0);
 			}
@@ -4647,6 +3865,17 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// --- FIPR: rd = dot(v1, v2) over 4 elements ---------------------------
 		// rs1,rs2 are FV4 vectors (base fr); rd is the 4th element slot.
 		case shop_fipr:
+			if (get_jit_ftrv_preset())
+			{
+				FvElem a[4], b[4];
+				for (u32 i=0;i<4;i++)
+				{
+					a[i]=fv_elem(op->rs1._reg+i);
+					b[i]=fv_elem(op->rs2._reg+i);
+				}
+				emit_fipr(a,b,fv_elem(op->rd._reg),ppc_contex);
+			}
+			else
 			{
 				ppc_fvec_load(ppc_f1,op->rs1,0);
 				ppc_fvec_load(ppc_f2,op->rs2,0);
@@ -4661,12 +3890,17 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- FTRV: rd(vec4) = matrix(rs2) x vec(rs1) --------------------------
-		// rs1 = FV4 vector (fr base), rs2 = XMTRX (xf base), rd = FV4 (aliases rs1).
-		//   out[i] = m[i]*v[0] + m[4+i]*v[1] + m[8+i]*v[2] + m[12+i]*v[3]
-		// Results go to f4..f7 first because rd aliases rs1 (must finish reads
-		// before any store).
+		// ftrv: rd = XMTRX (xf, rs2) x FV (fr, rs1), out[i] = sum of m[4j+i]*v[j]; results go to f4..f7 first,
+		// as rd aliases rs1.
 		case shop_ftrv:
+			if (get_jit_ftrv_preset() && ftrv_v2_ok(op))
+			{
+				FvElem v[4];
+				for (u32 j=0;j<4;j++)
+					v[j]=fv_elem(op->rs1._reg+j);
+				emit_ftrv(v,Sh4cntx.offset(op->rs2._reg),ppc_contex);
+			}
+			else
 			{
 				// Load the input vector once into f8..f11.
 				for (u32 j=0;j<4;j++)
@@ -4711,14 +3945,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// --- SR / FPSCR sync, prefetch, sqrt: direct native calls ------------
-		// sync_sr: write SR side-effects. UpdateSR() -> ChangeGPR() swaps
-		// r[]<->r_bank[] IN MEMORY on an SR.RB change, so pinned GPRs must be
-		// flushed before and reloaded after. The bool return (interrupt pending)
-		// is intentionally ignored here: every SH4 op that emits sync_sr ends its
-		// block with BET_*Intr, whose native handler runs UpdateINTC and
-		// dispatches. (This is pseudo-core: keep it self-contained, do not rely
-		// on the generic fallback.)
+		// sync_sr: UpdateSR() swaps r[]/r_bank[] in memory on SR.RB, so pinned GPRs are flushed and reloaded. Its
+		// return is ignored: every sync_sr block ends in BET_*Intr, which runs UpdateINTC.
 		case shop_sync_sr:
 			reg_flush_all();
 			ppc_call_c(&UpdateSR);
@@ -4741,11 +3969,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// pref: store-queue prefetch. Only addresses in the SQ region trigger a
-		// store-queue flush — the canonical guards with `if ((addr>>26)==0x38)`
-		// BEFORE calling do_sqw (do_sqw itself assumes an SQ address). For any
-		// other address pref is a no-op. The MMU vs no-MMU variant is chosen at
-		// COMPILE time from CCN_MMUCR.AT. addr in rarg0.
+		// pref: only SQ addresses ((addr>>26) == 0x38) flush the store queue; else a no-op. MMU or not is chosen at
+		// compile time from CCN_MMUCR.AT.
 		case shop_pref:
 			{
 				ppc_sh_load(ppc_rarg0,op->rs1);
@@ -4812,14 +4037,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
           printf("OH CRAP %d\n", op->op);
           die("Recompiler doesn't know about that opcode");
       }
-			// Bracket the canonical fallback with flush/reload: some fallback
-			// handlers (notably sync_sr -> UpdateSR) mutate context GPRs directly
-			// (e.g. SR.RB bank switch), so pinned regs must be coherent in memory
-			// across the call and re-read afterwards. The CC param marshalling
-			// itself is register-aware and unaffected. FPU_PIN: any un-natived
-			// float op reads/writes fr[]/xf[] directly too (including via
-			// ppc_sh_addr's &Sh4cntx.fr[n] pointers for CPT_ptr canonical
-			// params), so pinned fr needs the same bracket.
+			// Canonical fallback: some handlers change context GPRs or fr/xf directly (sync_sr's bank switch, CPT_ptr
+			// params to &Sh4cntx.fr[n]), so pinned registers are flushed before and reloaded after.
 			reg_flush_all();
 			reg_flush_all_fpu();
 			shil_chf[op->op](op);
@@ -4832,12 +4051,19 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 	ngen_End(block);
 
-	// Split point for JIT_HOTBLOCKS: everything up to here is the block's HOT
-	// body, everything FlushCold() adds after it is out-of-line mem slow paths
-	// that usually never execute. Lumping them together makes a block with big
-	// cold fragments look like bad codegen when its hot path may be fine, so
-	// the two are reported separately.
+	// JIT_HOTBLOCKS split: up to here is the hot body; FlushCold's out-of-line paths are reported separately.
 	u8 *const _hb_cold_start = (u8*)emit_GetCCPtr();
+
+	// JIT CYCLE CHECK 1 and 2: the block's cycle exit, first in the cold area so its 16-bit blt reaches it.
+	if (s_cycle_exit)
+	{
+		const snat d=(u8*)emit_GetCCPtr()-(u8*)s_cycle_exit;
+		verify(d>0 && d<32768);
+		s_cycle_exit->MarkLabel();
+		s_cycle_exit=0;
+		ppc_li(ppc_next_pc,block->start);
+		ppc_jump(loop_do_update_write);
+	}
 
 	FlushCold();          // emit the out-of-line mem slow paths after the block tail
 	make_address_range_executable((u8*)rv, (u8*)emit_GetCCPtr()-(u8*)rv);
@@ -4847,9 +4073,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	if (hb>=0)
 	{
 		u32 hot = (u32)(_hb_cold_start-(u8*)rv);
-		// Discount the probe's own 4-instruction counter so the B/op figure
-		// describes the codegen, not the measurement. On a 3-op block those
-		// 16 bytes are 5 B/op of pure observer effect.
+		// Discount the probe's own 4-instruction counter, so B/op describes the codegen.
 		s_hb[hb].ppc_start = (u8*)rv;
 		s_hb[hb].ppc_size  = hot>16 ? hot-16 : hot;
 		s_hb[hb].ppc_cold  = (u32)((u8*)emit_GetCCPtr()-_hb_cold_start);
@@ -4862,9 +4086,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 void ngen_ResetBlocks()
 {
-	// Block-cache clear: every fastmem-patched site just died with its
-	// block, so drop their trampolines too (bm_Reset calls this from
-	// recSh4_ClearCache and bm_Init).
+	// Block-cache clear: patched fastmem sites died with their blocks, so drop their trampolines too.
 	rec_fastmem_reset_pool();
 }
 
@@ -4882,17 +4104,11 @@ void* FASTCALL ngen_LinkBlock_Static(u32 pc,u32* patch)
 	
 	DynarecCodeEntry* rv=rdv_FindOrCompile();
 	
-	// rdv_FindOrCompile may have cleared the code cache. A clear rolls LastAddr
-	// back to LastAddr_min, so the very next compile lands ON the dead block
-	// that owns `patch` - writing here would overwrite an instruction inside
-	// fresh code with a branch to rv, which is how this livelocked. Same guard
-	// as ngen_LinkBlock_Dynamic_IC: if slot 2 is no longer our `bl`, the site
-	// is gone, so patch nothing and just enter rv.
+	// rdv_FindOrCompile may have cleared the cache, and the next compile lands on the dead site: patch only if
+	// slot 2 is still our `bl` (this livelocked before), else just enter rv.
 	const bool site_live = (patch[2] == static_site_bl_word(patch));
 
-	// Bring-up trace. Logged BEFORE the write: a bad link kills the SH4 thread
-	// outright, so the last line printed names the link that did it. Capped so
-	// the UDP log stays readable.
+	// Bring-up trace, logged before the write (a bad link kills the SH4 thread); capped for the UDP log.
 	if (get_debug_loop())
 	{
 		static u32 links=0;
@@ -4929,29 +4145,15 @@ static inline u32 ic_site_bl_word(const u32* site)
 	return 0x48000000u | ((0xffffffu & (u32)offs) << 2) | 1u;
 }
 
-// DYN_IC preset: fill a dynamic exit's inline cache.
-//
-// Reached by the `bl` in slot 0 of the site emitted in ngen_End(). `pc` is the
-// target the site actually branched to (rarg0 = djump, set just before the
-// site); `site` is the address of slot 0, recovered from LR by the stub.
-//
-// We compile/find the target, overwrite the four slots with the guard shown in
-// ngen_End(), and return the target so the stub's `bctr` jumps into it — this
-// call's dispatch is not wasted.
-//
-// Called at most once per site: after the rewrite slot 0 is no longer a `bl`,
-// so a target change just falls through to the generic path forever after.
+// DYN_IC fill, from the `bl` in slot 0 of a site: pc is the target taken, site is slot 0. Rewrites the
+// four slots with the guard (once per site) and returns the target for the stub's bctr.
 void* FASTCALL ngen_LinkBlock_Dynamic_IC(u32 pc,u32* site)
 {
 	next_pc=pc;
 
 	DynarecCodeEntry* rv=rdv_FindOrCompile();
 
-	// rdv_FindOrCompile may have cleared and refilled the code cache (a full
-	// clear resets LastAddr and recompiles from scratch). That destroys every
-	// patched site, this one included — `site` would now point into code that
-	// has been overwritten by an unrelated block. Detect it and patch nothing;
-	// the site is gone anyway and the caller is returning into fresh code.
+	// A cache clear in rdv_FindOrCompile overwrote this site with another block: patch nothing.
 	if (*site != ic_site_bl_word(site))
 		return (void*)rv;
 
@@ -4966,11 +4168,7 @@ void* FASTCALL ngen_LinkBlock_Dynamic_IC(u32 pc,u32* site)
 
 	make_address_range_executable(site, 4*sizeof(u32));
 
-	// [DYN_IC] engagement counter — served its purpose (Wii-measured
-	// 2026-09-07, see dyn-ic-preset memory) and is quieted now that this
-	// preset ships default-on. Re-enable if the fill path is ever suspect
-	// again: costs one increment per SITE (not per traversal), never on
-	// the hot path.
+	// [DYN_IC] engagement counter, quiet since the preset ships ON (Wii 2026-09-07); one increment per site.
 #if 0
 	{
 		static u32 ic_patched=0;
@@ -4982,9 +4180,7 @@ void* FASTCALL ngen_LinkBlock_Dynamic_IC(u32 pc,u32* site)
 	return (void*)rv;
 }
 
-// =========
-// MAIN LOOP
-// =========
+// ---- Main loop ----
 
 extern "C" int get_dynarec_preset();
 extern "C" int get_jit_safe_preset();
@@ -4997,9 +4193,7 @@ extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
 
-// One line per session naming every JIT toggle actually in force. Without it a
-// log cannot be told apart from a run with different settings, and an install
-// wipes nullDC.cfg.
+// One line per session with every JIT toggle in force: an install wipes nullDC.cfg, so a log needs its own.
 static void ps3_jit_dump_toggles()
 {
 	printf("[jitcfg] Dynarec=%d JitSafe=%d JitDynEnds=%d -> static_linking=%s\n",
@@ -5011,23 +4205,18 @@ static void ps3_jit_dump_toggles()
 	       get_jit_pcrel_preset(), get_debug_loop(), get_jit_ifb_mask(),
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
-	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d\n",
+	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
-	       get_jit_fastmem_preset());
+	       get_jit_fastmem_preset(), get_jit_sq_store_preset(), get_jit_ftrv_preset(),
+	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset());
 }
 
 void ngen_mainloop()
 {
-	// FASTMEM preset: set up the MMU window + DSI handler before the first
-	// block compiles. Idempotent, checks the preset itself, and leaves
-	// g_wii_fastmem_active=0 on any failure (emission then stays legacy).
-	// Called here (not recSh4_Init) so the game preset file has been
-	// applied and _vmem_reserve() has placed the guest arrays.
-	// No WiiFastmem_Init(): the PPC-MMU window and DSI handler are Wii-only.
-	// The PS3 window is arithmetic, so init only validates where the RAM
-	// block landed (Dynarec.MD 3.4).
+	// FASTMEM init before the first compile, after the presets and _vmem_reserve(). The PS3 window is
+	// arithmetic: this only checks where the RAM block landed (Dynarec.MD 3.4).
 	ps3_fastmem_init();
 
 	if (loop_code==0)
@@ -5036,14 +4225,8 @@ void ngen_mainloop()
 
 		loop_code=(void(*)())emit_GetCCPtr();
 		{
-			/*
-			create stack frame, push regsters, etc ..
-			*/
-			// PS3 ELFv1 frame (Dynarec.MD 3.2). Differs from the Wii on every
-			// count: 112-byte minimum linkage area instead of 8, the caller's LR
-			// slot at 16(sp) instead of 4(sp), 16-byte alignment, a back chain
-			// that stdu writes for us, and 8-byte register saves - stw would
-			// truncate the caller's 64-bit r13..r31.
+			// PS3 ELFv1 frame (Dynarec.MD 3.2): 112-byte linkage area, LR at 16(sp), 16-byte alignment, back chain by
+			// stdu, and 8-byte register saves (stw would truncate r13..r31).
 			const u32 GPR_SAVE_OFS   = 112;
 			u32 stac_alloc_size      = GPR_SAVE_OFS + 19*8;   // 264
 			stac_alloc_size          = (stac_alloc_size + 15) & ~15u;
@@ -5058,27 +4241,17 @@ void ngen_mainloop()
 				ppc_std(ppc_r13+i,GPR_SAVE_OFS+i*8,ppc_sp);
 			}
 
-			/*
-			pre load registers/counters etc ..
-			*/
 
 			//cntx base
 			ppc_lip(ppc_contex,&Sh4cntx);
 
-			// Load the pinned SH4 GPRs ONCE here, after ppc_contex is valid and
-			// before the loop_no_update re-entry point below. They then stay live
-			// in r14..r28 for the entire JIT run (no per-block reload/flush); the
-			// only resync points are shop_ifb and the canonical fallback.
+			// Load the pinned SH4 GPRs once, before the loop_no_update entry; they stay live in r14..r28 all run.
 			reg_reload_all();
 			// Same, for the FPU_PIN preset's fr[0..15] -> f14..f29 (no-op if off).
 			reg_reload_all_fpu();
 
-			// Cycle budget per timeslice. Latched from the accuracy preset
-			// (FAST=1792 / BALANCED=896 / ACCURATE=448) rather than the fixed
-			// SH4_TIMESLICE: recSh4_Run() applies the preset before this code
-			// is emitted, and UpdateSystem_no_event() advances TMU/PVR by the
-			// same s_timeslice, so the two stay consistent. Baked in at emit
-			// time — the mainloop is generated once per session.
+			// Cycle budget per timeslice from the accuracy preset (1792/896/448), the same s_timeslice that
+			// UpdateSystem_no_event() advances TMU/PVR by; baked in once per session.
 			const s32 jit_timeslice = sh4_GetTimeslice();
 
 			//cycles
@@ -5101,10 +4274,8 @@ void ngen_mainloop()
 			ppc_sh_store(ppc_next_pc,reg_nextpc);
 			ppc_addi(ppc_cycles,ppc_cycles,jit_timeslice);	//add cycles (preset-latched timeslice)
 
-			// Split UpdateSystem: the GPR-free peripheral cascade + interrupt
-			// pending-check runs every timeslice WITHOUT flushing the pinned
-			// GPRs. Only if it reports a pending interrupt (rv != 0) do we flush,
-			// run the GPR-touching handler (Do_Interrupt / bank swap), and reload.
+			// UpdateSystem_no_event runs every timeslice without flushing pinned GPRs; only a pending interrupt
+			// flushes, runs the GPR-touching handler and reloads.
 			ppc_call_c(UpdateSystem_no_event);
 			ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);			// rv == 0 ?
 			ppc_label* no_intr=ppc_CreateLabel();
@@ -5120,42 +4291,6 @@ void ngen_mainloop()
 			ppc_jump(loop_no_update);
 			//right
 
-      /*
-      Claude AI says it's dead end after looking in dump dynarec_XXX.bin
-			ppc_lbz(ppc_rarg0,ppc_rarg0,ppc_addr_high(ppc_rarg0,(void*)&sh4_int_bCpuRun));
-			ppc_sh_load(ppc_next_pc,reg_nextpc);
-
-			ppc_cmpi(ppc_cr0,ppc_rarg0,1,0);	//set flags
-
-			//does this even work ?
-			//ppc_bcx(BO_TRUE,BI_CR0_EQ,ppc_jdiff(loop_no_update),0,0);
-			
-
-			//write back registers and stuff ...
-
-			//cleanup
-			
-			Clean up the stack frame and return ...
-			
-
-			//restore link register
-			ppc_lwz(ppc_r0,ppc_sp,stac_alloc_size+4);
-			ppc_mtlr(ppc_r0);
-
-			//restore gprs 13 .. 31
-			for (int i=0;i<19;i++)
-			{
-				ppc_lwz(ppc_r13+i,ppc_sp,stac_alloc_size-4-i*4);
-			}
-
-			
-
-			//destroy stack frame
-			ppc_addi(ppc_sp,ppc_sp,stac_alloc_size);
-
-			//return
-			ppc_bclrx(BO_ALWAYS,BI_CR0_EQ,0);  // blr
-      */
 
 		} //that was mainloop
 
@@ -5166,9 +4301,7 @@ void ngen_mainloop()
 			ppc_call_and_jump_c(&rdv_FailedToFindBlock);
 		}
 
-    // ====================
-    // STATIC BLOCK LINKING
-    // ====================
+    // ---- Static block linking ----
 
 		ngen_LinkBlock_Static_stub=emit_GetCCPtr();
 		{
@@ -5192,10 +4325,7 @@ void ngen_mainloop()
 			//not used for now
 		}
 
-		// DYN_IC preset: inline-cache fill stub. Entered by the `bl` in slot 0
-		// of an unpatched site, so LR = site+4 and rarg0 = the target PC (the
-		// `mr rarg0,djump` that precedes every site). Hand both to the patcher
-		// and jump into whatever it returns.
+		// DYN_IC fill stub, entered by slot 0's `bl`: LR = site+4, rarg0 = target pc; patch and jump to the result.
 		ngen_LinkBlock_Dynamic_IC_stub=emit_GetCCPtr();
 		{
 			ppc_mfspr(ppc_rarg1,ppc_spr_lr);
@@ -5236,10 +4366,8 @@ extern "C" int get_jit_dynends_preset();
 
 void ngen_GetFeatures(ngen_features* dst)
 {
-	// Two separate bring-up switches. JITSAFE routes every non-branch opcode to
-	// the interpreter; JITDYNENDS disables static block linking so every exit
-	// goes through the dispatcher. Splitting them tells opcode bugs apart from
-	// block-linking bugs, which one combined switch could not.
+	// Two bring-up switches: JITSAFE sends non-branch opcodes to the interpreter, JITDYNENDS turns off static
+	// linking, so opcode bugs and linking bugs can be told apart.
 	dst->InterpreterFallback = get_jit_safe_preset() != 0;
 	dst->OnlyDynamicEnds     = get_jit_safe_preset() != 0 ||
 	                           get_jit_dynends_preset() != 0;
