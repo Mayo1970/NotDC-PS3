@@ -88,9 +88,10 @@ typedef struct
 {
 	uint32_t aram_ea;  // PS3 aica_ram (DC byte a at host byte a ^ 3)
 	uint32_t dsp_mode;
-	uint32_t snd;      // 5.13 A2: the SPU makes the sound, without the DSP, into ps3_audio.cpp's ring
+	uint32_t snd;      // 5.13 A2: the SPU makes the sound into ps3_audio.cpp's ring
 	uint32_t ring_ea, ring_frames, wr_ea, rd_ea, w0;   // ring (2 floats a frame), ring_wr, ring_rd, ring_wr at boot
-	uint32_t pad[24];
+	uint32_t snd_dsp;  // 5.13 A3: the sound runs the DSP (dsp_mode); A2 alone plays without it
+	uint32_t pad[23];
 } __attribute__((aligned(128))) AicaSetup;
 
 // One CD-DA sector, 128-byte aligned for the SPU's DMA

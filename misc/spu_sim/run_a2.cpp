@@ -1,7 +1,8 @@
-// 5.13 A2 high voices: the real spe_aica image (sound mode) in the simulator, fed like ps3_aica_spe.cpp; checks bad=0
+// 5.13 A2 high voices / A3: the real spe_aica image (sound mode) in the simulator, fed like ps3_aica_spe.cpp; checks bad=0
 // and every 48 kHz frame against the base model, reports SPU cycles. Usage: run_a2 elf [scenario seconds voices seed]
 #include "spusim.h"
 #include "spe_aica.h"
+#include "dsp_asm.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,7 +64,7 @@ static void ref_sample(RefSnd& s, int32_t l, int32_t r)
 static std::mt19937 g_rng;
 static uint32_t rnd(uint32_t n) { return (uint32_t)(g_rng() % n); }
 struct Ev { uint32_t off, val; };
-static void* g_base;   // reference: full model, no DSP
+static void* g_base;   // reference: full model; run() with the DSP in the dsp scenarios (A3)
 static void* g_cur;    // the PPU's control twin (current tree)
 static std::vector<uint8_t> g_dc;   // DC-order wave RAM, mirrored into both models and the PS3-layout aica_ram
 
@@ -95,6 +96,7 @@ struct Voice { bool on; uint32_t fmt; };
 static Voice g_v[64];
 static int g_nv;
 static const char* g_scn = "mix";
+static bool g_dsp;   // dsp / dsprand: the SPU runs the DSP (A3); env DSPJIT = its mode, default 1 (recompiler)
 
 static uint32_t pick_fmt()
 {
@@ -109,7 +111,8 @@ static void program_voice(int ch)
 {
     const uint32_t b = 0x80 * ch, fmt = pick_fmt();
     g_v[ch].fmt = fmt;
-    const uint32_t sa = fmt == 0 ? 0x000000 + rnd(0x7F000) * 2 : fmt == 1 ? 0x180000 + rnd(0x70000) : 0x100000 + rnd(0x70000);
+    // dsp scenarios: 0x1E0000 up is the DSP's (ring, then a table), no slot reads it
+    const uint32_t sa = fmt == 0 ? 0x000000 + rnd(0x7F000) * 2 : fmt == 1 ? 0x180000 + rnd(g_dsp ? 0x50000 : 0x70000) : 0x100000 + rnd(0x70000);
     const uint32_t len = 2000 + rnd(12000), lsa = rnd(500);
     wr(b + 0x00, (sa >> 16) | fmt << 7 | 1u << 9);   // LPCTL loop
     wr(b + 0x04, sa & 0xFFFF);
@@ -137,12 +140,42 @@ static void key(int ch, bool on)
 }
 static void kyonex() { wr(0, (base_read(g_base, 0) & 0x47FF) | 0x8000); }
 
+// A3: a program with half its steps busy: bus and EXTS inputs, ring reads and writes (some on even steps, so playing
+// slots collide), TABLE reads above the ring, EFREG outputs. No TABLE write and no 64K-word ring: the SPU keeps neither.
+static void program_dsp()
+{
+    const uint32_t rbl = !strcmp(g_scn, "dsprand") ? rnd(3) : 2;
+    wr(0x2804, (0x1E0000 / 2048) | rbl << 13);
+    for (int s = 0; s < 128; s++)
+    {
+        dsp_inst_t i = {};
+        if (rnd(2))
+        {
+            i.TRA = rnd(0x80); i.TWT = rnd(3) == 0; i.TWA = rnd(0x80);
+            i.XSEL = rnd(2); i.YSEL = rnd(4); i.IRA = rnd(3) ? 0x20 + rnd(16) : rnd(4) ? rnd(0x20) : 0x30 + rnd(2);
+            i.IWT = rnd(6) == 0; i.IWA = rnd(0x20);
+            i.MRD = rnd(3) == 0; i.MWT = !i.MRD && rnd(3) == 0; i.TABLE = i.MRD && rnd(6) == 0;
+            i.EWT = rnd(4) == 0; i.EWA = rnd(16);
+            i.ADRL = rnd(8) == 0; i.FRCL = rnd(6) == 0; i.SHIFT = rnd(4); i.YRL = rnd(6) == 0;
+            i.NEGB = rnd(4) == 0; i.ZERO = rnd(4) == 0; i.BSEL = rnd(3) == 0;
+            i.NOFL = rnd(6) == 0; i.MASA = rnd(0x40); i.ADREB = rnd(4) == 0; i.NXADR = rnd(4) == 0;
+        }
+        uint16_t w[4];
+        dsp_encode(&i, w);
+        for (int k = 0; k < 4; k++) wr(0x3400 + 16 * s + 4 * k, w[k]);
+    }
+    for (int s = 0; s < 128; s++) wr(0x3000 + 4 * s, rnd(0x10000) & 0xFFF8);
+    for (int k = 0; k < 64; k++) wr(0x3200 + 4 * k, rnd(0x10000));
+    for (int k = 0; k < 16; k++) wr(0x2000 + 4 * k, rnd(2) ? (8 + rnd(8)) << 8 | rnd(32) : 0);   // EFSDL, EFPAN
+}
+
 // Writes for the sample about to run: register traffic like a game's sound driver
 static void scenario_tick(uint32_t t, uint32_t total)
 {
     const bool pause = !strcmp(g_scn, "pause") && t >= total / 2;
     if (t == 0)
     {
+        if (g_dsp) program_dsp();
         for (int ch = 0; ch < g_nv; ch++) { program_voice(ch); key(ch, true); }
         kyonex();
         return;
@@ -172,6 +205,8 @@ static void scenario_tick(uint32_t t, uint32_t total)
         default: wr(b + 0x30 + 4 * rnd(3), 0x400 + rnd(0x1C00)); break;
         }
     }
+    if (g_dsp && rnd(10000) < 20)   // ~880 COEF writes/s
+        wr(0x3000 + 4 * rnd(128), rnd(0x10000) & 0xFFF8);
     if (rnd(10000) < 8)   // ~35 note changes/s
     {
         const int ch = (int)rnd((uint32_t)g_nv);
@@ -188,6 +223,9 @@ int main(int argc, char** argv)
     const double secs = argc > 3 ? atof(argv[3]) : 2.0;
     g_nv = argc > 4 ? atoi(argv[4]) : 28;
     g_rng.seed(argc > 5 ? (uint32_t)atoi(argv[5]) : 1);
+    g_dsp = !strncmp(g_scn, "dsp", 3);
+    const uint32_t dspjit = getenv("DSPJIT") ? (uint32_t)atoi(getenv("DSPJIT")) : 1;
+    const bool snd = !getenv("SND") || atoi(getenv("SND")) != 0;   // SND=0: the A1 check alone, no frames
     const uint32_t total = (uint32_t)(secs * 44100) & ~63u;
 
     g_bell = (uint8_t*)calloc(1, 128);
@@ -203,7 +241,7 @@ int main(int argc, char** argv)
     g_reg[4] = {EA_RING, RING_FRAMES * 8, g_ring};
     g_reg[5] = {EA_WORDS, 256, g_words};
 
-    g_base = base_create(1);
+    g_base = base_create(g_dsp ? 0 : 1);
     g_cur = cur_create(0);
     // wave RAM: smooth PCM16, PCM8, random ADPCM nibbles
     g_dc.resize(2u << 20);
@@ -215,13 +253,16 @@ int main(int argc, char** argv)
     }
     for (uint32_t a = 0x100000; a < 0x180000; a++) g_dc[a] = (uint8_t)rnd(256);
     for (uint32_t a = 0x180000; a < 0x200000; a++) g_dc[a] = (uint8_t)(int8_t)(90 * sin(a * 0.013) + (int)rnd(20) - 10);
+    if (g_dsp)   // the ring starts at 0 like the SPU's LS copy; a table above it for TABLE reads
+        for (uint32_t a = 0x1E0000; a < 0x200000; a++) g_dc[a] = a < 0x1F0000 ? 0 : (uint8_t)(a * 0x9E3779B1u >> 24);
     memcpy(base_ram(g_base), g_dc.data(), g_dc.size());
     for (uint32_t a = 0; a < g_dc.size(); a++) g_aram[a ^ 3] = g_dc[a];
 
     uint8_t* su = g_shared + offsetof(AicaShared, setup);
     put32(su + offsetof(AicaSetup, aram_ea), EA_ARAM);
-    put32(su + offsetof(AicaSetup, dsp_mode), 0);
-    put32(su + offsetof(AicaSetup, snd), 1);
+    put32(su + offsetof(AicaSetup, dsp_mode), g_dsp || !snd ? dspjit : 0);
+    put32(su + offsetof(AicaSetup, snd_dsp), g_dsp ? 1 : 0);
+    put32(su + offsetof(AicaSetup, snd), snd ? 1 : 0);
     put32(su + offsetof(AicaSetup, ring_ea), EA_RING);
     put32(su + offsetof(AicaSetup, ring_frames), RING_FRAMES);
     put32(su + offsetof(AicaSetup, wr_ea), EA_WORDS);
@@ -238,7 +279,7 @@ int main(int argc, char** argv)
     sim->r[5].w[1] = EA_SHARED;
     sim->prof = (uint64_t*)calloc(0x10000, sizeof(uint64_t));
     sim->brmiss = (uint32_t*)calloc(0x10000, sizeof(uint32_t));
-    int rc = spusim_run(sim, 50000000);
+    int rc = spusim_run(sim, 4000000000ull);   // the DSP recompiler's boot self-test runs first
     if (rc != SPU_RUN_BLOCKED || ECHO(state) != AICA_STATE_RUNNING)
     {
         fprintf(stderr, "SPU boot: rc %d state %u: %s\n", rc, ECHO(state), sim->msg);
@@ -338,9 +379,15 @@ int main(int argc, char** argv)
            prof[0] * 40 * 100.0 / busy, prof[1] * 40 * 100.0 / busy, prof[2] * 40 * 100.0 / busy, prof[3] * 40 * 100.0 / busy,
            prof[4] * 40 * 100.0 / busy, (double)sim->insns / (double)busy, sim->dual * 100.0 / (double)sim->insns,
            (unsigned long long)sim->br_miss, sim->dma_wait * 100.0 / busy);
+    if (g_dsp)
+        printf("DSP %s: self-test %s (%u samples), compiles %u fails %u odd %u | program %u words, %u live steps, %u slow | checks %u bad %u | dsp %.1f%% of real time\n",
+               (ECHO(dsp_flags) & 3) == 2 ? "CHECK" : (ECHO(dsp_flags) & 3) == 1 ? "recompiler" : "interpreter",
+               (ECHO(dsp_flags) & 0x600) ? "FAIL" : (ECHO(dsp_flags) & 0x100) ? "pass" : "not run", ECHO(dsp_flags) >> 16,
+               ECHO(dsp_compiles), ECHO(dsp_fails), ECHO(dsp_odd), ECHO(dsp_words), ECHO(dsp_live), ECHO(dsp_slow),
+               ECHO(dsp_checks), ECHO(dsp_bad), prof[3] * 40 * 100.0 / ((double)g_now * 3200000000.0 / 44100));
     if (late_n) printf("SPU after 70%% of the run: %.0f cycles/sample = %.1f%% of real time\n", (double)busy_late / late_n,
                        busy_late * 100.0 / ((double)late_n * 3200000000.0 / 44100));
     spusim_print_profile(sim, busy, 25);
     if (getenv("HOT")) spusim_print_hot(sim, getenv("HOT"), getenv("HOTN") ? atoi(getenv("HOTN")) : 60);
-    return bad || frames_bad ? 1 : 0;
+    return bad || frames_bad || (g_dsp && ECHO(dsp_bad)) ? 1 : 0;
 }

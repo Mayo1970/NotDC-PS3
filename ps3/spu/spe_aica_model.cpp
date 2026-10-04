@@ -1,4 +1,4 @@
-// OPTIMIZATION_PLAN 5.13 A1/A1b/A2: the caique model on the SPU, wave RAM through an LS cache, DSP pass recompiled.
+// OPTIMIZATION_PLAN 5.13 A1/A1b/A2/A3: the caique model on the SPU, wave RAM through an LS cache, DSP pass recompiled.
 // C entry points for spe_aica.c; no constructor runs on the SPU, so the model lives in raw storage.
 #include <spu_intrinsics.h>
 #include <spu_mfcio.h>
@@ -69,19 +69,15 @@ typedef char snap_size_check[sizeof(caique::CtlSnap) == AICA_SNAP_BYTES ? 1 : -1
 
 static int32_t s_mix[4 * caique::AicaModel::ADV_MAX] __attribute__((aligned(16)));   // slot sums l, r per sample
 
+// 5.13 A2 high voices: the slots run slot by slot, then per sample the DSP (A3, and the A1 check) and the output stage
 static void to(uint32_t sample)
 {
-	if (!s_snd)
-	{
-		while ((int32_t)(sample - (uint32_t)M->samples) > 0)
-			M->step();
-		return;
-	}
-	// 5.13 A2 high voices: the slots run slot by slot, then the output stage per sample
+	const bool dsp = !M->no_dsp;
+	const uint32_t cap = dsp ? caique::AicaModel::DSP_ROUND : caique::AicaModel::ADV_MAX;
 	for (uint32_t n; (int32_t)(n = sample - (uint32_t)M->samples) > 0;)
 	{
-		if (n > caique::AicaModel::ADV_MAX)
-			n = caique::AicaModel::ADV_MAX;
+		if (n > cap)
+			n = cap;
 		M->advance(n, true, s_mix);
 		for (uint32_t i = 0; i < n; i++)
 		{
@@ -93,10 +89,18 @@ static void to(uint32_t sample)
 			}
 			else
 				M->EXTS[0] = M->EXTS[1] = 0;
-			M->final_mix(s_mix[4 * i], s_mix[4 * i + 1]);
-			snd_sample(M->outL, M->outR);
+			if (dsp)
+				M->dsp_sample(i);
+			if (s_snd)
+			{
+				M->final_mix(s_mix[4 * i], s_mix[4 * i + 1]);
+				snd_sample(M->outL, M->outR);
+			}
+			if (dsp)
+				caique_prof(5, 0);
 		}
-		caique_prof(5, 0);   // the output stage shows as "mix"
+		if (!dsp)
+			caique_prof(5, 0);   // the output stage shows as "mix"
 	}
 }
 
@@ -110,11 +114,11 @@ void am_init(const AicaSetup* su, uint64_t dbad_ea, uint64_t isabad_ea, uint64_t
 	s_cdda_ea = cdda_ea;
 	M->init();
 	s_snd = su->snd != 0;
-	M->no_dsp = s_snd;   // A2 plays without the DSP (A3 adds it)
+	M->no_dsp = s_snd && !su->snd_dsp;   // A2 plays without the DSP; A3 and the A1 check run it
 	if (s_snd)
 		snd_init(su->ring_ea, su->ring_frames, su->wr_ea, su->rd_ea, su->w0);
 	aram_invalidate();
-	dj_init(M, s_snd ? 0 : (int)(su->dsp_mode & AICA_DSPF_MODE), DJ_LS(&dspjit_rd), DJ_LS(&dspjit_wr), where);
+	dj_init(M, M->no_dsp ? 0 : (int)(su->dsp_mode & AICA_DSPF_MODE), DJ_LS(&dspjit_rd), DJ_LS(&dspjit_wr), where);
 	s_dsp_flags = (uint32_t)dj_mode;
 }
 

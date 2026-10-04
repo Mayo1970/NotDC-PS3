@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "dsp_asm.h"
+#include "dsp_op.h"
 
 #ifdef CAIQUE_RAM_HOOKS
 /* Wave RAM outside the model (PS3 aica_ram, SPU cache); a = byte address, 16-bit reads are even and little-endian */
@@ -131,7 +132,7 @@ struct AicaModel {
     int32_t TEMP[128] CAIQUE_DSP_ALIGN;  /* 24-bit */
     int32_t MEMS[32];   /* 24-bit */
     int32_t MIXS[16];   /* 20-bit SGC sum; the DSP reads one of two banks on alternate samples (tests/eg_lock mixs) */
-    int32_t MIXS_bank[2][16] CAIQUE_DSP_ALIGN;
+    int32_t MIXS_bank[2][16] __attribute__((aligned(16)));   /* the recompiled code and dsp_sample() use quadwords */
     int32_t EXTS[2];    /* 16-bit */
     int32_t EFREG[16];  /* 16-bit */
     uint32_t MDEC_CT;
@@ -141,7 +142,7 @@ struct AicaModel {
     struct { int64_t land; uint16_t val; } mem_q[4]; /* reads in flight: global step at which each lands */
     int mem_qn;
     int mrd_even_masa;        /* even-step MRD waiting for the next (odd) memory slot, -1 = none */
-    dsp_inst_t mrd_even;
+    dsp_op_t mrd_even;
     uint8_t nofl_pipe[2];     /* NOFL of steps s-1, s-2 */
 
     int16_t outL, outR;       /* DAC output of the last sample */
@@ -157,13 +158,13 @@ struct AicaModel {
     /* KYONEX only raises this; the next envelope pass reads every KYONB, events land one sample later (tests/kon_defer) */
     bool kyonex_pending;
     /* Slot K's fetch owns DSP step 2K - 14's wave RAM slot (tests/dsp_coll): an MWT there drops, an MRD gets
-     * coll_word. Slots 0..6 fall in the next sample's sweep. */
-    bool coll_claim[64];
-    uint16_t coll_word[64];
+     * coll_word. Slots 0..6 fall in the next sample's sweep. 16-aligned: dsp_sample() copies them as quadwords. */
+    bool coll_claim[64] __attribute__((aligned(16)));
+    uint16_t coll_word[64] __attribute__((aligned(16)));
     bool mrd_even_coll;       /* the waiting even-step MRD was in a channel's slot */
     uint16_t mrd_even_word;
     uint32_t mpro_nz;         /* non-zero MPRO words: 0 runs the DSP's all-NOP fast path */
-    dsp_inst_t prog[128];     /* MPRO decoded on write */
+    dsp_op_t prog[128];       /* MPRO decoded on write */
     uint32_t stops_pending;   /* slots with stop_in set */
     bool keys_live;           /* some slot has keyed / keyed_off set */
     uint64_t quiet;           /* slots with no control work until a register write or a key event */
@@ -176,6 +177,17 @@ struct AicaModel {
     static const uint32_t ADV_MAX = 64;   /* advance() works in rounds of this many samples */
     uint32_t adv_l0[ADV_MAX]; /* LFSR at the start of each sample of the round, made on first use */
     bool adv_l0_ok;
+    /* 5.13 A3: a render round with the DSP leaves, per sample, the SGC bus sums and the claims dsp_step reads (slots
+     * 7..63 from that sample's fetch, 0..6 from the next sample's, as run()'s preview) */
+    static const uint32_t DSP_ROUND = 32;
+    int32_t adv_row[DSP_ROUND][4] __attribute__((aligned(16)));   /* one slot's slot_fast rows: l, r, V16, CA */
+    int32_t adv_bus[DSP_ROUND][16] __attribute__((aligned(16)));
+    bool adv_cc[DSP_ROUND][64] __attribute__((aligned(16)));
+    uint16_t adv_cw[DSP_ROUND][64] __attribute__((aligned(16)));
+    int32_t adv_busw[16] __attribute__((aligned(16)));   /* -1 for each bus some slot points at (isel_cnt) */
+    uint64_t coll_need;       /* slots whose claim the program reads: even steps with MWT or MRD */
+    uint64_t adv_s0;          /* the round's first sample and its MDEC_CT */
+    uint32_t adv_mdec0;
 
     AicaModel();
     ~AicaModel();
@@ -193,9 +205,10 @@ struct AicaModel {
      * or only the FEG moving (PPU stats) */
     void live_stats(uint32_t &live, uint32_t &en, uint32_t &aeg, uint32_t &feg) const;
     void dsp_step(uint64_t smp, uint32_t mdec);   /* the DSP interpreter; public for the SPU recompiler's check */
-    /* 5.13 A2 high voices: n samples slot by slot, the same state as n step() / step_control() calls. render needs
-     * no_dsp; it leaves 4 words per sample in mix (16-byte aligned): the slot sums l, r, then 0, 0. MIXS does not move. */
+    /* 5.13 A2 high voices: n samples slot by slot, as n step() / step_control() calls; render leaves l, r, 0, 0 per sample
+     * in mix (16-aligned), MIXS does not move. With the DSP (A3): n <= DSP_ROUND, then dsp_sample(i) for each i in order. */
     void advance(uint32_t n, bool render, int32_t *mix);
+    void dsp_sample(uint32_t i);   /* 5.13 A3: sample i of that round: MIXS_bank, the claims, the DSP; EXTS set first */
     void final_mix(int32_t l, int32_t r);   /* run()'s output stage after the slots: EXTS, EFREG, MONO, MVOL, DAC18B */
 
     uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
@@ -217,7 +230,7 @@ struct AicaModel {
     void feg_clock(int ch);
     int32_t lpf_step(int ch, uint32_t v, int32_t x8); /* cutoff v; input and output in 1/8 sample units */
     bool slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_t ca, uint16_t &word) const;
-    void coll_preview(Frame &F);
+    void coll_preview(Frame &F, uint32_t mask = 0x7F);   /* mask: the slots of 0..6 to preview */
     void lfo_calc(int ch);
     void lfo_sync(int ch, uint32_t t);
     inline void lfo_tick(int ch, uint32_t t);
@@ -232,6 +245,7 @@ struct AicaModel {
     void slot_run(int ch, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered);
     void slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered);
     template <bool R> uint32_t slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix, uint32_t &rendered);
+    uint32_t slot_fast_dsp(int ch, uint32_t i, const AdvCtx &x, int32_t *mix, uint32_t &rendered);
     uint32_t slot_ctl_fast(int ch, uint32_t i, const AdvCtx &x, uint32_t &rendered);
     uint32_t lfsr_at(const AdvCtx &x, uint32_t i);
     uint32_t sa_addr(int ch) const;

@@ -1,5 +1,5 @@
-// OPTIMIZATION_PLAN 5.13 A1/A1b/A2: the PPU runs caique's control pass and logs every register write; one SPU thread
-// runs the full model from the log and checks the PPU's snapshot every AICA_BLOCK samples. A2: the SPU makes the sound.
+// OPTIMIZATION_PLAN 5.13 A1/A1b/A2/A3: the PPU runs caique's control pass and logs every register write; one SPU thread
+// runs the full model from the log and checks the PPU's snapshot every AICA_BLOCK samples. A2/A3: the SPU makes the sound.
 
 // First: types.h defines a RAM_SIZE macro that would break the model's RAM_SIZE member.
 #include "plugs/caiqueAICA/aica_model.h"
@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <malloc.h>
+#include <new>
 #include <unistd.h>
 #include <sys/spu.h>
 #include <ogc/lwp_watchdog.h>
@@ -17,6 +19,7 @@
 extern "C" const u8 spe_aica_elf[];
 extern "C" int get_spe_aica_preset();
 extern "C" int get_spe_aica_snd_preset();
+extern "C" int get_spe_aica_dsp_preset();
 extern "C" int get_spe_dsp_jit_preset();
 // ps3_audio.cpp
 void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now);
@@ -48,6 +51,7 @@ static u32 s_live[4], s_live_n;   // live_stats sums over the window (live, en, 
 
 // 5.13 A2 sound mode
 static bool s_snd_req;   // asked for at boot (the [aica-spe] sound line)
+static bool s_snd_dsp;   // and with the DSP (A3): the dsp jit line stays
 static u32 s_w0;         // ring_wr when the SPU started
 static u32 s_cdda_rec[AICA_CDDA_SLOTS], s_cdda_n;   // per slot: 1 + the record that last used it
 
@@ -386,7 +390,7 @@ static void stats(u64 now)
 		s_dsp_test_shown = true;
 		print_dsp_test(e);
 	}
-	if (s_snd_req)   // A2 runs without the DSP
+	if (s_snd_req)
 	{
 		static u32 l_frames, l_cdda;
 		const u32 frames = e->snd_frames, cdda = e->cdda;
@@ -397,7 +401,7 @@ static void stats(u64 now)
 		l_frames = frames;
 		l_cdda = cdda;
 	}
-	else
+	if (!s_snd_req || s_snd_dsp)   // the DSP runs in the A1 check and in A3; A2 plays without it
 		printf("[aica-spe] dsp jit %s: compiles=%u fails=%u odd=%u code=%u words live=%u/128 slow=%u | checks=%u bad=%u"
 		       " | jit %.2f%% of wall\n",
 		       k_mode[e->dsp_flags & AICA_DSPF_MODE], e->dsp_compiles, e->dsp_fails, e->dsp_odd, e->dsp_words,
@@ -424,13 +428,13 @@ static void stats(u64 now)
 
 bool ps3aica_init(u8* aica_ram)
 {
-	const bool snd = get_spe_aica_snd_preset() != 0;
+	const bool snd = get_spe_aica_snd_preset() != 0, snd_dsp = snd && get_spe_aica_dsp_preset() != 0;
 	if ((!get_spe_aica_preset() && !snd) || s_up)
 		return s_up;
 	s_aram = aica_ram;
 	ps3spe_sys_init();
-	if (!s_m)
-		s_m = new caique::AicaModel();
+	if (!s_m)   // the model has 16-aligned members; C++14 new does not promise that
+		s_m = new (memalign(16, sizeof(caique::AicaModel))) caique::AicaModel();
 	s_m->reset();
 
 	s32 r = sysSpuImageImport(&s_img, spe_aica_elf, SPU_IMAGE_PROTECT);
@@ -463,8 +467,9 @@ bool ps3aica_init(u8* aica_ram)
 	memset(s_shared.dbad, 0, sizeof(s_shared.dbad));
 	memset(&s_shared.isabad, 0, sizeof(s_shared.isabad));
 	s_shared.setup.aram_ea = (u32)(uintptr_t)aica_ram;
-	s_shared.setup.dsp_mode = snd ? 0 : (u32)get_spe_dsp_jit_preset() & AICA_DSPF_MODE;
+	s_shared.setup.dsp_mode = snd && !snd_dsp ? 0 : (u32)get_spe_dsp_jit_preset() & AICA_DSPF_MODE;
 	s_snd_req = snd;
+	s_snd_dsp = snd_dsp;
 	memset(s_cdda_rec, 0, sizeof(s_cdda_rec));
 	s_cdda_n = 0;
 	if (snd)
@@ -473,6 +478,7 @@ bool ps3aica_init(u8* aica_ram)
 		ps3_audio_ring_info(&su.ring_ea, &su.ring_frames, &su.wr_ea, &su.rd_ea, &s_w0);
 		su.w0 = s_w0;
 		su.snd = 1;
+		su.snd_dsp = snd_dsp;
 	}
 
 	sysSpuThreadAttribute tattr;
@@ -505,7 +511,8 @@ bool ps3aica_init(u8* aica_ram)
 	static const char* const k_mode[4] = {"OFF (interpreter)", "ON", "CHECK", "?"};
 	if (snd)
 		printf("[aica-spe] SPU thread up: caique control on the PPU, full model on the SPU, check every %u samples;"
-		       " SOUND from the SPU (no DSP), nullAICA mixer off, ring_wr %u\n", AICA_BLOCK, s_w0);
+		       " SOUND from the SPU (%s%s), nullAICA mixer off, ring_wr %u\n", AICA_BLOCK,
+		       snd_dsp ? "DSP on, dsp jit " : "no DSP", snd_dsp ? k_mode[s_shared.setup.dsp_mode & AICA_DSPF_MODE] : "", s_w0);
 	else
 		printf("[aica-spe] SPU thread up: caique control on the PPU, full model on the SPU, check every %u samples;"
 		       " dsp jit %s\n", AICA_BLOCK, k_mode[s_shared.setup.dsp_mode & AICA_DSPF_MODE]);

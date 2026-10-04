@@ -1,6 +1,6 @@
 #pragma once
-// OPTIMIZATION_PLAN 5.13 A1/A2: caique AICA control pass on the PPU, the full model on an SPE from the write log.
-// AUDIO "SPE AICA Check": nullAICA plays, the SPU is checked. "SPE AICA Sound": the SPU plays. Read at InitAica.
+// OPTIMIZATION_PLAN 5.13 A1/A2/A3: caique AICA control pass on the PPU, the full model on an SPE from the write log.
+// AUDIO "SPE AICA Check": nullAICA plays, the SPU is checked. "SPE AICA Sound": the SPU plays ("SPE AICA DSP": with the DSP).
 #include "types.h"
 
 extern bool g_aica_spe_on;    // the SPU thread runs

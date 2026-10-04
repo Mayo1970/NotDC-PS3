@@ -293,7 +293,7 @@ static int pack(Em* e, int S)
 }
 
 // The interpreter's ADDR before the RBP add: MADRS (+ADRS) (+1), then ring or table mask.
-static int mem_addr(Em* e, const DspJitLayout* L, const dsp_inst_t* m)
+static int mem_addr(Em* e, const DspJitLayout* L, const dsp_op_t* m)
 {
 	const int a = tmp(e);
 	lqa_(e, a, L->madrs + 16 * m->MASA);
@@ -317,14 +317,14 @@ static int mem_addr(Em* e, const DspJitLayout* L, const dsp_inst_t* m)
 typedef struct
 {
 	const DspJitLayout* L;
-	const dsp_inst_t* prog;
+	const dsp_op_t* prog;
 	int ring_in_ls;
 	int8_t rd_src[128];   // the read issued at step s uses the fields of this step (s, or the even step before); -1 none
 	uint8_t need_acc[128];
 	DspJitInfo* info;
 } Plan;
 
-static int slow(const Plan* P, const dsp_inst_t* m) { return m->TABLE || !P->ring_in_ls; }
+static int slow(const Plan* P, const dsp_op_t* m) { return m->TABLE || !P->ring_in_ls; }
 
 static void emit_inputs(Em* e, const Plan* P, unsigned ira)
 {
@@ -402,7 +402,7 @@ static void emit_shifted(Em* e, unsigned shift)
 // ACC = sext26(floor(X * Y / 4096) + B), the product split as X = xh * 4096 + xl so both mpy fit 16 x 16
 static void emit_acc(Em* e, const Plan* P, unsigned s)
 {
-	const dsp_inst_t* in = &P->prog[s];
+	const dsp_op_t* in = &P->prog[s];
 	int tr = -1, Y;
 	if (!in->XSEL || (!in->ZERO && !in->BSEL))
 		tr = temp_rd(e, in->TRA);
@@ -449,7 +449,7 @@ static void emit_acc(Em* e, const Plan* P, unsigned s)
 static void emit_mem(Em* e, const Plan* P, unsigned s)
 {
 	const DspJitLayout* L = P->L;
-	const dsp_inst_t* in = &P->prog[s];
+	const dsp_op_t* in = &P->prog[s];
 	const int even = !(s & 1);
 	if (in->MWT)
 	{
@@ -486,7 +486,7 @@ static void emit_mem(Em* e, const Plan* P, unsigned s)
 	const int r = P->rd_src[s];
 	if (r < 0)
 		return;
-	const dsp_inst_t* m = &P->prog[r];
+	const dsp_op_t* m = &P->prog[r];
 	const int deferred = r != (int)s;
 	const unsigned ck = ((unsigned)(r + 14) >> 1) & 63;
 	if (slow(P, m))
@@ -526,7 +526,7 @@ static void emit_mem(Em* e, const Plan* P, unsigned s)
 static void emit_step(Em* e, const Plan* P, unsigned s)
 {
 	const DspJitLayout* L = P->L;
-	const dsp_inst_t* in = &P->prog[s];
+	const dsp_op_t* in = &P->prog[s];
 	const int needs_s = in->TWT || in->FRCL || in->EWT || in->MWT || (in->ADRL && in->SHIFT == 3);
 	const int need_in = (P->need_acc[s] && in->XSEL) || in->YRL || (in->ADRL && in->SHIFT != 3);
 	e->tmp = T0;
@@ -577,7 +577,7 @@ static void emit_step(Em* e, const Plan* P, unsigned s)
 	}
 }
 
-int dspjit_compile(const DspJitLayout* L, const dsp_inst_t* prog, uint32_t rbl, uint32_t ring_bytes,
+int dspjit_compile(const DspJitLayout* L, const dsp_op_t* prog, uint32_t rbl, uint32_t ring_bytes,
                    uint32_t* buf, uint32_t cap, DspJitInfo* info)
 {
 	Plan P;
@@ -610,7 +610,7 @@ int dspjit_compile(const DspJitLayout* L, const dsp_inst_t* prog, uint32_t rbl, 
 	// ACC of step s is read only by step s + 1 (SHIFTED or B); step 127's is the next sample's input
 	for (s = 0; s < 128; s++)
 	{
-		const dsp_inst_t* n = &prog[s == 127 ? 0 : s + 1];
+		const dsp_op_t* n = &prog[s == 127 ? 0 : s + 1];
 		const int uses = n->TWT || n->FRCL || n->EWT || n->MWT || (n->ADRL && n->SHIFT == 3) || (!n->ZERO && n->BSEL);
 		P.need_acc[s] = s == 127 || uses;
 	}

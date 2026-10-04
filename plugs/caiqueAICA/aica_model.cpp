@@ -101,6 +101,14 @@ void AicaModel::reset() {
     lfsr = 1;
     mpro_nz = 0;
     memset(prog, 0, sizeof prog);   /* the decode of an all-zero MPRO */
+    coll_need = 0;
+    memset(adv_row, 0, sizeof adv_row);   /* the A3 rows start zero; each user leaves them so */
+    memset(adv_bus, 0, sizeof adv_bus);
+    memset(adv_cc, 0, sizeof adv_cc);
+    memset(adv_cw, 0, sizeof adv_cw);
+    memset(adv_busw, 0, sizeof adv_busw);
+    adv_s0 = 0;
+    adv_mdec0 = 0;
     stops_pending = 0;
     keys_live = false;
     quiet = rsilent = fetching = 0;
@@ -400,8 +408,9 @@ bool AicaModel::slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_
 
 /* Slots 0..6 own DSP steps 114..126, inside the next sample's sweep: predict that fetch with this sample's
  * registers (a write between the two samples is missed, the one known difference to rtl/v1) */
-void AicaModel::coll_preview(Frame &F) {
+void AicaModel::coll_preview(Frame &F, uint32_t mask) {
     for (int k = 0; k < 7; k++) {
+        if (!((mask >> k) & 1)) continue;
         const bool en = slot[k].enabled, keyed = slot[k].keyed_fetch;
         F.pv[k].en = en;
         F.pv[k].keyed = keyed;
@@ -788,7 +797,7 @@ void AicaModel::dsp_step(uint64_t smp, uint32_t mdec) {
     uint32_t RBL = (8192u << ((rbpl >> 13) & 3)) - 1;
     for (int s = 0; s < 128; s++) {
         uint64_t gstep = smp * 128 + s;
-        const dsp_inst_t &in = prog[s];
+        const dsp_op_t &in = prog[s];
 
         for (int q = 0; q < mem_qn;) { /* reads landing at this step */
             if ((uint64_t)mem_q[q].land == gstep) {
@@ -837,7 +846,7 @@ void AicaModel::dsp_step(uint64_t smp, uint32_t mdec) {
          * A playing channel owns its even step's slot: MWT drops, MRD gets coll_word (tests/dsp_coll). */
         const int ck = ((s + 14) >> 1) & 63;
         const bool coll = !(s & 1) && coll_claim[ck];
-        const dsp_inst_t *rq = 0;
+        const dsp_op_t *rq = 0;
         bool rq_coll = false;
         if (in.MRD && !in.MWT && (s & 1)) rq = &in;
         else if (!in.MRD && (s & 1) && mrd_even_masa >= 0) { rq = &mrd_even; rq_coll = mrd_even_coll; }
@@ -846,7 +855,7 @@ void AicaModel::dsp_step(uint64_t smp, uint32_t mdec) {
             mrd_even = in; mrd_even_masa = in.MASA; mrd_even_coll = coll; mrd_even_word = coll_word[ck];
         }
         for (int pass = 0; pass < 2; pass++) {
-            const dsp_inst_t *m = pass == 0 ? (in.MWT && !coll ? &in : 0) : rq;
+            const dsp_op_t *m = pass == 0 ? (in.MWT && !coll ? &in : 0) : rq;
             if (!m) continue;
             if (pass == 1 && rq_coll) {
                 if (mem_qn < 4) { mem_q[mem_qn].land = (int64_t)(gstep + 2); mem_q[mem_qn].val = mrd_even_word; mem_qn++; }
@@ -1078,13 +1087,13 @@ uint32_t AicaModel::lfsr_at(const AdvCtx &x, uint32_t i) {
 }
 
 void AicaModel::final_mix(int32_t mixl, int32_t mixr) {
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) {   /* level 0 adds 0 to both sides: skipped */
         uint16_t v = r(0x2040 + 4 * i);
-        volpan(EXTS[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
+        if (v & 0xF00) volpan(EXTS[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
     for (int i = 0; i < 16 && !no_dsp; i++) {
         uint16_t v = r(0x2000 + 4 * i);
-        volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
+        if (v & 0xF00) volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
     uint16_t c0 = r(0x2800);
     if (c0 & 0x8000) { mixl += mixr; mixr = mixl; }
@@ -1096,8 +1105,9 @@ void AicaModel::final_mix(int32_t mixl, int32_t mixr) {
 }
 
 void AicaModel::advance(uint32_t n, bool render, int32_t *mix) {
+    const uint32_t cap = render && !no_dsp ? DSP_ROUND : ADV_MAX;   /* A3: the rows hold one round */
     while (n) {
-        const uint32_t k = n < ADV_MAX ? n : ADV_MAX;
+        const uint32_t k = n < cap ? n : cap;
         advance_round(k, render, mix);
         if (render) mix += 4 * k;
         n -= k;
@@ -1115,6 +1125,12 @@ void AicaModel::advance_round(uint32_t n, bool render, int32_t *mix) {
     adv_l0_ok = false;
     uint32_t rendered = 0;
     if (render) { CAIQUE_PROF_AT(0, 0); memset(mix, 0, n * 4 * sizeof(int32_t)); }
+    const bool dsp = render && !no_dsp;
+    if (dsp) {   /* 5.13 A3: for dsp_sample(), which reads the rows and clears them */
+        adv_s0 = samples;
+        adv_mdec0 = MDEC_CT;
+        for (int b = 0; b < 16; b++) adv_busw[b] = isel_cnt[b] ? -1 : 0;
+    }
     {   /* run()'s timers in closed form: timer t counts on samples i == (MDEC_CT - tim_phase) mod 2^pre; the bit on a wrap */
         uint16_t set = 0x400;
         for (int t = 0; t < 3; t++) {
@@ -1145,6 +1161,18 @@ void AicaModel::advance_round(uint32_t n, bool render, int32_t *mix) {
     for (uint32_t i = 0; i < n; i++) l = lfsr_adv64(l);
     lfsr = l;
     if (render) CAIQUE_PROF_AT(1, rendered);
+    /* slots 0..6 claim DSP steps 114..126 of the last sample with their next fetch: run()'s preview, at the same point */
+    const uint32_t pm = dsp ? (uint32_t)coll_need & 0x7F : 0;
+    if (pm) {
+        coll_preview(fr, pm);
+        for (int k = 0; k < 7; k++) {
+            uint16_t w;
+            if (((pm >> k) & 1) && slot_fetch(k, fr.pv[k].en, fr.pv[k].keyed, fr.pv[k].ca_old, fr.pv[k].ca, w)) {
+                adv_cc[n - 1][k] = true;
+                adv_cw[n - 1][k] = w;
+            }
+        }
+    }
 }
 
 void AicaModel::slot_run(int ch, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered) {
@@ -1158,9 +1186,10 @@ void AicaModel::slot_run(int ch, const AdvCtx &x, bool render, int32_t *mix, uin
         if (!kx0 && (render ? (quiet & rsilent & bit) != 0 : (quiet & bit) != 0)) break;   /* nothing moves until a write */
         if (!kx0 && !lfsr_use && !(c.keyed_fetch | c.ca_clr | c.keyed | c.keyed_off) && !c.stop_in)
 #ifdef CAIQUE_ADV_RENDER_ONLY   /* SPU: advance() always renders, the control twin runs on the PPU (saves LS) */
-            i = slot_fast<true>(ch, i, x, mix, rendered);
+            i = no_dsp ? slot_fast<true>(ch, i, x, mix, rendered) : slot_fast_dsp(ch, i, x, mix, rendered);
 #else
-            i = render ? slot_fast<true>(ch, i, x, mix, rendered) : slot_ctl_fast(ch, i, x, rendered);
+            i = !render ? slot_ctl_fast(ch, i, x, rendered)
+                : no_dsp ? slot_fast<true>(ch, i, x, mix, rendered) : slot_fast_dsp(ch, i, x, mix, rendered);
 #endif
         else
             slot_sample(ch, i++, x, render, mix, rendered);
@@ -1204,6 +1233,15 @@ void AicaModel::slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, in
                 if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
                 if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
             }
+            if (!no_dsp) {   /* 5.13 A3: run()'s fetch claim; for slots 0..6 it is the previous sample's */
+                bool cl = false;
+                uint16_t w;
+                if ((coll_need >> ch) & 1) {
+                    cl = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, w);
+                    if (cl && (ch >= 7 || i > 0)) { adv_cc[i - (ch < 7)][ch] = true; adv_cw[i - (ch < 7)][ch] = w; }
+                }
+                coll_claim[ch] = cl;   /* slot_quiet() reads it, as in run() */
+            }
             const uint16_t r28 = chr(ch, 0x28);
             if (!sf.en_out && !((chr(ch, 0x00) >> 10) & 1) &&
                 (((r28 >> 5) & 1) || (c.lpf_fix && c.lpf_low == 0 && c.fix_v == sf.fv && c.fix_q == (r28 & 0x1F)))) {
@@ -1215,6 +1253,7 @@ void AicaModel::slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, in
                 slot_render(ch, sf, t, l, rr, d);
                 mix[4 * i] += l;
                 mix[4 * i + 1] += rr;
+                if (!no_dsp) adv_bus[i][chr(ch, 0x20) & 0xF] += d;
             }
         }
     }
@@ -1394,7 +1433,8 @@ uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix,
                     V16 = att_apply(s16, tl4 + aeg_a + alfo) & ~15;
                 }
                 const int32_t dir = send_apply(V16 >> 4, dlv), side = send_apply(dir, slv);
-                const mix4 lr = {(dir & pm) | (side & ~pm), (side & pm) | (dir & ~pm), 0, 0};
+                /* lanes 2, 3 feed slot_fast_dsp() (A3); in a row shared by all slots they are never read */
+                const mix4 lr = {(dir & pm) | (side & ~pm), (side & pm) | (dir & ~pm), V16, (int32_t)CA};
                 *(mix4 *)(mix + 4 * i) += lr;
             }
         }
@@ -1432,6 +1472,79 @@ uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix,
         c.FEG.vo = (uint16_t)vo;
     }
     return i;
+}
+
+/* 5.13 A3: slot_fast<true> into adv_row, then the slot's DSP inputs: its bus send and, if the program reads it, its fetch
+ * claim. Inside slot_fast, slot_quiet() reaches the claim test only after a sample with no fetch: run()'s claim is 0. */
+uint32_t AicaModel::slot_fast_dsp(int ch, uint32_t i0, const AdvCtx &x, int32_t *mix, uint32_t &rendered) {
+    const Slot &c = slot[ch];
+    const bool en0 = c.enabled;   /* only a one-shot end clears it, and that ends slot_fast */
+    uint32_t ca_prev = c.CA;
+    coll_claim[ch] = false;
+    const uint32_t i1 = slot_fast<true>(ch, i0, x, &adv_row[0][0], rendered);
+    if (en0 && ((coll_need >> ch) & 1) && i1 > i0) {
+        /* slot_fetch(ch, true, false, ca_old, ca) inline: never noise here; ADPCM fetches on a word change, none at OCT 3..7.
+         * Every sample rendered, so its row has its CA, but a one-shot end's last, whose CA slot_fast left in c.CA. */
+        if (c.ca_clr) adv_row[i1 - 1][3] = (int32_t)c.CA;
+        const int f = (chr(ch, 0x00) >> 7) & 3;
+        const uint32_t sa = sa_addr(ch), fs = f == 0 ? 0 : f == 1 ? 1 : 2;   /* fetch byte = sa + (2 (CA + 1) >> fs) */
+        const bool adpcm = f >= 2, adp_nf = ((chr(ch, 0x18) >> 11) & 15) - 3u <= 4u;
+        uint32_t lb = 1;   /* base of the wave RAM line in lp; 1 = none */
+        const uint8_t *lp = 0;
+        uint32_t i = i0;
+        if (ch < 7 && i == 0) { ca_prev = (uint32_t)adv_row[0][3]; i = 1; }   /* sample 0: the last round's preview */
+        for (const int r0 = ch < 7 ? -1 : 0; i < i1; i++) {
+            const uint32_t ca = (uint32_t)adv_row[i][3], w1 = (sa + (ca >> 1)) >> 1;
+            const bool same = w1 == (sa + (ca_prev >> 1)) >> 1 && (sa + ((ca + 1) >> 1)) >> 1 == w1;
+            ca_prev = ca;
+            if (__builtin_expect((uint32_t)!adpcm | ((uint32_t)!adp_nf & (uint32_t)!same), 1)) {
+                const uint32_t b = (sa + ((2 * (ca + 1)) >> fs)) & (RAM_SIZE - 2);
+                if ((b & ~127u) != lb) { lp = CAIQUE_LINE(b); lb = b & ~127u; }
+                adv_cc[i + r0][ch] = true;
+                adv_cw[i + r0][ch] = (uint16_t)(lp[(b & 127) ^ CAIQUE_SWZ] | lp[((b & 127) + 1) ^ CAIQUE_SWZ] << 8);
+            }
+        }
+    }
+    /* the l, r lanes into the round's mix and the bus send (IMXL 0 sends 0); the rows left zero */
+    const uint16_t r20 = chr(ch, 0x20);
+    const SendLv ilv = send_lv((r20 >> 4) & 0xF);
+    int32_t *const busp = &adv_bus[0][r20 & 0xF];
+    const mix4 lr_mask = {-1, -1, 0, 0}, zero = {0, 0, 0, 0};
+    for (uint32_t i = i0; i < i1; i++) {
+        const mix4 row = *(const mix4 *)adv_row[i];   /* a sample with no render left zeros: V16 0, send 0 */
+        *(mix4 *)adv_row[i] = zero;
+        *(mix4 *)(mix + 4 * i) += row & lr_mask;
+        busp[16 * i] += send_apply(row[2], ilv);
+    }
+    return i1;
+}
+
+typedef uint32_t umix4 __attribute__((vector_size(16), may_alias));
+
+/* run()'s part between the slots and the output stage: bus sums into MIXS_bank, the claims, the DSP */
+void AicaModel::dsp_sample(uint32_t i) {
+    const uint64_t smp = adv_s0 + i;
+    const mix4 zero = {0, 0, 0, 0};
+    mix4 *bus = (mix4 *)adv_bus[i], *bank = (mix4 *)MIXS_bank[smp & 1];
+    const mix4 *bw = (const mix4 *)adv_busw;
+    for (int k = 0; k < 4; k++) {   /* the 20-bit sums wrap (tests/sgc_mix); a bus no slot points at keeps its value */
+        const mix4 v = (mix4)((umix4)bus[k] << 12) >> 12;
+        bank[k] = (v & bw[k]) | (bank[k] & ~bw[k]);
+        bus[k] = zero;
+    }
+    if (coll_need) {
+        mix4 *cc = (mix4 *)adv_cc[i];
+        const mix4 *cw = (const mix4 *)adv_cw[i];
+        for (int k = 0; k < 4; k++) { ((mix4 *)coll_claim)[k] = cc[k]; cc[k] = zero; }
+        for (int k = 0; k < 8; k++) ((mix4 *)coll_word)[k] = cw[k];
+    }
+    CAIQUE_PROF_AT(3, 0);
+    const uint32_t mdec = (adv_mdec0 - i) & 0xFFFF;
+#ifdef CAIQUE_DSP_HOOK
+    if (!caique_dsp_hook(this, smp, mdec))
+#endif
+        dsp_step(smp, mdec);
+    CAIQUE_PROF_AT(4, 0);
 }
 
 #ifndef CAIQUE_ADV_RENDER_ONLY
@@ -1541,7 +1654,13 @@ void AicaModel::write(uint32_t off, uint32_t val) {
         mpro_nz += (v != 0) - (old != 0);
         const uint32_t s = (off - 0x3400) >> 4;
         const uint16_t w[4] = {r(0x3400 + 16 * s), r(0x3404 + 16 * s), r(0x3408 + 16 * s), r(0x340C + 16 * s)};
-        dsp_decode(w, &prog[s]);
+        dsp_inst_t d;
+        dsp_decode(w, &d);
+        dsp_op_set(&prog[s], &d);
+        if (!(s & 1)) {   /* even step: it reads the claim of slot (s + 14) / 2 */
+            const uint64_t b = 1ull << (((s + 14) >> 1) & 63);
+            coll_need = (prog[s].MWT | prog[s].MRD) ? coll_need | b : coll_need & ~b;
+        }
     }
     switch (off) {   /* timers and interrupt registers: as cycle-model/aica_model.cpp reg_write */
     case 0x2890: case 0x2894: case 0x2898: { const int t = (off - 0x2890) >> 2; irq.cnt[t] = (uint8_t)v; irq.pre[t] = (v >> 8) & 7; break; }

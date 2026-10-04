@@ -2,8 +2,8 @@
 // OPTIMIZATION_PLAN 5.13 A1b: AICA DSP recompiler for the SPU. Portable C, so the PC test
 // (misc/dspjit_check) runs the same emitter and executes its output in a small SPU simulator.
 #include <stdint.h>
-#ifndef CAIQUE_DSP_ASM_H   // the PPU build gets it through aica_model.h, without plugs/caiqueAICA on the path
-#include "dsp_asm.h"
+#ifndef CAIQUE_DSP_OP_H   // the PPU build gets it through aica_model.h, without plugs/caiqueAICA on the path
+#include "dsp_op.h"
 #endif
 
 #ifdef __cplusplus
@@ -46,7 +46,7 @@ typedef struct
 } DspJitInfo;
 
 // 0 = ok, -1 = buffer too small, -2 = emitter limit hit (a bug)
-int dspjit_compile(const DspJitLayout* L, const dsp_inst_t* prog, uint32_t rbl, uint32_t ring_bytes,
+int dspjit_compile(const DspJitLayout* L, const dsp_op_t* prog, uint32_t rbl, uint32_t ring_bytes,
                    uint32_t* buf, uint32_t cap, DspJitInfo* info);
 
 // ISA probe forms: r13 = OP(r10, r11, r12 | imm), with r10..r12 loaded from in_ls, in_ls+16, in_ls+32.

@@ -363,9 +363,11 @@ static Option s_audio[] = {
 	{ "SPE AICA Check",  &g_spe_aica_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "caique AICA on an SPE, checked against the PPU. [aica-spe] log. Set before boot." },
 	{ "SPE DSP JIT",     &g_spe_dsp_jit_preset,   OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
-	  "DSP recompiler of SPE AICA Check. CHECK also compares it. Set before boot." },
+	  "DSP recompiler of the SPE AICA model. CHECK also compares it. Set before boot." },
 	{ "SPE AICA Sound",  &g_spe_aica_snd_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "SPE caique AICA plays the sound, not nullAICA. No DSP yet. Set before boot." },
+	  "SPE caique AICA plays the sound, not nullAICA. Set before boot." },
+	{ "SPE AICA DSP",    &g_spe_aica_dsp_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The DSP (reverb, echo) in SPE AICA Sound. Mode: SPE DSP JIT. Set before boot." },
 };
 
 static Option s_video[] = {
