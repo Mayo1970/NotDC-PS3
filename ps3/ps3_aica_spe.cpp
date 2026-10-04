@@ -53,7 +53,7 @@ static u32 s_live[4], s_live_n;   // live_stats sums over the window (live, en, 
 static bool s_snd_req;   // asked for at boot (the [aica-spe] sound line)
 static bool s_snd_dsp;   // and with the DSP (A3): the dsp jit line stays
 static u32 s_w0;         // ring_wr when the SPU started
-static u32 s_cdda_rec[AICA_CDDA_SLOTS], s_cdda_n;   // per slot: 1 + the record that last used it
+static u32 s_cdda_rec[AICA_CDDA_SLOTS], s_cdda_n;   // per slot: 1 + the record that last used it (5.15: its CD-DA number)
 
 // The PPU never runs the render pass; these only satisfy the link (and read aica_ram if it ever does).
 uint8_t caique_rd8(uint32_t a) { return s_aram[a ^ 3]; }
@@ -264,6 +264,47 @@ void ps3aica_cdda(const s16* sector, bool silent)
 		val = k;
 	}
 	push(AICA_OP_CDDA, 0, val, 0);
+}
+
+// 5.15: the ARM7 SPU writes the log and the bell; it gets their addresses here.
+void ps3aica_spe_eas(u32* bell, u32* echo_ea, u32* log)
+{
+	*bell = (u32)(uintptr_t)&s_bell;
+	*echo_ea = (u32)(uintptr_t)&s_echo;
+	*log = (u32)(uintptr_t)s_shared.log;
+}
+
+// 5.15: ps3aica_step's pacing and stats point, from the SH4 thread's sample count (the twin is on the ARM7 SPU).
+void ps3aica_pace(u32 now)
+{
+	s_now = now;
+	const u64 t0 = gettime();
+	if (t0 - s_win_t0 >= 5 * ps3_timebase_hz)
+		stats(t0);
+	if (g_aica_spe_snd)
+		s_ring_wait_ticks += ps3_audio_spu_wait(s_w0 + frames_for(now) - echo()->snd_drops);
+}
+
+// 5.15: the sector into a free slot. The PPU no longer knows record numbers, so a slot is free once the sound SPU has
+// applied the CD-DA record that last used it: ord = 1 + the CD-DA records before this one, silent ones too.
+u32 ps3aica_cdda_slot(const s16* sector, u32 ord)
+{
+	const u32 k = s_cdda_n & (AICA_CDDA_SLOTS - 1);
+	const u64 t0 = gettime();
+	while ((s32)(echo()->cdda - s_cdda_rec[k]) < 0)
+	{
+		if (gettime() - t0 > ps3_timebase_hz / 10)
+		{
+			printf("[aica-spe] CD-DA slot %u still in use after 100 ms; sector dropped\n", k);
+			return AICA_CDDA_SILENT;
+		}
+		usleep(20);
+	}
+	s_spu_wait_ticks += gettime() - t0;
+	memcpy(s_shared.cdda[k].s, sector, sizeof(s_shared.cdda[k].s));
+	s_cdda_rec[k] = ord;
+	s_cdda_n++;
+	return k;
 }
 
 static void print_bad(const AicaBad* b)

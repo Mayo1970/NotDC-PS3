@@ -2,6 +2,7 @@
 #include "dsp.h"
 #include "aica_mem.h"
 #include "ps3/ps3_aica_spe.h"
+#include "ps3/ps3_sndthr.h"
 #include <math.h>
 
 // Stats-line counters (plugs/drkPvr/Renderer_if.h). Declared here rather than
@@ -1386,11 +1387,14 @@ void FASTCALL gdrom_get_cdda(s16* sector);
 static void cdda_refill()
 {
     cdda_index = 0;
-    if (CDDA_FIX())
+    if (g_snd_thread || CDDA_FIX())
     {
-        // gdrom_get_cdda gives the raw Red Book sector (s16 L/R
-        // interleaved, little-endian) or silence when no track plays.
-        gdrom_get_cdda(cdda_sector);
+        // gdrom_get_cdda gives the raw Red Book sector (s16 L/R interleaved, little-endian) or silence. 5.14: the SH4
+        // thread read it at this sample (it changes GD-ROM state); it is zeros when CD Audio is off.
+        if (g_snd_thread)
+            snd_cdda_pop(cdda_sector);
+        else
+            gdrom_get_cdda(cdda_sector);
 #ifdef WII
         // Disc bytes are little-endian; swap each sample for the
         // big-endian CPU.

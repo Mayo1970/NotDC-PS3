@@ -1,6 +1,7 @@
 #include "arm7.h"
 #include "arm_mem.h"
 #include "arm7_jit.h"
+#include "ps3/ps3_arm_spe.h"
 
 #define ARM7_FIQ_DIAG 0   // 1 = count real FIQs serviced per second (see CPUFiq)
 
@@ -376,6 +377,8 @@ void arm_Reset()
 	// Latch cached vs JIT for this run (arm7_jit preset) and flush the JIT.
 	// Must come after the cached flush: both engines share its buffers.
 	arm_jit_on_reset();
+	if (g_arm_spe)
+		arm_spe_reset();   // 5.15: the ARM7 that runs the game is the SPU's
 }
 
 // Both engines read the idle-skip rule while they compile: drop their code so a new rule acts at once.
@@ -385,6 +388,8 @@ void arm_FlushCode()
 	arm_Run_Cached(0, true);
 #endif
 	arm_jit_on_reset();
+	if (g_arm_spe)
+		arm_spe_flush();
 }
 
 void CPUInterrupt()

@@ -6,6 +6,7 @@
 #include "dc/aica/aica_if.h"
 
 #include "plugins/plugin_manager.h"
+#include "ps3/ps3_sndthr.h"
 
 // Area 0: 0-1FFFFF boot ROM, 200000 flash, 5F6800 sysctrl, 5F6C00 Maple, 5F7000 GD-ROM, 5F7400 G1,
 // 5F7800 G2, 5F7C00 PVR i/f, 5F8000 TA/PVR, 600000 modem, 700000 AICA, 710000 RTC, 800000 wave RAM.
@@ -106,9 +107,15 @@ T FASTCALL ReadMem_area0(u32 addr)
 }
 
 	// --- AICA Sound Control: 0x700000 - 0x707FFF (page 0x70) ---
+	// 5.14: with the sound thread the SH4 reads the AICA as of its last MediumUpdate, as before.
 	if (base == 0x70 && addr <= 0x00707FFF)
 	{
-		return (T)ReadMem_aica_reg(addr, sz);
+		if (!g_snd_thread)
+			return (T)ReadMem_aica_reg(addr, sz);
+		snd_lock(SND_LOCK_REG);
+		const T v = (T)ReadMem_aica_reg(addr, sz);
+		snd_unlock();
+		return v;
 	}
 
 	// --- AICA RTC: 0x710000 - 0x71000B (page 0x71) ---
@@ -215,7 +222,9 @@ void FASTCALL WriteMem_area0(u32 addr, T data)
 	// --- AICA Sound Control: 0x700000 - 0x707FFF ---
 	if (base == 0x70 && addr <= 0x00707FFF)
 	{
+		snd_lock(SND_LOCK_REG);
 		WriteMem_aica_reg(addr, data, sz);
+		snd_unlock();
 		return;
 	}
 

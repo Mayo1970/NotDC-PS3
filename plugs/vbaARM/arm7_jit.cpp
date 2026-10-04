@@ -20,19 +20,59 @@
 extern "C" int get_arm7_jit_preset();   // ps3/ps3_presets.cpp
 extern "C" int get_arm7_idle_skip_preset();
 
-// ── Emitter and SH4-driver helpers (C++ linkage) ────────────────────────────
-void* emit_GetCCPtr();                  // dc/sh4/rec_v2/driver.cpp
+// ── Emitter (C++ linkage) ───────────────────────────────────────────────────
+// 5.14: this JIT can compile on the sound thread while the SH4 JIT compiles, so it never touches the driver's
+// emit_ptr: the header's encoders write through this file's own pointer (arm7_emit).
+#define ppc_emit      arm7_emit
+#define emit_GetCCPtr arm7_emit_cc
+void* emit_GetCCPtr();
 #include "emitter/PPCEmit/ppc_emitter.h"
 #ifdef ppc_li
-#  undef ppc_li                         // macro is 16-bit only; use the driver's
+#  undef ppc_li                         // macro is 16-bit only
 #endif
-void ppc_li(u32 D, u32 imm);            // ps3/ps3_driver.cpp
-void ppc_call(void* funct);
-void ppc_jump(void* funct);
-void ppc_call_c(void* fn);              // ELFv1: C function pointers are OPD descriptors
-u32  ppc_addr_high(u32 rD, void* ptr);
-void make_address_range_executable(void* addr, u32 size);
-extern u32* emit_ptr;                   // driver.cpp: redirects ppc_emit output
+void make_address_range_executable(void* addr, u32 size);   // ps3/ps3_driver.cpp, no emitter state
+u64  ps3_opd_entry(void* fn);                                // ps3/ps3_jitmem.cpp
+
+static u32* emit_ptr;   // set by emit_stubs and compile_block before every emit
+
+void arm7_emit(u32 insn) { *emit_ptr++ = insn; }
+void* arm7_emit_cc() { return emit_ptr; }
+
+// The SH4 driver's helpers (ps3/ps3_driver.cpp), on this file's pointer.
+static void ppc_li(u32 D, u32 imm)
+{
+	if ((s32)(s16)imm == (s32)imm)
+	{
+		ppc_addi(D, 0, imm);
+		return;
+	}
+	ppc_addis(D, 0, imm >> 16);
+	if ((u16)imm != 0)
+		ppc_ori(D, D, (u16)imm);
+	// addis sign-extends on PPC64; ELFv1 C calls want a zero-extended u32 (clrldi D,D,32).
+	if (imm & 0x80000000)
+		ppc_emit(0x78000000 | (D << 21) | (D << 16) | 0x20);
+}
+
+static void ppc_bx_to(void* dst, u32 lk)
+{
+	const s64 d = (u8*)dst - (u8*)emit_ptr;
+	verify(d < 33554432 && d > -33554432);
+	ppc_bx((u32)(d >> 2), 0, lk);
+}
+static void ppc_call(void* code) { ppc_bx_to(code, 1); }
+static void ppc_jump(void* code) { ppc_bx_to(code, 0); }
+// ELFv1: a C function pointer is an OPD descriptor; branch to its entry.
+static void ppc_call_c(void* fn) { ppc_call((void*)(uintptr_t)ps3_opd_entry(fn)); }
+
+static u32 ppc_addr_high(u32 rD, void* ptr)
+{
+	uintptr_t diff = (uintptr_t)ptr;
+	const u32 rv = (u32)(s32)(s16)diff;
+	diff -= rv;
+	ppc_addis(rD, 0, (u32)(diff >> 16));
+	return rv;
+}
 
 // ── ARM7 core state (arm7.cpp / arm_mem.cpp) ─────────────────────────────────
 typedef union { u32 I; } reg_pair;

@@ -5,6 +5,7 @@
 #include "ps3_ui.h"
 #include "ps3_video.h"
 #include "ps3_presets.h"
+#include "ps3_sndthr.h"
 #include "plugs/vbaARM/arm7_jit.h"
 
 #include <stdio.h>
@@ -375,6 +376,10 @@ static Option s_audio[] = {
 	  "SPE caique AICA plays the sound, not nullAICA. Set before boot." },
 	{ "SPE AICA DSP",    &g_spe_aica_dsp_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The DSP (reverb, echo) in SPE AICA Sound. Mode: SPE DSP JIT. Set before boot." },
+	{ "Sound Thread",    &g_sound_thread_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ARM7 and AICA on their own PPU thread; looser sound timing. Set before boot." },
+	{ "SPE ARM7",        &g_spe_arm7_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ARM7 and AICA registers on an SPE; needs SPE AICA Sound. Set before boot." },
 };
 
 static Option s_video[] = {
@@ -878,6 +883,8 @@ bool ps3_menu_pending(void)
 void ps3_menu_ingame(void)
 {
 	s_ingame_req = false;
+	// 5.14: live sound options below touch ARM7 and AICA state, so the sound thread waits until the menu closes.
+	snd_lock(SND_LOCK_MENU);
 	// The SH4 thread runs the guest's rounding mode; the UI math wants round-to-nearest.
 	double fpscr;
 	__asm__ volatile("mffs %0" : "=f"(fpscr));
@@ -941,6 +948,7 @@ void ps3_menu_ingame(void)
 
 	__asm__ volatile("mtfsf 0xFF,%0" : : "f"(fpscr));
 	printf("[menu] in-game menu closed\n");
+	snd_unlock();
 }
 
 // -- Loop --------------------------------------------------------------------

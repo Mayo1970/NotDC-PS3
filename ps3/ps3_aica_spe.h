@@ -16,3 +16,7 @@ void ps3aica_step();
 u16 ps3aica_read_mon(u32 reg, bool keep_lp);
 // Sound mode: the CD-DA sector (host-order s16 L/R) EXTS plays from this sample on.
 void ps3aica_cdda(const s16* sector, bool silent);
+// 5.15 (ARM7 SPU): the log's addresses, the pacing point every AICA_BLOCK samples, a CD-DA sector into a free slot.
+void ps3aica_spe_eas(u32* bell, u32* echo, u32* log);
+void ps3aica_pace(u32 now);
+u32 ps3aica_cdda_slot(const s16* sector, u32 ord);

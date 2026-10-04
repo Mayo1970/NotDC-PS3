@@ -1,6 +1,8 @@
 #include "arm_aica.h"
 #include "arm7.h"
 #include "arm_mem.h"
+#include "ps3/ps3_sndthr.h"
+#include "ps3/ps3_arm_spe.h"
 #include <math.h>
 
 // Wall-time split for the stats line (rationale in Renderer_if.h, not included to keep the renderer
@@ -46,11 +48,35 @@ bool g_arm7_in_run;
 u32  g_arm7s_runs;
 u64  g_arm7s_ticks;
 
-// Runs ARM7 and AICA in lockstep from the SH4 timeslice (like devcast SoundCPU::Update): step AICA per
-// accumulated sample, then run the ARM for the slice.
-void FASTCALL armUpdateARM(u32 Cycles)
+// Whole AICA samples in this slice, remainder carried. SH4 thread only: with the sound thread (5.14) the CD-DA
+// reads must fall on the same samples as the worker's steps.
+static u32 aica_samples_due(u32 Cycles)
 {
 	static u32 aica_cycle_acc = 0;
+
+	// Refresh the cached samples-per-cycle only when the underclock preset
+	// changed (never during gameplay — set at game load / in the menu).
+	int mhz = get_sh4_clock_preset();
+	if (mhz != aica_clock_mhz)
+	{
+		aica_clock_mhz     = mhz;
+		aica_sample_cycles = (u32)((u64)mhz * 1000000u / 44100u);
+	}
+
+	aica_cycle_acc += Cycles;
+	u32 n = 0;
+	while (aica_cycle_acc >= aica_sample_cycles)
+	{
+		aica_cycle_acc -= aica_sample_cycles;
+		n++;
+	}
+	return n;
+}
+
+// Runs ARM7 and AICA in lockstep from the SH4 timeslice (like devcast SoundCPU::Update): the ARM for the slice,
+// then the AICA once per sample. On whichever thread holds the sound token.
+void arm_aica_run(u32 Cycles, u32 samples)
+{
 	static u32 arm_batch_acc = 0;     // SH4 cycles owed to the ARM (arm7_batch > 1)
 	static u32 arm_batch_calls = 0;
 
@@ -93,31 +119,25 @@ void FASTCALL armUpdateARM(u32 Cycles)
 	}
 arm_deferred:
 
-	// Refresh the cached samples-per-cycle only when the underclock preset
-	// changed (never during gameplay — set at game load / in the menu).
-	{
-		int mhz = get_sh4_clock_preset();
-		if (mhz != aica_clock_mhz)
-		{
-			aica_clock_mhz     = mhz;
-			aica_sample_cycles = (u32)((u64)mhz * 1000000u / 44100u);
-		}
-	}
-
-	// Advance the AICA sample generator by however many whole samples elapsed
-	// during this slice, carrying the remainder for exact long-run timing.
-	aica_cycle_acc += Cycles;
-	if (aica_cycle_acc >= aica_sample_cycles)
+	if (samples)
 	{
 		// Clock reads skipped when no sample ran (about 1 call in 5 in ACCURATE).
 		const u64 t_aica = ARM_PERF_TICKS();
 		do
-		{
-			aica_cycle_acc -= aica_sample_cycles;
 			libAICA_TimeStep();
-		}
-		while (aica_cycle_acc >= aica_sample_cycles);
+		while (--samples);
 
 		AicaTicks += ARM_PERF_TICKS() - t_aica;
 	}
+}
+
+void FASTCALL armUpdateARM(u32 Cycles)
+{
+	const u32 samples = aica_samples_due(Cycles);
+	if (g_arm_spe)
+		arm_spe_update(Cycles, samples);
+	else if (g_snd_thread)
+		snd_push(Cycles, samples);
+	else
+		arm_aica_run(Cycles, samples);
 }

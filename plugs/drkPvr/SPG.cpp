@@ -3,6 +3,8 @@
 #include "spg.h"
 #include "Renderer_if.h"
 #include "regs.h"
+#include "ps3/ps3_sndthr.h"
+#include "ps3/ps3_arm_spe.h"
 #include <ogc/system.h>
 #include <unistd.h>
 
@@ -258,6 +260,8 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
             if (tdiff > 1.0)
             {
                 spg_last_vps = now;
+                // 5.14: the sound counters and dumps below belong to the sound thread while it runs.
+                snd_lock(SND_LOCK_STATS);
 
                 double spd_fps = FrameCount    / tdiff;
                 double spd_vbs = spg_VblankCount / tdiff;
@@ -351,7 +355,10 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
+                snd_thread_stats();
+                arm_spe_stats(tdiff);
 #endif
+                snd_unlock();
                 // PSP profiler logging removed for Wii build — not applicable
             }
 

@@ -61,6 +61,8 @@ int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against 
 int g_spe_dsp_jit_preset   = 2;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b)
 int g_spe_aica_snd_preset  = 0;   // 1 = that SPU model makes the sound; nullAICA's mixer off (5.13 A2)
 int g_spe_aica_dsp_preset  = 0;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3)
+int g_sound_thread_preset  = 0;   // 1 = ARM7 and AICA on their own PPU thread (5.14)
+int g_spe_arm7_preset      = 0;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -114,6 +116,8 @@ static const CfgItem s_items[] = {
 	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
 	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
 	{ "SpeAicaDsp",    &g_spe_aica_dsp_preset },
+	{ "SoundThread",   &g_sound_thread_preset },
+	{ "SpeArm7",       &g_spe_arm7_preset },
 };
 
 void ps3_presets_load(void)
@@ -147,6 +151,8 @@ static const CfgItem s_snd_items[] = {
 	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
 	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
 	{ "SpeAicaDsp",    &g_spe_aica_dsp_preset },
+	{ "SoundThread",   &g_sound_thread_preset },
+	{ "SpeArm7",       &g_spe_arm7_preset },
 };
 #define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
 
@@ -239,6 +245,10 @@ int get_spe_aica_preset()      { return g_spe_aica_preset; }
 int get_spe_dsp_jit_preset()   { return g_spe_dsp_jit_preset; }
 int get_spe_aica_snd_preset()  { return g_spe_aica_snd_preset; }
 int get_spe_aica_dsp_preset()  { return g_spe_aica_dsp_preset; }
+// OPTIMIZATION_PLAN 5.14, read once in InitAica.
+int get_sound_thread_preset()  { return g_sound_thread_preset; }
+// OPTIMIZATION_PLAN 5.15, read once in InitAica.
+int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

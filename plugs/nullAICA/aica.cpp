@@ -3,6 +3,8 @@
 #include "aica_mem.h"
 #include "wii/wii_audio.h"
 #include "ps3/ps3_aica_spe.h"
+#include "ps3/ps3_sndthr.h"
+#include "ps3/ps3_arm_spe.h"
 #include <math.h>
 
 // config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc's machine/endian.h defines them, so undef first (as wii_audio.cpp).
@@ -79,19 +81,29 @@ void update_arm_interrupts()
     ArmInterruptChange(p_ints, Lval);
 }
 
+// SH4 thread: sets the Holly SPU line to `on`; true when it changed.
+bool aica_sh4_irq_apply(bool on)
+{
+    if (on == ((*aica_params.SB_ISTEXT & SH4_IRQ_BIT) != 0))
+        return false;
+    if (on)
+        aica_params.RaiseInterrupt(holly_SPU_IRQ);
+    else
+        aica_params.CancelInterrupt(holly_SPU_IRQ);
+    return true;
+}
+
 void UpdateSh4Ints()
 {
-    u32 p_ints = MCIEB->full & MCIPD->full;
-    if (p_ints)
+    const bool on = (MCIEB->full & MCIPD->full) != 0;
+    if (g_snd_thread)
     {
-        if ((*aica_params.SB_ISTEXT & SH4_IRQ_BIT) == 0)
-            aica_params.RaiseInterrupt(holly_SPU_IRQ);
+        // 5.14: the sound thread only keeps the level; the SH4 thread applies it at its next MediumUpdate.
+        snd_irq_set(on);
+        if (g_snd_on_worker)
+            return;
     }
-    else
-    {
-        if (*aica_params.SB_ISTEXT & SH4_IRQ_BIT)
-            aica_params.CancelInterrupt(holly_SPU_IRQ);
-    }
+    aica_sh4_irq_apply(on);
 }
 
 // ---- Timers ----
@@ -216,6 +228,8 @@ static void timer_write_diag(u32 id)
 
 void aica_arm7s_dump(double wall_s)
 {
+    if (g_arm_spe)   // 5.15: nullAICA's counters here do not move; [arm7spe] has the SPU's
+        return;
     static u64 last_smp;
     const double es = (double)(g_aica_smp - last_smp) / 44100.0;
     last_smp = g_aica_smp;

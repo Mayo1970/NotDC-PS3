@@ -13,6 +13,28 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-04)
 
+**Active: 5.15 SPE ARM7 (Matt 2026-10-04, after 5.14 boot 3: "It sounded
+the same. Let's apply 2.").** The ARM7, nullAICA's registers and the caique
+control twin run on an SPU; the SH4 thread only queues commands. Built
+2026-10-04, PC tested (B0, B1, B2 checks and mutation tests, see 5.15).
+AUDIO -> "SPE ARM7" (`SpeArm7`), default OFF, set before boot, needs SPE
+AICA Sound ON. HW 2026-10-04 (package of 17:34): Crazy Taxi dense VPS 52.9
+-> 54.7, ChuChu stage at full speed, logs clean; Matt heard popping in Crazy
+Taxi, also at full speed. Tests 2026-10-04 (lag cap 32, then the PPU path's
+order exactly, then SPE ARM7 OFF): the old PPU path pops the same with SPE
+AICA Sound ON, so the popping is plan 6.6's crackle, not 5.15. Lag cap back
+to 256, test option removed: package of 19:03 (HW: dense VPS 54.8, driving
+49.5 fps against 42.6 before 5.15; Matt: popping lower, still there).
+
+**Next (Matt 2026-10-04, in a new session): 5.17 TA store off the SH4
+thread and 5.18 JIT hot-block profile.** Dense Crazy Taxi needs ~9% more
+SH4-thread speed for 60 VPS (54.8 -> 59.95). Also saved: 5.16 (SPE Draw
+check, one boot) and 5.19 (SH4 Clock below 150, last resort). Plan 6.6 when
+Matt says.
+
+5.14 Sound thread (second PPU thread) works but is a FAILURE on speed: dense
+VPS 52.9 -> 51.6, the SH4 thread ~10% slower from SMT (see 5.14 "Boot 3").
+
 **Section 6 (sound faults) PARKED by Matt 2026-10-04: "We will return to
 these later on."** The ChuChu diagnostic build ran on HW 2026-10-04
 (results in 6.1). Only the "reg 0x00 reads" row of its decision table
@@ -479,6 +501,13 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
 | 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending |
+
+| 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
+| 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
+| 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[ ]` |
+| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[ ]` next (Matt), new session |
+| 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[ ]` next (Matt), new session |
+| 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]` |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -1724,6 +1753,384 @@ clock by VPS.
           issue; he has an idea of "what we got wrong". Next session.
         - 2026-10-04, later: the echo, the menu crackle and Looney Tunes
           were investigated. See section 6.
+- 5.14 (Matt 2026-10-04: "let's go with ARM7+AICA off the SH4 thread"):
+  the ARM7 and the AICA run on a second PPU thread. Option AUDIO -> "Sound
+  Thread" (`nullDC.cfg [ps3] SoundThread`), default OFF, set before boot,
+  on the `[sndcfg]` line.
+  - Why: dense Crazy Taxi at 150 MHz (A3 run) is limited by the SH4 thread
+    (VPS 52.3-53.0 of 59.95, the SH4 never waits for the render thread).
+    Sound costs the SH4 thread `arm` 6.0% + `aica` 2.4% of wall; a ChuChu
+    stage 14%. Full speed needs ~12% less SH4-thread time. The render thread
+    is busy 42%, so the second PPE hardware thread is idle more than half the
+    time. In the ChuChu logs the SH4 reads no AICA register; it shares only
+    ARAM with the sound driver.
+  - Model: each MediumUpdate is one queue entry {SH4 cycles, AICA samples}.
+    The SH4 thread counts the samples (`aica_samples_due`, the old
+    accumulator) and queues the entry (`snd_push`). The token holder runs
+    `arm_aica_run()` per entry: the ARM7 slice (Batch rules unchanged), then
+    one `libAICA_TimeStep()` per sample. Same code and order as before.
+    OFF: `armUpdateARM` calls `arm_aica_run()` directly, as before.
+  - Token: only its holder runs sound code. The worker takes it when the
+    queue is not empty. The SH4 thread takes it (`snd_lock`) for AICA
+    register reads and writes (area 0, `sh4_area0.cpp`), Holly soft reset,
+    the in-game menu and the 1 Hz stats block. `snd_lock` first runs the
+    queued entries itself, so the SH4 sees the AICA and ARM7 as before
+    (caught up to its last MediumUpdate). It nests.
+  - Not locked: ARAM. The SH4 and the ARM7 read and write it directly, as
+    on hardware. The ARM7 can see an SH4 write up to the worker's lag early
+    (Batch 4 already gives 4 MediumUpdates of this).
+  - SH4 interrupt (Holly SPU IRQ): on the worker, `UpdateSh4Ints` only keeps
+    the level (`snd_irq_set`); the SH4 thread raises or cancels it at its
+    next MediumUpdate (`aica_sh4_irq_apply`, new in `aica.cpp`). On the SH4
+    thread it acts at once, as before.
+  - CD-DA: `gdrom_get_cdda` reads the image file and changes GD-ROM state,
+    so it stays on the SH4 thread. The SH4 reads each sector at the
+    MediumUpdate where the old code read it (every 588 samples) into an
+    8-slot ring before it queues the entry; `cdda_refill` takes the next
+    slot, then the old LE -> BE swap.
+  - Queue 128 entries. At 16 queued the SH4 posts the worker's semaphore if
+    it sleeps. At 32 (~1.5 ms of guest time at 150 MHz) the SH4 runs the
+    queue itself if the worker is not on it ("help"); at 120 it waits. The
+    worker sleeps 50 µs between checks, 2 ms after 200 empty checks.
+  - Priorities while the worker runs: SH4 thread 1001 -> 998, worker 999,
+    render thread 1000 (unchanged). The worker never waits behind a render
+    job and never takes the SH4's hardware thread. Restored at stop. If lv2
+    refuses the SH4 change, the worker gets 1002 (below both); the `up` line
+    says which.
+  - Start: at the first `snd_push`. Stop: after `sh4_cpu.Run()` returns,
+    at `ResetDC` and in `TermAica`; the SH4 then runs what the worker left.
+  - Speed trade: the order of SH4 and sound events now depends on the
+    worker's lag, so runs are not deterministic. An AICA interrupt reaches
+    the SH4 up to the lag + 1 MediumUpdate late.
+  - Log: `[sndthr] up/down` and every ~5 s: entries/s, share run by the
+    worker and by the SH4, worker busy % of wall, wakes/s (empty), SH4 help
+    and wait % of wall, posts/s, `crit` (waits for room), `maxfill`, locks/s
+    by reason, irq/s, cdda/s, `miss` (must stay 0). With the option ON,
+    `arm:` and `aica:` on the SPEED line show the sound work on whichever
+    thread ran it; the SH4's share is `sh4 help` + `wait` on `[sndthr]`.
+  - Files: `ps3/ps3_sndthr.{h,cpp}` (new), `plugs/vbaARM/arm_aica.cpp`,
+    `plugs/nullAICA/aica.cpp`, `sgc_if.cpp`, `nullAICA.cpp`,
+    `dc/mem/sh4_area0.cpp`, `dc/dc.cpp`, `plugs/drkPvr/SPG.cpp`,
+    `ps3/ps3_menu.cpp`, `ps3/ps3_presets.{cpp,h}`.
+  - PC test, `misc/sndthr_check/` (WSL): the real `ps3_sndthr.cpp` with
+    pthreads for the lv2 calls and a fake sound core. The core checks: one
+    thread at a time in sound code, every entry once and in order, CD-DA
+    sectors in order with the right content (disc data or zeros), GD-ROM
+    reads and Holly line changes only on the SH4 thread, `g_snd_on_worker`
+    right for the thread. The driver checks after each `snd_lock`: caught
+    up, no sound code running, Holly line = the level of the last entry,
+    token still held after a nested unlock. Random pacing waits in the core,
+    random SH4 blocks, stops and restarts.
+    - `run.sh`: ThreadSanitizer 3 x 60000 entries, -O2 8 x 400000: ALL PASS,
+      no TSan report. The worker ran ~96% of the entries.
+    - `mutate.sh`: 10 of 10 protocol bugs caught (no token, no catch-up in
+      snd_lock, no line apply, stop leaves entries, wrong CD-DA slot,
+      missing sector, entry queued before its sector, no wait when full,
+      nested unlock frees the token, worker line never applied).
+  - Build: no warnings. Disassembly: the token CAS ends in `isync`, the
+    queue head load is `lwz; cmpw; bne-; isync`, tail and token releases are
+    `lwsync; stw`. ELF `.got` 0x9FC8, 0 r2off. Package of 15:18.
+  - HW test: Dynarec ON, JIT Fastmem ON, SH4 Clock 150, SPE AICA Sound ON
+    (as the A2/A3 runs), AudioBuffers as before.
+    1. Crazy Taxi, Sound Thread OFF: 2-3 min of dense traffic (baseline in
+       the same build).
+    2. Next boot, Sound Thread ON: the same. Pass: `[sndthr] up`, sound and
+       music right (no new crackle, no stuck or late notes), `miss=0`,
+       `crit` near 0. Read dense VPS/SPEED against step 1, `run by worker`
+       %, `sh4 help`/`wait` %, worker busy %, wakes/s, posts/s.
+    3. ChuChu Rocket stage, ON: echo and effects as before (F1 is old),
+       VPS. 4. Soul Calibur fight, ON: no slowdown against OFF (render-bound;
+       the worker shares the render thread's hardware thread).
+    5. In-game menu once (SELECT twice): the game and sound continue.
+  - HW 2026-10-04, build of 15:18 (log `ps3log_sndthr_run1.txt`, scratchpad
+    of session cfef67ac):
+    - Boot 1, Sound Thread OFF (baseline): Crazy Taxi, 126 dense seconds:
+      VPS 52.9 of 59.95, SPEED 88.3%, 29% at full speed; vt 6-9K / 9-12K /
+      12K+ 50.9 / 52.0 / 59.0; `ta` 5.1, `arm` 6.0, `aica` 2.5%; render busy
+      40.6%. Matches the A3 run.
+    - Boot 2, Sound Thread ON: hung in the BIOS (vbl 27). `[sndthr] up`, the
+      SH4 priority change worked, ARM7 self-test PASS, then right after the
+      ARMRST write: `Verify Failed: in_s16(d) in e_bc_to` (arm7_jit.cpp).
+    - Cause: the ARM7 JIT borrowed the SH4 driver's global `emit_ptr` (its
+      `ppc_emit` and helpers are the driver's). On the worker it compiled
+      while the SH4 JIT compiled the BIOS, through the same pointer.
+    - Fix: arm7_jit.cpp has its own emit pointer: `ppc_emit` and
+      `emit_GetCCPtr` map to `arm7_emit`/`arm7_emit_cc` in that file, and
+      `ppc_li`, `ppc_call`, `ppc_jump`, `ppc_call_c`, `ppc_addr_high` are
+      local copies of the driver's. The emitted words are the same; the boot
+      self-test (45 tests) checks it. The ".text section attributes" assembler
+      warning of arm7_jit.cpp is old (HEAD gives it too). ELF `.got` 0x9FD0,
+      0 r2off, two `emit_ptr` symbols (driver global, arm7_jit local).
+      Package of 15:30. HW pending: repeat boot 2.
+    - Boot 3 (build of 15:30), Sound Thread ON, Crazy Taxi: runs, ARM7
+      self-test PASS, `miss=0`. FAILURE on speed:
+
+      | | dense VPS | SPEED | full-speed s | TA ns/call | render ms/render | render busy |
+      |---|---|---|---|---|---|---|
+      | OFF (boot 1) | 52.9 | 88.3% | 29% | 149 | 9.50 | 39.7% |
+      | ON (boot 3) | 51.6 | 86.0% | 11% | 164 | 12.72 | 58.8% |
+
+      - The worker ran 99.8% of the entries, busy 9.0% of wall; SH4 help
+        0.02%, wait 0.01%; 62 posts/s; reg locks 14/s. So the sound work left
+        the SH4 thread, but the SH4 thread itself got ~10% slower: the same TA
+        store code takes 164 ns per call, not 149.
+      - The worker woke 18.6K times/s (5.1K with work, 13.5K empty: the 50 µs
+        poll), each time above the render thread's priority: render jobs took
+        34% longer (970 -> 1344 ns per vertex), the second hardware thread got
+        much busier.
+      - Older runs for scale: render-thread load alone barely slows the SH4
+        (Crazy Taxi render busy 23% vs 40%: TA 154 vs 149 ns; Soul Calibur
+        render 90%: 160-170 ns). The wake pattern and the worker's own work
+        cost the SH4 far more per second of activity.
+- 5.15 (Matt 2026-10-04, after 5.14 boot 3: "It sounded the same. Let's
+  apply 2."): the ARM7, nullAICA's registers and the caique control twin run
+  on an SPU (`spe_arm7`). AUDIO -> "SPE ARM7" (`nullDC.cfg [ps3] SpeArm7`),
+  default OFF, set before boot, on the `[sndcfg]` line. It needs SPE AICA
+  Sound ON (else the log says so and the ARM7 stays on the PPU). Sound Thread
+  (5.14) is off while it runs.
+  - Why: 5.14 put the same work on the second PPE hardware thread, and SMT
+    made the SH4 thread ~10% slower. An SPU shares no core with the SH4.
+  - Model:
+    - The SH4 thread queues commands in a 4096-entry ring
+      (`ps3/ps3_arm_spe.cpp`): each MediumUpdate {SH4 cycles, AICA samples,
+      Arm7Batch, ARM7 Speed stage, Idle Skip SAFE}, each SH4 AICA register
+      write and read, CD-DA sector slots, ARM7 reset and code flush. It
+      stores the new head in a bell line the SPU holds a reservation on.
+    - The SPU (`ps3/spu/spe_arm7.cpp`) runs the commands in order, as
+      `arm_aica_run` did: the ARM7 slice (Batch rules unchanged), then per
+      sample nullAICA's timers, interrupts and CD-DA count, and the control
+      twin with its log records for the sound SPU (spe_aica, unchanged).
+      After each batch it puts an echo line: commands done, the Holly SPU
+      interrupt level, the last read value, stats.
+    - Code: the ARM7 is `arm7_spu.h` (B0), nullAICA's register semantics are
+      `aica_ctl.h` (B1, byte-exact with `aica_reg`), the twin and the log are
+      the PPU part of `ps3_aica_spe.cpp`, moved.
+    - An SH4 register read waits for the SPU. Writes do not, except MCIEB,
+      MCIPD and MCIRE: these wait, so the Holly line is right before the SH4
+      goes on (an interrupt ack). The PPU applies the line at each
+      MediumUpdate and after each read.
+    - ARAM: the SPU reads through a 32 KB LS cache (128-byte lines) and
+      writes through at once (exact-size fenced puts; a cached line gets the
+      write too). Each SH4 store to ARAM (`libAICA_WriteMem_aica_ram`, every
+      SH4 and DMA path) marks its line; the next command carries the range
+      and the SPU drops those lines first. ARM7 reset and ARMRST release
+      drop the whole cache.
+    - CD-DA and the audio pacing stay on the SH4 thread, at the samples
+      nullAICA used. A sector goes to a free AicaShared slot (free once the
+      sound SPU applied the CD-DA record that last used it), then a CDDA
+      command. Pacing every 64 samples, as `ps3aica_step`.
+    - Speed trades, as 5.14: the ARM7 runs behind the SH4 by the SPU's lag.
+      It can see an SH4 ARAM store early, and the SH4 sees ARM7 stores
+      later; the Holly line reaches the SH4 a few MediumUpdates late. The
+      SH4 waits when 256 commands are in flight.
+    - Other differences: the SPU ARM7 executes ARAM as it is now
+      (arm7_cached keeps decoded code until a reset, so only self-modifying
+      code or code changed without ARMRST differ); its block map has 8192
+      entries (an eviction can re-decode a block from another start, so
+      ticks can differ, see B0). The `[arm7s]`, `[aicarw]`, `[key]` and
+      `[montrace]` lines stop (nullAICA's PPU counters do not move);
+      `[arm7spe]` has the SPU's counts.
+    - SPU LS: 208 KB used (text 75 KB; register file, block map, ARAM cache
+      32 KB each; twin 31 KB).
+  - Log: `[arm7spe] SPU thread up ... SPU LS used`, and every ~5 s per
+    second: commands, ARM7 runs, ticks, FIQs, samples, lag in commands
+    (max), log records, checks, monitor reads, ARAM misses and puts, block
+    map decodes and evicts, SPU busy %, wakes, SH4 reads, writes and wait %,
+    lag waits, log waits and drops, CD-DA underruns. Drops and underruns
+    must stay 0. `[aica-spe]` goes on: bad must stay 0.
+  - Files: new `ps3/spu/aica_ctl.h`, `spe_arm7.h`, `spe_arm7.cpp`,
+    `ps3/ps3_arm_spe.{h,cpp}`; hooks in `arm_aica.cpp`, `arm7.cpp` (reset,
+    code flush), `nullAICA_plug.cpp`, `nullAICA.cpp`, `aica.cpp` (`[arm7s]`
+    off), `ps3_aica_spe.{cpp,h}` (log addresses, pacing, CD-DA slot),
+    `ps3_sndthr.cpp`, `SPG.cpp`, `ps3_menu.cpp`, `ps3_presets.{cpp,h}`,
+    `Makefile`.
+  - PC tests (WSL `run.sh`; `build_spu.sh` and `mutate.sh` in Git Bash):
+    - B0 `misc/arm7spu_check/`: arm7_spu.h against the real `arm7.cpp` +
+      `arm7_cached.cpp`, 6 seeds x 400 random programs and the 45
+      conformance tests: ALL PASS (8192-entry map: 399 of 400, evictions).
+    - B1 `misc/aicactl_check/`: aica_ctl.h against nullAICA's own
+      `aica.cpp`, `aica_mem.cpp`, `sgc_if.cpp`, `dsp.cpp` and vbaARM's
+      `arm_mem.cpp`, built for the SPU (big-endian) and run in
+      `misc/spu_sim`. Random SH4 and ARM7 register traffic and samples;
+      after every op: read values, the 32 KB register file, timers, e68k,
+      the Holly line, twin calls in order. 8 seeds x 4000 ops ALL PASS;
+      `mutate.sh` 14 of 14 caught. The copies get two test entry points
+      appended (AICA_Init without sgc_Init's float tables, which the
+      simulator cannot run; they only feed nullAICA's own mixer). Odd 16-bit
+      register accesses are left out: the SPU build of the reference aligns
+      them down, the PPU does not (aica_ctl.h does what the PPU does).
+    - B2 `misc/arm7spe_check/`: the spe_arm7 image in `misc/spu_sim`
+      against an x86 reference (arm7_spu.h, aica_ctl.h and the caique model
+      on flat memory, arm_mem.cpp's ARAM rules, ps3_aica_spe's twin and
+      log), fed the same commands: random ARM7 programs that use AICA
+      registers and take FIQs, SH4 register traffic, SH4 ARAM stores into
+      the running code, ARMRST, resets, flushes, CD-DA. After each batch:
+      ARM7 registers and block map, the register file, all 2 MB of ARAM,
+      every log record, the echo. 8 seeds x 4000 batches ALL PASS (2 with
+      an SH4 write storm and a stalled sound SPU: full log, wraps);
+      `mutate.sh` 12 of 12 caught (no ARAM invalidation, no write-update,
+      swizzles, echo line, CD-DA, log wrap, Batch, Idle SAFE, ARMRST, read
+      size, twin catch-up).
+    - The 5.14 check `misc/sndthr_check` still passes.
+  - Build: no warnings. ELF `.got` 0xA188, 0 r2off; `cmd_push` is
+    `lwsync; stw; stw`. Package of 17:34.
+  - HW test: Dynarec ON, JIT Fastmem ON, SH4 Clock 150, SPE AICA Sound ON,
+    SPE AICA DSP and AudioBuffers as in the last runs, Sound Thread OFF.
+    1. Crazy Taxi, SPE ARM7 OFF: 2-3 min of dense traffic (baseline in this
+       build).
+    2. Next boot, SPE ARM7 ON: the same. Pass: `[arm7spe] SPU thread up`,
+       sound and music right (no new crackle, no stuck or late notes),
+       `[aica-spe]` bad=0, log drops and CD-DA underruns 0. Read dense
+       VPS/SPEED against step 1, `arm:`/`aica:` on the SPEED line, SPU busy
+       %, lag.
+    3. ChuChu Rocket stage, ON: sound as before (the echo F1 is old).
+    4. Soul Calibur fight, ON: sound right, no slowdown against OFF.
+    5. In-game menu once (SELECT twice): the game and sound continue.
+  - HW 2026-10-04, package of 17:34 (log `ps3log_sndthr_run1.txt`, scratchpad
+    of session cfef67ac). Matt skipped the OFF boot; the baseline is 5.14
+    boot 1 (same settings, sound on the SH4 thread).
+    - Crazy Taxi, ON, 75 dense seconds: VPS 54.7 (OFF 52.9), SPEED 91.3%
+      (88.3%), 20% of dense seconds at full speed (29%; less light-dense
+      traffic in this run); `arm` 0.0% (6.0), `aica` 1.1% (2.5); TA store
+      157 ns/call (149); render busy 46.6% (39.7), 9.77 ms/render (9.50).
+      ARM7 SPU busy 14-16% at 21K commands/s; FIQ 1744/s (as in s3_run1);
+      ARAM misses 5-15K/s, puts 55-100K/s. `[aica-spe]` bad=0; no log drops,
+      no CD-DA underruns, no silent audio blocks at full speed.
+    - Matt: popping in the audio, also at full speed. Likely 6.6's race,
+      made larger: at full speed the SPU was 120-180 commands (~8 ms) behind
+      the SH4 at the stats point (the cap was 256, ~12 ms; the SH4 waited at
+      it up to 32 times/s at boot); in dense driving 0. 5.14 kept its worker
+      within ~32 entries and sounded the same as OFF.
+    - ChuChu Rocket stage, ON: SPEED 100.0%, VPS 59.9; sound work on the SH4
+      thread 1.6% of wall (before 5.15 the control pass alone took 8.9%, A2
+      high voices run); ARM7 SPU busy 14-24%, sound SPU up to 33%; bad=0, no
+      silent blocks in the stage; the driver's 4-7K monitor reads/s now run
+      on the SPU. Matt: the sound is the same as before.
+  - Option 1 (Matt 2026-10-04: "You can build option 1 now"): `LAG_MAX` 256
+    -> 32 commands (~1.5 ms of guest time, 5.14's limit). At 32 in flight the
+    SH4 spins until 16 are left. `max` on the `[arm7spe]` line is now the
+    largest real lag found at a check. Build: no warnings, `.got` 0xA188, 0
+    r2off; package of 18:18. Plan 6.6 stays the fix for the race itself;
+    Matt wants it later. In 5.15 it needs the ARM7 SPU to publish the slots'
+    play positions for the SH4's ARAM stores; the ARM7's own stores can be
+    checked on that SPU.
+  - HW test (option 1): Crazy Taxi, SPE ARM7 ON, settings as above: is the
+    popping at full speed (menus with music, light driving) gone or back to
+    the old 6.6 crackle? Read `[arm7spe]` lag max (<= 32) and lag-waits, and
+    dense VPS against 54.7.
+  - HW 2026-10-04, package of 18:18: the popping in the Crazy Taxi main menu
+    is still there (Matt). The log: lag max 32, lag 0 at the stats points;
+    the SH4 waited 170-530 times/s in the menu (up to 8% of wall); bad=0.
+  - A/B boot for 6.6: the log shows `SpeAicaSound=0 SpeArm7=0` (nullAICA
+    made the sound, the known clean case), so it did not test 5.15. Matt:
+    5.15 causes the popping; look into it.
+  - Lead: with the SPU behind the SH4, the two share ARAM out of the PPU
+    path's order. The ARM7 can read an SH4 store made later in guest time
+    (and the SH4 reads ARM7 state from earlier). Crazy Taxi's ARM7 writes
+    ~58K words/s in the menu (`puts`), near the two PCM16 music rings'
+    176 KB/s, so the driver likely copies the music from a buffer the SH4
+    fills. A lag cap only narrows that window.
+  - Diagnostic build, package of 18:41: AUDIO -> "SPE ARM7 Sync"
+    (`SpeArm7Sync`, live, default LAG). LAG: as 18:18 (32 commands). ARAM:
+    the SH4 also waits for the SPU to finish every queued command before its
+    next ARAM load or store after a push. FULL: the SH4 waits after every
+    MediumUpdate, the PPU path's order exactly (diagnostic, costs speed).
+    The SPU now waits for its ARAM puts before it moves `tail`, so a command
+    reported done has its ARM7 stores in memory. `[arm7spe]` adds SH4 ARAM
+    loads and stores per second, syncs per second and the mode. B2 still
+    passes. No warnings, `.got` 0xA1E8, 0 r2off.
+  - HW test (diagnostic): Crazy Taxi, SPE AICA Sound ON, SPE ARM7 ON (both
+    before boot). In the main menu, 30 s per mode, switched live in the
+    in-game menu: LAG, ARAM, FULL. Which modes pop?
+    - FULL clean, LAG pops: the order is the cause. ARAM clean: keep ARAM if
+      its wait % is small. ARAM pops: look at the other shared state.
+    - FULL pops too: not the order. Next: the PPU path with ARM7 JIT OFF
+      (the cached interpreter, which arm7_spu.h copies) against JIT 5.
+  - HW 2026-10-04, package of 18:41, Crazy Taxi main menu at SH4 Clock 200:
+    ARAM and FULL both pop (Matt). FULL ran the PPU path's order exactly
+    (the SH4 waited after each of ~28K MediumUpdates/s, ~22% of wall), so
+    the order is not the cause. The SH4 itself writes ~44K words/s to ARAM
+    in the menu: it streams the music.
+  - A/B boot, SH4 200, SPE AICA Sound ON, SPE ARM7 OFF, ARM7 JIT 5: the
+    popping is there too (Matt). So it is SPE AICA Sound's own crackle (6.6),
+    not 5.15; the ARM7 JIT 0 boot was not needed.
+  - Clean-up (Matt: "let's make these changes first"): `LAG_MAX` back to
+    256 (at 32 the SH4 waited up to 8% of wall in light scenes for nothing);
+    the "SPE ARM7 Sync" option is gone (a saved `SpeArm7Sync` key is now
+    ignored). Kept: the SPU waits for its ARAM puts before it moves `tail`,
+    and the lag `max` fix. No warnings, `.got` 0xA188, 0 r2off; package of
+    19:03.
+- 5.16-5.19 (Matt 2026-10-04: "Anything else we can do to optimize Crazy Taxi
+  to reach full speed?"). Dense Crazy Taxi at SH4 150 with SPE ARM7 ON (19:03
+  run): VPS 54.8, so ~9% more SH4-thread speed gives 60 VPS. The SH4 never
+  waits for the render thread (busy 46.7%). SH4 thread: ~92% recompiled code
+  and its C calls, `ta` 6.0%, `aica` 1.1% (5.15's PPU part). Matt: 5.17 and
+  5.18 first, in a new session.
+- 5.16 SPE Draw check. No build: VIDEO / DEBUG -> "SPE Draw" ON, SPE ARM7
+  ON, Crazy Taxi dense traffic, against the 19:03 run. Before 5.15, S3 freed
+  the render thread (busy 40 -> 23%) with no VPS change, so expect little.
+  Read dense VPS and TA ns/call (155 now, 149 when the render thread was 40%
+  busy).
+- 5.17 TA store off the SH4 thread.
+  - Facts: dense `ta` 6.0% of wall at 384K calls/s, ~155 ns (~500 PPU
+    cycles) per 32-byte store-queue block. The path: the guest stores 8 words
+    into `sq_both` (JIT stores), PREF -> `do_sqw` (`sh4_cpu_prelude.h`, C
+    call, `CCALL(CC_SQW)`, QACR address) -> `TAWriteSQ` (`pvr_if.cpp`, range
+    check) -> `libPvr_TaSQ` (`ta.cpp`: two `gettime()` for `TaTicks`,
+    `TaCalls++`) -> `ps3ta_store_sq` (`ps3_rend.cpp`: 32-byte memcpy into the
+    TA raw buffer, `raw_note_peak`, `spe_note`, one `ta_store_fsm_run` table
+    step; a list end takes `ta_store_slow`, which raises the list-end
+    interrupt on time). The DMA path (`ps3ta_store_dma`) is the same per
+    batch.
+  - Suspects for the 500 cycles: (a) load-hit-store: the memcpy reads the 8
+    words the guest stored a moment before (the PPE's large LHS penalty, see
+    5.0's Cell note); (b) the two mftb of the measurement itself, on every
+    call; (c) the call chain; (d) the FSM step.
+  - Step 1, measure: sample 1 call in 64 with mftb at entry, after the copy
+    and after the FSM; print the split once per stats window (`[ta-split]`).
+    Take `TaTicks` from the same samples, so the measurement stops costing 2
+    mftb per call.
+  - Step 2, fix by the split:
+    - Copy / LHS: when QACR points at the TA (area 4), the JIT writes the
+      guest's SQ stores straight into the next 32-byte slot of the TA raw
+      buffer, not into `sq_both`. PREF then only advances `raw_used` and runs
+      the FSM step on the first word. Other SQ targets keep today's path.
+    - Call chain: a direct JIT call to one lean TA store function for TA
+      targets (no `do_sqw` / `TAWriteSQ` / `libPvr_TaSQ` hops).
+    - FSM: run the store FSM on the SPE that already pulls the raw stream
+      (5.12 S1-S3). The SH4 thread raises the list-end interrupts when the
+      SPE reports them, a few us late; check games that wait on them.
+  - Expected: up to ~5% of wall.
+  - Checks: PC: the stored raw stream and the list-end events stay identical
+    (FSM equivalence on recorded streams). HW: Crazy Taxi dense VPS and `ta`
+    %, no missing geometry; Soul Calibur; one game that feeds the TA by DMA.
+- 5.18 JIT hot-block profile, then fixes.
+  - Facts: ~92% of the SH4 thread is recompiled code and its C calls. 5.0's
+    lesson: removing C calls or interpreter fallbacks did not move SPEED; the
+    time is inside the emitted code. On the PPE, features that keep values
+    in registers gained +3.5% each (FPU PIN, T FORWARD, CR0 BRANCH).
+  - Step 1, profiler: `get_hotblocks_preset()` is hard-wired to 0
+    (`ps3/ps3_presets.cpp`). Make it an option (VIDEO / DEBUG "JIT
+    HOTBLOCKS", set before boot). The probe exists (`ps3/ps3_driver.cpp`
+    `hotblocks_*`): 4 instructions per block entry; once a second the top 8
+    blocks by entries with PPC bytes per SH4 op; it dumps the SH4 source and
+    the generated PPC of the top block and of each new worst density. It
+    counts entries, not time: rank by entries x PPC bytes. Diagnostic only
+    (it costs speed).
+  - Step 2: Crazy Taxi dense traffic with the profiler; read the dumps of
+    the hottest blocks for: SH4 registers stored to the context and loaded
+    back (load-hit-store), repeated SR / T / FPSCR syncs, memory accesses
+    outside main RAM (out-of-line handlers), block exits and lookups (block
+    linking), and the remaining fallbacks (addc / subc / div1: 5.2 JIT Carry
+    is broken on the PS3; the fix is in 5.2: zero-extend the operands, take
+    the carry from bit 32).
+  - Step 3: fix the top pattern first, each behind a JIT SPEED toggle
+    (default OFF until HW validated); measure dense VPS after each.
+  - Expected: unknown before the profile; most of the SH4 time is here.
+- 5.19 SH4 Clock below 150. The option allows 150-200 MHz (`ps3_menu.cpp`).
+  A lower floor (e.g. 120-140) buys VPS, but the guest gets fewer cycles per
+  frame, so heavy scenes drop more of the game's own frames (already at 150:
+  dense 46.6 fps at 54.8 VPS). Last resort, Matt's call.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

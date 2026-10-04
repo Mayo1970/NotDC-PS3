@@ -10,6 +10,7 @@
 #include "dc.h"
 #include "config/config.h"
 #include "plugins/plugin_manager.h"
+#include "ps3/ps3_sndthr.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +83,7 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 			emu_thread_rv = RV_OK;
 			dc_running = true;
 			sh4_cpu.Run();
+			snd_thread_stop();   // 5.14: resets and term run with the sound on this thread
 			dc_running = false;
 			break;
 
@@ -182,7 +184,8 @@ bool Init_DC()
 static void ResetDC(bool manual)
 {
 	printf("Resetting DC (%s)...\n", manual ? "manual" : "auto");
-	
+	snd_thread_stop();
+
 	plugins_Reset(manual);
 	sh4_cpu.Reset(manual);
 	mem_Reset(manual);
@@ -224,10 +227,12 @@ void HollySoftReset()
 {
 	printf("Performing Holly soft reset (peripherals only, CPU keeps running)...\n");
 
+	snd_lock(SND_LOCK_OTHER);
 	plugins_Reset(true);
 	pvr_Reset(true);
 	aica_Reset(true);
 	arm_Reset(true);
+	snd_unlock();
 }
 
 bool Reset_DC(bool manual)
