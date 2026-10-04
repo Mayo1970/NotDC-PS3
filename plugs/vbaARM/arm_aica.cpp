@@ -40,6 +40,12 @@ extern "C" int get_arm7_batch_preset();
 static u32 aica_sample_cycles = SH4_CLOCK / 44100;
 static int aica_clock_mhz     = 200;
 
+// [arm7s] (plugs/nullAICA/aica.cpp). g_arm7_in_run tells that an AICA access comes from the ARM7.
+extern bool Arm7Enabled;
+bool g_arm7_in_run;
+u32  g_arm7s_runs;
+u64  g_arm7s_ticks;
+
 // Runs ARM7 and AICA in lockstep from the SH4 timeslice (like devcast SoundCPU::Update): step AICA per
 // accumulated sample, then run the ARM for the slice.
 void FASTCALL armUpdateARM(u32 Cycles)
@@ -73,8 +79,15 @@ void FASTCALL armUpdateARM(u32 Cycles)
 			arm_batch_calls = 0;
 		}
 		{
+			if (Arm7Enabled)
+			{
+				g_arm7s_runs++;
+				g_arm7s_ticks += ticks;
+			}
 			const u64 t_arm = ARM_PERF_TICKS();
+			g_arm7_in_run = true;
 			arm_Run(ticks);
+			g_arm7_in_run = false;
 			ArmTicks += ARM_PERF_TICKS() - t_arm;
 		}
 	}

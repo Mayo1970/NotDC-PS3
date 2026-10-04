@@ -4,10 +4,8 @@
 
 #define ARM7_FIQ_DIAG 0   // 1 = count real FIQs serviced per second (see CPUFiq)
 
-// config.h (pulled in transitively via arm7.h -> ... -> types.h) deliberately
-// poisons BIG_ENDIAN and LITTLE_ENDIAN to catch accidental use; must undef
-// before any libogc header, which legitimately defines those same names via
-// machine/endian.h. Same pattern as wii/wii_audio.cpp / plugs/nullAICA/aica.cpp.
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN to catch accidental use; libogc's machine/endian.h defines them, so undef
+// them before it (as plugs/nullAICA/aica.cpp).
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
@@ -19,17 +17,8 @@
 #define C_CORE
 #define DEV_VERSION
 
-// Switch the active ARM7 execution engine. Define ARM7_USE_CACHED (e.g. in the
-// build flags or here) to route arm_Run() through the cached/threaded
-// interpreter in arm7_cached.cpp. Leaving it undefined keeps the proven inline
-// interpreter below as the default. Both share the same register file / state.
-
-// Claude Test for Rez Fix - disproven: temporarily disabled 2026-07-21 to
-// bisect Rez's post-logo stall (both engines share the same symptom, so the
-// cached interpreter was briefly back under suspicion). Testing on real
-// hardware showed no difference between the two engines, so it was not the
-// cause. Re-enabled — this engine had already been cleared once before
-// (2026-07-14 retest).
+// ARM7_USE_CACHED routes arm_Run() through the cached interpreter (arm7_cached.cpp), not arm-new.h; same state.
+// Rez's post-logo stall (2026-07-21) is the same with both engines on hardware, so the cached one stays on.
 #define ARM7_USE_CACHED    // cached/threaded ARM7 interpreter active
 
 #ifdef ARM7_USE_CACHED
@@ -85,11 +74,8 @@ enum
 	SPSR_FIQ =44,
 };
 
-// Register storage is a plain u32. The old union had endian-dependent
-// B0/B1/B2/B3 and W0/W1 sub-fields, which were wrong on big-endian hosts
-// (B.B0 was the MSB, W.W0 the high halfword) and silently corrupted STRB /
-// STRH / SWPB / register-specified shift amounts. All accesses now use
-// explicit masks/shifts on .I, so the sub-fields are gone entirely.
+// Plain u32: the old B0-B3 / W0-W1 sub-fields were wrong on big-endian hosts and corrupted STRB / STRH / SWPB and
+// register shift amounts, so every access uses masks and shifts on .I.
 typedef union {
 	u32 I;
 } reg_pair;
@@ -99,9 +85,7 @@ typedef union {
 
 u32 arm_ArmNextPC;
 
-// 45 architectural/banked registers, plus two scratch pseudo-registers used
-// only by the cached interpreter's split shift uops: [45]=C_OUT (shifter carry),
-// [46]=SHIFT_OUT (computed operand2). Harmless to the inline interpreter.
+// 45 architectural/banked registers, plus [45] C_OUT and [46] SHIFT_OUT of the cached interpreter's shift uops.
 reg_pair arm_Reg[47];
 
 void CPUSwap(u32 *a, u32 *b)
@@ -394,6 +378,15 @@ void arm_Reset()
 	arm_jit_on_reset();
 }
 
+// Both engines read the idle-skip rule while they compile: drop their code so a new rule acts at once.
+void arm_FlushCode()
+{
+#ifdef ARM7_USE_CACHED
+	arm_Run_Cached(0, true);
+#endif
+	arm_jit_on_reset();
+}
+
 void CPUInterrupt()
 {
 	u32 PC = reg[15].I;
@@ -410,8 +403,11 @@ void CPUInterrupt()
 	reg[15].I += 4;
 }
 
+u32 g_arm7s_fiqs;   // [arm7s] (plugs/nullAICA/aica.cpp)
+
 void CPUFiq()
 {
+	g_arm7s_fiqs++;
 	u32 PC = reg[15].I;
 	//bool savedState = armState;
 	CPUSwitchMode(0x11, true, false);
@@ -427,19 +423,8 @@ void CPUFiq()
 	reg[15].I += 4;
 
 #if ARM7_FIQ_DIAG
-	// Off by default: even with the printf commented out this ran a gettime()
-	// and a 64-bit ticks->ms division (a libgcc call on the 750) on every FIQ.
-	//
-	// Diagnostic: measure the ACTUAL real-time rate at which the ARM7 core
-	// services FIQs (AICA's interrupt line -> e68k -> FIQ pin), using a real
-	// hardware wall-clock timer. The AICA-side interrupt-pending signal is
-	// updated once per generated sample (~44100/sec if audio generation is
-	// paced correctly); if FIQ SERVICING falls far short of that (e.g. stuck
-	// near a low, roughly-constant rate) that would mean the ARM7 sound
-	// driver's interrupt-driven sequencer is being starved/throttled
-	// somewhere in the FIQ dispatch path (e.g. FIQ not being re-enabled
-	// promptly by the handler, or block-boundary sampling missing events),
-	// which would explain a uniformly slowed-down note sequence.
+	// Off: a gettime() and a 64-bit division per FIQ. FIQs serviced per wall second; far below the AICA interrupt rate
+	// means a starved FIQ path (late re-enable, missed samples) and a slowed note sequence.
 	static u32 fiq_count = 0;
 	static u64 last_check_ms = 0;
 	fiq_count++;
@@ -456,14 +441,8 @@ void CPUFiq()
 }
 
 
-/*
-	--Seems like aica has 3 interrupt controllers actualy (damn lazy sega ..)
-	The "normal" one (the one that exists on scsp) , one to emulate the 68k intc , and , 
-	of course , the arm7 one
-
-	The output of the sci* bits is input to the e68k , and the output of e68k is inputed into the FIQ
-	pin on arm7
-*/
+// The AICA has 3 interrupt controllers: the SCSP one, a 68k intc emulation and the ARM7's. The sci* bits feed the
+// e68k, whose output drives the ARM7 FIQ pin.
 
 #ifdef _MUDFLAP
 __attribute__ ((optimize("O0")))
@@ -504,9 +483,7 @@ void arm_SetEnabled(bool enabled)
 	Arm7Enabled=enabled;
 }
 
-// ── Self-test accessors ────────────────────────────────────────────────────
-// Minimal getters/setters so the ARM7DI conformance self-test (arm7_selftest.cpp)
-// can drive the core without duplicating the internal reg_pair layout.
+// ── Self-test accessors: arm7_selftest.cpp drives the core without the internal reg_pair layout ──
 u32  arm_GetReg(int n)            { return arm_Reg[n].I; }
 void arm_SetReg(int n, u32 value) { arm_Reg[n].I = value; }
 u32  arm_GetNextPC()             { return arm_ArmNextPC; }

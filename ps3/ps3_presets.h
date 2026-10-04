@@ -15,6 +15,8 @@ extern int g_speed_limiter_preset;
 extern int g_render_delay_preset;
 extern int g_arm7_speed_preset;
 extern int g_arm7_batch_preset;
+extern int g_arm7_idle_skip_preset;
+extern int g_aica_kyonb_preset;
 extern int g_audio_buffers_preset;
 extern int g_exit_fix_preset;
 extern int g_aica_fast_preset;
@@ -56,3 +58,5 @@ extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
 void ps3_presets_save(void);
+// [sndcfg] line: every sound and ARM7 setting. Without always, only when one changed since the last line.
+void ps3_sndcfg_print(const char* when, bool always);

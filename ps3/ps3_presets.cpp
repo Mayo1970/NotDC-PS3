@@ -18,6 +18,8 @@ int g_speed_limiter_preset = 0;
 int g_render_delay_preset  = 0;
 int g_arm7_speed_preset    = 0;   // clock divider stage, ~10 MHz >> stage
 int g_arm7_batch_preset    = 4;
+int g_arm7_idle_skip_preset = 0;  // 0 OLD: +100 ticks on any store-free self-loop, 1 SAFE: true wait loops only (6.1)
+int g_aica_kyonb_preset    = 0;   // 0 nullAICA clears KYONB on release, 1 never cleared, as on hardware (6.1)
 int g_audio_buffers_preset = -1;  // -1 leaves the nullDC.cfg value alone
 int g_exit_fix_preset      = 1;
 int g_aica_fast_preset     = 1;
@@ -75,6 +77,8 @@ static const CfgItem s_items[] = {
 	{ "RenderDelay",   &g_render_delay_preset },
 	{ "Arm7Speed",     &g_arm7_speed_preset },
 	{ "Arm7Batch",     &g_arm7_batch_preset },
+	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
+	{ "AicaKyonb",     &g_aica_kyonb_preset },
 	{ "AudioBuffers",  &g_audio_buffers_preset },
 	{ "ExitFix",       &g_exit_fix_preset },
 	{ "AicaFast",      &g_aica_fast_preset },
@@ -126,6 +130,47 @@ void ps3_presets_save(void)
 		cfgSaveInt(CFG_SECT, s_items[i].key, *s_items[i].val);
 }
 
+// Every sound and ARM7 setting, with its nullDC.cfg key.
+static const CfgItem s_snd_items[] = {
+	{ "SH4Clock",      &g_sh4_clock_preset },
+	{ "Accuracy",      &g_accuracy_preset },
+	{ "Arm7Jit",       &g_arm7_jit_preset },
+	{ "Arm7Speed",     &g_arm7_speed_preset },
+	{ "Arm7Batch",     &g_arm7_batch_preset },
+	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
+	{ "AicaKyonb",     &g_aica_kyonb_preset },
+	{ "AicaFast",      &g_aica_fast_preset },
+	{ "MutePcm16",     &g_mute_pcm16_preset },
+	{ "Cdda",          &g_cdda_preset },
+	{ "AudioBuffers",  &g_audio_buffers_preset },
+	{ "SpeAicaCheck",  &g_spe_aica_preset },
+	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
+	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
+	{ "SpeAicaDsp",    &g_spe_aica_dsp_preset },
+};
+#define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
+
+void ps3_sndcfg_print(const char* when, bool always)
+{
+	static int last[SND_ITEMS];
+	static bool printed;
+	bool same = printed;
+	for (u32 i = 0; i < SND_ITEMS; i++)
+		same = same && last[i] == *s_snd_items[i].val;
+	if (same && !always)
+		return;
+
+	char buf[512];
+	int n = snprintf(buf, sizeof(buf), "[sndcfg] %s:", when);
+	for (u32 i = 0; i < SND_ITEMS && n < (int)sizeof(buf); i++)
+	{
+		last[i] = *s_snd_items[i].val;
+		n += snprintf(buf + n, sizeof(buf) - n, " %s=%d", s_snd_items[i].key, last[i]);
+	}
+	printed = true;
+	printf("%s\n", buf);
+}
+
 extern "C" {
 int get_accuracy_preset()      { return g_accuracy_preset; }
 int get_sh4_clock_preset()     { return g_sh4_clock_preset; }
@@ -139,6 +184,7 @@ int get_speed_limiter_preset() { return g_speed_limiter_preset; }
 int get_render_delay_preset()  { return g_render_delay_preset; }
 int get_arm7_speed_preset()    { return g_arm7_speed_preset; }
 int get_arm7_batch_preset()    { return g_arm7_batch_preset; }
+int get_arm7_idle_skip_preset() { return g_arm7_idle_skip_preset; }
 int get_arm7_jit_preset()      { return g_arm7_jit_preset; }
 int get_audio_buffers_preset() { return g_audio_buffers_preset; }
 int get_exit_fix_preset()      { return g_exit_fix_preset; }

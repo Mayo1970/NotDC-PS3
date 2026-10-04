@@ -45,6 +45,10 @@ SampleType mixr;
 extern "C" int get_mute_pcm16_preset();
 #define MUTE_PCM16_FIX() (get_mute_pcm16_preset() != 0)
 
+// AicaKyonb (plan 6.1, live): 1 = the chip never clears KYONB, as on hw (caique-rtl NOTES "Loops and key events"),
+// so a key-on after a slot's own end waits for a key-off. 0 = nullAICA clears KYONB on release.
+extern int g_aica_kyonb_preset;
+
 // x.15
 s32  volume_lut[16];
 u32  SendLevel[16] = {0xF000<<3,14<<3,13<<3,12<<3,11<<3,10<<3,9<<3,8<<3,
@@ -341,6 +345,82 @@ static inline bool diag_take()
 }
 static inline u32 diag_ms(u64 samples) { return (u32)(samples * 1000 / 44100); }
 
+// [pcm16s] per-SA aggregates (OPTIMIZATION_PLAN 6.1), in samples. An entry outlives its second, so a pair gap (next
+// key-on of the same SA within 2048 samples) can span two; the counts restart every second.
+struct Pcm16Sa
+{
+    u32  sa, kon, koff, konign, held_n, held_max, gap_n, gap_h[4];
+    u64  held_sum, last_kon;
+    bool keyed;
+    u16  gap[64];
+};
+static Pcm16Sa s_psa[4] = { { ~0u }, { ~0u }, { ~0u }, { ~0u } };
+
+// add: a new SA takes the entry with the least activity this second.
+static Pcm16Sa* psa_find(u32 sa, bool add)
+{
+    Pcm16Sa* pick = &s_psa[0];
+    for (int i = 0; i < 4; i++)
+    {
+        Pcm16Sa& e = s_psa[i];
+        if (e.sa == sa)
+            return &e;
+        if (e.kon + e.koff + e.konign < pick->kon + pick->koff + pick->konign)
+            pick = &e;
+    }
+    if (!add)
+        return 0;
+    memset(pick, 0, sizeof(*pick));
+    pick->sa = sa;
+    return pick;
+}
+
+static void psa_kon(u32 sa)
+{
+    Pcm16Sa* e = psa_find(sa, true);
+    e->kon++;
+    const u64 gap = diag_clock - e->last_kon;
+    if (e->keyed && gap < 2048)
+    {
+        e->gap_h[gap < 64 ? 0 : gap < 256 ? 1 : gap < 1024 ? 2 : 3]++;
+        if (e->gap_n < 64)
+            e->gap[e->gap_n] = (u16)gap;
+        e->gap_n++;
+    }
+    e->keyed = true;
+    e->last_kon = diag_clock;
+}
+
+// [key]: every KYONEX write with its CPU and sample time. start / rel come from nullAICA's channels, which step only
+// when nullAICA makes the sound, so they print as '-' in SPE sound mode.
+static u32 s_key_lines, s_key_dropped;
+
+static void key_log(int slot, u64 on, u64 start, u64 rel)
+{
+    g_aicarw[g_arm7_in_run].kyonex++;
+    if (s_key_lines >= 120)
+    {
+        s_key_dropped++;
+        return;
+    }
+    s_key_lines++;
+    const u32 t = (u32)g_aica_smp;
+    if (g_aica_spe_snd)
+        printf("[key] t=%u (%u ms) cpu=%s slot=%d kyonb=%08X%08X start=- rel=-\n", t, (u32)((u64)t * 1000 / 44100),
+               g_arm7_in_run ? "ARM" : "SH4", slot, (u32)(on >> 32), (u32)on);
+    else
+        printf("[key] t=%u (%u ms) cpu=%s slot=%d kyonb=%08X%08X start=%08X%08X rel=%08X%08X\n", t,
+               (u32)((u64)t * 1000 / 44100), g_arm7_in_run ? "ARM" : "SH4", slot, (u32)(on >> 32), (u32)on,
+               (u32)(start >> 32), (u32)start, (u32)(rel >> 32), (u32)rel);
+}
+
+u32 aica_key_log_reset()
+{
+    const u32 d = s_key_dropped;
+    s_key_lines = s_key_dropped = 0;
+    return d;
+}
+
 void (FASTCALL* STREAM_STEP_LUT[5][2][2])(ChannelEx* ch);
 void (FASTCALL* STREAM_INITAL_STEP_LUT[5])(ChannelEx* ch);
 void (FASTCALL* AEG_STEP_LUT[4])(ChannelEx* ch);
@@ -455,12 +535,14 @@ struct ChannelEx
     } lfo;
 
     bool enabled;
+    bool keyed;        // set by a key-on, cleared only by a key-off; the slot's own end leaves it set
     int  ChanelNumber;
 
     bool diag_pcm16;   // this note is 16-bit PCM and is being tracked
     bool diag_keyoff;  // KEY_OFF reached it
     bool diag_d2end;   // Decay2 ran out, not a KEY_OFF
     u64  diag_on;      // diag_clock at KEY_ON
+    u32  diag_sa;      // SA at KEY_ON
 
     // Bit n set <=> Chans[n].enabled. enable()/disable() keep it in step even with
     // aica_fast off, so turning the preset on never starts from a stale mask.
@@ -471,6 +553,7 @@ struct ChannelEx
     {
         ccd = (ChannelCommonData*)&ccd_raw[cn * 0x80];
         ChanelNumber = cn;
+        keyed = false;
         for (u32 i = 0; i < 0x80; i++)
             RegWrite(i);
         disable();
@@ -481,8 +564,8 @@ struct ChannelEx
         {
             diag_end++;
             if (diag_take())
-                printf("[pcm16] end ch=%2d t=%u life=%ums by=%s\n", ChanelNumber, diag_ms(diag_clock),
-                       diag_ms(diag_clock - diag_on),
+                printf("[pcm16] end ch=%2d t=%u SA=0x%06X life=%ums by=%s\n", ChanelNumber, diag_ms(diag_clock),
+                       diag_sa, diag_ms(diag_clock - diag_on),
                        diag_keyoff ? "keyoff" : diag_d2end ? "decay2" : AEG.state != EG_Release ? "oneshot" : "?");
         }
         diag_pcm16 = false;
@@ -556,7 +639,7 @@ struct ChannelEx
     {
         StepAEG    = AEG_STEP_LUT[newstate];
         AEG.state  = newstate;
-        if (newstate == EG_Release)
+        if (newstate == EG_Release && !g_aica_kyonb_preset)
             ccd->KYONB = 0;
     }
     void SetFegState(_EG_state newstate)
@@ -571,16 +654,20 @@ struct ChannelEx
         if (MUTE_PCM16_FIX() && !ccd->SSCTL && ccd->PCMS == 0)
             return;
 
-        if (AEG.state != EG_Release && !ccd->SSCTL && ccd->PCMS == 0)
+        // AicaKyonb 1: a slot that ended by itself stays keyed, so it needs a key-off first (hw rule).
+        const bool start = AEG.state == EG_Release && !(g_aica_kyonb_preset && keyed);
+        if (!start && !ccd->SSCTL && ccd->PCMS == 0)
         {
             diag_konign++;
+            psa_find((ccd->SA_hi << 16) | ccd->SA_low, true)->konign++;
             if (diag_take())
                 printf("[pcm16] kon-ignored ch=%2d t=%u state=%d aeg=%d\n", ChanelNumber,
                        diag_ms(diag_clock), (int)AEG.state, AEG.GetValue());
         }
 
-        if (AEG.state == EG_Release)
+        if (start)
         {
+            keyed = true;
             enable();
             SetAegState(EG_Attack);
             AEG.SetValue(0x3FF);
@@ -607,13 +694,15 @@ struct ChannelEx
             diag_pcm16 = !ccd->SSCTL && ccd->PCMS == 0;
             if (diag_pcm16)
             {
+                const u32 sa = (ccd->SA_hi << 16) | ccd->SA_low;
                 diag_keyoff = false;
                 diag_d2end  = false;
                 diag_on     = diag_clock;
+                diag_sa     = sa;
                 diag_kon++;
+                psa_kon(sa);
                 if (diag_take())
                 {
-                    const u32 sa = (ccd->SA_hi << 16) | ccd->SA_low;
                     printf("[pcm16] on  ch=%2d t=%u SA=0x%06X LSA=%u LEA=%u %s OCT=%u FNS=%u TL=%u DIPAN=%u "
                            "AR=%u D1R=%u D2R=%u DL=%u RR=%u KRS=%u LPSLNK=%u effD1=%u effD2=%u effRR=%u\n",
                            ChanelNumber, diag_ms(diag_clock), sa, ccd->LSA, ccd->LEA,
@@ -626,6 +715,7 @@ struct ChannelEx
     }
     void KEY_OFF()
     {
+        keyed = false;
         if (AEG.state != EG_Release)
         {
             key_printf("[AICA] KEY_OFF ch=%2d\n", ChanelNumber);
@@ -633,9 +723,18 @@ struct ChannelEx
             {
                 diag_keyoff = true;
                 diag_koff++;
+                const u64 held = diag_clock - diag_on;
+                if (Pcm16Sa* e = psa_find(diag_sa, false))
+                {
+                    e->koff++;
+                    e->held_sum += held;
+                    e->held_n++;
+                    if (held > e->held_max)
+                        e->held_max = (u32)held;
+                }
                 if (diag_take())
-                    printf("[pcm16] off ch=%2d t=%u held=%ums state=%d aeg=%d\n", ChanelNumber,
-                           diag_ms(diag_clock), diag_ms(diag_clock - diag_on), (int)AEG.state, AEG.GetValue());
+                    printf("[pcm16] off ch=%2d t=%u SA=0x%06X held=%ums state=%d aeg=%d\n", ChanelNumber,
+                           diag_ms(diag_clock), diag_sa, diag_ms(held), (int)AEG.state, AEG.GetValue());
             }
             SetAegState(EG_Release);
         }
@@ -747,11 +846,17 @@ struct ChannelEx
             if (ccd->KYONEX)
             {
                 ccd->KYONEX = 0;
+                u64 on = 0, start = 0, rel = 0;
                 for (int i = 0; i < 64; i++)
                 {
-                    if (Chans[i].ccd->KYONB) Chans[i].KEY_ON();
+                    const bool was_rel = Chans[i].AEG.state == EG_Release;
+                    if (Chans[i].ccd->KYONB) { on |= 1ull << i; Chans[i].KEY_ON(); }
                     else                      Chans[i].KEY_OFF();
+                    const bool now_rel = Chans[i].AEG.state == EG_Release;
+                    if (was_rel && !now_rel) start |= 1ull << i;
+                    if (!was_rel && now_rel) rel |= 1ull << i;
                 }
+                key_log(ChanelNumber, on, start, rel);
             }
             break;
         case 0x04: case 0x05:
@@ -1151,6 +1256,62 @@ void WriteChannelReg8(u32 channel, u32 reg)
     Chans[channel].RegWrite(reg);
 }
 
+// In-game menu, after an AicaKyonb change. Back at 0, a slot that ended by itself under 1 gets the KYONB clear
+// nullAICA does on release; else the next KYONEX would restart it.
+void sgc_KyonbSync()
+{
+    if (g_aica_kyonb_preset)
+        return;
+    for (int i = 0; i < 64; i++)
+        if (Chans[i].keyed && Chans[i].AEG.state == EG_Release)
+            Chans[i].ccd->KYONB = 0;
+}
+
+// [montrace]: the last 32 channel-monitor reads, the value the CPU got and the slot's own registers; it shows what a
+// driver waits for. Printed every ~5 s while there were reads.
+struct MonRec { u32 t; u16 v, lsa, lea; u8 cpu, slot, reg, kb_lp; };
+static MonRec s_mon[32];
+static u32 s_mon_n, s_mon_printed;
+
+static void mon_rec(u32 reg, bool byte)
+{
+    MonRec& m = s_mon[s_mon_n++ & 31];
+    const u32 slot = CommonData->MSLC;
+    const ChannelCommonData* c = ChannelEx::Chans[slot].ccd;
+    m.t = (u32)g_aica_smp;
+    m.v = *(u16*)&aica_reg[(reg & ~1u) + 2];   // the 16-bit register sits in the low half of its BE word
+    m.lsa = (u16)c->LSA;
+    m.lea = (u16)c->LEA;
+    m.cpu = g_arm7_in_run;
+    m.slot = (u8)slot;
+    m.reg = (u8)((reg & 0xFF) | (byte ? 0x80 : 0));
+    m.kb_lp = (u8)((c->KYONB << 1) | c->LPCTL);
+}
+
+void aica_montrace_dump()
+{
+    const u32 n = s_mon_n;
+    if (n == s_mon_printed)
+        return;
+    printf("[montrace] %u monitor reads since the last dump; the last %u, oldest first (t cpu slot reg value KYONB LPCTL"
+           " LSA-LEA):\n", n - s_mon_printed, n < 32 ? n : 32);
+    s_mon_printed = n;
+    const u32 first = n < 32 ? 0 : n - 32;
+    for (u32 i = first; i < n; i += 4)
+    {
+        char buf[384];
+        int len = snprintf(buf, sizeof(buf), "[montrace]");
+        for (u32 j = i; j < i + 4 && j < n && len < (int)sizeof(buf); j++)
+        {
+            const MonRec& m = s_mon[j & 31];
+            len += snprintf(buf + len, sizeof(buf) - len, " | %u %s s%02u %02X%c %04X kb%u lp%u %u-%u", m.t,
+                            m.cpu ? "ARM" : "SH4", m.slot, m.reg & 0x7F, (m.reg & 0x80) ? 'b' : 'w', m.v, m.kb_lp >> 1,
+                            m.kb_lp & 1, m.lsa, m.lea);
+        }
+        printf("%s\n", buf);
+    }
+}
+
 void ReadCommonReg(u32 reg, bool byte)
 {
     switch (reg)
@@ -1160,6 +1321,7 @@ void ReadCommonReg(u32 reg, bool byte)
         CommonData->MOEMP = 1;
         break;
     case 0x2810: case 0x2811:
+        g_arm7s_mon_rd[g_arm7_in_run]++;
         if (g_aica_spe_snd)   // 5.13 A2: the channels run in the caique twin
         {
             *(u16*)&aica_reg[0x2812] = ps3aica_read_mon(0x2810, byte && reg == 0x2810);
@@ -1175,6 +1337,7 @@ void ReadCommonReg(u32 reg, bool byte)
         }
         break;
     case 0x2814: case 0x2815:
+        g_arm7s_mon_rd[g_arm7_in_run]++;
         if (g_aica_spe_snd)
         {
             *(u16*)&aica_reg[0x2816] = ps3aica_read_mon(0x2814, false);
@@ -1189,10 +1352,14 @@ void ReadCommonReg(u32 reg, bool byte)
         }
         break;
     }
+    if ((reg & ~1u) == 0x2810 || (reg & ~1u) == 0x2814)
+        mon_rec(reg, byte);
 }
 
 void WriteCommonReg8(u32 reg, u32 data)
 {
+    if (reg == 0x280D)   // MSLC
+        g_arm7s_mslc_wr[g_arm7_in_run]++;
     WriteMemArr(aica_reg, reg, data, 1);
     if (reg == 0x2804 || reg == 0x2805)
     {
@@ -1252,6 +1419,76 @@ static void cdda_refill()
     }
 }
 
+// Once per emulated second; the second half is the most-keyed SA of that second.
+static void pcm16s_print()
+{
+    u32 active = 0, oldest = 0, top_active = 0, top_oldest = 0;
+    Pcm16Sa* top = 0;
+    for (int i = 0; i < 4; i++)
+    {
+        Pcm16Sa& e = s_psa[i];
+        if (e.kon + e.koff + e.konign && (!top || e.kon > top->kon))
+            top = &e;
+    }
+    for (int i = 0; i < 64; i++)
+    {
+        const ChannelEx& ch = ChannelEx::Chans[i];
+        if (!ch.enabled || !ch.diag_pcm16)
+            continue;
+        const u32 age = (u32)(diag_clock - ch.diag_on);
+        active++;
+        oldest = max(oldest, age);
+        if (top && ch.diag_sa == top->sa)
+        {
+            top_active++;
+            top_oldest = max(top_oldest, age);
+        }
+    }
+
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf), "[pcm16s] t=%u kon=%u kon-ignored=%u koff=%u end=%u active=%u oldest=%u"
+                     " not-logged=%u", diag_ms(diag_clock), diag_kon, diag_konign, diag_koff, diag_end, active, oldest,
+                     diag_dropped);
+    if (top && n < (int)sizeof(buf))
+    {
+        u16 g[64];
+        const u32 m = top->gap_n < 64 ? top->gap_n : 64;
+        for (u32 i = 0; i < m; i++)   // insertion sort for the median
+        {
+            u32 j = i;
+            for (; j > 0 && g[j - 1] > top->gap[i]; j--)
+                g[j] = g[j - 1];
+            g[j] = top->gap[i];
+        }
+        n += snprintf(buf + n, sizeof(buf) - n, " | SA=0x%06X kon=%u koff=%u kon-ignored=%u held=", top->sa, top->kon,
+                      top->koff, top->konign);
+        if (n < (int)sizeof(buf))
+            n += top->held_n ? snprintf(buf + n, sizeof(buf) - n, "%.0f/%u (n=%u)", (double)top->held_sum / top->held_n,
+                                        top->held_max, top->held_n)
+                             : snprintf(buf + n, sizeof(buf) - n, "-");
+        if (n < (int)sizeof(buf))
+            n += snprintf(buf + n, sizeof(buf) - n, " active=%u oldest=%u gap<64/256/1024/2048=%u/%u/%u/%u median=",
+                          top_active, top_oldest, top->gap_h[0], top->gap_h[1], top->gap_h[2], top->gap_h[3]);
+        if (n < (int)sizeof(buf))
+        {
+            if (m)
+                snprintf(buf + n, sizeof(buf) - n, "%u", (u32)g[m / 2]);
+            else
+                snprintf(buf + n, sizeof(buf) - n, "-");
+        }
+    }
+    printf("%s\n", buf);
+
+    diag_lines = diag_dropped = diag_kon = diag_konign = diag_koff = diag_end = 0;
+    for (int i = 0; i < 4; i++)
+    {
+        Pcm16Sa& e = s_psa[i];
+        e.kon = e.koff = e.konign = e.held_n = e.held_max = e.gap_n = 0;
+        e.gap_h[0] = e.gap_h[1] = e.gap_h[2] = e.gap_h[3] = 0;
+        e.held_sum = 0;
+    }
+}
+
 void AICA_Sample()
 {
     // 5.13 A2: the SPU makes the sound; only the CD-DA sectors go to it from here.
@@ -1286,15 +1523,7 @@ void AICA_Sample()
     AicaSampleCount++;
 
     if (++diag_clock % 44100 == 0)
-    {
-        u32 active = 0;
-        for (int i = 0; i < 64; i++)
-            if (ChannelEx::Chans[i].enabled && ChannelEx::Chans[i].diag_pcm16)
-                active++;
-        printf("[pcm16s] t=%u kon=%u kon-ignored=%u koff=%u end=%u active=%u not-logged=%u\n",
-               diag_ms(diag_clock), diag_kon, diag_konign, diag_koff, diag_end, active, diag_dropped);
-        diag_lines = diag_dropped = diag_kon = diag_konign = diag_koff = diag_end = 0;
-    }
+        pcm16s_print();
 
     // CDDA input
     if (cdda_index >= CDDA_SIZE)

@@ -99,6 +99,25 @@ void WriteReg(u32 addr, u32 data)
 
 u32 FASTCALL aica_ReadMem_reg(u32 addr, u32 size)
 {
+    // [aicarw] read counts by CPU; SCIEB/SCIPD/MCIEB/MCIPD are "irq", SCIRE/SCILV0-2/MCIRE "write-only" (read 0 on hw)
+    const u32 a = addr & 0x7FFF;
+    AicaRw& rw = g_aicarw[g_arm7_in_run];
+    if (a < 0x2000)
+    {
+        rw.slot_rd++;
+        if ((a & 0x7F) < 4)
+            rw.reg0_rd++;
+    }
+    else if (a >= 0x2890 && a < 0x28C0)
+    {
+        if (a < 0x289C)
+            rw.tim_rd++;
+        else if ((a >= 0x28A4 && a < 0x28B4) || a >= 0x28BC)
+            rw.wo_rd++;
+        else
+            rw.irq_rd++;
+    }
+
     if (size == 1)
         return ReadReg<1>(addr & 0x7FFF);
     else

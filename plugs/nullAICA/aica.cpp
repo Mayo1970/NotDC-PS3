@@ -96,6 +96,8 @@ void UpdateSh4Ints()
 
 // ---- Timers ----
 
+static void timer_overflow_diag(u32 id);
+
 struct AicaTimerData
 {
     union
@@ -143,6 +145,7 @@ public:
             data->count++;
             if (data->count == 0)
             {
+                timer_overflow_diag(id);
                 if      (id == 0) { SCIPD->TimerA = 1; MCIPD->TimerA = 1; }
                 else if (id == 1) { SCIPD->TimerB = 1; MCIPD->TimerB = 1; }
                 else              { SCIPD->TimerC = 1; MCIPD->TimerC = 1; }
@@ -162,6 +165,109 @@ public:
 };
 
 AicaTimer timers[3];
+
+// ---- [arm7s] (OPTIMIZATION_PLAN 6.1): once per wall second, counts per emulated second ----
+
+extern u32  g_arm7s_runs, g_arm7s_fiqs;   // vbaARM
+extern u64  g_arm7s_ticks;
+u32 g_arm7s_mon_rd[2], g_arm7s_mslc_wr[2];   // [0] SH4, [1] ARM7
+
+u64 g_aica_smp;   // AICA samples since boot
+AicaRw g_aicarw[2];
+
+// The last AICA internal DMA start (0x288C DEXE), which neither nullAICA nor caique carries out (Flycast does).
+static struct { u32 n, gate, dir, dlg, dmea, drga; } s_dexe;
+
+struct TimerDiag
+{
+    u32  tim, md, ovf, merge, lat_n, lat_max;
+    u64  lat_sum, ovf_at;
+    bool wait;   // overflowed, TIMx not written since
+};
+static TimerDiag s_td[3];
+
+// Called before the SCIPD bit is set, so a merge sees the bit of the previous overflow still pending.
+static void timer_overflow_diag(u32 id)
+{
+    TimerDiag& t = s_td[id];
+    t.ovf++;
+    if (SCIPD->full & (0x40u << id))
+        t.merge++;
+    t.ovf_at = g_aica_smp;
+    t.wait = true;
+}
+
+// Reload latency: samples from an overflow to the next TIMx write.
+static void timer_write_diag(u32 id)
+{
+    TimerDiag& t = s_td[id];
+    t.tim = timers[id].data->count;
+    t.md  = timers[id].data->md;
+    if (t.wait)
+    {
+        const u32 lat = (u32)(g_aica_smp - t.ovf_at);
+        t.lat_sum += lat;
+        t.lat_n++;
+        if (lat > t.lat_max)
+            t.lat_max = lat;
+        t.wait = false;
+    }
+}
+
+void aica_arm7s_dump(double wall_s)
+{
+    static u64 last_smp;
+    const double es = (double)(g_aica_smp - last_smp) / 44100.0;
+    last_smp = g_aica_smp;
+    const double k = es > 0.0 ? 1.0 / es : 0.0;
+
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf), "[arm7s] per emulated s (emu %.2f s / wall %.2f s): runs %.0f ticks %.0f fiq %.0f",
+                     es, wall_s, g_arm7s_runs * k, (double)g_arm7s_ticks * k, g_arm7s_fiqs * k);
+    for (int i = 0; i < 3 && n < (int)sizeof(buf); i++)
+    {
+        TimerDiag& t = s_td[i];
+        n += snprintf(buf + n, sizeof(buf) - n, " | %c tim %02X md %u P %u ovf %.1f merge %.1f lat ", 'A' + i,
+                      t.tim, t.md, (256 - t.tim) << t.md, t.ovf * k, t.merge * k);
+        if (n < (int)sizeof(buf))
+            n += t.lat_n ? snprintf(buf + n, sizeof(buf) - n, "%.1f/%u", (double)t.lat_sum / t.lat_n, t.lat_max)
+                         : snprintf(buf + n, sizeof(buf) - n, "-");
+        t.ovf = t.merge = t.lat_n = t.lat_max = 0;
+        t.lat_sum = 0;
+    }
+    if (n < (int)sizeof(buf))
+        snprintf(buf + n, sizeof(buf) - n,
+                 " | SCIEB %03X SCIPD %03X SCILV %02X/%02X/%02X MCIEB %03X"
+                 " | mon rd sh4 %.0f arm %.0f | mslc wr sh4 %.0f arm %.0f",
+                 SCIEB->full & 0x7FF, SCIPD->full & 0x7FF, (u32)CommonData->SCILV0, (u32)CommonData->SCILV1,
+                 (u32)CommonData->SCILV2, MCIEB->full & 0x7FF, g_arm7s_mon_rd[0] * k, g_arm7s_mon_rd[1] * k,
+                 g_arm7s_mslc_wr[0] * k, g_arm7s_mslc_wr[1] * k);
+    printf("%s\n", buf);
+
+    g_arm7s_runs = g_arm7s_fiqs = 0;
+    g_arm7s_ticks = 0;
+    g_arm7s_mon_rd[0] = g_arm7s_mon_rd[1] = g_arm7s_mslc_wr[0] = g_arm7s_mslc_wr[1] = 0;
+
+    // [aicarw]: what the sound driver touches, by CPU. Timer counts, SCIRE, SCILV0-2 and MCIRE read 0 on hardware
+    // ("write-only rd"; caique NOTES "Timers and interrupts"); nullAICA returns stored or live values.
+    const AicaRw& s = g_aicarw[0];
+    const AicaRw& a = g_aicarw[1];
+    n = snprintf(buf, sizeof(buf), "[aicarw] per emulated s: kyonex sh4 %.0f arm %.0f (key lines dropped %u) | dexe sh4 %.0f"
+                 " arm %.0f | slot rd sh4 %.0f arm %.0f (reg 0x00 sh4 %.0f arm %.0f) | timer rd sh4 %.0f arm %.0f"
+                 " | write-only rd sh4 %.0f arm %.0f | irq rd sh4 %.0f arm %.0f",
+                 s.kyonex * k, a.kyonex * k, aica_key_log_reset(), s.dexe * k, a.dexe * k, s.slot_rd * k, a.slot_rd * k,
+                 s.reg0_rd * k, a.reg0_rd * k, s.tim_rd * k, a.tim_rd * k, s.wo_rd * k, a.wo_rd * k, s.irq_rd * k,
+                 a.irq_rd * k);
+    if (s_dexe.n && n < (int)sizeof(buf))
+        snprintf(buf + n, sizeof(buf) - n, " | dexe total %u, last: gate %u dir %u dlg %u dmea %06X drga %04X", s_dexe.n,
+                 s_dexe.gate, s_dexe.dir, s_dexe.dlg, s_dexe.dmea, s_dexe.drga);
+    printf("%s\n", buf);
+    memset(g_aicarw, 0, sizeof(g_aicarw));
+
+    static u32 calls;
+    if (++calls % 5 == 0)
+        aica_montrace_dump();
+}
 
 // ---- Main loop ----
 
@@ -223,20 +329,33 @@ void WriteAicaReg(u32 reg, u32 data)
     case TIMER_A:
         WriteMemArr(aica_reg, reg, data, sz);
         timers[0].RegisterWrite();
+        timer_write_diag(0);
         break;
 
     case TIMER_B:
         WriteMemArr(aica_reg, reg, data, sz);
         timers[1].RegisterWrite();
+        timer_write_diag(1);
         break;
 
     case TIMER_C:
         WriteMemArr(aica_reg, reg, data, sz);
         timers[2].RegisterWrite();
+        timer_write_diag(2);
         break;
 
     default:
         WriteMemArr(aica_reg, reg, data, sz);
+        if (reg == 0x288C && (data & 1))   // DEXE: counted only, the transfer is not carried out
+        {
+            g_aicarw[g_arm7_in_run].dexe++;
+            s_dexe.n++;
+            s_dexe.gate = CommonData->DGATE;
+            s_dexe.dir  = CommonData->DDIR;
+            s_dexe.dlg  = CommonData->DLG;
+            s_dexe.dmea = (CommonData->DMEA_hi << 16) | (CommonData->DMEA_lo << 2);
+            s_dexe.drga = CommonData->DRGA << 2;
+        }
         break;
     }
 }
@@ -286,6 +405,7 @@ void AICA_Term()
 // (SH4 timeslice), see [[aica-arm-timing]].
 void libAICA_TimeStep()
 {
+    g_aica_smp++;
     AICA_Sample();
     SCIPD->SAMPLE_DONE = 1;
 

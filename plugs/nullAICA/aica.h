@@ -363,5 +363,17 @@ void libAICA_TimeStep();  // called by wii_audio.cpp once per sample
 void WriteAicaReg8(u32 reg, u32 data);
 extern bool e68k_out;
 
+// [arm7s] (OPTIMIZATION_PLAN 6.1): AICA accesses split by CPU, [0] SH4, [1] ARM7 (g_arm7_in_run, set by vbaARM).
+extern bool g_arm7_in_run;
+extern u32  g_arm7s_mon_rd[2], g_arm7s_mslc_wr[2];
+void aica_arm7s_dump(double wall_s);
+
+// ChuChu diagnostic build (plan 6.1 follow-up): the AICA sample clock and accesses by CPU for [aicarw], [key], [montrace].
+extern u64 g_aica_smp;
+struct AicaRw { u32 kyonex, dexe, slot_rd, reg0_rd, tim_rd, wo_rd, irq_rd; };
+extern AicaRw g_aicarw[2];
+u32  aica_key_log_reset();   // sgc_if.cpp: [key] lines dropped since the last call
+void aica_montrace_dump();   // sgc_if.cpp
+
 template<u32 sz>
 void WriteAicaReg(u32 reg, u32 data);

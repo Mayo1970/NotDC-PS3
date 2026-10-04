@@ -11,7 +11,26 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-03)
+## 0. Resume here (updated 2026-10-04)
+
+**Section 6 (sound faults) PARKED by Matt 2026-10-04: "We will return to
+these later on."** The ChuChu diagnostic build ran on HW 2026-10-04
+(results in 6.1). Only the "reg 0x00 reads" row of its decision table
+matched, so Matt chose the option "KYONB never cleared" (AUDIO -> "KYONB",
+default CLEARED ON END). HW 2026-10-04: FAILURE, F1 unchanged (6.1, "KYONB
+option"). On return, F1's next step is a Flycast key trace on the PC.
+Start the UDP listener on port 18194 before a HW run (the xashPS3 listener
+may hold the port; Matt manages it).
+
+**Then: section 6 (sound faults).** On 2026-10-04 an investigation found the
+causes of the ChuChu Rocket echo (sound effects play slower than in
+Flycast), the Crazy Taxi crackle with SPE AICA Sound, and the Looney Tunes
+silence. It also found two defects that touch every game (6.4 TMU clock,
+6.7 JIT FMOV.D). Matt does each item 6.1-6.7 in its own session, then goes
+back to the real goals. 6.1 HW tested 2026-10-04: FAILURE (SAFE does not
+fix F1). Its `[arm7s]` log shows the driver tick 13% slow at SH4 150 from
+the Batch 4 FIQ latency, but with Batch 1 the tick is right and F1 stays,
+so the tick is not F1's cause. 6.2-6.7 are not built.
 
 **Active work: section 5 (speed). Matt wants full speed over accuracy.**
 
@@ -105,14 +124,15 @@ the SPE decoder (5.12 S2) writes the 5.10 vertex format.
      Matt 2026-10-04: the ChuChu Rocket echo is most likely a sound playing
      much slower than normal, maybe tied to a Quake 3 issue; he has an idea
      of "what we got wrong". He continues in a new session.
-  3. Open (it was next before A3): ARM7 rate option (2.5): cycles per sample
-     170 (today at SH4 Clock 150) / 256 (Reicast, Minicast) / 512 (Flycast,
-     real). Test: ChuChu echo, and one Looney Tunes boot for its missing
-     voices.
+     Later on 2026-10-04: Matt cannot recall the Quake 3 issue (dropped).
+     Investigated: see section 6.
+  3. Moved to section 6: the ARM7 rate option (2.5) is now 6.3, next to
+     6.1 (idle skip) and 6.2 (per-sample interleave).
 - Deferred (Matt 2026-10-03: "get back to this later"): Looney Tunes Space
   Race has no voices or effects, also with nullAICA (not A2). Music works
   since the 3h pause fix. The ARM7 driver writes no AICA register after its
   upload; first check: the ARM7 rate option, then `[ARMHOT]` (JIT C-Calls).
+  2026-10-04: now 6.5 (Flycast's Looney Tunes race fixes), with 6.2.
 - In-game menu (Matt 2026-10-03) HW validated 2026-10-03 (Sonic Adventure,
   opened and closed 7 times, the game continued each time): SELECT in a game stops
   the guest at the next vblank and shows the option pages (`ps3_menu_ingame`,
@@ -151,7 +171,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 2.2 AICA EG rate + loop fixes | `[x]` HW, echo unchanged, no regression |
 | 2.3 DSP | PARKED: Matt wants a PPC DSP JIT |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
-| 2.5 ARM7 clock (`arm_sh4_bias` 20) | PARKED, likely cause of the ChuChu echo |
+| 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04 |
 | 3c modifier volumes (Flycast GL) | `[x]` HW |
 | 3d background depth bias | `[x]` HW, no regression |
 | 3e background vertex order | dropped, our code has no such fault |
@@ -332,6 +352,10 @@ All changes are uncommitted in the working tree. Matt commits.
   2)` per sample), ours `aica_sample_cycles / 20`: 226 at 200 MHz, 170 at
   SH4 Clock 150. The ChuChu echo stays with the caique model (5.13 A2), so
   the mixer is not the cause.
+- 2026-10-04: correction. nullDC-v1 gives 256 ticks per sample, not 2267:
+  its MediumUpdate runs `UpdateArm(512); UpdateAica(1)` once per sample
+  with bias 2. So bias 2 here would be 8.9x nullDC-v1. This item is now
+  6.3, with 6.1 and 6.2.
 
 ---
 
@@ -454,7 +478,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound; A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -1698,6 +1722,8 @@ clock by VPS.
         - Matt 2026-10-04, after the run: the ChuChu echo is most likely a
           sound that plays much slower than normal, maybe tied to a Quake 3
           issue; he has an idea of "what we got wrong". Next session.
+        - 2026-10-04, later: the echo, the menu crackle and Looney Tunes
+          were investigated. See section 6.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC
@@ -1722,6 +1748,460 @@ clock by VPS.
   wrong. Fix: zero-extend the operands and take the carry from bit 32.
 - `jit_fmov` does not apply: it needs the Wii DSI fastmem, which is off.
 - Dropped: `SmcCheckLevel` (the guard is 2 halfword loads), `regalloc`, SSA.
+
+---
+
+## 6. Sound faults (investigation 2026-10-04)  PARKED 2026-10-04 (Matt)
+
+Matt, 2026-10-04: do each item below in its own session, then go back to the
+real goals. Each item: build (`./build.sh pkg`), the PC checks it lists, a
+HW test on Matt's PS3, then Matt's verdict. A new option goes in nullDC.cfg
+[ps3] (cfg* table, `ps3/ps3_presets.cpp`) and on the AUDIO page; a live one
+also goes in `k_live_opts` (`ps3/ps3_menu.cpp:780-784`). Main-menu changes
+print nothing today, so the first item to build adds a `[sndcfg]` line (all
+sound and ARM7 settings, at boot and on each change). Defaults keep today's
+behaviour unless the item says otherwise.
+
+Source: a read-only investigation (7 lenses, each checked by an adversarial
+reviewer, then a synthesis and a critic). Full proposal with every log line:
+`proposal_final.md` in the scratchpad of session b712e835. Logs used:
+ps3log_ctl_run1 (9b40b305), ps3log_a2_run2 (43d8f55c), ps3log_a2hv_run1
+(f83a8fb2), ps3log_a3_run1 (609fa37c), ps3log_a1b_run1 (3534ff6d), and the
+ARM census logs s3_run1.log / s3_sc.log (16a921ca).
+
+| Item | Fault | Status |
+|---|---|---|
+| 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
+| 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
+| 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
+| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]` |
+| 6.5 AICA Race Fix | F3 Looney Tunes | `[ ]` |
+| 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]` |
+| 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
+| 6.8 Verified, not scheduled | various | - |
+
+### 6.0 Facts set on 2026-10-04
+
+- F1 ChuChu Rocket: Matt compared it with Flycast on a PC. Our sound effects
+  play slower. That is the "echo".
+- The 2026-09-23 echo tests ran at SH4 Clock 200 MHz (the 150 MHz option
+  came later that day). So F1 is not only an underclock effect.
+- ChuChu's main PCM16 instrument (ctl:11766): `SA=0x02A04E LSA=17453
+  LEA=30266 loop OCT=15 FNS=349 ... D1R=0 D2R=0 DL=0 RR=12`. It plays at full
+  level until KEY_OFF, with a 12813-sample loop (433 ms). A late KEY_OFF
+  makes the note ring on.
+- F2 Crazy Taxi: Matt, SPE AICA Sound OFF (nullAICA) is clean in the menu
+  at full speed; ON crackles. The fault is in the SPE path.
+- F3 Looney Tunes: the twin and nullAICA boots match for 11 log windows,
+  then split. With the twin the driver loops one MSLC write + one monitor
+  read per 34.76 samples (1269/s); with nullAICA all AICA writes stop.
+- Quake 3: Matt cannot recall the issue. No Quake 3 PS3 audio bug makes a
+  sound slower. Dropped.
+- ARM7 cycles per AICA sample: ours 170 at SH4 150, 226.7 at 200; Reicast
+  256, nullDC-v1 256, Flycast 512. All three run the ARM once per sample.
+- Ruled out, with proof:
+  - Output path: `late=0` and `dropped=0` in all 7084 `[aud]` lines; rate
+    exact (48009 frames per 44107 samples); resampler, DMA and ring order
+    correct.
+  - Mixer and DSP (echo with nullAICA, A2 and A3); sample clock (+0.01%);
+    PCM16 pitch and note life exact in emulated time (`life=650ms`,
+    ctl:3402/3422).
+  - ARAM and register byte order on every path (non-uniform values); timer
+    and interrupt bitfields on BE; CD-DA; SPU against the twin (`bad=0`,
+    `full=0` in 1249 windows).
+
+### 6.1 ARM7 Idle Skip SAFE  FAILURE (HW 2026-10-04)
+
+- Defect: a backward branch to its own block in a store-free block costs
+  +100 ticks (`plugs/vbaARM/arm7_jit.cpp:1652-1653`
+  `e_ticks(selfLoop ? 103 : 3)`; `arm7_cached.cpp:737-746`, rule at
+  `:947-963`). Only stores, SWP, MSR and LDM/STM clear `blockSafe`; register
+  writes and LDR writeback do not. So a counted delay loop
+  (`subs rN,rN,#1; bne`) or a scan loop costs 121 ticks per pass, not 21:
+  4.2-5.8x slower in emulated time. Soul Calibur: 22-23.5% of the ARM
+  budget, true cost 4.4-4.7% (s3_sc:3277). Flycast, Reicast and nullDC-v1
+  have no idle skip. Present since 5a32b94.
+- Change: option "ARM7 Idle Skip" OLD / SAFE (`Arm7IdleSkip`), default OLD,
+  live (flush the ARM code caches, as the JIT C-Calls toggle does with
+  `arm_jit_on_reset()`, plus the cached engine's decode cache). SAFE keeps
+  the +100 only for a true wait loop: no register the block writes is a
+  source of the same or an earlier instruction (so `subs r3,r3,#1` counts),
+  and no load uses writeback or post-index.
+- Logs (also used by 6.2, 6.3, 6.5):
+  - `[arm7s]` once per second: ARM runs/s, ticks/s, FIQs/s. Per timer A/B/C:
+    last TIMx/md and period P = (256-TIMx)<<md samples, overflows/s,
+    merges/s (an overflow while its SCIPD bit is still 1), reload latency.
+    SCIEB, SCIPD, SCILV0-2, MCIEB. Monitor reads/s and MSLC writes/s, split
+    by ARM and SH4.
+  - `[sndcfg]` (see the section head).
+  - `[pcm16s]` note aggregates, nullAICA sound only (the diag clock does not
+    run in SPE sound): most-keyed SA, key-ons, key-offs, ignored key-ons,
+    held mean/max in samples, age of the oldest active note, histogram of
+    the gap to the next key-on of the same SA.
+- Check: `[ARM7TEST] PASS: all 45 tests passed.` on HW.
+- HW test: ChuChu Rocket, SPE AICA Sound OFF. Title/menu, confirm 10 times
+  per setting, OLD then SAFE; then 60 s of a stage each. Compare by ear with
+  Flycast. Read `[arm7s]`, `[pcm16s]` (held, oldest), `arm:`. Then check
+  Crazy Taxi and Soul Calibur speed with SAFE.
+- 2026-10-04: built (`./build.sh pkg`), PC tested, HW test pending.
+  - Option AUDIO -> "ARM7 Idle Skip" OLD / SAFE (`Arm7IdleSkip`), default
+    OLD, live. On a change the in-game menu calls `arm_FlushCode()`
+    (`arm7.cpp`): the cached decode cache plus `arm_jit_on_reset()`.
+  - One rule for both engines: `plugs/vbaARM/arm7_idle.h` (`Arm7IdleScan`).
+    SAFE = the old `blockSafe` and `scan.ok`, over the block from its start.
+    The JIT block of a loop starts at the loop target after the first pass;
+    the cached engine scans its decoded block (more conservative when a loop
+    branches into the middle of a block).
+  - `[sndcfg] boot:` at launch, `[sndcfg] menu:` after an in-game change of
+    a sound setting (running values, cfg key names).
+  - `[arm7s]`, once per wall second, rates per emulated second (AICA samples
+    / 44100): ARM runs, ticks granted, FIQs; per timer the last TIMx/md
+    written, P, overflows, merges, reload latency avg/max in samples; SCIEB,
+    SCIPD, SCILV0-2, MCIEB at print time; monitor reads and MSLC writes split
+    SH4 / ARM7 (`g_arm7_in_run` around `arm_Run`). Both sound back ends.
+  - `[pcm16s]` adds `oldest=` and the most-keyed SA of the second: kon, koff,
+    kon-ignored, held mean/max (n) in samples, active, oldest, pair gaps
+    <64/<256/<1024/<2048 and their median. `[pcm16] off` and `end` show SA.
+  - PC check (WSL; the real `arm7.cpp` + `arm7_cached.cpp`; scratchpad of
+    session e184b2b5, `idletest/run.sh`): 15 scan cases pass. Counted loop
+    `subs r3,r3,#1 / bne`: OLD 111 ticks per pass, SAFE 15. Post-index scan
+    loop: 48 against 240 words in 6000 ticks. A store loop counts the same
+    in both modes. The JIT uses the same scan; only HW tests it.
+  - ELF: `.got` 0x9D30, 0 r2off stubs.
+  - Comments longer than 2 lines in the touched files were trimmed (Matt's
+    rule), no code change in those edits.
+- HW 2026-10-04, ChuChu Rocket, SH4 150, Batch 4, SPE AICA Sound ON (the
+  `[sndcfg]` line showed it; `[pcm16s]` therefore did not print). Self-test
+  PASS, full speed. Matt: the slow sound is the same with OLD and SAFE.
+  FAILURE: the idle-skip over-charge is not F1. Option kept, default OLD.
+  The SAFE part has no log (the listener stopped at 12:29:57).
+- `[arm7s]` found the likely F1 cause (6.2). The driver sets its timer to
+  TIMx 0xD4, md 0: P = 44 samples, 1002 Hz on hardware. Measured 872/s,
+  reload latency 6.6 samples (max 7), in the menu (timer A) and in the next
+  boot (timer B). The FIQ waits for the next Batch 4 burst (every 8.43
+  samples at SH4 150), so the period locks to ceil(44 / 8.43) x 8.43 = 50.6
+  samples: the sound driver runs 13% slow. Same rule: Batch 1 at 150 gives
+  about 996/s, Batch 4 at 200 MHz about 996/s (bursts of 6.32 samples).
+- Debug step 1, HW 2026-10-04: ChuChu, SH4 150, Batch 1, SAFE, SPE AICA
+  Sound ON. Timer A 996-997/s, latency 0.3 samples (max 1): the driver tick
+  is now right (HW 1002/s). Matt: the slow sound is still there. So the
+  tick rate (and with it the Batch 4 FIQ delay) is NOT the cause of F1.
+- Debug step 3, HW 2026-10-04: SH4 200, Batch 4 (Matt also tried 8, 2, 3
+  live), SAFE, SPE AICA Sound ON. Timer A 996-997/s, ARM7 226.7 ticks per
+  sample (was 170). Matt: still slow. Ruled out for F1: Idle Skip (6.1), the
+  tick rate and FIQ delay (the point of 6.2), an ARM7 budget of 170 -> 227
+  (most of 6.3's cap of 256), and the TMU (6.4, exact at 200 MHz).
+- Matt 2026-10-04: against Flycast the pitch is the same; the sound is only
+  longer and slower. So the sample rate is right; the key events come late
+  or the notes are held too long.
+- nullDC4Wii (checked 2026-10-04, Matt asked): it never fixed F1. Commit
+  cc192ac: "SA=0x2A04E (the problematic SFX chord) sounds echoey/slow-motion
+  ... plays correctly on real hardware. Root cause unresolved"; its only
+  answer is the mute_pcm16 preset (our AUDIO "Mute 16-bit PCM"). Its README
+  keeps "Fix Chuchu Rocket 16Bit PCM bug" open. Its other attempt, the
+  KRS=0xF rule in AEG_EffRate, is already in our code (Flycast's form).
+  Our envelope tables, rates and attenuation already match Flycast's.
+- HW 2026-10-04, ARM7 Speed test (decision table row b): SH4 150, Batch 1.
+  Boot 1 HALF (85 ARM7 ticks per sample), boot 2 FULL (170), then live
+  HALF, FULL, EIGHTH (21; the tick then drops to 910/s), Mute 16-bit PCM,
+  AICA Fast, CD Audio. Matt: HALF and FULL sound the same. ARM7 time is
+  ruled out for F1. The table's next step: `[g2dma]`, `[mem64]`,
+  `[montrace]` (6.5, 6.7), then a key-on/key-off command trace.
+- HW 2026-10-04, `[pcm16s]` run: SPE AICA Sound OFF (nullAICA), SH4 150,
+  Batch 1, FULL, SAFE; ChuChu menu, select confirmed ~10 times. Only SA
+  0x02A04E plays as PCM16 (FNS 349 and 705, plus OCT 0 FNS 4).
+  - 11-16 of these notes are active at once; the oldest is up to 392304
+    samples (8.9 s). Held key-on to key-off: 0.7-6.2 s (mean per second
+    112000-272000 samples).
+  - Key-offs come in batches: 5 slots at the same moment, every 1.7-2.4 s
+    (t=30050, 31969, 33973, 35755, 37590, 39577, 41311, 43746 ms). Key-ons
+    come one by one. Each released note then fades for 2.8 s (RR 12).
+  - kon-ignored 13-492/s: each KYONEX write re-keys every held slot
+    (KYONB=1), as on hardware and in Flycast; not a fault by itself.
+  - With the same key timing, Flycast would sound the same (same key, rate
+    and envelope rules), so the key-on/key-off timing itself must differ.
+    No reference trace exists yet.
+- caique-rtl checked 2026-10-04 (Matt asked; `E:\...\Dreamcast\caique-rtl`,
+  console-measured AICA). Its slot side is what SPE AICA Sound already
+  plays, and F1 is there too: the slots are not the cause. What the CPUs
+  see is still nullAICA's in both modes, and caique measured these
+  hardware rules that nullAICA breaks (NOTES "Timers and interrupts",
+  "Loops and key events", `aica_model.cpp` read()/chan_mask()):
+  - KYONB is never cleared by the hardware; nullAICA clears it on release.
+    KYONEX and slot reg 0x00 bits 13:11 read 0.
+  - TIMA/B/C, SCILV0-2, SCIRE, MCIRE read 0 (nullAICA: live or stored).
+    0x2800 reads 0x0010 (VER 1), 0x2804 0, 0x2808 0x0900.
+  - One timer prescaler, never restarted by a write (nullAICA restarts it).
+  - MCIPD gets bit 10 (sample done) like SCIPD (nullAICA: SCIPD only).
+  - FIQ (wren7 handshake): level 0 never interrupts, reading L releases
+    nFIQ, writing M bit 0 re-arms (ours: released only by the M write).
+  - Flycast also has the AICA internal DMA (0x288C DEXE: clear or copy
+    between wave RAM and registers, DMA-end interrupt, 15a99aeeb); neither
+    nullAICA nor caique has it.
+- **ChuChu diagnostic build** (Matt 2026-10-04: built now, HW run in the
+  next session). Logs only, no behaviour change, `.got` 0x9DE8, 0 r2off.
+  - `[aicarw]` once per second, per emulated second, split SH4 / ARM:
+    KYONEX writes, DEXE writes (0x288C bit 0; counted, not carried out),
+    slot register reads and reg 0x00 (KYONB) reads, timer reads,
+    write-only register reads (SCIRE, SCILV0-2, MCIRE: 0 on hardware),
+    irq register reads. With any DEXE: the last DMA's gate, dir, dlg,
+    dmea, drga. (`aica.cpp`, `aica_mem.cpp`)
+  - `[key]` per KYONEX write: sample time, CPU, the writing slot, the
+    KYONB mask of all 64 slots, and (nullAICA sound only) the slots it
+    started and released. At most 120 lines per second; drops show on
+    `[aicarw]`. (`sgc_if.cpp` RegWrite 0x01)
+  - `[montrace]` every ~5 s while there were monitor reads: the last 32
+    reads of 0x2810/0x2814 with time, CPU, slot, byte or word, the value
+    returned, and the slot's KYONB, LPCTL, LSA-LEA. (`sgc_if.cpp`)
+  - HW procedure: SPE AICA Sound OFF (so `[key]` start/rel and `[pcm16s]`
+    are valid), SH4 150, ARM7 Batch 1, ARM7 Speed FULL. ChuChu Rocket menu:
+    confirm the select sound ~10 times; then 60 s of a stage.
+  - Decision: DEXE > 0 -> port Flycast's internal DMA (15a99aeeb) as an
+    option. Reg 0x00 reads > 0 -> option for "KYONB never cleared". Timer
+    or write-only reads > 0 -> option "read as 0". `[key]` cpu=SH4 -> the
+    game keys the notes from the SH4: look at the SH4 side. `[montrace]`
+    shows the value the driver polls while the notes hang. If none of
+    these shows anything: a Flycast key trace on the PC (VS 2022 is
+    installed) as the reference.
+- HW 2026-10-04, ChuChu diagnostic build: SPE AICA Sound OFF, SH4 150,
+  Batch 1, FULL, SAFE; menu (~10 confirms), then 60 s of a stage. Speed
+  ~100% in the menu, timer A 996/s. Log `ps3log_diag_run1.txt` (scratchpad
+  of session 558e9945).
+  - DEXE 0. Timer reads 0, write-only reads 0, irq reads 0. KYONEX 5343, all
+    from the ARM. Reg 0x00 reads 4826, all ARM: the read-modify-write of a
+    KYONEX write (title: ~210/s on slot 63, no key change; menu: the slot
+    being keyed). Only the "reg 0x00 reads" row matched.
+  - `[montrace]`: the ARM reads 0x2810 of all 64 slots, ~6000/s (MSLC
+    writes ~5000/s). Held notes read 0x4000, idle slots 0x63FF.
+  - KYONB went 1 -> 0 without a key-off: 0 times in the menu, 66 in the
+    stage (slots that ended by themselves). With SPE AICA Sound ON the
+    nullAICA channels do not step, so KYONB already stays as written, and
+    the monitor reads come from the caique twin; F1 was there in those runs.
+  - The key-offs come late. Every menu note is looped and stops only on a
+    key-off. Menu: 100 key-offs, median hold 205,000 samples (4.6 s), max
+    408,102 (9.3 s). SA 0x02A04E notes stop at a cap of 271,484-273,000
+    samples (6.16-6.19 s) unless a batch releases them first; in 16 of 20
+    cases the next key-on comes 38-72 samples after that key-off. Other
+    key-offs come in batches of 6 slots within 6 samples. Probably the
+    select sound: a slot pair (loop 6296-10237) keyed every 2-3 s, each
+    pair held 4.8-9.3 s. The 0x02A04E notes form an arpeggio: each note
+    repeats 3 steps later on the other side, quieter; a step is ~22,550
+    samples (0.51 s).
+- **KYONB option** (Matt 2026-10-04: "Let's do the KYONB never cleared
+  option"). Built 2026-10-04 14:04, `.got` 0x9DF8, 0 r2off. HW: FAILURE.
+  - AUDIO -> "KYONB" CLEARED ON END / NEVER CLEARED (`AicaKyonb`), default
+    CLEARED ON END (today's nullAICA), live; on `[sndcfg]`.
+  - NEVER CLEARED: `SetAegState(EG_Release)` no longer clears KYONB
+    (`plugs/nullAICA/sgc_if.cpp`). A per-slot `keyed` latch (set by a key-on,
+    cleared only by a key-off) keeps the hardware key rule: a slot that ended
+    by itself ignores key-ons until a key-off. Without the latch, every
+    KYONEX would restart such a slot.
+  - Back to CLEARED ON END in the in-game menu: `sgc_KyonbSync()` clears
+    KYONB on slots that ended by themselves, as the old rule would have.
+  - It acts on nullAICA only: with SPE AICA Sound ON it changes nothing.
+  - HW test: same settings as the diagnostic run (SPE AICA Sound OFF), KYONB
+    NEVER CLEARED before boot. ChuChu menu ~10 confirms, 60 s of a stage;
+    then SELECT, CLEARED ON END, ~10 confirms (A/B by ear). Log check: in
+    the stage, no KYONB 1 -> 0 without a key-off; menu hold times.
+  - HW 2026-10-04 (`ps3log_kyonb_run1.txt`, scratchpad of session
+    558e9945): FAILURE. Matt: still the same. With NEVER CLEARED, no KYONB
+    bit went 1 -> 0 without a key-off; after the switch to CLEARED ON END
+    (86.9 s), 25 did, all in the stage. The NEVER CLEARED part covered the
+    menu (24-55 s) and a silent screen (56-86 s, 0 voices, no KYONEX); the
+    stage ran from ~118 s, with CLEARED ON END. Menu holds unchanged (0x02A04E
+    cap 271,434-271,484 samples). After the switch, on another screen
+    (87-107 s), each confirm keyed one 0x02A04E note: held 344 ms, ended
+    513 ms after its key-on (the driver sets a faster release there).
+
+### 6.2 ARM7 Interleave SAMPLE  `[ ]`
+
+- Fact: with Arm7Batch 4 (default, `ps3_presets.cpp:20`) and accuracy FAST
+  (7168 SH4 cycles per MediumUpdate), the ARM7 runs one burst of 1433 ticks
+  every 8.43 AICA samples at SH4 150 (191 us) (`arm_aica.cpp:59-77`). The
+  AICA steps after the burst (`:94-106`). So:
+  - at most one FIQ per source per burst, up to 8-9 samples late;
+  - inside a burst the ARM sees no AICA progress (a KEY_OFF, wait, KEY_ON
+    on one slot; a poll of the monitor or SAMPLE_DONE);
+  - Batch 1 still freezes 2.1 samples per run.
+- Measured: the Crazy Taxi / BIOS driver tick runs 435.7 per emulated second
+  at SH4 150 (12 bursts) and 498.3 at 200 (14 bursts): `fiq 1744/s`
+  (s3_run1:1325) against `fiq 1990/s` (s3_run1:36932). On HW it is fixed.
+  The tick is quantized to bursts.
+- Change: option "ARM7 Interleave" SLICE / SAMPLE (`Arm7Interleave`),
+  default SLICE, live. SAMPLE: for each whole sample due, `arm_Run`
+  (per-sample ticks, remainder carried), then `libAICA_TimeStep()`, as
+  Flycast does; Batch is ignored. Each run's overshoot is carried into the
+  next run (`arm_jit_run` / `arm_Run_Cached` return it); with 170-tick runs,
+  dropping it would grant up to 64% extra on idle branches.
+- Risk: `IC_DEMOTE_SLICES` (`arm7_jit.cpp:440`) counts runs, so its window
+  gets 8.4x shorter.
+- Cost: 44.1K ARM runs/s instead of 5.2K, estimated 0.5-2% of wall; measure
+  it on the stats line.
+- HW test: as 6.1, SLICE against SAMPLE (Batch 1 as a control). Looney
+  Tunes (SPE AICA Sound ON): does the 34.76-sample loop change, do voices
+  come back.
+
+### 6.3 ARM7 Rate (capped)  `[ ]`
+
+- Fact: ticks = Cycles / 20 (`arm_aica.cpp:61,71`, `arm7.h:20`). The budget
+  follows SH4 Clock: 170 per sample at 150, 226.7 at 200. Engines charge 6+
+  ticks per instruction (ours about 8.3 on average), so ours runs about 20.5
+  instructions per sample at 150; Reicast's dynarec about 28.4.
+- Change: option "ARM7 Rate" LEGACY / 256 (`Arm7Rate`), default LEGACY,
+  live: ticks = (banked SH4 cycles x rate + remainder) / aica_sample_cycles,
+  remainder carried; the ARM7 Speed shift still applies. Move the
+  `aica_sample_cycles` refresh above its first use.
+- Matt, 2026-10-04: yes to a cap (256 was the example). 384 and 512 only as
+  test steps if 256 is not enough.
+- Note: F1 was heard at 200 MHz (226.7 ticks), and 256 is only 1.13x that.
+  6.1 and 6.2 are more likely to decide F1.
+- Cost (linear model from a2hv; in SPE sound the twin catch-up of each
+  monitor read sits inside the ARM bracket, so measure it): `arm:` x1.51 at
+  256: Crazy Taxi dense 6.0 -> about 9%, ChuChu stage 9-12 -> about 14-18%.
+  At 512: about 18% and 27-36%.
+- HW test: as 6.1.
+
+### 6.4 TMU Clock EFF  `[ ]`
+
+- Defect: `UpdateTMU(s_timeslice)` gets raw SH4 cycles
+  (`dc/sh4/sh4_interpreter.cpp:313, 334`), and `dc/sh4/tmu.cpp:145-147`
+  assumes 4 SH4 cycles per Pclk at 200 MHz. Every other time base uses
+  `SH4_CLOCK_EFF`: RTC (`sh4_interpreter.cpp:281`), VBlank (`SPG.cpp:71`),
+  AICA (`arm_aica.cpp:90`), G2 DMA (`aica_if.cpp:313`), maple, GD-ROM. At SH4
+  150 the TMU gives 37.5M Pclk per emulated second, not 50M: every TMU
+  period is 1.33x too long against video and sound, in every game.
+- Not F1's root cause (F1 exists at 200 MHz, where the TMU is exact); it may
+  add to it at 150.
+- Change: option "TMU Clock" SH4 / EFF (`TmuClock`), default SH4, live. EFF
+  feeds UpdateTMU `Cycles x 200 / SH4 MHz`, remainder carried. At 200 MHz
+  both are the same. Cost: one multiply per timeslice (<0.05%).
+- HW test: ChuChu menu at SH4 150, SH4 against EFF; Crazy Taxi and Soul
+  Calibur for regressions.
+
+### 6.5 AICA Race Fix (Looney Tunes)  `[ ]`
+
+- Reference: Flycast a920ae590 (2021-02-14), "aica: fix race conditions
+  between sh4/arm - Fix sound issue in Test Drive Le Mans and Looney Tunes".
+  Ours differs:
+  - `Read_SB_ADST` never runs: `REG_READ_DATA` (`aica_if.cpp:435`) makes
+    `sb.cpp:354-361` return the raw register first.
+  - No busy guard: a start while SB_ADST&1 is accepted
+    (`aica_if.cpp:272-278`).
+  - ADSTAR/ADSTAG advance at the start (`:301-302`); Flycast and Reicast
+    advance them at completion.
+  - End rule `SB_ADEN = bit31 ? 1 : 0` (`:217`), the opposite of Flycast
+    a44619931 (Reicast, nullDC-v1 and Minicast keep ours). A later start
+    with ADEN=0 is dropped silently (`:277-278`).
+  - SB_ADSUSP bit 4 is never maintained.
+  - No avoidRaceCondition: when the ARM raises the SH4 line (MCIPD bit 5 or
+    MCIEB), Flycast runs the ARM at least 50 more ticks (`arm7.cpp:77-80`);
+    ours only calls `UpdateSh4Ints` (`aica.cpp:208-215`).
+  - SCIEB/MCIEB writes take the default path, with no
+    `update_arm_interrupts()` / `UpdateSh4Ints()` (`aica.cpp:187-241`);
+    Flycast updates both at once.
+- Not shown: that Looney Tunes uses G2 DMA.
+- Change: option "AICA Race Fix" OFF / ON (`AicaRaceFix`), default OFF,
+  boot only (the ADEN rule changes DMA state). ON: all the points above.
+- Logs:
+  - `[g2dma]` when non-zero: starts/s, KB/s, `noaden` (starts dropped by
+    ADEN=0), `busy`, `dup` (same STAR/STAG/LEN), `irqrd` (SB_ADST reads while
+    the SPU DMA IRQ is pending), bit 31 counts, `bell` (+50-tick runs).
+  - `[montrace]` every 5 s while monitor reads > 0: the last 32 monitor
+    accesses (CPU, MSLC, register, size, value, slot state). It shows the
+    value a stuck driver waits for, so no second diagnostic build is needed.
+- HW test: Looney Tunes with SPE AICA Sound ON (the 34.76-sample loop exists
+  only with the twin), one race, 60 s, OFF then ON (next boot). Voices and
+  effects? Also live: Batch 1 moves 34.76 to about 31-32 = timer reload
+  after FIQ latency; ARM7 Speed HALF moves it to about 70 = ARM-bound loop;
+  neither = paced by the SH4 or a monitor value (`[montrace]`).
+
+### 6.6 SPE AICA Sync (Crazy Taxi crackle)  `[ ]`
+
+- Cause (Matt: SPE AICA Sound OFF clean, ON crackles):
+  - The PPU publishes records at each 64-sample CHECK
+    (`ps3/ps3_aica_spe.cpp:172-173`). The SPU renders a block only after the
+    guest has passed its end, and it fetches ARAM live
+    (`ps3/spu/spe_aica_model.cpp:15-20`; cache dropped in `am_check`,
+    `:163-170`).
+  - Guest ARAM writes land at once (`dc/mem/sh4_area0.cpp:229-233`; G2 DMA
+    copies at the start, `aica_if.cpp:295-299`; ARM JIT stores inline), and
+    the guest reads the exact CA from the twin (`sgc_if.cpp:1162-1181`).
+  - So a refill 0-63 samples behind CA (+8-26 samples of SPU render time,
+    more in A3 CHECK) plays next-lap data: a click. nullAICA is at most 2.1
+    samples off.
+  - Crazy Taxi music: looped PCM16 rings `SA=0x1D7E80` / `0x1DBEC0`,
+    `LEA=8192` (ctl:2521-2522). `bad=0` cannot see it: CtlSnap holds
+    control state only.
+- Second, smaller suspect: clipping. The SPU path is 0.92 dB (even MVOL) to
+  1.43 dB (odd) louder than nullAICA: nullAICA applies Volume=90
+  (`nullAICA.cpp:71`, `sgc_if.cpp:1350,1356`) and 0.707 at odd steps
+  (`:1129`); caique uses 0.75 and no Volume factor
+  (`aica_model.cpp:726-731, 1089-1105`).
+- Change: option "SPE AICA Sync" OFF / ON (`SpeAicaSync`), default OFF,
+  live, SPE sound only.
+  - New record `AICA_OP_SYNC` (`ps3/spu/spe_aica.h`): the SPU runs
+    `to(sample)`, then drops its ARAM cache.
+  - Trigger: a guest ARAM write inside a live slot's unrendered span (behind
+    CA within `(s_now - echo()->samples) x step` + 8 samples). At most one
+    per `s_now` and one per 64-sample block (the rest counted as `miss`).
+    Push SYNC, publish, spin (no usleep) until `echo()->tail` reaches it;
+    100 ms cap -> the existing failure path. Then the write lands.
+  - Always on: invalidate the SPU ARAM cache at the start of each SPU batch
+    (0 cost today, one batch = one CHECK).
+- Logs: `[aram-hz]` (256-byte page bitmap near each live slot's play point,
+  rebuilt per CHECK: hazards/s by sh4/dma/arm, minimum distance, syncs/s,
+  miss/s, wait us); `clip=L/R`/s on the `sound SPU` line (in `final_mix`,
+  outside `slot_fast`'s loop); nullAICA clip16 hits.
+- Cost: bounded by the cap: <=3.9% of wall (A2), <=15% (A3 DSP JIT ON),
+  <=38% (A3 CHECK); expected 0.01-0.3% in A2. Test in A2 or with DSP JIT ON.
+- PC checks before the pkg: `misc/spu_sim` (`run.sh`,
+  `BIN=diff_a3 diff_seeds.sh`), `misc/a2_check`, `misc/a3_check/run.sh`
+  stay bit-exact.
+- HW test: Crazy Taxi main menu with music at SPEED >= 99.5%, SPE AICA Sound
+  ON, DSP OFF: 60 s Sync OFF, 60 s ON, 30 s OFF; count the crackles per
+  10 s. If ON still crackles with hazards = 0 and clip > 0: next step is an
+  SPU output gain.
+
+### 6.7 JIT FMOV.D ABI fix  `[ ]`
+
+- Defect: the PS3 JIT cold path for a 64-bit access to a handler page uses
+  the 32-bit EABI layout.
+  - Write (kind 3) leaves the data in r5:r6 and calls `WriteMem64(u32,u64)`
+    (`ps3/ps3_driver.cpp:2586-2598`); ELF64 ELFv1 passes the u64 in r4,
+    which holds no data.
+  - Read (kind 1) takes r3:r4 (`:2549-2562`); ELFv1 returns the u64 in r3
+    alone. So FR[n] = word[a+4] and FR[n+1] = junk.
+  - The interpreter, SH4 Cached and JIT Safe Mode are correct.
+- Pages: area 0 (AICA regs, ARAM, Holly/G2), the 0x05 VRAM window, area 5,
+  P4 0xE4-0xFF. Store queues are not affected (block-mapped). May relate to
+  the Soul Calibur black texture.
+- Change: kind 1, after the call: `rldicl r4,r3,0,32; rldicl r3,r3,32,32`.
+  Kind 3, before the call: `rldicl r4,r6,0,32; rldimi r4,r5,32,0` (safe with
+  poisoned upper halves). Check the `c.fuct` path too. Option "JIT FMOV.D
+  Fix" (`JitFmovdFix`), boot only (SH4 code cache), default ON (Matt
+  2026-10-04). It changes every game.
+- Log: `[mem64]` when non-zero: JIT cold-path 64-bit reads/writes per area
+  (aram, aica, other area 0, 0x05, p4).
+- HW test: ChuChu, Looney Tunes, Soul Calibur (black texture), Crazy Taxi:
+  any change; `[mem64]` counts.
+
+### 6.8 Verified, not scheduled
+
+- Byte writes to timer and interrupt registers: the cases match exact
+  addresses only (`aica.cpp:190-241`). A byte write to 0x2891/95/99 skips
+  RegisterWrite; 0x28A1/0x28B9 store raw pending bits; 0x28A5/0x28BD clear
+  nothing.
+- `arm_Reset` (`arm7.cpp:355-395`) does not clear aica_interr, aica_reg_L,
+  e68k_out, e68k_reg_L/M (`arm_mem.cpp:6-11`); Flycast does.
+- An unaligned ARM word store scatters 4 bytes (`arm_mem.cpp:129-145`); the
+  ARM7 and Flycast write the aligned word.
+- AICA internal DMA (0x288C DEXE) exists in neither nullAICA nor caique.
+- Sample-rate surplus: floor(150e6/44100) = 3401 gives 44104.7 Hz
+  (+106 ppm); with AudioBuffers 0 the ring fill rises about 5 frames/s.
+- nullAICA idle-slot EG readback is 0x3FF; caique and Flycast give 0x1FFF.
+- ARM7 self-test: no STR/STRB, unaligned STR or register-window cases.
+- `_vmem` handler ids: only ids 0-7 fit (id*4 under HANDLER_MAX 0x1F,
+  `dc/mem/_vmem.cpp:16-17`); 8 are registered, so a 9th would break.
 
 ---
 

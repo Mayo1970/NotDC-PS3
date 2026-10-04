@@ -1,35 +1,14 @@
-// ARM7DI cached (pre-decoded / threaded) interpreter for the Dreamcast AICA core.
-//
-// This is an ALTERNATIVE execution path to arm_Run() in arm7.cpp. It keeps the
-// proven per-opcode semantics from arm-new.h but removes the per-instruction
-// fetch + condition switch + 12-bit decode switch from the hot loop. Each ARM
-// instruction is decoded ONCE into one ARM7CACHEOP "uop" holding a computed-goto
-// dispatch label plus pre-extracted operand fields (r0..r3 / imm / cond). The hot
-// loop is then a chain of `goto *next->dispatch`.
-//
-// Coverage: the ARM7DI (ARMv3) instruction set ONLY, per arm7di.pdf Figure 8:
-//   Data Processing / PSR Transfer (MRS/MSR), Multiply (MUL/MLA),
-//   Single Data Swap (SWP/SWPB), Single Data Transfer (LDR/STR, word/byte),
-//   Block Data Transfer (LDM/STM), Branch (B/BL), Software Interrupt (SWI).
-// Instructions NOT in ARM7DI (halfword/signed loads, long multiply, BX, Thumb,
-// coprocessor) are decoded to the undefined-instruction handler.
-//
-// Cache invalidation policy (per project decision): the cache is reset only when
-// the core is reset (arm_Run_Cached(_, reset=true)). Self-modifying / DMA-written
-// AICA code is NOT tracked. This matches arm_Run()'s assumption for AICA workloads.
-//
-// Requires GCC computed-goto (&&label / goto *). The active build target is
-// __GNUC__ + __POWERPC__ (devkitPPC / Wii), which supports it.
+// ARM7DI (ARMv3) cached interpreter: each instruction is decoded once into a uop (computed-goto label + operands) with
+// arm-new.h semantics; non-ARMv3 ops trap as undefined. The cache resets only with the core: SMC is not tracked.
 
 #include "arm7.h"
 #include "arm_mem.h"
+#include "arm7_idle.h"
 
 #define C_CORE
 #define DEV_VERSION
 
-// Define to profile block execution: counts each block entry (keyed by start
-// PC) and prints the top 10 hottest blocks roughly once per wall-clock second.
-// Off by default -- zero cost in the hot path when undefined.
+// Define to count block entries by start PC and print the 10 hottest about once per wall second; no cost when off.
 //#define ARM7_PROFILE_BLOCKS
 
 #ifdef ARM7_PROFILE_BLOCKS
@@ -128,11 +107,8 @@ typedef union { u32 I; } reg_pair;
 extern u32 arm_ArmNextPC;
 extern reg_pair arm_Reg[47];
 
-// Scratch pseudo-registers for the split shift uops:
-//   reg[R_COUT]  -- shifter carry-out (C_OUT) produced by carry-writing shifts
-//   reg[R_SHIFT] -- the shifted operand2 value (SHIFT_OUT)
-// A shift uop writes these; the following data-proc op uop reads them when its
-// operand2 came from a shift (the _s / carry-from-reg[45] variants).
+// Scratch pseudo-registers of the split shift uops: shifter carry-out and shifted operand2, written by a shift uop
+// and read by the data-proc uop after it.
 #define R_COUT   45
 #define R_SHIFT  46
 
@@ -149,17 +125,10 @@ void CPUSoftwareInterrupt(int comment);
 void CPUUndefinedException();
 void CPUFiq();
 
-// CPUUpdateFlags / CPUSwitchMode in arm7.cpp default breakLoop=true. The cached
-// path is driven by the SH4 timeslice the same way as arm_Run(), so keep the
-// same break-loop behavior.
+// Same break-loop behaviour as arm_Run(): both run from the SH4 timeslice, and arm7.cpp defaults breakLoop to true.
 #define CPUUpdateFlags() CPUUpdateFlags(true)
 
-// ── Cached uop layout ───────────────────────────────────────────────────────
-// NOTE on the original spec: it sketched ARM7CACHEOP as a `union` of
-// {void* dispatch; u8 r0..r3; u32 imm}. A union overlaps all members, so it
-// cannot hold a dispatch pointer AND four register indices AND an immediate at
-// once. The intended layout is a struct (one dispatch + the operand fields),
-// which is what we use. On the 32-bit PPC target this is 12 bytes.
+// ── Cached uop: a struct, not the union of the original spec, which cannot hold the label and operands at once
 struct ARM7CACHEOP {
 	void* dispatch;   // computed-goto target (&&label)
 	u8 r0;            // primary: dest (Rd)
@@ -170,10 +139,7 @@ struct ARM7CACHEOP {
 };
 
 #define ARM7_CACHE_SIZE   (192*1024)
-// ARM7 opcodes are always word-aligned, so indexing the entrypoint table by
-// raw byte address (old: ARM7_EP_SIZE = ARAM_SIZE, masked with ARAM_MASK)
-// wastes 3 of every 4 slots -- an 8MB static array for a 2MB ARAM range.
-// Index by word (pc>>2) instead: 1/4 the slots, same coverage.
+// Indexed by word (pc >> 2): opcodes are word-aligned, so a byte index wasted 3 of every 4 slots.
 #define ARM7_EP_SIZE      (ARAM_SIZE / 4)
 #define ARM7_EP_MASK      (ARM7_EP_SIZE - 1)
 #define ARM7_EP_INDEX(pc) (((pc) >> 2) & ARM7_EP_MASK)
@@ -185,11 +151,12 @@ static u32          ARM7_CACHE_LAST_OP;
 // Set on reset(); the next non-reset entry (which has label addresses in scope)
 // initializes the dispatch sentinel and clears every entrypoint to it.
 static bool         s_cache_dirty = true;
+static bool         s_idle_safe;   // ARM7 Idle Skip SAFE (6.1), latched with the table
 
-// The ARM7 JIT (arm7_jit.cpp) runs instead of this engine when the arm7_jit
-// preset is on, and reuses these two buffers rather than adding 4 MB of its
-// own. arm_Reset() latches one engine and flushes both (s_cache_dirty makes
-// this engine rebuild its tables before its next run).
+extern "C" int get_arm7_idle_skip_preset();
+
+// The ARM7 JIT borrows the block table rather than adding its own. arm_Reset() latches one engine and flushes both
+// (s_cache_dirty makes this one rebuild its tables before its next run).
 void arm7_cached_borrow_buffers(u8** code, u32* code_bytes, void*** entries, u32* entry_count)
 {
 	*code        = (u8*)ARM7_CACHE;
@@ -201,20 +168,8 @@ void arm7_cached_borrow_buffers(u8** code, u32* code_bytes, void*** entries, u32
 // Condition handling is now per-uop (lbl_cond_<cc> guard uops in
 // arm_Run_Cached); the old cond_check() helper is no longer needed.
 
-// ── Block-data-transfer execution helpers ───────────────────────────────────
-// LDM/STM are data-dependent (the register list is decoded at runtime), so per
-// the project decision they use runtime-decoded handlers rather than a label
-// per list. These free functions implement the canonical ARM LDM/STM address
-// algorithm, which is exactly what arm-new.h's per-variant code computes:
-//   n        = popcount(reg list)
-//   IA P=0U=1 first=Rn         wb=Rn+4n
-//   IB P=1U=1 first=Rn+4       wb=Rn+4n
-//   DA P=0U=0 first=Rn-4n+4    wb=Rn-4n
-//   DB P=1U=0 first=Rn-4n      wb=Rn-4n
-// Registers transfer in ascending register order at ascending addresses.
-// Writeback (W) lands the computed final base; matching arm-new.h, when the
-// base is also in the list it is written back as part of the transfer order
-// (the early-writeback `temp` trick), which the self-test exercises.
+// ── LDM/STM, decoded at run time from the raw opcode with arm-new.h's IA/IB/DA/DB rules: ascending registers at
+// ascending addresses; a base in the list is written back in transfer order, as arm-new.h (self-tested).
 
 static inline u32 arm_blockBase(u32 opcode, u32* outFirst, u32* outWb)
 {
@@ -246,9 +201,7 @@ void arm_cached_stm(u32 opcode, int& clockTicks)
 	u32 address = first;
 	clockTicks += 2;
 
-	// S-bit STM transfers the USER-bank registers. We snapshot which bank to
-	// read each register from; on this core the user-bank copies live at the
-	// R*_USR / fiq indices when not in user/system mode.
+	// S-bit STM stores the user-bank registers; outside user/system mode their copies sit at the R*_USR / fiq indices.
 	bool userBank = S && (armMode != 0x10 && armMode != 0x1f);
 
 	bool wroteBase = false;
@@ -312,12 +265,8 @@ void arm_cached_ldm(u32 opcode, int& clockTicks, bool hasPC)
 		clockTicks += 2 + CPUUpdateTicksAccess32(address);
 		address += 4;
 
-		// Writeback MUST happen BEFORE the S-bit CPUSwitchMode: arm-new.h's
-		// LDM{cond}<a>S {..,pc} writes back reg[base]=temp while still in the
-		// CURRENT mode, then restores CPSR (which re-banks r13/r14). Doing the
-		// switch first would land the base writeback in the NEW mode's banked
-		// register, corrupting the returned-to code's stack pointer (observed:
-		// sp clobbered to the literal-pool address after an LDMFD sp!,{pc}^).
+		// Writeback before the S-bit CPUSwitchMode, as arm-new.h: after the switch it lands in the new mode's banked
+		// register (seen: sp clobbered with a literal-pool address after LDMFD sp!,{pc}^).
 		if (W && !(opcode & (1 << base)))
 			reg[base].I = wb;
 
@@ -392,54 +341,22 @@ void arm_cached_ldm(u32 opcode, int& clockTicks, bool hasPC)
 // Forward declaration so arm7.cpp's switchable entry can call us.
 void arm_Run(u32 CycleCount);
 
-// ── Shifter-operand value computation (operand2) ────────────────────────────
-// Each data-processing label uses one FORM_* macro to produce `value` and (for
-// the flag-setting / logical labels) `C_OUT`, exactly as arm-new.h does. The
-// decoded operand fields are:
-//   op->r2  = Rm (operand register)
-//   op->imm = shift amount (imm-shift forms) | Rs index (reg-shift forms)
-//             | pre-rotated 32-bit immediate (immediate operand2 form)
-// C_OUT defaults to C_FLAG at the top of every data-proc label.
-
-// The operand2 shifter is now its own uop (lbl_sh_/lbl_shc_ in the generated
-// label block): it computes the shifted value into reg[R_SHIFT] (and the carry
-// into reg[R_COUT] for the carry-writing variant), then falls through to the
-// data-processing op uop. The op uop reads operand2 from reg[op->r2] (which the
-// decoder sets to R_SHIFT when a shift uop ran, or the real Rm otherwise) or
-// from op->imm for the immediate forms. The old inline FORM_* macros are gone.
-
-// (The data-processing / shift / LDR/STR label bodies + their decode tables are
-//  generated mechanically from the DO_* macros + shift_body() by
-//  gen_arm7_cached.py and pulled in via arm7_cached_gen.inc below.)
+// Operand2: a shift uop (lbl_sh_/lbl_shc_) leaves the value in reg[R_SHIFT], the carry in reg[R_COUT]; the op uop reads
+// reg[op->r2] (R_SHIFT or Rm) or op->imm. gen_arm7_cached.py generates these labels and decoders (arm7_cached_gen.inc).
 
 #if !defined(__GNUC__)
 #  error "arm7_cached.cpp requires GCC computed-goto (&&label / goto *)."
 #endif
 
-// ════════════════════════════════════════════════════════════════════════════
-//  The cached interpreter.
-//
-//  Pipeline / PC model (identical to arm_Run() in arm7.cpp):
-//    Before executing the instruction at address A:  armNextPC == A,
-//    reg[15] == A+4. The per-instruction prologue then does
-//    `armNextPC = reg[15]; reg[15] += 4;`, so during execution reg[15] == A+8
-//    (the ARM prefetch value) and armNextPC == A+4 (the next instruction).
-//
-//  The threaded loop folds that prologue into NEXT(): every label ends with
-//  NEXT, which (1) honors the cycle budget, (2) looks up the uop for the
-//  instruction at the current armNextPC, (3) runs the prologue, (4) dispatches.
-//  Sequential ops leave armNextPC/reg[15] to the prologue; branch / PC-write
-//  ops overwrite armNextPC and reg[15] themselves (exactly as arm-new.h) before
-//  reaching NEXT, which then re-homes on the branch target.
-// ════════════════════════════════════════════════════════════════════════════
+// ═══ The cached interpreter. PC model of arm_Run(): the instruction at A runs with reg[15] == A+8 (prefetch) and
+// armNextPC == A+4; between slices armNextPC is the next instruction and reg[15] == armNextPC + 4.
 
 void arm_Run_Cached(u32 CycleCount, bool reset)
 {
 	static int clockTicks;            // matches arm-new.h / LDM-STM helper signature
 	static ARM7CACHEOP* pc_op;
-	// Condition-code -> guard-uop label, indexed by opcode[31:28]. Filled once
-	// below (label addresses are only valid inside this function). Index 0xE (AL)
-	// is unused (no guard); 0xF (NV) maps to the always-skip guard.
+	// Guard-uop label per condition (opcode[31:28]), filled below: label addresses exist only in this function.
+	// AL (0xE) has no guard; NV (0xF) always skips.
 	static void* cond_labels[16];
 
 	if (reset) {
@@ -471,6 +388,7 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 		cond_labels[0xC] = &&lbl_cond_gt; cond_labels[0xD] = &&lbl_cond_le;
 		cond_labels[0xE] = &&lbl_cond_nv; /* AL: unused */
 		cond_labels[0xF] = &&lbl_cond_nv;
+		s_idle_safe = get_arm7_idle_skip_preset() != 0;
 		s_cache_dirty = false;
 	}
 
@@ -479,30 +397,12 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 	// Hot-block profiler: once per slice, dump the top 10 if >=1s has elapsed.
 	PROF_TICK();
 
-	// ── dispatch_pc execution model ────────────────────────────────────────────
-	// A single running program counter, dispatch_pc, drives dispatch. The common
-	// uops (no r15) never touch reg[15] / armNextPC: they do their work, advance
-	// dispatch_pc by 4, and re-dispatch. Only the special PC-read uops materialize
-	// reg[15] (= dispatch_pc + 8, the ARM prefetch value), and only the PC-write
-	// uops change the control flow (they set dispatch_pc to the new target).
-	//
-	// reg[15] / armNextPC are reconciled with dispatch_pc only at slice exit, so
-	// the next slice's FIQ/exception entry (which read reg[15]/armNextPC) and the
-	// kickoff see exactly what the old per-prologue engine left behind.
+	// dispatch_pc drives dispatch: common uops only advance it, PC-read uops materialize reg[15] = dispatch_pc + 8,
+	// PC writes set it. reg[15] / armNextPC are written back only at slice exit (lbl_exit).
 	u32 dispatch_pc;
 
-	// Re-home: charge cycles + budget check + dispatch the uop registered for the
-	// current dispatch_pc via the entrypoint table. Used at block entry and after
-	// any control-flow change (branch / PC write).
-	//
-	// FIQ is sampled HERE -- at every block boundary -- rather than per
-	// instruction. e68k_out (the AICA FIQ pin) only changes at SH4-timeslice
-	// boundaries in this emulator, so block-granular sampling services it with
-	// the same effective latency as arm-new.h's per-instruction check, while
-	// straight-line ADVANCE() (pc_op++) pays nothing. CPUFiq() reads reg[15] as
-	// the FIQ return value (lr_fiq = next-instruction address + 4, matching the
-	// reference's pre-prologue reg[15]) and sets armNextPC to the FIQ vector,
-	// which we pick up as the new dispatch_pc.
+	// Re-home through the entrypoint table, sampling FIQ (CPUFiq takes lr from reg[15] = next instruction + 4). The
+	// FIQ pin changes only between SH4 timeslices, so a per-block sample keeps arm-new.h's latency; pc_op++ pays nothing.
 	#define DISPATCH() do {                              \
 			if (armFiqEnable && e68k_out) {              \
 				reg[15].I = dispatch_pc + 4;              \
@@ -516,11 +416,8 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 			goto *pc_op->dispatch;                        \
 		} while(0)
 
-	// Sequential advance (non-PC-writing ops): the next instruction's uop is the
-	// next CONTIGUOUS cache slot (the decoder lays a block out sequentially), so
-	// fall straight through with pc_op++ and SKIP the entrypoint-table lookup.
-	// The last uop of a capped block is a synthetic rehome terminator (lbl_rehome)
-	// that re-homes via DISPATCH(), so pc_op++ never walks past a block boundary.
+	// Sequential advance: the next uop is the next slot (a block is laid out in order), so no table lookup; a capped
+	// block ends in a rehome uop, so pc_op++ never leaves its block.
 	#define ADVANCE() do {                               \
 			dispatch_pc += 4;                             \
 			if ((u32)clockTicks >= CycleCount) goto lbl_exit; \
@@ -536,14 +433,8 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 	// Materialize the ARM prefetch value for the few uops that read r15.
 	#define SET_PC_READ() do { reg[15].I = dispatch_pc + 8; } while(0)
 
-	// ── Condition-guard uops ────────────────────────────────────────────────
-	// A conditional instruction is decoded as TWO contiguous uops: a guard uop
-	// (lbl_cond_<cc>, which the instruction's entrypoint points at) followed by
-	// the (now unconditional) op uop. On PASS the guard falls through to the op
-	// via pc_op++ (no cycle charge / no dispatch_pc change -- same instruction).
-	// On FAIL it skips the instruction: advance dispatch_pc and re-home (which
-	// charges the +6 for the *next* instruction, exactly as a normal advance).
-	// AL instructions get no guard uop (the entrypoint points straight at the op).
+	// Condition guard: the entrypoint uop of a conditional instruction, its op uop next. Pass: pc_op++, same
+	// instruction, no charge. Fail: skip it and re-home (+6 for the next one, as an advance). AL has no guard.
 	#define COND_PASS()  do { pc_op++; goto *pc_op->dispatch; } while(0)
 	#define COND_FAIL()  do { dispatch_pc += 4; DISPATCH(); } while(0)
 	#define COND_UOP(cc, expr) \
@@ -577,14 +468,10 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 	#include "arm7_cached_gen.inc"
 	#undef GEN_LABELS
 
-	// ── Hand-written labels for the remaining ARM7DI instructions ───────────
-	// All operate on pc_op; the raw opcode is carried in pc_op->imm where the
-	// handler needs full field access (LDM/STM, MSR field masks, etc).
+	// ── Hand-written labels for the other ARM7DI instructions; pc_op->imm holds the raw opcode where one needs it.
 
 lbl_mul:
-	// MUL/MLA field convention (set by decode):
-	//   r0 = Rd (19:16)   r1 = Rs (11:8)   r2 = Rm (3:0)
-	//   imm bit 8 = S flag;  imm[3:0] = Rn (accumulate reg, 15:12) for MLA.
+	// MUL/MLA fields from decode: r0 = Rd (19:16), r1 = Rs (11:8), r2 = Rm (3:0); imm bit 8 = S, imm[3:0] = Rn (MLA).
 	{
 		ARM7CACHEOP* op = pc_op;
 		int dest = op->r0;
@@ -702,9 +589,7 @@ lbl_msr_spsr:
 	}
 	ADVANCE();
 
-	// Block data transfer. Per project decision: a single handler split only by
-	// "register list includes PC" (lbl_ldm_pc) vs not (lbl_ldm_nopc), with the
-	// register-list / P,U,S,W decode done at runtime from the raw opcode.
+	// Block data transfer: STM, LDM without pc and LDM with pc; the list and P,U,S,W are decoded at run time.
 lbl_stm:
 	// STM may store r15 (as PC+12 = reg[15]+4) and reads reg[base]; materialize
 	// the prefetch PC so any r15 reference matches arm-new.h.
@@ -735,12 +620,8 @@ lbl_b:
 	DISPATCH_PC();
 
 lbl_b_idle:
-	// Idle-loop closing branch: an unconditional B back to a read-only block's
-	// own start (an interrupt-wait spin). Charge a large chunk so a slice spent
-	// idling reaches its CycleCount budget in ~15x fewer iterations and exits to
-	// let the SH4/AICA advance (which is the only thing that can break the loop).
-	// DISPATCH_PC() re-samples FIQ on the way out, so an interrupt that arrives
-	// is still serviced promptly. dispatch_pc is unchanged (target == this block).
+	// Idle-loop branch: +100 ticks, so an idle slice ends ~15x sooner and the SH4/AICA, the only thing that can end
+	// the loop, moves on. DISPATCH_PC() still samples FIQ on the way out.
 	clockTicks += 100;
 	{
 		s32 offset = pc_op->imm;
@@ -777,10 +658,7 @@ lbl_undefined:
 	dispatch_pc = armNextPC;
 	DISPATCH_PC();
 
-	// Block-cap terminator: the synthetic uop appended when a block hit the
-	// MAX_BLOCK_UOPS cap. Sequential ADVANCE() (pc_op++) lands here after the
-	// last real uop; dispatch_pc already points at the next instruction, so we
-	// re-home through the entrypoint table to its (separately decoded) block.
+	// Block-cap terminator: the last real uop's pc_op++ lands here, with dispatch_pc already on the next instruction.
 lbl_rehome:
 	DISPATCH();
 
@@ -788,10 +666,8 @@ lbl_rehome:
 	// Reached when an entrypoint still points at the sentinel ARM7_CACHE[0].
 lbl_unknown_block:
 	{
-		// The decode trampoline is not a real instruction: refund the base 6
-		// ticks DISPATCH() charged for it, so the re-dispatch charges exactly one
-		// +6 for the real first instruction (and a CycleCount=1 slice still runs
-		// one instruction rather than being exhausted by the trampoline).
+		// The decode trampoline is no instruction: refund DISPATCH()'s +6, so the first real instruction pays one +6
+		// and a CycleCount=1 slice still runs one instruction.
 		clockTicks -= 6;
 		// dispatch_pc is the address we must decode (DISPATCH() does not advance it).
 		u32 blockStart = dispatch_pc;
@@ -800,21 +676,15 @@ lbl_unknown_block:
 		// (Each uop registers its own entrypoint inside the loop below, so no
 		// separate blockStart assignment is needed here.)
 
-		// Cap block length. A long straight-line run with no branch would
-		// otherwise grow one huge block; bound it so the next chunk gets its own
-		// block. At the cap we append a rehome terminator uop (see below) that the
-		// last real uop's pc_op++ ADVANCE() lands on, which re-homes via the table.
+		// Cap the block length; a capped block ends in a rehome uop, so the next chunk gets its own block.
 		const u32 MAX_BLOCK_UOPS = 128;
 		u32 blockUops = 0;
 
-		// Idle-loop detection: a block whose body is ONLY loads + data-processing
-		// (no stores / PC-writes / mode changes / block-transfers) and which ends
-		// in an UNCONDITIONAL branch back to its own start is an interrupt-wait
-		// spin loop -- it can only exit via FIQ/IRQ, which is sampled at slice
-		// boundaries. Such a loop's outcome cannot change within the slice, so the
-		// closing branch is routed to lbl_b_idle which charges a large cycle chunk
-		// (+100) per iteration, ending the idle slice ~15x sooner than spinning.
+		// Idle loops (lbl_b_idle): blockSafe = no store, SWP, MSR or LDM/STM; Idle Skip SAFE also needs scan.ok (no
+		// loop-carried register, no load writeback), so a counted loop pays its true cost.
 		bool blockSafe = true;
+		Arm7IdleScan scan;
+		scan.reset();
 
 		bool last = false;
 		do {
@@ -827,19 +697,16 @@ lbl_unknown_block:
 				ARM7_CACHE_LAST_OP = 1;
 				decode_pc = blockStart;
 				blockUops = 0;          // restart count for the re-decoded block
+				scan.reset();
 				// (the loop body re-registers entrypoints as it re-decodes)
 			}
 
 			u32 opcode = CPUReadMemoryQuick(decode_pc);
 			u32 cond = opcode >> 28;
+			scan.insn(opcode);
 
-			// Register the instruction's entrypoint. For a conditional instruction
-			// (cond != AL) the entrypoint points at a CONDITION-GUARD uop placed in
-			// this slot; the actual op uop goes in the NEXT contiguous slot and the
-			// guard falls through to it on pass (or re-homes at +4 on fail). AL
-			// instructions have no guard -- the entrypoint points straight at the op.
-			// Either way the entrypoint targets the address-aligned first uop so a
-			// branch INTO this instruction evaluates the condition correctly.
+			// The entrypoint is the instruction's first uop: the guard of a conditional one (op uop in the next slot),
+			// so a branch into it still tests the condition; for AL, the op itself.
 			if (cond != 0xE) {
 				ARM7CACHEOP* guard = &ARM7_CACHE[ARM7_CACHE_LAST_OP];
 				guard->dispatch = cond_labels[cond];
@@ -856,9 +723,7 @@ lbl_unknown_block:
 			cop->imm = opcode;          // default: keep raw opcode
 			last = false;
 
-			// ── Inline decode: opcode -> dispatch label + operand fields ────
-			// Decode MUST live here so &&label addresses are in scope. The 12-bit
-			// primary classification matches arm-new.h.
+			// Decode here: &&label addresses exist only in this function. Classes as in arm-new.h.
 			u32 fam = (opcode >> 26) & 3;   // bits[27:26]
 			if (fam == 0 || fam == 1) {
 				// 00: data-proc / multiply / swp / psr-transfer
@@ -915,9 +780,7 @@ lbl_unknown_block:
 						#define GEN_DECODE_DP
 						#include "arm7_cached_gen.inc"
 						#undef GEN_DECODE_DP
-						// A data-proc write to PC (Rd==15) ends the block, except
-						// the compare-only ops (TST/TEQ/CMP/CMN, op4 0x8..0xB) which
-						// never write Rd.
+						// A data-proc write to PC ends the block; TST/TEQ/CMP/CMN (op4 0x8..0xB) never write Rd.
 						{
 							u32 op4 = (opcode >> 21) & 0xF;
 							if (((opcode >> 12) & 0xF) == 15 && !(op4 >= 0x8 && op4 <= 0xB))
@@ -944,21 +807,10 @@ lbl_unknown_block:
 					if (opcode & 0x01000000) {
 						cop->dispatch = &&lbl_bl;   // BL writes lr -> not an idle wait
 					} else {
-						// Idle-loop: a BACKWARD branch (conditional OR unconditional)
-						// that stays within the current all-read-only block is an
-						// interrupt/memory wait spin. The body has no store / PC-write
-						// / mode change, so nothing it does can change the branch
-						// outcome -- only an IRQ/FIQ or a memory-mapped value written
-						// by the SH4/AICA can, and both only happen at slice
-						// boundaries. So the loop's per-iteration result is fixed
-						// within a slice: route it to lbl_b_idle, which charges +100
-						// on the loop-continuing (taken) path so an idle slice ends
-						// ~15x sooner. For a conditional branch the cond-guard uop
-						// (already inserted before this op uop) handles the exit edge;
-						// lbl_b_idle is only reached when the branch is TAKEN.
-						// Target = (B_addr + 8) + offset.
+						// A backward branch into an idle-safe block is a wait spin: only an FIQ or an SH4/AICA write,
+						// both between slices, ends it. Its taken edge goes to lbl_b_idle; the guard takes the exit edge.
 						u32 target = decode_pc + 8 + (u32)offset;
-						bool selfLoop = blockSafe &&
+						bool selfLoop = blockSafe && (!s_idle_safe || scan.ok) &&
 						                target >= blockStart && target <= decode_pc;
 						cop->dispatch = selfLoop ? &&lbl_b_idle : &&lbl_b;
 					}
@@ -979,12 +831,8 @@ lbl_unknown_block:
 			ARM7_CACHE_LAST_OP++;
 			decode_pc += 4;
 
-			// `last` set above means a control-flow instruction (branch / PC
-			// write / SWI / undefined) ended the block: it re-homes via its own
-			// dispatch, so no terminator is needed and pc_op++ never runs past it.
-			// The cap instead ends a block on an ORDINARY sequential instruction,
-			// whose ADVANCE() does pc_op++ -- so append a rehome terminator uop in
-			// the next contiguous slot for that pc_op++ to land on.
+			// A control-flow instruction ends the block and re-homes itself; the cap ends it on a sequential one,
+			// whose pc_op++ needs a rehome uop in the next slot.
 			if (!last && ++blockUops >= MAX_BLOCK_UOPS) {
 				ARM7_CACHE[ARM7_CACHE_LAST_OP].dispatch = &&lbl_rehome;
 				ARM7_CACHE_LAST_OP++;
@@ -992,17 +840,12 @@ lbl_unknown_block:
 			}
 		} while (!last);
 
-		// Re-dispatch: run the freshly decoded block from its first uop.
-		// dispatch_pc is still blockStart, whose entrypoint now points at the
-		// first decoded uop.
+		// Run the new block: dispatch_pc is still blockStart, whose entrypoint is now its first uop.
 	}
 	DISPATCH();
 
 lbl_exit:
-	// Reconcile the architectural PC with dispatch_pc so the next slice's FIQ /
-	// exception entry (which read reg[15] / armNextPC) and the kickoff resume
-	// exactly where this slice left off -- matching the old per-prologue engine
-	// (armNextPC = next instr, reg[15] = next instr + 4).
+	// The architectural PC as the next slice's kickoff and FIQ entry expect it: next instruction, reg[15] = it + 4.
 	armNextPC = dispatch_pc;
 	reg[15].I = dispatch_pc + 4;
 	return;

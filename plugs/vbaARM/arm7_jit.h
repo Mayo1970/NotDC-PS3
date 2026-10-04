@@ -9,3 +9,4 @@ void arm_jit_on_reset();         // end of arm_Reset(): latch engine, flush the 
 bool arm_jit_active();           // true -> arm_Run() goes through arm_jit_run()
 void arm_jit_run(u32 CycleCount);
 void arm_jit_census_dump(double seconds);   // [ARMJIT] counters, jit_ccalls probe only
+void arm_FlushCode();            // arm7.cpp: drops both engines' code, re-latches the JIT

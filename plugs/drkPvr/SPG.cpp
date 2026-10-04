@@ -26,6 +26,8 @@ extern "C" void hotblocks_dump(double seconds);
 extern "C" void ccall_census_dump(double seconds, double vbs);
 // Same probe, ARM7 JIT side (plugs/vbaARM/arm7_jit.cpp): exits, cache hits, C helpers.
 void arm_jit_census_dump(double seconds);
+// [arm7s] ARM7 and AICA timer activity (plugs/nullAICA/aica.cpp), always on.
+void aica_arm7s_dump(double wall_s);
 
 // Host-side exit-combo poll (EXIT FIX = 3): driven by the scanline counter, which runs whatever the
 // guest does, so a game that stops polling Maple (or never fires vblank) can still be exited.
@@ -89,15 +91,8 @@ void CalculateSync()
 
     spg_FrameSh4Cycles = spg_ScanlineCount * spg_LineSh4Cycles;
 
-    // [SPG] diagnostic: if vbstart is past the counter wrap (vcount+1), the internal vblank event never
-    // fires and the stats go silent while the game keeps running on SPG_VBLANK_INT.
-    // printf("[SPG] sync: vcount=%d hcount=%d interlace=%d NTSC=%d PAL=%d lines=%d line_cycles=%d vbstart=%d vbend=%d%s\n",
-    //     (int)SPG_LOAD.vcount, (int)SPG_LOAD.hcount, (int)SPG_CONTROL.interlace,
-    //     (int)SPG_CONTROL.NTSC, (int)SPG_CONTROL.PAL,
-    //     (int)spg_ScanlineCount, (int)spg_LineSh4Cycles,
-    //     (int)SPG_VBLANK.vbstart, (int)SPG_VBLANK.vbend,
-    //     (SPG_VBLANK.vbstart >= spg_ScanlineCount) ? "  <-- vbstart OUT OF RANGE, vblank event will NEVER fire!" : "");
-    // fflush(stdout); // mode changes are rare; make sure this survives a hard power-off
+    // If vbstart is past the counter wrap (vcount+1), the vblank event never fires and the stats go silent while the
+    // game runs on SPG_VBLANK_INT: log vcount, hcount, vbstart and vbend here to check.
 }
 
 s32 render_end_pending_cycles = 0;
@@ -355,6 +350,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 hotblocks_dump(tdiff);   // no-op unless the JIT HOTBLOCKS preset is on
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
+                aica_arm7s_dump(tdiff);
 #endif
                 // PSP profiler logging removed for Wii build — not applicable
             }

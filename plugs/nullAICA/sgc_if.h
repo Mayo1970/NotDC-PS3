@@ -6,6 +6,7 @@ void WriteChannelReg8(u32 channel, u32 reg);
 
 void sgc_Init();
 void sgc_Term();
+void sgc_KyonbSync();
 
 // Fixed-point types — bitfield order reversed on big-endian (WII)
 union fp_22_10

@@ -23,6 +23,7 @@
 // nullDC.cpp and os_GetFile() read this; empty means boot the BIOS with no disc.
 extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
+void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 
 // -- Pad ---------------------------------------------------------------------
 
@@ -291,6 +292,8 @@ static const char* k_drop[]      = { "DROP", "WAIT 1 FRAME", "WAIT", NULL };
 static const char* k_exit_fix[]  = { "OFF", "SAFE", "SAFE + WATCHDOG",
                                      "SAFE + WATCHDOG + HOST POLL", NULL };
 static const char* k_arm7[]      = { "FULL", "HALF", "QUARTER", "EIGHTH", NULL };
+static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
+static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
@@ -358,6 +361,10 @@ static Option s_audio[] = {
 	  "Sound CPU clock divider. Lower reclaims PPU time; check the music." },
 	{ "ARM7 Batch",      &g_arm7_batch_preset,    OPT_RANGE,  NULL,        0, 1,8,1, "%d call(s)",
 	  "Runs the ARM7 once per N calls, with the cycles of all N." },
+	{ "ARM7 Idle Skip",  &g_arm7_idle_skip_preset, OPT_CHOICE, k_idle_skip, 0, 0,0,0, NULL,
+	  "OLD: +100 ticks per store-free self-loop. SAFE: wait loops only. Live." },
+	{ "KYONB",           &g_aica_kyonb_preset,    OPT_CHOICE, k_kyonb,     0, 0,0,0, NULL,
+	  "NEVER CLEARED: as on hw; an ended slot needs a key-off before a key-on. Live." },
 	{ "Audio Buffers",   &g_audio_buffers_preset, OPT_CHOICE, k_audio_buf, -1, 0,0,0, NULL,
 	  "Queue depth. Higher blocks the SH4 until the mixer drains." },
 	{ "SPE AICA Check",  &g_spe_aica_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -781,7 +788,8 @@ static volatile bool s_ingame_req;
 static int* const k_live_opts[] = {
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
-	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset,
+	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
+	&g_aica_kyonb_preset,
 };
 
 #define MAX_INGAME_OPTS 64
@@ -889,6 +897,8 @@ void ps3_menu_ingame(void)
 		});
 		s_boot_val_set = true;
 		const int ccalls = g_jit_ccalls_preset;
+		const int idle = g_arm7_idle_skip_preset;
+		const int kyonb = g_aica_kyonb_preset;
 
 		// The SELECT still held from opening does not count as a press.
 		s_pad_prev = ~0u;
@@ -919,6 +929,12 @@ void ps3_menu_ingame(void)
 		// The ARM7 census is compiled into its blocks: re-latch it, which also flushes the ARM7 code cache.
 		if (g_jit_ccalls_preset != ccalls)
 			arm_jit_on_reset();
+		// So is the idle-skip rule, in both ARM7 engines.
+		if (g_arm7_idle_skip_preset != idle)
+			arm_FlushCode();
+		if (g_aica_kyonb_preset != kyonb)
+			sgc_KyonbSync();
+		ps3_sndcfg_print("menu", false);
 	}
 	else
 		printf("[menu] in-game menu: no UI\n");
@@ -998,5 +1014,6 @@ int ps3_menu_run(void)
 	ps3_presets_save();
 	printf("[menu] launching %s\n",
 	       selectedFilePath[0] ? selectedFilePath : "(BIOS, no disc)");
+	ps3_sndcfg_print("boot", true);
 	return 1;
 }
