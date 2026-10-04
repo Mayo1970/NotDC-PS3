@@ -11,6 +11,11 @@ uint8_t caique_rd8(uint32_t a);
 uint16_t caique_rd16(uint32_t a);
 uint16_t caique_dsp_rd16(uint32_t a, uint32_t rbp, uint32_t rbl);
 void caique_dsp_wr16(uint32_t a, uint32_t rbp, uint32_t rbl, uint16_t v);
+/* The 128-byte line holding byte a, PS3 order (byte a at [(a & 127) ^ 3]); valid until the next wave RAM access */
+const uint8_t *caique_line(uint32_t a);
+#define CAIQUE_SWZ 3
+#else
+#define CAIQUE_SWZ 0
 #endif
 #ifdef CAIQUE_PROF
 /* full-model section marks: 0 start, 1 slots, 2 envelopes, 3 preview + buses, 4 DSP, 5 mix; v = slots rendered */
@@ -118,7 +123,7 @@ struct CtlSnap {
 struct AicaModel {
     static const uint32_t RAM_SIZE = 2u << 20;
     uint8_t *ram;              /* RAM_SIZE bytes; null with CAIQUE_RAM_HOOKS */
-    uint16_t reg[0x8000 / 4];  /* register file, one 16-bit value per 32-bit slot, offset >> 2 */
+    uint16_t reg[0x4600 / 4];  /* register file, one 16-bit value per 32-bit slot, offset >> 2; none is stored above 0x45BC */
 
     Slot slot[64];
 
@@ -168,6 +173,9 @@ struct AicaModel {
     bool no_dsp;              /* 5.13 A2: no DSP pass, EFREG mix or collision fetch; init() clears it, reset() keeps it */
 
     Frame fr;                 /* control -> render hand-off of the current sample */
+    static const uint32_t ADV_MAX = 64;   /* advance() works in rounds of this many samples */
+    uint32_t adv_l0[ADV_MAX]; /* LFSR at the start of each sample of the round, made on first use */
+    bool adv_l0_ok;
 
     AicaModel();
     ~AicaModel();
@@ -185,6 +193,10 @@ struct AicaModel {
      * or only the FEG moving (PPU stats) */
     void live_stats(uint32_t &live, uint32_t &en, uint32_t &aeg, uint32_t &feg) const;
     void dsp_step(uint64_t smp, uint32_t mdec);   /* the DSP interpreter; public for the SPU recompiler's check */
+    /* 5.13 A2 high voices: n samples slot by slot, the same state as n step() / step_control() calls. render needs
+     * no_dsp; it leaves 4 words per sample in mix (16-byte aligned): the slot sums l, r, then 0, 0. MIXS does not move. */
+    void advance(uint32_t n, bool render, int32_t *mix);
+    void final_mix(int32_t l, int32_t r);   /* run()'s output stage after the slots: EXTS, EFREG, MONO, MVOL, DAC18B */
 
     uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
     uint16_t chr(int ch, uint32_t o) const { return reg[(0x80 * ch + o) >> 2]; }
@@ -208,12 +220,20 @@ struct AicaModel {
     void coll_preview(Frame &F);
     void lfo_calc(int ch);
     void lfo_sync(int ch, uint32_t t);
+    inline void lfo_tick(int ch, uint32_t t);
     bool aeg_frozen(int ch) const;
     bool feg_frozen(int ch) const;
     bool slot_quiet(int ch, bool render) const;
     uint16_t env_skip_mask(int ch) const;
     void slot_control(int ch, SlotFrame &sf);
     void slot_render(int ch, const SlotFrame &sf, uint32_t smp, int32_t &l, int32_t &r, int32_t &d);
+    struct AdvCtx { uint32_t t0, mdec0, n; bool kx; uint32_t l00; };
+    void advance_round(uint32_t n, bool render, int32_t *mix);
+    void slot_run(int ch, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered);
+    void slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered);
+    template <bool R> uint32_t slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix, uint32_t &rendered);
+    uint32_t slot_ctl_fast(int ch, uint32_t i, const AdvCtx &x, uint32_t &rendered);
+    uint32_t lfsr_at(const AdvCtx &x, uint32_t i);
     uint32_t sa_addr(int ch) const;
     int fmt(int ch) const;
 #ifdef CAIQUE_RAM_HOOKS

@@ -6,14 +6,15 @@
 #define AICA_STATE_RUNNING 1
 #define AICA_STATE_EXITED  2
 
-#define AICA_LOG        16384  // log records, a power of two
+#define AICA_LOG        32768  // log records, a power of two (~5 s of game traffic)
 #define AICA_BLOCK      64     // samples per CHECK
 #define AICA_SNAPS      64     // PPU snapshots kept for mismatch reports, a power of two
 #define AICA_BAD_MAX    4      // SPU snapshots of the first mismatches
 #define AICA_SNAP_BYTES 1296   // sizeof(caique::CtlSnap), asserted on the PPU
 
-// 5.13 A2 CD-DA: sectors in flight (a power of two) and s16 per 2352-byte sector, L/R pairs in host order
-#define AICA_CDDA_SLOTS  8
+// 5.13 A2 CD-DA: sectors in flight (a power of two; 16 cap the SPU lag at 9408 samples) and s16 per 2352-byte sector,
+// L/R pairs in host order
+#define AICA_CDDA_SLOTS  16
 #define AICA_CDDA_WORDS  1176
 #define AICA_CDDA_SILENT 0xFFFFFFFFu
 

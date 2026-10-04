@@ -4,11 +4,25 @@
 #include "dsp_asm.h"
 #include "dsp_float.h"
 #include <stdlib.h>
+#ifdef __SPU__
+#include <spu_intrinsics.h>
+#endif
 
 namespace caique {
 
 static inline int32_t sext(int32_t v, int bits) { return (int32_t)((uint32_t)v << (32 - bits)) >> (32 - bits); }
 static inline int32_t clampi(int32_t v, int32_t lo, int32_t hi) { return v < lo ? lo : v > hi ? hi : v; }
+#ifdef __SPU__
+/* The SPU multiplies 16 x 16 bits; GCC sees through the int16_t casts below and emits the 3-multiply 32-bit sequence */
+static inline int32_t mul16(int32_t a, int32_t b) { return si_to_int(si_mpy(si_from_int(a), si_from_int(b))); }
+static inline int32_t mul32x16(int32_t a, int32_t b) {   /* b in 0..0xFFFF: (a_hi * b) << 16 + a_lo * b */
+    const qword x = si_from_int(a), y = si_from_int(b);
+    return si_to_int(si_a(si_mpyh(x, y), si_mpyu(x, y)));
+}
+#else
+static inline int32_t mul16(int32_t a, int32_t b) { return (int32_t)(int16_t)a * (int32_t)(int16_t)b; }   /* both fit */
+static inline int32_t mul32x16(int32_t a, int32_t b) { return a * b; }   /* b in 0..0xFFFF */
+#endif
 
 /* Tables (minicast sgc_if.cpp) */
 static const int32_t adpcm_qs[8] = {0x0e6, 0x0e6, 0x0e6, 0x0e6, 0x133, 0x199, 0x200, 0x266};
@@ -40,6 +54,8 @@ static uint16_t chan_mask(uint32_t o) {
     default: return 0;
     }
 }
+
+const uint32_t AicaModel::ADV_MAX;
 
 AicaModel::AicaModel() { init(); }
 AicaModel::~AicaModel() { free(ram); }
@@ -262,6 +278,22 @@ void AicaModel::lfo_sync(int ch, uint32_t t) {
     if (c.lfo.state != st0) lfo_calc(ch);
 }
 
+/* lfo_sync(ch, t) for the common case of slot_fast(): one tick due, counter in 1..period */
+inline void AicaModel::lfo_tick(int ch, uint32_t t) {
+    Slot &c = slot[ch];
+    const uint32_t lc = c.lfo.counter, sv = c.lfo.start_value;
+    if (__builtin_expect((t - c.lfo_t == 1) & (lc - 1 < sv), 1)) {
+        c.lfo_t = t;
+        const uint8_t st0 = c.lfo.state;
+        uint8_t st = st0;
+        if (lc > 1) c.lfo.counter = lc - 1;
+        else { c.lfo.counter = sv; st++; }
+        if ((c.lfo_r1c >> 15) & 1) st = 0;   /* LFORE */
+        if (st != st0) { c.lfo.state = st; lfo_calc(ch); }
+    } else
+        lfo_sync(ch, t);
+}
+
 void AicaModel::update_lfo(int ch, bool from_write) {
     Slot &c = slot[ch];
     if (from_write) lfo_sync(ch, (uint32_t)samples);   /* the ticks so far ran with the old period and LFORE */
@@ -297,16 +329,17 @@ void AicaModel::slot_regwrite(int ch, uint32_t o) {
     }
 }
 
-static int32_t decode_adpcm(uint32_t sample, int32_t prev, int32_t &quant) {
-    int32_t sign = 1 - 2 * (int32_t)(sample / 8);
-    uint32_t data = sample & 7;
+/* sample is a nibble. Branch-free for the SPU; quant stays in 127..24576, so its product fits a 16-bit multiply. */
+static inline __attribute__((always_inline)) int32_t decode_adpcm(uint32_t sample, int32_t prev, int32_t &quant) {
+    const int32_t q = quant, neg = -(int32_t)((sample >> 3) & 1);
+    const uint32_t data = sample & 7;
     /* Yamaha delta, each term shifted separately (tests/sgc_formats: nibble 6 at step 127 gives 205, not 206) */
-    int32_t rv = (quant >> 3) + ((data & 1) ? quant >> 2 : 0) + ((data & 2) ? quant >> 1 : 0) + ((data & 4) ? quant : 0);
-    if (rv > 0x7FFF) rv = 0x7FFF;
-    rv = sign * rv + prev;
-    quant = (quant * adpcm_qs[data]) >> 8;
-    quant = clampi(quant, 127, 24576);
-    return clampi(rv, -32768, 32767);
+    int32_t rv = (q >> 3) + ((q >> 2) & -(int32_t)(data & 1)) + ((q >> 1) & -(int32_t)((data >> 1) & 1)) + (q & -(int32_t)(data >> 2));
+    rv = rv < 0x7FFF ? rv : 0x7FFF;
+    rv = prev + ((rv ^ neg) - neg);
+    const int32_t nq = mul16(q, adpcm_qs[data]) >> 8;
+    quant = nq < 127 ? 127 : nq > 24576 ? 24576 : nq;
+    return rv < -32768 ? -32768 : rv > 32767 ? 32767 : rv;
 }
 
 void AicaModel::decode_sample(int ch, bool last, uint32_t CA) {
@@ -412,7 +445,7 @@ void AicaModel::stream_step(int ch, Frame *F, uint32_t smp) {
         uint32_t ca_t = CA;
         uint8_t op = OP_DECODE | (ip == 0 ? OP_LAST : 0);
         if (f == 3) ca_t &= ~3u;
-        if (LPSLNK && c.AEG.state == EG_ATTACK && CA >= c.LSA) set_aeg_state(ch, EG_DECAY1);
+        if (LPSLNK && c.AEG.state == EG_ATTACK && CA >= c.LSA) { set_aeg_state(ch, EG_DECAY1); c.env_skip = 0; }
         /* Loop end, armed once CA reached LSA (tests/sgc_loop): CA >= LEA -> CA -= LEA - LSA (16-bit).
          * LSA == LEA plays through; LEA < LSA jumps forward and triggers at LEA after the 0xFFFF wrap. */
         bool armed = c.in_loop;
@@ -428,6 +461,7 @@ void AicaModel::stream_step(int ch, Frame *F, uint32_t smp) {
                 c.CA = (c.CA + 1) & 0xFFFF;   /* the stepped CA, not wrapped */
                 c.enabled = false;
                 c.ca_clr = true;
+                c.env_skip = 0;
                 break;
             }
         }
@@ -497,13 +531,13 @@ bool AicaModel::slot_quiet(int ch, bool render) const {
 /* Clocks a slow rate cannot step on: (eg_cnt - 1) & mask set makes eg_increment 0. R >= 44 can step on any clock */
 static inline uint32_t eg_skip_mask(uint32_t R) { return R < 44 ? (1u << (11 - (R >> 2))) - 1 : 0; }
 
-/* Idle slot (no fetch, no flag) with a moving envelope: a clock with (eg_cnt - 1) & mask set leaves it unchanged.
- * Only clocks move such a slot; a write or a key event clears the mask. 0 = visit every clock. */
+/* No key or stop flag: a clock with (eg_cnt - 1) & mask set moves neither envelope (0 = every clock). Writes, key
+ * events, a one-shot end and an LPSLNK attack end (the only fetch effect) clear the mask. */
 uint16_t AicaModel::env_skip_mask(int ch) const {
     const Slot &c = slot[ch];
-    if (c.enabled || c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) return 0;
+    if (c.keyed_fetch || c.ca_clr || c.keyed || c.keyed_off || c.stop_in) return 0;
     const bool af = aeg_frozen(ch), ff = feg_frozen(ch);
-    if (af && ff) return 0;   /* frozen but not yet quiet (render conditions): check again on the next clock */
+    if (af && ff) return c.enabled ? 0x3FFF : 0;   /* idle: not yet quiet (render conditions), check again next clock */
     uint32_t m = 0x3FFF;
     if (!af) {
         if (c.AEG.state == EG_DECAY1 && (c.AEG.a >> 5) == ((chr(ch, 0x14) >> 5) & 0x1F)) return 0;   /* D1 -> D2 on any clock */
@@ -620,24 +654,56 @@ static const uint8_t lpf_q128[32] = {192, 176, 160, 144, 128, 120, 112, 104, 96,
                                      48, 44, 40, 36, 32, 30, 28, 26, 24, 22, 20, 18, 16, 15, 14, 13};
 static inline int64_t ceil_shr(int64_t v, int sh) { return -((-v) >> sh); }
 
+/* lpf_step in 32 bits (the SPU has no 64-bit multiply); exact when |L|, |B| < 2^28 and |x8| < 2^20, else false.
+ * Products are split at 2^9 (sh >= 9): floor(k*h / 2^sh) = floor(floor(k*h / 512) / 2^(sh-9)), all terms under 2^29. */
+static inline void lpf_ksh(uint32_t v, int32_t &k, int &sh) {   /* cutoff multiplier and shift (less 9) of FEG value v */
+    const int32_t m = -(int32_t)(v >= 0x1FFE);
+    k = (512 & m) | ((256 + (int32_t)((v >> 1) & 0xFF)) & ~m);
+    sh = 15 - (int)(v >> 9);
+}
+static inline bool lpf32k(int32_t &L, int32_t &B, int32_t k, int sh, int32_t qd, int32_t x8) {
+    if (__builtin_expect((((uint32_t)L + (1u << 28)) | ((uint32_t)B + (1u << 28))) >= (1u << 29), 0)) return false;
+    const int32_t d1 = mul32x16(B >> 8, qd) + ((mul16(qd, B & 0xFF) + 255) >> 8);   /* ceil(qd * B / 256) */
+    int32_t high = x8 - L - 2 * d1;
+    high = high < -8388608 ? -8388608 : high > 8388607 ? 8388607 : high;
+    const int32_t band = B + ((mul16(k, high >> 9) + (mul16(k, high & 511) >> 9)) >> sh);
+    const int32_t nb = -band;   /* ceil(k * band / 2^sh) = -floor(k * -band / 2^sh) */
+    L = L - ((mul32x16(nb >> 9, k) + (mul16(k, nb & 511) >> 9)) >> sh);
+    B = band;
+    return true;
+}
+static inline bool lpf32(int32_t &L, int32_t &B, uint32_t v, uint32_t q, int32_t x8) {
+    int32_t k;
+    int sh;
+    lpf_ksh(v, k, sh);
+    return lpf32k(L, B, k, sh, lpf_q128[q], x8);
+}
+
+__attribute__((noinline)) static void lpf64(int32_t &L, int32_t &B, uint32_t v, uint32_t q, int32_t x8) {
+    int64_t k = v >= 0x1FFE ? 512 : 256 + ((v >> 1) & 0xFF);
+    int sh = 24 - (int)(v >> 9);
+    int64_t damping = 2 * ceil_shr((int64_t)lpf_q128[q] * B, 8);
+    /* the high-pass difference saturates to signed 24 bits BEFORE the cutoff multiply (tests/filt_overflow) */
+    int64_t high = (int64_t)x8 - L - damping;
+    high = high < -8388608 ? -8388608 : high > 8388607 ? 8388607 : high;
+    int64_t band = B + ((k * high) >> sh);
+    int64_t low = L + ceil_shr(k * band, sh);
+    B = (int32_t)band;
+    L = (int32_t)low;
+}
+
 int32_t AicaModel::lpf_step(int ch, uint32_t v, int32_t x8) {
     Slot &c = slot[ch];
     const uint8_t q = chr(ch, 0x28) & 0x1F;
     if (x8 == 0 && c.lpf_fix && c.fix_v == v && c.fix_q == q) return (int32_t)-(int64_t)c.lpf_low;
-    int64_t k = v >= 0x1FFE ? 512 : 256 + ((v >> 1) & 0xFF);
-    int sh = 24 - (int)(v >> 9);
-    int64_t damping = 2 * ceil_shr((int64_t)lpf_q128[q] * c.lpf_band, 8);
-    /* the high-pass difference saturates to signed 24 bits BEFORE the cutoff multiply (tests/filt_overflow) */
-    int64_t high = (int64_t)x8 - c.lpf_low - damping;
-    high = high < -8388608 ? -8388608 : high > 8388607 ? 8388607 : high;
-    int64_t band = c.lpf_band + ((k * high) >> sh);
-    int64_t low = c.lpf_low + ceil_shr(k * band, sh);
-    c.lpf_fix = x8 == 0 && (int32_t)band == c.lpf_band && (int32_t)low == c.lpf_low;
+    int32_t L = c.lpf_low, B = c.lpf_band;
+    if (!lpf32(L, B, v, q, x8)) lpf64(L, B, v, q, x8);
+    c.lpf_fix = x8 == 0 && B == c.lpf_band && L == c.lpf_low;
     c.fix_v = (uint16_t)v;
     c.fix_q = q;
-    c.lpf_band = (int32_t)band;
-    c.lpf_low = (int32_t)low;
-    return (int32_t)-low;
+    c.lpf_band = B;
+    c.lpf_low = L;
+    return (int32_t)(0u - (uint32_t)L);
 }
 
 /* V = floor(sample * (127 - a[5:0]) / 2^(7 + (a >> 6))), a in 0.09375 dB (tests/sgc_level). AEG + ALFO sum unmeasured.
@@ -645,7 +711,7 @@ int32_t AicaModel::lpf_step(int ch, uint32_t v, int32_t x8) {
 static inline int32_t att_apply(int32_t sample, uint32_t a) {
     if (a >= 0x3FF) a = 0x3FF;
     int32_t M = 127 - (int32_t)(a & 63), k = (int32_t)(a >> 6);
-    return (sample * M) >> (7 + k);
+    return mul32x16(sample, M) >> (7 + k);
 }
 /* IMXL (DISDL assumed the same): n = 15 - L, x 2^-(n>>1) x (n odd ? 3/4 : 1), one floor; L 0 is off */
 static inline int32_t send_level(int32_t v16, uint32_t L) {   /* every input is under 2^27: 32 bits suffice */
@@ -972,6 +1038,439 @@ void AicaModel::run(bool render) {
     CAIQUE_PROF_AT(5, 0);
 }
 
+/* 5.13 A2 high voices: a slot's sample needs only its own state plus per-sample globals (LFSR, envelope clock, KYONEX)
+ * and run()'s cross-slot parts are sums, counts or no-ops, so advance() runs each slot through a whole round. */
+#if CAIQUE_MUTE != 0 || CAIQUE_STOP_LAG != 1
+#error "advance() assumes the measured stop rule (CAIQUE_MUTE 0, CAIQUE_STOP_LAG 1)"
+#endif
+
+static inline int ctz64(uint64_t m) {   /* clz-based: the SPU has no ctz and __builtin_ctzll is a library call */
+    const uint32_t lo = (uint32_t)m, hi = (uint32_t)(m >> 32);
+    return lo ? 31 - __builtin_clz(lo & (0u - lo)) : 63 - __builtin_clz(hi & (0u - hi));
+}
+
+/* One sample of LFSR steps (64) as a GF(2) map, a nibble at a time: t[k][v] = the image of v << 4k. Built at compile
+ * time, so the SPU needs no constructor. */
+struct Lf64Tab { uint32_t t[5][16]; };
+static constexpr Lf64Tab lf64_make() {
+    Lf64Tab r{};
+    for (int k = 0; k < 5; k++)
+        for (uint32_t v = 0; v < 16; v++) {
+            uint32_t l = (v << (4 * k)) & 0x1FFFF;
+            for (int s = 0; s < 64; s++) l = (l >> 1) | ((((l >> 0) ^ (l >> 5)) & 1) << 16);
+            r.t[k][v] = l;
+        }
+    return r;
+}
+static constexpr Lf64Tab LF64 = lf64_make();
+static inline uint32_t lfsr_adv64(uint32_t l) {
+    return LF64.t[0][l & 15] ^ LF64.t[1][(l >> 4) & 15] ^ LF64.t[2][(l >> 8) & 15] ^ LF64.t[3][(l >> 12) & 15] ^
+           LF64.t[4][(l >> 16) & 1];
+}
+
+uint32_t AicaModel::lfsr_at(const AdvCtx &x, uint32_t i) {
+    if (!adv_l0_ok) {
+        uint32_t l = x.l00;
+        for (uint32_t k = 0; k < x.n; k++) { adv_l0[k] = l; l = lfsr_adv64(l); }
+        adv_l0_ok = true;
+    }
+    return adv_l0[i];
+}
+
+void AicaModel::final_mix(int32_t mixl, int32_t mixr) {
+    for (int i = 0; i < 2; i++) {
+        uint16_t v = r(0x2040 + 4 * i);
+        volpan(EXTS[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
+    }
+    for (int i = 0; i < 16 && !no_dsp; i++) {
+        uint16_t v = r(0x2000 + 4 * i);
+        volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
+    }
+    uint16_t c0 = r(0x2800);
+    if (c0 & 0x8000) { mixl += mixr; mixr = mixl; }
+    mixl = send_level(mixl, c0 & 0xF);
+    mixr = send_level(mixr, c0 & 0xF);
+    if (c0 & 0x100) { mixl >>= 2; mixr >>= 2; }
+    outL = (int16_t)clampi(mixl, -32768, 32767);
+    outR = (int16_t)clampi(mixr, -32768, 32767);
+}
+
+void AicaModel::advance(uint32_t n, bool render, int32_t *mix) {
+    while (n) {
+        const uint32_t k = n < ADV_MAX ? n : ADV_MAX;
+        advance_round(k, render, mix);
+        if (render) mix += 4 * k;
+        n -= k;
+    }
+}
+
+void AicaModel::advance_round(uint32_t n, bool render, int32_t *mix) {
+    AdvCtx x;
+    x.t0 = (uint32_t)samples;
+    x.mdec0 = MDEC_CT;
+    x.n = n;
+    x.kx = kyonex_pending;   /* writes come between calls, so KYONEX can only act on the first sample */
+    x.l00 = lfsr;
+    kyonex_pending = false;
+    adv_l0_ok = false;
+    uint32_t rendered = 0;
+    if (render) { CAIQUE_PROF_AT(0, 0); memset(mix, 0, n * 4 * sizeof(int32_t)); }
+    {   /* run()'s timers in closed form: timer t counts on samples i == (MDEC_CT - tim_phase) mod 2^pre; the bit on a wrap */
+        uint16_t set = 0x400;
+        for (int t = 0; t < 3; t++) {
+            const uint32_t d0 = (x.mdec0 - tim_phase) & ((1u << irq.pre[t]) - 1);
+            if (d0 < n) {
+                const uint32_t ticks = 1 + ((n - 1 - d0) >> irq.pre[t]);
+                if (irq.cnt[t] + ticks >= 256) set |= (uint16_t)(0x40 << t);
+                irq.cnt[t] = (uint8_t)(irq.cnt[t] + ticks);
+            }
+        }
+        irq.scipd |= set;
+        irq.mcipd |= set;
+    }
+    /* a slot outside this set has no flag and nothing to fetch, render or clock until a write or a key event */
+    const uint64_t todo = x.kx ? ~0ull : render ? ~(quiet & rsilent) : (fetching | ~quiet);
+    bool keys = false;
+    for (uint64_t m = todo; m; m &= m - 1) {
+        const int ch = ctz64(m);
+        slot_run(ch, x, render, mix, rendered);
+        keys |= slot[ch].keyed || slot[ch].keyed_off;
+    }
+    keys_live = keys;
+    const uint32_t md = (x.mdec0 - (n - 1) - 2) & 0xFFFF;   /* the last sample's envelope counter */
+    eg_cnt = (eg_K - (md >> 1)) & 0x3FFF;
+    MDEC_CT = (x.mdec0 - n) & 0xFFFF;
+    samples += n;
+    uint32_t l = x.l00;
+    for (uint32_t i = 0; i < n; i++) l = lfsr_adv64(l);
+    lfsr = l;
+    if (render) CAIQUE_PROF_AT(1, rendered);
+}
+
+void AicaModel::slot_run(int ch, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered) {
+    Slot &c = slot[ch];
+    const uint64_t bit = 1ull << ch;
+    const uint16_t r0 = chr(ch, 0x00), r1c = chr(ch, 0x1C);
+    /* the LFSR users go the generic way: noise, noise PLFO (PLFOWS 3, PLFOS > 0), noise ALFO (ALFOWS 3, ALFOS > 0) */
+    const bool lfsr_use = ((r0 >> 10) & 1) || (r1c & 0x3E0) > 0x300 || (render && ((r1c >> 3) & 3) == 3 && (r1c & 7));
+    for (uint32_t i = 0; i < x.n;) {
+        const bool kx0 = x.kx && i == 0;
+        if (!kx0 && (render ? (quiet & rsilent & bit) != 0 : (quiet & bit) != 0)) break;   /* nothing moves until a write */
+        if (!kx0 && !lfsr_use && !(c.keyed_fetch | c.ca_clr | c.keyed | c.keyed_off) && !c.stop_in)
+#ifdef CAIQUE_ADV_RENDER_ONLY   /* SPU: advance() always renders, the control twin runs on the PPU (saves LS) */
+            i = slot_fast<true>(ch, i, x, mix, rendered);
+#else
+            i = render ? slot_fast<true>(ch, i, x, mix, rendered) : slot_ctl_fast(ch, i, x, rendered);
+#endif
+        else
+            slot_sample(ch, i++, x, render, mix, rendered);
+    }
+    if (!render && !(c.ca_clr | c.enabled | c.keyed_fetch)) fetching &= ~bit;
+}
+
+/* One sample of one slot in run()'s order: walk + output, a pending stop, key events and the envelope */
+void AicaModel::slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, int32_t *mix, uint32_t &rendered) {
+    Slot &c = slot[ch];
+    const uint64_t bit = 1ull << ch;
+    const uint32_t t = x.t0 + i, mdec = (x.mdec0 - i) & 0xFFFF;
+    const bool kx = x.kx && i == 0;
+    if (render ? !(quiet & rsilent & bit) : (c.ca_clr | c.enabled | c.keyed_fetch)) {
+        const uint16_t r1c = chr(ch, 0x1C);
+        if (((chr(ch, 0x00) >> 10) & 1) || (r1c & 0x3E0) > 0x300 || ((r1c >> 3) & 3) == 3)
+            lfsr = lfsr_adv(lfsr_at(x, i), ch);   /* only noise reads it; slot_control steps it once more */
+        if (c.ca_clr) { c.ca_clr = false; c.CA = 0; }
+        const bool en = c.enabled, keyed = c.keyed_fetch;
+        if (!render) {
+            if (en && !keyed) stream_step(ch, 0, t);
+            c.keyed_fetch = false;
+        } else {
+            Frame &F = fr;
+            SlotFrame sf;
+            sf.en_fetch = en;
+            sf.keyed = keyed;
+            sf.ca_old = c.CA;
+            F.nops = 0;
+            if (en && !keyed) stream_step(ch, &F, t);
+            else if (keyed) {
+                F.ops[0].ca = 0;
+                F.ops[0].flags = OP_RESET | (en ? OP_DECODE | OP_LAST : 0);
+                F.nops = 1;
+            }
+            c.keyed_fetch = false;
+            sf.ca = c.CA;
+            slot_control(ch, sf);
+            for (uint32_t k = 0; k < F.nops; k++) {
+                const RenderOp &o = F.ops[k];
+                if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
+                if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
+            }
+            const uint16_t r28 = chr(ch, 0x28);
+            if (!sf.en_out && !((chr(ch, 0x00) >> 10) & 1) &&
+                (((r28 >> 5) & 1) || (c.lpf_fix && c.lpf_low == 0 && c.fix_v == sf.fv && c.fix_q == (r28 & 0x1F)))) {
+                rsilent |= bit;
+            } else {
+                rsilent &= ~bit;
+                rendered++;
+                int32_t l, rr, d;
+                slot_render(ch, sf, t, l, rr, d);
+                mix[4 * i] += l;
+                mix[4 * i + 1] += rr;
+            }
+        }
+    }
+    if (c.stop_in && --c.stop_in == 0) { slot_stop(c); stops_pending--; }
+    /* a quiet slot is clocked only on KYONEX samples, where its clocks are no-ops unless the key event moved it */
+    const bool q0 = (quiet & bit) != 0;
+    if (c.keyed || c.keyed_off) c.keyed = c.keyed_off = false;   /* each lasts one sample */
+    if (kx) {
+        const bool on = (chr(ch, 0x00) & 0x4000) != 0;
+        if (on && c.AEG.state == EG_RELEASE) { key_on(ch); c.keyed = true; c.keyed_fetch = true; }
+        if (!on && c.AEG.state != EG_RELEASE) { key_off(ch); c.keyed_off = true; }
+    }
+    const uint32_t md = (mdec - 2) & 0xFFFF;
+    if ((md & 1) == eg_par && (kx || !q0)) {
+        eg_cnt = (eg_K - (md >> 1)) & 0x3FFF;
+        if (((eg_cnt - 1) & c.env_skip) == 0) {
+            if (!(c.AEG.off && c.AEG.a >= 0x3FF)) aeg_clock(ch);
+            if (c.FEG.dir || c.FEG.passed || c.keyed_off) feg_clock(ch);
+            if (slot_quiet(ch, render)) quiet |= bit;
+            else c.env_skip = env_skip_mask(ch);
+        }
+    }
+    if (c.keyed || c.keyed_off) quiet &= ~bit;
+}
+
+#ifdef CAIQUE_RAM_HOOKS
+#define CAIQUE_LINE(a) caique_line(a)
+#else
+#define CAIQUE_LINE(a) (ram + ((a) & ~127u))
+#endif
+
+/* send_level() with the level taken apart once per slot, branch-free per sample (SPU: no branch prediction) */
+struct SendLv { int32_t odd, on; uint32_t sh; };
+static inline SendLv send_lv(uint32_t L) {
+    const uint32_t n = 15 - L;
+    SendLv s;
+    s.odd = (n & 1) ? -1 : 0;
+    s.on = L ? -1 : 0;
+    s.sh = 2 + (n >> 1);
+    return s;
+}
+static inline int32_t send_apply(int32_t v, const SendLv &s) { return ((v * 4 - (v & s.odd)) >> s.sh) & s.on; }
+
+typedef int32_t mix4 __attribute__((vector_size(16), may_alias));
+
+/* slot_sample() over [i, n) for a slot with no key/stop flag, noise or KYONEX, state in locals (R: render into mix).
+ * Returns after a one-shot end, an armed stop, or once the slot is quiet (render: and render-silent). */
+template <bool R>
+uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix, uint32_t &rendered) {
+    Slot &c = slot[ch];
+    const uint64_t bit = 1ull << ch;
+    const uint16_t r0 = chr(ch, 0x00), r14 = chr(ch, 0x14), r18 = chr(ch, 0x18), r1c = chr(ch, 0x1C);
+    const int f = (r0 >> 7) & 3;
+    const bool LPCTL = (r0 >> 9) & 1, LPSLNK = (r14 >> 14) & 1;
+    const uint32_t LSA = c.LSA, LEA = c.LEA, sa = sa_addr(ch), plfos = (r1c >> 5) & 7;
+    const int32_t m0 = 1024 + (int32_t)(r18 & 0x3FF);
+    const int osh = (((r18 >> 11) & 8) ? (int)((r18 >> 11) & 0xF) - 16 : (int)((r18 >> 11) & 0xF)) + 4;
+    const uint16_t r24 = R ? chr(ch, 0x24) : 0, r28 = R ? chr(ch, 0x28) : 0;
+    const bool lpoff = (r28 >> 5) & 1, voff = (r28 >> 6) & 1;
+    const uint32_t q = r28 & 0x1F, tl4 = ((r28 >> 8) & 0xFF) * 4, alfos = r1c & 7;
+    const SendLv dlv = send_lv((r24 >> 8) & 0xF), slv = send_lv(15 - (r24 & 0xF));   /* DIPAN 0xF: side level 0 */
+    const int32_t pm = (r24 & 0x10) ? -1 : 0;   /* direct to the left, side to the right */
+    bool en = c.enabled, in_loop = c.in_loop, fix = c.lpf_fix, out = false;
+    bool qb = (quiet & bit) != 0, rs = (rsilent & bit) != 0;
+    uint32_t CA = c.CA, step = c.step, fix_v = c.fix_v, fix_q = c.fix_q, vo = c.FEG.vo, rn = 0;
+    int32_t s0 = c.s0, s1 = c.s1, quant = c.adpcm_quant, L = c.lpf_low, B = c.lpf_band;
+    const int32_t qd = lpf_q128[q];
+    uint32_t kv = 0x10000;   /* the FEG value kk, ksh were made for */
+    int32_t kk = 0;
+    int ksh = 0;
+    /* loop invariants, and the envelope fields only a clock or an LPSLNK attack end changes */
+    const uint32_t n = x.n, t0 = x.t0, mdec0 = x.mdec0, eK = eg_K, ep = eg_par, urate = c.update_rate;
+    const bool lfo_on = plfos || (R && alfos);   /* PLFO, or ALFO when rendering (never the noise waveforms here) */
+    uint32_t aeg_a = c.AEG.a, fev = c.FEG.v, es = c.env_skip;
+    EgState ast = c.AEG.state;
+    uint32_t lb = 1;   /* base of the wave RAM line in lp; 1 = none */
+    const uint8_t *lp = 0;
+    auto rd8 = [&](uint32_t a) -> uint32_t {
+        if (__builtin_expect((a & ~127u) != lb, 0)) { lp = CAIQUE_LINE(a); lb = a & ~127u; }
+        return lp[(a & 127) ^ CAIQUE_SWZ];
+    };
+    auto decode = [&](uint32_t ca, bool last) {   /* decode_sample() for formats 0..3 */
+        if (__builtin_expect(f >= 2, 1)) {
+            const uint32_t sf = (ca & 1) * 4;
+            int32_t qq = quant;
+            s0 = decode_adpcm((rd8((sa + (ca >> 1)) & (RAM_SIZE - 1)) >> sf) & 0xF, s0, qq);
+            quant = qq;
+            /* the next-sample preview; s1 is 0 after a step that is not the last (decoded anyway: no branch) */
+            s1 = decode_adpcm((rd8((sa + ((ca + 1) >> 1)) & (RAM_SIZE - 1)) >> (4 - sf)) & 0xF, s0, qq) & -(int32_t)last;
+        } else if (f == 0) {
+            const uint32_t a0 = (sa + 2 * ca) & (RAM_SIZE - 2), a1 = (sa + 2 * ca + 2) & (RAM_SIZE - 2);
+            s0 = (int16_t)(rd8(a0) | rd8(a0 + 1) << 8);
+            s1 = (int16_t)(rd8(a1) | rd8(a1 + 1) << 8);
+        } else {
+            s0 = (int8_t)rd8((sa + ca) & (RAM_SIZE - 1)) * 256;
+            s1 = (int8_t)rd8((sa + ca + 1) & (RAM_SIZE - 1)) * 256;
+        }
+    };
+    for (; i < n && !out; i++) {
+        const uint32_t t = t0 + i;
+        if (__builtin_expect(lfo_on, 0)) lfo_tick(ch, t);   /* the LFO before this sample's tick, for PLFO and ALFO */
+        if (__builtin_expect(en, 1)) {   /* stream_step() */
+            uint32_t inc = urate;
+            if (__builtin_expect(plfos != 0, 0)) {   /* PLFOWS 0..2 here */
+                const int32_t w = (int8_t)c.lfo.plfo, mod = (w & ~1) >> (7 - plfos), m = m0 + ((m0 * mod) >> 10);
+                inc = (uint32_t)(osh >= 0 ? m << osh : m >> -osh);
+            }
+            step += inc;
+            uint32_t ip = step >> 14;
+            step &= 0x3FFF;
+            if (__builtin_expect(ip != 0, 1)) {
+                /* the first CA where the loop logic acts (<= 0xFFFF: no wrap); selects, no branches */
+                const int32_t il = -(int32_t)in_loop;
+                uint32_t ev = (LEA & il) | (LSA & ~il);
+                const int32_t ls = -(int32_t)(LPSLNK & (ast == EG_ATTACK) & (LSA < ev));
+                ev = (LSA & ls) | (ev & ~ls);
+                const bool clean = CA + ip < ev;
+                /* PCM and the control pass only need the last position */
+                const uint32_t sk = (ip - 1) & -(uint32_t)(clean & !(R && f >= 2));
+                CA += sk;
+                ip -= sk;
+                do {
+                    ip--;
+                    uint32_t ca = (CA + 1) & 0xFFFF;
+                    bool rst = false;
+                    if (__builtin_expect(!clean, 0)) {
+                        const uint32_t ca_t = f == 3 ? ca & ~3u : ca;
+                        if (LPSLNK && ast == EG_ATTACK && ca >= LSA) { ast = c.AEG.state = EG_DECAY1; es = c.env_skip = 0; }
+                        const bool armed = in_loop;
+                        if (ca >= LSA) in_loop = true;
+                        if (ca_t >= LEA && armed) {
+                            c.looped = true;
+                            ca = (uint32_t)((int32_t)ca - ((int32_t)LEA - (int32_t)LSA)) & 0xFFFF;
+                            if (LPCTL) rst = f == 2;
+                            else {   /* one-shot end: CA reads LEA now, 0 from the next sample */
+                                CA = (CA + 1) & 0xFFFF;
+                                en = c.enabled = false;
+                                c.ca_clr = true;
+                                es = c.env_skip = 0;
+                                out = true;
+                                break;
+                            }
+                        }
+                    }
+                    CA = ca;
+                    if (R && __builtin_expect((f >= 2) | (ip == 0), 1)) {
+                        if (__builtin_expect(rst, 0)) { quant = 127; s0 = 0; }
+                        decode(CA, ip == 0);
+                    }
+                } while (__builtin_expect(ip != 0, 0));
+            }
+        }
+        if (R) {   /* slot_control() + slot_render(), no noise, no DSP send */
+            const uint32_t fv = fev;
+            vo = fv;
+            rs = (!en) & (lpoff | (fix & (L == 0) & (fix_v == fv) & (fix_q == q)));
+            if (__builtin_expect(!rs, 1)) {
+                rn++;
+                int32_t s16 = en ? s0 * 16 + (mul32x16(s1 - s0, (step >> 8) & 63) >> 2) : 0;
+                if (__builtin_expect(!lpoff, 1)) {
+                    const int32_t x8 = s16 >> 1;
+                    if (__builtin_expect(!((x8 == 0) & fix & (fix_v == fv) & (fix_q == q)), 1)) {
+                        const int32_t L0 = L, B0 = B;
+                        if (__builtin_expect(fv != kv, 0)) { lpf_ksh(fv, kk, ksh); kv = fv; }
+                        if (!lpf32k(L, B, kk, ksh, qd, x8)) lpf64(L, B, fv, q, x8);
+                        fix = (x8 == 0) & (B == B0) & (L == L0);
+                        fix_v = fv;
+                        fix_q = q;
+                    }
+                    s16 = clampi((int32_t)((0u - (uint32_t)L) << 1), -524288, 524287);
+                }
+                int32_t V16 = s16;
+                if (__builtin_expect(!voff, 1)) {
+                    uint32_t alfo = 0;
+                    if (__builtin_expect(alfos != 0, 0))   /* ALFOWS 0..2 here; lfo_tick() synced it */
+                        alfo = (c.lfo.alfo_w & 0xFEu) >> (7 - alfos);
+                    V16 = att_apply(s16, tl4 + aeg_a + alfo) & ~15;
+                }
+                const int32_t dir = send_apply(V16 >> 4, dlv), side = send_apply(dir, slv);
+                const mix4 lr = {(dir & pm) | (side & ~pm), (side & pm) | (dir & ~pm), 0, 0};
+                *(mix4 *)(mix + 4 * i) += lr;
+            }
+        }
+        const uint32_t md = (mdec0 - i - 2) & 0xFFFF;   /* the envelope for the next sample */
+        const uint32_t ec = (eK - (md >> 1)) & 0x3FFF;
+        if (__builtin_expect(((md & 1) == ep) & !qb & (((ec - 1) & es) == 0), 0)) {
+            eg_cnt = ec;
+            if (!(c.AEG.off && c.AEG.a >= 0x3FF)) aeg_clock(ch);
+            if (c.FEG.dir || c.FEG.passed) feg_clock(ch);
+            if (R) c.FEG.vo = (uint16_t)vo;   /* slot_quiet() reads it */
+            if (slot_quiet(ch, R)) { quiet |= bit; qb = true; }
+            else c.env_skip = env_skip_mask(ch);
+            if (c.stop_in) out = true;
+            aeg_a = c.AEG.a;
+            fev = c.FEG.v;
+            ast = c.AEG.state;
+            es = c.env_skip;
+        }
+        if (__builtin_expect(qb & (!R | rs), 0)) out = true;   /* quiet (render: and silent): static */
+    }
+    c.CA = CA;
+    c.step = step;
+    c.in_loop = in_loop;
+    if (R) {
+        rsilent = rs ? rsilent | bit : rsilent & ~bit;
+        rendered += rn;
+        c.s0 = s0;
+        c.s1 = s1;
+        c.adpcm_quant = quant;
+        c.lpf_low = L;
+        c.lpf_band = B;
+        c.lpf_fix = fix;
+        c.fix_v = (uint16_t)fix_v;
+        c.fix_q = (uint8_t)fix_q;
+        c.FEG.vo = (uint16_t)vo;
+    }
+    return i;
+}
+
+#ifndef CAIQUE_ADV_RENDER_ONLY
+/* slot_fast<false> without PLFO: the walk in closed form to the next clock the env_skip mask (2^m - 1) lets through,
+ * as eg_cnt advances 1 per clock. A loop event in reach (LSA, LEA, LPSLNK) leaves the round to slot_fast<false>. */
+uint32_t AicaModel::slot_ctl_fast(int ch, uint32_t i, const AdvCtx &x, uint32_t &rendered) {
+    Slot &c = slot[ch];
+    const uint64_t bit = 1ull << ch;
+    if ((chr(ch, 0x1C) >> 5) & 7) return slot_fast<false>(ch, i, x, 0, rendered);   /* PLFO: the step changes per sample */
+    const bool LPSLNK = (chr(ch, 0x14) >> 14) & 1;
+    const uint32_t n = x.n;
+    while (i < n) {
+        if (quiet & bit) return i;
+        /* the first sample j >= i whose envelope pass clocks: parity of MDEC_CT, then eg_cnt = 1 mod (env_skip + 1) */
+        const uint32_t j0 = i + ((x.mdec0 + eg_par - i) & 1);
+        const uint32_t ec0 = (eg_K - (((x.mdec0 - j0 - 2) & 0xFFFF) >> 1)) & 0x3FFF;
+        const uint32_t j = j0 + 2 * ((1u - ec0) & c.env_skip);
+        const uint32_t last = j < n ? j : n - 1;   /* walk samples i..last */
+        if (c.enabled) {
+            const uint32_t tot = c.step + (last - i + 1) * c.update_rate;   /* < 2^29: 64 x (2047 << 11) + 2^14 */
+            uint32_t ev = c.in_loop ? c.LEA : c.LSA;
+            if (LPSLNK && c.AEG.state == EG_ATTACK && c.LSA < ev) ev = c.LSA;
+            if (c.CA + (tot >> 14) >= ev) return slot_fast<false>(ch, i, x, 0, rendered);
+            c.CA += tot >> 14;
+            c.step = tot & 0x3FFF;
+        }
+        if (j >= n) return n;
+        eg_cnt = (eg_K - (((x.mdec0 - j - 2) & 0xFFFF) >> 1)) & 0x3FFF;   /* sample j's envelope pass */
+        if (!(c.AEG.off && c.AEG.a >= 0x3FF)) aeg_clock(ch);
+        if (c.FEG.dir || c.FEG.passed) feg_clock(ch);
+        if (slot_quiet(ch, false)) quiet |= bit;
+        else c.env_skip = env_skip_mask(ch);
+        i = j + 1;
+        if (c.stop_in) return i;   /* the stop is the generic path's */
+    }
+    return i;
+}
+#endif
+
 void AicaModel::snap(CtlSnap &o) {
     for (int ch = 0; ch < 64; ch++) lfo_sync(ch, (uint32_t)samples);
     o.sample = (uint32_t)samples;
@@ -1105,6 +1604,7 @@ uint32_t AicaModel::read(uint32_t off) {
     }
     if (off >= 0x4580 && off < 0x45C0) return EFREG[(off - 0x4580) >> 2] & 0xFFFF;
     if (off >= 0x45C0 && off < 0x45C8) return 0;
+    if (off >= 0x4600) return 0;   /* never written */
     return reg[off >> 2];
 }
 

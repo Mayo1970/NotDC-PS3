@@ -54,6 +54,7 @@ static u32 s_cdda_rec[AICA_CDDA_SLOTS], s_cdda_n;   // per slot: 1 + the record 
 // The PPU never runs the render pass; these only satisfy the link (and read aica_ram if it ever does).
 uint8_t caique_rd8(uint32_t a) { return s_aram[a ^ 3]; }
 uint16_t caique_rd16(uint32_t a) { return (uint16_t)(s_aram[a ^ 3] | (s_aram[(a + 1) ^ 3] << 8)); }
+const uint8_t* caique_line(uint32_t a) { return s_aram + (a & ~127u); }
 uint16_t caique_dsp_rd16(uint32_t a, uint32_t, uint32_t) { return caique_rd16(a); }
 void caique_dsp_wr16(uint32_t, uint32_t, uint32_t, uint16_t) {}
 
@@ -168,12 +169,11 @@ static void push(u8 op, u16 off, u32 val, u32 hash)
 		publish();
 }
 
-// Batched control pass: the samples since the last write or CHECK run back to back, with the state hot in cache.
+// Batched control pass: the samples since the last write or CHECK, slot by slot (5.13 A2 high voices).
 static void catch_up()
 {
 	const u32 n = s_now - (u32)s_m->samples;
-	for (u32 i = 0; i < n; i++)
-		s_m->step_control();
+	s_m->advance(n, false, 0);
 	s_ctl_samples += n;
 }
 

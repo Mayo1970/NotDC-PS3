@@ -67,6 +67,8 @@ static uint32_t s_cdda_i = AICA_CDDA_WORDS, s_cdda_n;
 
 typedef char snap_size_check[sizeof(caique::CtlSnap) == AICA_SNAP_BYTES ? 1 : -1];
 
+static int32_t s_mix[4 * caique::AicaModel::ADV_MAX] __attribute__((aligned(16)));   // slot sums l, r per sample
+
 static void to(uint32_t sample)
 {
 	if (!s_snd)
@@ -75,18 +77,26 @@ static void to(uint32_t sample)
 			M->step();
 		return;
 	}
-	while ((int32_t)(sample - (uint32_t)M->samples) > 0)
+	// 5.13 A2 high voices: the slots run slot by slot, then the output stage per sample
+	for (uint32_t n; (int32_t)(n = sample - (uint32_t)M->samples) > 0;)
 	{
-		if (s_cdda_i < AICA_CDDA_WORDS)
+		if (n > caique::AicaModel::ADV_MAX)
+			n = caique::AicaModel::ADV_MAX;
+		M->advance(n, true, s_mix);
+		for (uint32_t i = 0; i < n; i++)
 		{
-			M->EXTS[0] = s_cdda[s_cdda_i];
-			M->EXTS[1] = s_cdda[s_cdda_i + 1];
-			s_cdda_i += 2;
+			if (s_cdda_i < AICA_CDDA_WORDS)
+			{
+				M->EXTS[0] = s_cdda[s_cdda_i];
+				M->EXTS[1] = s_cdda[s_cdda_i + 1];
+				s_cdda_i += 2;
+			}
+			else
+				M->EXTS[0] = M->EXTS[1] = 0;
+			M->final_mix(s_mix[4 * i], s_mix[4 * i + 1]);
+			snd_sample(M->outL, M->outR);
 		}
-		else
-			M->EXTS[0] = M->EXTS[1] = 0;
-		M->step();
-		snd_sample(M->outL, M->outR);
+		caique_prof(5, 0);   // the output stage shows as "mix"
 	}
 }
 

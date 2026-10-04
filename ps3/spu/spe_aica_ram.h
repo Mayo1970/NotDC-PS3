@@ -41,6 +41,8 @@ static inline uint8_t* aram_get(uint32_t a)
 
 uint8_t caique_rd8(uint32_t a) { return aram_get(a)[(a & 127) ^ 3]; }
 
+const uint8_t* caique_line(uint32_t a) { return aram_get(a); }
+
 uint16_t caique_rd16(uint32_t a)
 {
 	const uint8_t* l = aram_get(a);

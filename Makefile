@@ -110,7 +110,7 @@ $(BUILD)/spu/spe_aica.elf: ps3/spu/spe_aica.c ps3/spu/spe_dsp_jit.c $(SPU_SRCS_s
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -c ps3/spu/spe_aica.c -o $(BUILD)/spu/spe_aica_main.o
 	@$(SPU_CC) $(SPU_CFLAGS) -Os -Iplugs/caiqueAICA -c ps3/spu/spe_dsp_jit.c -o $(BUILD)/spu/spe_dsp_jit.o
-	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -DCAIQUE_DSP_HOOK -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(BUILD)/spu/spe_dsp_jit.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -DCAIQUE_DSP_HOOK -DCAIQUE_ADV_RENDER_ONLY -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(BUILD)/spu/spe_dsp_jit.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

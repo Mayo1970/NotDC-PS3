@@ -83,10 +83,17 @@ the SPE decoder (5.12 S2) writes the 5.10 vertex format.
     OPEN: not yet run with SPE AICA Sound OFF. See 5.13 "A2 HW".
 - Next goals (Matt 2026-10-03, after A2; order set by Matt after the menu
   test):
-  1. NEXT: A2 at high voice counts (5.13 "A2 high voices"): SPU model speed
-     (ChuChu stage) and the PPU control pass cost (5.3-6.0 us per sample at
-     22 voices).
-  2. Then: ARM7 rate option (2.5): cycles per sample 170 (today at SH4 Clock
+  1. DONE: A2 at high voice counts (5.13 "A2 high voices"), HW validated
+     2026-10-04 (Matt: SUCCESS, "very significant performance gain"). The
+     model runs slot by slot (`advance()`), bit-exact; new PC SPU simulator
+     `misc/spu_sim/` runs the real SPU image. ChuChu stage (26 voices): SPU
+     busy 95-101% -> 29%, lag 64, SPEED ~99% (was 45-90%); `ppu ctl`
+     20.5-21.9% -> 8.9%. Crazy Taxi dense VPS 49.3 -> 52.5. See 5.13.
+     NEW OPEN item: with SPE AICA Sound, Crazy Taxi crackles a little also
+     at full speed (main menu: 0 silent blocks, buffer full). Already heard
+     in the A2 run. Suspects: stream data overwritten before the SPU reads
+     it (SPU ~64-128 samples behind), or clipping at the output stage.
+  2. NEXT: ARM7 rate option (2.5): cycles per sample 170 (today at SH4 Clock
      150) / 256 (Reicast, Minicast) / 512 (Flycast, real). Test: ChuChu
      echo, and one Looney Tunes boot for its missing voices.
 - Deferred (Matt 2026-10-03: "get back to this later"): Looney Tunes Space
@@ -434,7 +441,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open) |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -1454,6 +1461,105 @@ clock by VPS.
         6. More CD-DA slots and a bigger log, so a short SPU overload does
            not stop the SH4 thread (the 8 CD-DA slots cap the lag at 4704
            samples; lag 4777 was seen).
+      - Built 2026-10-04 (Matt: "Let's go with the next goal"), PC tested,
+        HW pending. Everything bit-exact except where noted.
+      - PC SPU simulator `misc/spu_sim/` (new): runs the real spe_aica image
+        (ISA from the spec, MFC DMA, events, decrementer) with an in-order
+        dual-issue timing model (CBEA latencies, 18-cycle unhinted branch,
+        500-cycle DMA). The harness `run_a2` feeds it like ps3_aica_spe.cpp
+        (writes, CHECKs with the x86 twin's hash, CD-DA) and compares every
+        48 kHz frame with the base model (ee0def6). Calibration: old code,
+        28 voices, 2633 cycles per rendered slot (HW ChuChu: 2770).
+        `build_spu.sh` (Git Bash) builds the image with symbols, `run.sh`
+        (WSL) the scenarios, `hot.sh FUNC` the hot instructions with source
+        lines.
+      - Model: `advance(n, render, mix)` runs each slot through a round of up
+        to 64 samples (`slot_run`), in run()'s order per sample. A slot's
+        sample needs only its own state plus per-sample globals (LFSR,
+        envelope clock, KYONEX on the first sample); run()'s cross-slot parts
+        are sums, counts or no-ops. `final_mix()` is run()'s output stage.
+        - `slot_fast<R>`: steady slots (no key/stop flag, no noise, no
+          KYONEX), playing or idle, with walk, decode and filter state in
+          locals; branch-free selects and `__builtin_expect` (the SPU has no
+          branch prediction); wave RAM through one line pointer
+          (`caique_line`). Others: `slot_sample` (generic, run()'s code).
+        - `lpf32`: the filter in 32 bits, exact while |low|, |band| < 2^28
+          (products split at 2^9); else the int64 path (`lpf64`). No more
+          `__muldi3` (was 3 calls per filter step, 8% of the SPU).
+        - SPU 16x16 multiplies by intrinsic (`mul16`, `mul32x16`): GCC sees
+          through int16 casts and emits the 3-multiply sequence.
+        - `decode_adpcm` branch-free; `lfo_tick` (one LFO tick inline);
+          timers in closed form; one sample of LFSR as a constexpr GF(2)
+          table (`lfsr_adv64`).
+        - Candidate 5: `env_skip` also for playing slots (a frozen playing
+          envelope gets 0x3FFF); an LPSLNK attack end and a one-shot end
+          clear it.
+        - Candidate 4 (PPU only): `slot_ctl_fast`, the walk in closed form up
+          to the next envelope clock that can move the slot (from the
+          env_skip mask); per sample only with PLFO or a loop event in reach.
+        - Register file 16 KB -> 8.75 KB (nothing is stored above 0x45BC;
+          reads there return 0 as before), for SPU LS.
+      - SPU (`spe_aica_model.cpp`): sound mode runs `advance()` in rounds of
+        64, then per sample EXTS, `final_mix`, resampler. Build define
+        `CAIQUE_ADV_RENDER_ONLY` drops the control-only path from the SPU
+        image. SPU image: text 87.1 KB, bss end 0x3D5D0: 10.5 KB stack,
+        deepest path ~4.1 KB (`-fstack-usage`).
+      - PPU (`ps3_aica_spe.cpp`): `catch_up()` = `advance(n, false, 0)`.
+      - Candidate 6: CD-DA slots 8 -> 16 (lag cap 9408 samples), log 16384
+        -> 32768 records. PPU RW segment +280 KB, `.got` 0x9BB8, 0 `r2off`.
+      - Candidate 1 (filter tail skip, a speed trade) NOT done: the tails now
+        cost ~370 cycles per slot-sample (24 tails 12% of real time, was
+        ~4x more) and the SPU is no longer the limit. Left as an option.
+      - PC tests:
+        - `diff_adv` (base run() per sample against advance() in random
+          chunks, writes/reads/timer writes between chunks; control
+          snapshot every chunk, DAC every sample, SCIPD/MCIPD): 2000
+          episodes per change, ~100 M samples, 0 mismatches.
+        - `mutate_adv.sh`: 28 of 29 output-relevant bugs caught; the miss is
+          equivalent (a non-last ADPCM preview is always overwritten).
+        - All 73 caique cases + 13 validators: identical to the base model.
+          A1b test: 443432 A1 checks, 28377429 DSP samples, 0 mismatches.
+          A2 test: snd_unit PASS, 28377429 samples, 0 mismatches.
+        - Simulator, real image (cycles per sample, % of real time):
+          | scenario | old | new |
+          |---|---|---|
+          | 28 voices mixed | 92765 (128%) | 22061 (30%) |
+          | 28 ADPCM | 99646 (137%) | 22835 (32%) |
+          | 28 PCM16 | 89053 (123%) | 21964 (30%) |
+          | 31 voices mixed | - | 24260 (33%) |
+          | 24 filter tails | - | 8937 (12%) |
+          Every frame bit-exact against the base model, `bad=0`.
+        - PPU proxy (x86, `bench_ctl`, ns per voice-sample, base -> new): 28
+          voices 19.7 -> 4.5 (4.4x); with 4240 monitor reads/s 19.1 -> 6.0
+          (3.2x). Each read catches all slots up: per-slot catch-up is A4.
+      - HW test: as A2 (Dynarec ON, JIT Fastmem ON, SH4 Clock 150, SPE AICA
+        Sound ON). ChuChu Rocket into a stage, the pause screen, then Crazy
+        Taxi. Pass: right sound, `bad=0`, `drops=0`, lag small. Read `spu
+        busy` (was 95-101%), `ppu ctl` % and ns/sample (was 20.5-21.9%,
+        5.3-6.0 us), `live`, SPEED and VPS. The `spu % of wall` line now
+        shows the envelopes inside `slots` and the output stage as `mix`.
+      - HW 2026-10-04 (log ps3log_a2hv_run1.txt), settings as above,
+        AudioBuffers=0. Matt: SUCCESS, "very significant performance gain";
+        the ChuChu echo stays (old, 2.5).
+        - Every window: `bad=0`, `drops=0`, lag 64, no fallback to nullAICA.
+        - ChuChu stage (windows with > 20 live, 25.9 on average): SPU busy
+          29.1% (A2: 95-101% at 22-25 voices; the simulator said 30-33%),
+          `ppu ctl` 8.94%, 2028 ns/sample = ~78 ns per live slot (A2:
+          236-243 ns, 3.0x). Dense windows: SPEED 98.9%, VPS 59.3, 96% of
+          them at full speed (A2 stage: 45-90%).
+        - ChuChu pause screen: 0 live, 15 tails rendered, SPU 10.7-11.2%
+          (A2: 13 tails = 25% of the SPU).
+        - Crazy Taxi dense windows (vt > 3K): SPEED 82.2 -> 87.6%, VPS 49.3
+          -> 52.5, `ppu ctl` 6.2 -> 2.1%, `arm:` + `aica:` 12.5 -> 8.4%.
+          Silent output blocks only in seconds below 100% and the next one.
+        - OPEN: Matt hears small crackles also at full speed, e.g. the main
+          menu, where the log shows 0 silent blocks, fill 3300-4500 frames,
+          SPU in step. Not from this goal (heard in the A2 run). Suspects:
+          music streamed into wave RAM in a fast refill lands before the SPU
+          plays the old data (SPU ~64-128 samples behind the PPU), or the
+          output stage clips (caique DAC mix levels unverified).
+        - Left on the PPU: each write and monitor read (~10K/s in ChuChu)
+          catches all slots up. A4 (per-slot catch-up) would cut that.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

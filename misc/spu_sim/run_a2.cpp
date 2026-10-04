@@ -1,0 +1,346 @@
+// 5.13 A2 high voices: the real spe_aica image (sound mode) in the simulator, fed like ps3_aica_spe.cpp; checks bad=0
+// and every 48 kHz frame against the base model, reports SPU cycles. Usage: run_a2 elf [scenario seconds voices seed]
+#include "spusim.h"
+#include "spe_aica.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stddef.h>
+#include <math.h>
+#include <random>
+#include <vector>
+
+extern "C" {
+#define DECL(p) void* p##create(int); void p##write(void*, uint32_t, uint32_t); uint32_t p##read(void*, uint32_t); \
+    void p##step(void*, int32_t, int32_t, int16_t*); void p##catch_up(void*, uint32_t); uint32_t p##snap_hash(void*); \
+    uint8_t* p##ram(void*); uint64_t p##samples(void*); void p##live(void*, uint32_t*);
+DECL(base_) DECL(cur_)
+}
+
+// ---- main memory (big-endian data, PS3 layout) ----
+enum { EA_BELL = 0x10000000, EA_ECHO = 0x10001000, EA_SHARED = 0x10100000, EA_ARAM = 0x20000000, EA_RING = 0x30000000,
+       EA_WORDS = 0x30100000 };
+static const uint32_t RING_FRAMES = 8192;
+struct Region { uint64_t ea; uint32_t size; uint8_t* p; };
+static Region g_reg[6];
+static uint8_t *g_bell, *g_echo, *g_shared, *g_aram, *g_ring, *g_words;
+
+static uint8_t* ea_fn(void*, uint64_t ea, uint32_t size)
+{
+    for (auto& r : g_reg)
+        if (r.p && ea >= r.ea && ea + size <= r.ea + r.size) return r.p + (ea - r.ea);
+    return 0;
+}
+static void put32(uint8_t* p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static uint32_t get32(const uint8_t* p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+#define ECHO(f) get32(g_echo + offsetof(AicaEcho, f))
+
+// ---- SPU float rounding (truncation) for the reference resampler ----
+static float f_trunc(double d)
+{
+    if (d == 0.0 || fabs(d) < 1.1754943508222875e-38) return 0.0f;
+    float f = (float)d;
+    if (fabs((double)f) > fabs(d)) { uint32_t w; memcpy(&w, &f, 4); w--; memcpy(&f, &w, 4); }
+    return f;
+}
+struct RefSnd { uint32_t phase = 0; int32_t pl = 0, pr = 0; std::vector<float> out; };
+static void ref_sample(RefSnd& s, int32_t l, int32_t r)
+{
+    const float scale = 1.0f / (32768.0f * 48000);
+    uint32_t ph = s.phase;
+    while (ph < 48000)
+    {
+        s.out.push_back(f_trunc((double)f_trunc((double)(s.pl * (int32_t)(48000 - ph) + l * (int32_t)ph)) * scale));
+        s.out.push_back(f_trunc((double)f_trunc((double)(s.pr * (int32_t)(48000 - ph) + r * (int32_t)ph)) * scale));
+        ph += 44100;
+    }
+    s.phase = ph - 48000;
+    s.pl = l;
+    s.pr = r;
+}
+
+// ---- scenario: a voice-heavy load like the ChuChu Rocket stage ----
+static std::mt19937 g_rng;
+static uint32_t rnd(uint32_t n) { return (uint32_t)(g_rng() % n); }
+struct Ev { uint32_t off, val; };
+static void* g_base;   // reference: full model, no DSP
+static void* g_cur;    // the PPU's control twin (current tree)
+static std::vector<uint8_t> g_dc;   // DC-order wave RAM, mirrored into both models and the PS3-layout aica_ram
+
+static uint32_t g_head, g_checks, g_cdda_n;
+static uint32_t g_now;   // samples run (the PPU's s_now)
+
+static void push(uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
+{
+    uint8_t* r = g_shared + offsetof(AicaShared, log) + (g_head & (AICA_LOG - 1)) * sizeof(AicaRec);
+    put32(r, g_now);
+    r[4] = op;
+    r[5] = 0;
+    r[6] = (uint8_t)(off >> 8);
+    r[7] = (uint8_t)off;
+    put32(r + 8, val);
+    put32(r + 12, hash);
+    g_head++;
+}
+
+static void wr(uint32_t off, uint32_t val)
+{
+    cur_catch_up(g_cur, g_now);
+    cur_write(g_cur, off, val);
+    base_write(g_base, off, val);
+    push(AICA_OP_WRITE, (uint16_t)off, val, 0);
+}
+
+struct Voice { bool on; uint32_t fmt; };
+static Voice g_v[64];
+static int g_nv;
+static const char* g_scn = "mix";
+
+static uint32_t pick_fmt()
+{
+    if (!strcmp(g_scn, "adpcm")) return 2;
+    if (!strcmp(g_scn, "pcm16")) return 0;
+    if (!strcmp(g_scn, "pcm8")) return 1;
+    const uint32_t r = rnd(10);
+    return r < 6 ? 2 : r < 9 ? 0 : 1;
+}
+
+static void program_voice(int ch)
+{
+    const uint32_t b = 0x80 * ch, fmt = pick_fmt();
+    g_v[ch].fmt = fmt;
+    const uint32_t sa = fmt == 0 ? 0x000000 + rnd(0x7F000) * 2 : fmt == 1 ? 0x180000 + rnd(0x70000) : 0x100000 + rnd(0x70000);
+    const uint32_t len = 2000 + rnd(12000), lsa = rnd(500);
+    wr(b + 0x00, (sa >> 16) | fmt << 7 | 1u << 9);   // LPCTL loop
+    wr(b + 0x04, sa & 0xFFFF);
+    wr(b + 0x08, lsa);
+    wr(b + 0x0C, lsa + len);
+    wr(b + 0x10, 31 | (8 + rnd(10)) << 6 | rnd(6) << 11);   // AR fast, D1R, D2R slow
+    wr(b + 0x14, (10 + rnd(10)) | (4 + rnd(16)) << 5 | 15 << 10);   // RR, DL, KRS off
+    const uint32_t oct = rnd(4) == 0 ? 0xE : rnd(2) ? 0xF : 0;
+    wr(b + 0x18, oct << 11 | rnd(0x400));
+    wr(b + 0x1C, rnd(5) == 0 ? (0x0200 | rnd(8) << 10 | 2u << 5) : 0);   // some vibrato
+    wr(b + 0x20, rnd(16) | rnd(16) << 4);
+    wr(b + 0x24, (0xD + rnd(3)) << 8 | rnd(32));   // DISDL, DIPAN
+    wr(b + 0x28, rnd(64) << 8 | rnd(32) | (rnd(8) == 0 ? 0x20 : 0));   // TL, Q, mostly filter on
+    for (uint32_t o = 0x2C; o <= 0x3C; o += 4) wr(b + o, 0x400 + rnd(0x1C00));
+    wr(b + 0x40, rnd(20) << 8 | rnd(20));
+    wr(b + 0x44, rnd(20) << 8 | rnd(20));
+}
+
+static void key(int ch, bool on)
+{
+    const uint32_t b = 0x80 * ch;
+    const uint32_t r0 = base_read(g_base, b) & 0x47FF;
+    wr(b, on ? (r0 | 0x4000) : (r0 & ~0x4000u));
+    g_v[ch].on = on;
+}
+static void kyonex() { wr(0, (base_read(g_base, 0) & 0x47FF) | 0x8000); }
+
+// Writes for the sample about to run: register traffic like a game's sound driver
+static void scenario_tick(uint32_t t, uint32_t total)
+{
+    const bool pause = !strcmp(g_scn, "pause") && t >= total / 2;
+    if (t == 0)
+    {
+        for (int ch = 0; ch < g_nv; ch++) { program_voice(ch); key(ch, true); }
+        kyonex();
+        return;
+    }
+    if (pause)
+    {
+        if (t == total / 2)   // fast release: the slots stop soon and leave their filter tails
+        {
+            for (int ch = 0; ch < g_nv; ch++)
+            {
+                wr(0x80 * ch + 0x14, (base_read(g_base, 0x80 * ch + 0x14) & ~0x1Fu) | 31);
+                key(ch, false);
+            }
+            kyonex();
+        }
+        return;
+    }
+    if (rnd(10000) < 1100)   // ~4900 writes/s: pitch, volume, pan, filter
+    {
+        const int ch = (int)rnd((uint32_t)g_nv);
+        const uint32_t b = 0x80 * ch;
+        switch (rnd(4))
+        {
+        case 0: wr(b + 0x18, (base_read(g_base, b + 0x18) & 0x7800) | rnd(0x400)); break;
+        case 1: wr(b + 0x28, rnd(64) << 8 | (base_read(g_base, b + 0x28) & 0xFF)); break;
+        case 2: wr(b + 0x24, (base_read(g_base, b + 0x24) & 0x0F00) | rnd(32)); break;
+        default: wr(b + 0x30 + 4 * rnd(3), 0x400 + rnd(0x1C00)); break;
+        }
+    }
+    if (rnd(10000) < 8)   // ~35 note changes/s
+    {
+        const int ch = (int)rnd((uint32_t)g_nv);
+        if (g_v[ch].on) key(ch, false);
+        else { program_voice(ch); key(ch, true); }
+        kyonex();
+    }
+}
+
+int main(int argc, char** argv)
+{
+    if (argc < 2) { fprintf(stderr, "usage: run_a2 elf [mix|adpcm|pcm16|pcm8|pause] [seconds] [voices] [seed]\n"); return 2; }
+    g_scn = argc > 2 ? argv[2] : "mix";
+    const double secs = argc > 3 ? atof(argv[3]) : 2.0;
+    g_nv = argc > 4 ? atoi(argv[4]) : 28;
+    g_rng.seed(argc > 5 ? (uint32_t)atoi(argv[5]) : 1);
+    const uint32_t total = (uint32_t)(secs * 44100) & ~63u;
+
+    g_bell = (uint8_t*)calloc(1, 128);
+    g_echo = (uint8_t*)calloc(1, sizeof(AicaEcho));
+    g_shared = (uint8_t*)calloc(1, sizeof(AicaShared));
+    g_aram = (uint8_t*)calloc(1, 2u << 20);
+    g_ring = (uint8_t*)calloc(1, RING_FRAMES * 8);
+    g_words = (uint8_t*)calloc(1, 256);
+    g_reg[0] = {EA_BELL, 128, g_bell};
+    g_reg[1] = {EA_ECHO, (uint32_t)sizeof(AicaEcho), g_echo};
+    g_reg[2] = {EA_SHARED, (uint32_t)sizeof(AicaShared), g_shared};
+    g_reg[3] = {EA_ARAM, 2u << 20, g_aram};
+    g_reg[4] = {EA_RING, RING_FRAMES * 8, g_ring};
+    g_reg[5] = {EA_WORDS, 256, g_words};
+
+    g_base = base_create(1);
+    g_cur = cur_create(0);
+    // wave RAM: smooth PCM16, PCM8, random ADPCM nibbles
+    g_dc.resize(2u << 20);
+    for (uint32_t a = 0; a < 0x100000; a += 2)
+    {
+        const int16_t v = (int16_t)(12000 * sin(a * 0.0021) + 6000 * sin(a * 0.017) + (int)rnd(2000) - 1000);
+        g_dc[a] = (uint8_t)v;
+        g_dc[a + 1] = (uint8_t)(v >> 8);
+    }
+    for (uint32_t a = 0x100000; a < 0x180000; a++) g_dc[a] = (uint8_t)rnd(256);
+    for (uint32_t a = 0x180000; a < 0x200000; a++) g_dc[a] = (uint8_t)(int8_t)(90 * sin(a * 0.013) + (int)rnd(20) - 10);
+    memcpy(base_ram(g_base), g_dc.data(), g_dc.size());
+    for (uint32_t a = 0; a < g_dc.size(); a++) g_aram[a ^ 3] = g_dc[a];
+
+    uint8_t* su = g_shared + offsetof(AicaShared, setup);
+    put32(su + offsetof(AicaSetup, aram_ea), EA_ARAM);
+    put32(su + offsetof(AicaSetup, dsp_mode), 0);
+    put32(su + offsetof(AicaSetup, snd), 1);
+    put32(su + offsetof(AicaSetup, ring_ea), EA_RING);
+    put32(su + offsetof(AicaSetup, ring_frames), RING_FRAMES);
+    put32(su + offsetof(AicaSetup, wr_ea), EA_WORDS);
+    put32(su + offsetof(AicaSetup, rd_ea), EA_WORDS + 128);
+    put32(su + offsetof(AicaSetup, w0), 0);
+
+    SpuSim* sim = (SpuSim*)calloc(1, sizeof(SpuSim));
+    spusim_init(sim, ea_fn, 0);
+    const uint32_t entry = spusim_load_elf(sim, argv[1]);
+    if (!entry) { fprintf(stderr, "cannot load %s\n", argv[1]); return 2; }
+    sim->pc = entry;
+    sim->r[3].w[1] = EA_BELL;
+    sim->r[4].w[1] = EA_ECHO;
+    sim->r[5].w[1] = EA_SHARED;
+    sim->prof = (uint64_t*)calloc(0x10000, sizeof(uint64_t));
+    sim->brmiss = (uint32_t*)calloc(0x10000, sizeof(uint32_t));
+    int rc = spusim_run(sim, 50000000);
+    if (rc != SPU_RUN_BLOCKED || ECHO(state) != AICA_STATE_RUNNING)
+    {
+        fprintf(stderr, "SPU boot: rc %d state %u: %s\n", rc, ECHO(state), sim->msg);
+        return 1;
+    }
+    memset(sim->prof, 0, 0x10000 * sizeof(uint64_t));
+    memset(sim->brmiss, 0, 0x10000 * sizeof(uint32_t));
+    const uint64_t c_boot = sim->cycle;
+    uint64_t busy = 0, busy_late = 0;   // late: after 70% of the run (pause: the filter tails only)
+    uint32_t late_n = 0;
+
+    RefSnd ref;
+    uint32_t rd = 0, frames_ok = 0, frames_bad = 0, first_bad = ~0u;
+    std::vector<int16_t> cdda(AICA_CDDA_WORDS);
+    uint32_t cdda_i = AICA_CDDA_WORDS;
+    bool cdda_on = false;
+    double live_sum = 0;
+    uint32_t live_n = 0;
+    for (g_now = 0; g_now < total;)
+    {
+        scenario_tick(g_now, total);
+        if (g_now % 588 == 0)   // a CD-DA sector, as AICA_Sample sends it: data half the time
+        {
+            cdda_on = rnd(2) == 0;
+            uint32_t val = AICA_CDDA_SILENT;
+            if (cdda_on)
+            {
+                const uint32_t k = g_cdda_n++ & (AICA_CDDA_SLOTS - 1);
+                uint8_t* d = g_shared + offsetof(AicaShared, cdda) + k * sizeof(AicaCddaSlot);
+                for (uint32_t i = 0; i < AICA_CDDA_WORDS; i++)
+                {
+                    cdda[i] = (int16_t)(8000 * sin((g_now + i / 2) * 0.05 + (i & 1)));
+                    d[2 * i] = (uint8_t)(cdda[i] >> 8);
+                    d[2 * i + 1] = (uint8_t)cdda[i];
+                }
+                val = k;
+            }
+            cdda_i = cdda_on ? 0 : AICA_CDDA_WORDS;
+            push(AICA_OP_CDDA, 0, val, 0);
+        }
+        int32_t e0 = 0, e1 = 0;
+        if (cdda_i < AICA_CDDA_WORDS) { e0 = cdda[cdda_i]; e1 = cdda[cdda_i + 1]; cdda_i += 2; }
+        int16_t o[2];
+        base_step(g_base, e0, e1, o);
+        ref_sample(ref, o[0], o[1]);
+        g_now++;
+        if (g_now % AICA_BLOCK)
+            continue;
+        cur_catch_up(g_cur, g_now);
+        push(AICA_OP_CHECK, 0, g_checks++, cur_snap_hash(g_cur));
+        if ((g_checks & 15) == 0)
+        {
+            uint32_t l[4];
+            cur_live(g_cur, l);
+            live_sum += l[0];
+            live_n++;
+        }
+        // publish and let the SPU work through the block
+        put32(g_bell, g_head);
+        spusim_llr_lost(sim);
+        const uint64_t c0 = sim->cycle;
+        rc = spusim_run(sim, 400000000);
+        if (rc != SPU_RUN_BLOCKED) { fprintf(stderr, "SPU stopped at sample %u: rc %d: %s\n", g_now, rc, sim->msg); return 1; }
+        busy += sim->cycle - c0;
+        if (g_now > total * 7 / 10) { busy_late += sim->cycle - c0; late_n += AICA_BLOCK; }
+        if (ECHO(tail) != g_head) { fprintf(stderr, "SPU tail %u != head %u\n", ECHO(tail), g_head); return 1; }
+        // the audio feeder: compare and consume every frame the SPU wrote
+        const uint32_t w = get32(g_words + 0);
+        for (; rd != w; rd++)
+        {
+            const uint8_t* f = g_ring + (rd & (RING_FRAMES - 1)) * 8;
+            for (int k = 0; k < 2; k++)
+            {
+                const uint32_t bits = get32(f + 4 * k);
+                float got;
+                memcpy(&got, &bits, 4);
+                const size_t idx = (size_t)rd * 2 + k;
+                if (idx < ref.out.size() && memcmp(&got, &ref.out[idx], 4) == 0) frames_ok++;
+                else { if (first_bad == ~0u) first_bad = rd; frames_bad++; }
+            }
+        }
+        put32(g_words + 128, rd);
+        // the sim's clock runs on as wall time would: one block of real time between bells
+        const uint64_t wall = sim->cycle - c_boot, want = (uint64_t)g_now * 3200000000ull / 44100;
+        if (want > wall) sim->cycle = c_boot + want;
+    }
+    const uint32_t checks = ECHO(checks), bad = ECHO(bad), samples = ECHO(samples), drops = ECHO(snd_drops);
+    uint32_t prof[6];
+    for (int i = 0; i < 6; i++) prof[i] = get32(g_echo + offsetof(AicaEcho, prof) + 4 * i);
+    const double rendered = samples ? (double)prof[5] / samples : 0;
+    printf("scenario %s voices %d seed: samples %u (spu %u) | checks %u bad %u | frames ok %u bad %u (first at frame %d) drops %u\n",
+           g_scn, g_nv, g_now, samples, checks, bad, frames_ok, frames_bad, first_bad == ~0u ? -1 : (int)first_bad, drops);
+    printf("SPU: %.0f cycles/sample = %.1f%% of real time | live %.1f, rendered %.1f per sample -> %.0f cycles per rendered slot\n",
+           (double)busy / g_now, busy * 100.0 / ((double)g_now * 3200000000.0 / 44100), live_n ? live_sum / live_n : 0, rendered,
+           rendered > 0 ? (double)prof[0] * 40 / ((double)prof[5]) : 0.0);
+    printf("SPU %% of busy (decrementer sections): slots %.1f env %.1f preview+bus %.1f dsp %.1f mix %.1f | ipc %.2f dual %.1f%% br_miss %llu dma_wait %.1f%%\n",
+           prof[0] * 40 * 100.0 / busy, prof[1] * 40 * 100.0 / busy, prof[2] * 40 * 100.0 / busy, prof[3] * 40 * 100.0 / busy,
+           prof[4] * 40 * 100.0 / busy, (double)sim->insns / (double)busy, sim->dual * 100.0 / (double)sim->insns,
+           (unsigned long long)sim->br_miss, sim->dma_wait * 100.0 / busy);
+    if (late_n) printf("SPU after 70%% of the run: %.0f cycles/sample = %.1f%% of real time\n", (double)busy_late / late_n,
+                       busy_late * 100.0 / ((double)late_n * 3200000000.0 / 44100));
+    spusim_print_profile(sim, busy, 25);
+    if (getenv("HOT")) spusim_print_hot(sim, getenv("HOT"), getenv("HOTN") ? atoi(getenv("HOTN")) : 60);
+    return bad || frames_bad ? 1 : 0;
+}
