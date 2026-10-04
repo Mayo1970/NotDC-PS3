@@ -2,7 +2,7 @@
 
 Base: copy of `nullDC4Wii` (upstream folder stays untouched).
 Toolchain: PSL1GHT, Docker image `ps3dev/ps3dev:latest` (ppu-gcc 7.2).
-TITLE_ID: `NULLDC000`. Data root: `/dev_hdd0/data/NullDC/` (BIOS in `data/`). Debug: UDP log only.
+TITLE_ID: `NULLDC000`. Data root: `/dev_hdd0/data/NullDC/` (BIOS in `data/`). VMU saves: `/dev_hdd0/savedata/vmu/`. Debug: UDP log only.
 References: `ioQuake3-PS3` (RSX, audio, pad, PKG rules), `xashPS3` (vid/snd/in/sys under `engine/platform/ps3`).
 Video reuse: RSX init/flip from `xashPS3/engine/platform/ps3/vid_ps3.c` and `ioQuake3-PS3/code/sys/ps3_glimp.c`;
 GL 1.1 to RSX layer `ps3gl` (`xashPS3/3rdparty/ps3gl`, `ioQuake3-PS3/code/gl`) as the base for the renderer.
@@ -21,7 +21,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 7. HW test: PKG installs, boots, prints a log line, returns to XMB cleanly.
 
 ## G2 - Headless BIOS boot  `[x]` (HW 2026-09-18: BIOS runs, PAL 22.5/50 VPS = ~45% speed; XMB exit moved to G3)
-1. File layer over `/dev_hdd0/data/NullDC/` (`data/`: dc_boot.bin, dc_flash.bin, fsca-table.bin; VMU saves in the root).
+1. File layer over `/dev_hdd0/data/NullDC/` (`data/`: dc_boot.bin, dc_flash.bin, fsca-table.bin; VMU saves were in the root until 2026-10-04, now `/dev_hdd0/savedata/vmu/`).
 2. Load `dc_boot.bin` and `dc_flash.bin`. Run the SH4 interpreter with no video.
 3. Log PC, frame count, and PVR/TA activity (monitor thread `[hb]` line + SPG stats line). XMB exit stops the SH4.
 4. HW test: BIOS runs and the log shows progress (frames advance, no crash).

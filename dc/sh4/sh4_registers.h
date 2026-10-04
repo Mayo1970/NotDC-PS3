@@ -8,19 +8,8 @@ struct Sh4Context
 	f32 xf[16];
 	f32 fr[16];
 
-	// Scratch bounce buffer used by the native recompiler for int<->float
-	// conversions (fctiwz / integer-to-double magic-constant trick). Not an
-	// SH4 architectural register.
-	//
-	// Placed HERE (right after the FP register files, offset 128 — 8-byte
-	// aligned so lfd/stfd are well-formed) rather than at the tail of the
-	// struct on purpose: the cvt_f2i_t / cvt_i2f_* JIT sequences bounce a
-	// value between an FP register (xf/fr, offsets 0..127) and this slot on
-	// every conversion. Keeping it inside the hot, perpetually-resident
-	// register-file region means the bounce hits an already-cached L1 line
-	// instead of faulting in an otherwise-cold line ~160 bytes away. All
-	// accesses are via offsetof()/offset(), so the field may live anywhere;
-	// only the 8-byte alignment matters. Move it back below old_fpscr to A/B.
+	// Recompiler bounce slot for int<->float conversions, not an SH4 register. Next to the FP files (offset 128)
+	// so each bounce hits a resident L1 line; only its 8-byte alignment matters.
 	u64 jit_scratch;
 
 	u32 r[16];
@@ -37,40 +26,25 @@ struct Sh4Context
 	sr_type old_sr;
 	fpscr_type old_fpscr;
 
-	// Backing store for Sh4RegType reg_temp — the decoder's scratch register.
-	// Not an SH4 architectural register: decoder handlers that need a spare
-	// value (rotcl/rotcr's saved T, tas.b's loaded byte, the SR read/write
-	// pairs) emit SHIL against reg_temp, and the backend resolves it through
-	// offset() like any other register. Kept at the tail so no existing
-	// field's context offset moves.
+	// Backing store for reg_temp, the decoder's scratch (rotcl/rotcr's T, tas.b's byte, SR pairs). The fields
+	// from here on sit at the tail so no older context offset moves.
 	u32 jit_temp;
 
-	// Backing store for Sh4RegType reg_temp2. mac.l/mac.w need BOTH loaded
-	// operands live at the same time to multiply them, which one scratch slot
-	// cannot express. Kept at the tail for the same reason jit_temp is.
+	// reg_temp2: mac.l/mac.w need both loaded operands live at once.
 	u32 jit_temp2;
+
+	// Plan 5.25 JIT IDLE SKIP: nonzero once a block that may store runs; the idle check reads and clears it.
+	u32 jit_idle_work;
 
 	u32 offset(u32 sh4_reg);
 	u32 offset(Sh4RegType sh4_reg) { return offset((u32)sh4_reg); }
 };
 
-// Context field offsets for JIT backends, captured HERE — above the
-// convenience-macro block below — because those macros (`#define fr
-// Sh4cntx.fr`, etc.) rewrite the bare field names, so `offsetof(Sh4Context,fr)`
-// at any later point expands to `offsetof(Sh4Context,Sh4cntx.fr)` and does not
-// compile. Any future context offset the recompiler needs belongs here too.
-//
-// SH4CTX_OFS_FR is needed by the Wii fastmem DSI handler, which runs in
-// exception context and therefore cannot call Sh4Context::offset() (that goes
-// through Sh4_int_GetRegisterPtr + verify()). fr[] is contiguous and
-// GetFloatReg maps fr[n] -> f14+n, so the handler recovers a pinned FR's slot
-// from the faulting instruction's register field alone.
+// JIT context offsets go here, above the macros below: they rewrite bare field names, so offsetof(Sh4Context,fr)
+// would not compile after them. SH4CTX_OFS_FR: the Wii fastmem DSI handler cannot call offset().
 enum { SH4CTX_OFS_FR = offsetof(Sh4Context, fr) };
 
-// SH4CTX_OFS_OLD_FPSCR is needed by the JIT_FSCHG fast path in the Wii
-// backend: `fschg` toggles FPSCR.SZ only, so the whole of UpdateFPSCR()
-// reduces to keeping old_fpscr in step, which the backend does with a
-// single stw instead of a C call bracketed by a full pinned-FPU spill.
+// JIT_FSCHG: fschg only toggles FPSCR.SZ, so the backend keeps old_fpscr in step with one stw, not a C call.
 enum { SH4CTX_OFS_OLD_FPSCR = offsetof(Sh4Context, old_fpscr) };
 
 extern ALIGN(64) Sh4Context Sh4cntx;

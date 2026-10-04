@@ -11,9 +11,74 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-04)
+## 0. Resume here (updated 2026-10-05)
 
-**Next (Matt 2026-10-04: "5.18 for measurements, and we'll think from
+**Next: 5.26, T for `bt.s`/`bf.s` (the jcond load-hit-store), from the
+5.18 ranking.** Not built; Matt picks the option (5.26 a-b) before any
+build. Matt 2026-10-05: "Can you update the OPTIMIZATION plan so it
+resumes from there?"
+- Candidates after 5.25, in the order of the 5.18 ranking (item 1, the
+  wait loop, is done):
+  1. Load-hit-stores, ~6M/s real stalls of ~40 cycles each:
+     - T for `bt.s`/`bf.s`, ~1.9M/s: 5.26 (new). Recommended first.
+     - FPUL and `jit_scratch` ~1.2M/s (`lds`, `float`, `ftrc`, `flds`,
+       `fsts` through memory): 5.24.
+     - Pinned FR values through the context ~1M/s; FPSCR 0.22M/s.
+  2. Dynamic ends (`rts`, `jsr @Rn`, `braf`) 2.6M/s, each ~15
+     instructions and an indirect branch: DYN_IC, 5.3 (forced OFF on the
+     PS3).
+  3. `mfcr` -> `mfocrf`, 3.5M/s: 5.24.
+  4. Store-queue stores JIT SQ STORES misses, 0.88M/s: 5.27 (new).
+  5. Small: sync_fpscr full path 158K/s, variable shifts 0.45M/s.
+- Lesson from 5.25: the profiler counts instructions, not time. The wait
+  loop was 12.4% of the JIT instructions but only ~3% of the time (+3.0%
+  VPS). Stalls (items 1-3) cost far more than their instruction count, so
+  rank by stalls.
+- Dense Crazy Taxi now (SH4 200, JIT IDLE SKIP ON, no profiler): VPS 57.1
+  of 59.95 at vt 9.3K, 35% of dense windows at full speed. Full speed
+  needs ~5% more.
+- Reference log for the next same-load comparison: `run525b.txt` in the
+  scratchpad of session 1a0d7654 (with `vtbins.py`, `bins.py`,
+  `idlepair.py`, `jcond518.py`). Its settings (an install resets them):
+  Dynarec ON, JIT Fastmem ON, SH4 Clock 200; ARM7 Idle Skip SAFE, SPE AICA
+  Sound ON, SPE ARM7 ON; TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON,
+  JIT HOTBLOCKS OFF; JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+  VALUES ON, JIT CYCLE CHECK LOOPS ONLY and JIT IDLE SKIP ON (both
+  defaults).
+- Open, not speed: the Sonic Adventure check of the 5.25 fix (not run);
+  the XMB exit 3 s fallback (`OPTIMIZATION_POTENTIAL.md` P6, ~25 lines);
+  section 6 (sound faults) and the Soul Calibur faults, both parked.
+- UDP: no listener runs; port 18194 is free. Start one only when Matt
+  says so.
+
+**Done: 5.25, the wait-loop idle skip (Matt 2026-10-05: "Let's go with
+the wait loop", option "a + safety").** Built and PC tested 2026-10-05,
+package of 00:45: JIT SPEED -> "JIT IDLE SKIP" (`JitIdleSkip`), default
+OFF, set before boot. HW 2026-10-05: Crazy Taxi +3.0% VPS at the same
+load, but Sonic Adventure drew 20 frames/s where it drew 30 (a skipped
+loop did work). Fix (Matt: "Fix build"): a register-hash check, package of
+01:13. HW 2026-10-05: Crazy Taxi +3.0% VPS at the same load against the
+no-probe 5.18 run (dense VPS 57.1, 35% of dense windows at full speed);
+work loops no longer skip. The Sonic check of the fix was not run (Matt:
+"Sonic Adventure already runs well"). Default ON since the package of
+01:27 (Matt: "Turn it on by default").
+Matt 2026-10-05: do not start the UDP listener until he says so. This
+session's listener (file `ps3log_525_run1.txt` in its scratchpad) was
+stopped at the end (Matt); port 18194 is free.
+
+**Earlier next: 5.25, the wait-loop idle skip (from the 5.18 ranking).**
+Matt picks the option (5.25 a-d) before any build.
+- 5.18 (Matt 2026-10-04: "We start from 5.18") is measured: profiler VIDEO
+  / DEBUG -> "JIT HOTBLOCKS" (default OFF, set before boot), package of
+  23:13; HW run 3 is complete. Ranking in 5.18 "HW": 1. wait loop (12.4% of
+  the JIT instructions), 2. real load-hit-stores ~6M/s (T for `bt.s`/
+  `bf.s` 1.9M/s, FPUL and float conversions 1.2M/s), 3. dynamic ends
+  2.6M/s (DYN_IC, 5.3), 4. `mfcr` 3.5M/s (5.24), 5. missed store-queue
+  stores 0.88M/s, 6. sync_fpscr full path 158K/s.
+- The 23:13 package also holds the VMU session's maple changes (same
+  working tree). The 5.18 logs are in the scratchpad of session 29bdd1c1.
+
+**Earlier next (Matt 2026-10-04: "5.18 for measurements, and we'll think from
 there"), in a new session: 5.18, the JIT hot-block profile.** It changes no
 speed by itself: it measures where the SH4 thread's JIT time goes, then Matt
 picks the fix. Steps in 5.18. Candidates it ranks: 5.24 (`mfcr` ->
@@ -614,13 +679,16 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
 | 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[ ]` |
 | 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF |
-| 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[ ]` next (Matt 2026-10-04: "5.18 for measurements, and we'll think from there"), new session |
+| 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]` |
 | 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[~]` HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean; Soul Calibur pending |
 | 5.21 | Minicast M3 + M4: constant propagation (no memory baking) + dead value elimination | `[x]` HW, correct, no gain, default OFF; built + PC tested 2026-10-04 ("JIT CONSTPROP", "JIT DEAD VALUES", default OFF; fuzzer PASS 1.6 M blocks, 31/31 mutants fail), package of 22:06; HW 2026-10-04: Crazy Taxi log clean, SHIL ops -2.9%, same-load VPS +0.2% (noise); geometry and sound right (Matt) |
 | 5.22 | Minicast M5: cycle check out of line, then only on backward branches | `[x]` HW, LOOPS ONLY default since 2026-10-04 (Matt); built 2026-10-04 ("JIT CYCLE CHECK": OLD / COLD EXIT / LOOPS ONLY, default OLD), package of 22:27; HW 2026-10-04: logs clean, same-load VPS +0.8% (COLD EXIT), +1.9% (LOOPS ONLY) against 5.21 |
 | 5.23 | Minicast M6: `fmov.s @Rn+` pair fusion | `[ ]` not scheduled (low) |
 | 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[ ]` not scheduled |
+| 5.25 | Wait-loop idle skip (Crazy Taxi 0C15A658-0C15A67E, from 5.18) | `[x]` option a + safety (Matt 2026-10-05), JIT SPEED "JIT IDLE SKIP", default OFF; HW 2026-10-05 (package 00:45): Crazy Taxi +3.0% same-load VPS, Sonic Adventure 30 -> 20 frames/s (work loop skipped); fix with a register-hash check, package of 01:13: HW Crazy Taxi +3.0% same-load VPS (dense 57.1), work loops no longer skip; Sonic not rechecked; default ON since the package of 01:27 (Matt) |
+| 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[ ]` next candidate, not built; Matt picks the option |
+| 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[ ]` not scheduled |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -2448,6 +2516,122 @@ clock by VPS.
     - The probe counts block entries, not time: rank by entries x PPC
       bytes, and remember that a microcoded op or a load-hit-store costs
       far more than its bytes.
+  - Step 1 built 2026-10-04 (Matt: "We start from 5.18"), package of
+    23:13. Build clean (the 7 old warnings), `.got` 0xA438, 0 r2off.
+    - Option VIDEO / DEBUG -> "JIT HOTBLOCKS" (`JitHotblocks`), default
+      OFF, set before boot; `[jitcfg]` prints `hotblocks=1`. Diagnostic
+      only: every block entry pays a 4-instruction counter.
+    - The old probe printed the top 8 blocks each second and dumped about
+      16 blocks, most of them in the boot menus. It now measures the dense
+      gameplay:
+      - Entries per block, and cold-path entries per block: a 5-instruction
+        counter at the entry of each out-of-line fragment
+        (`emit_hot_cold_count`: r0 and rarg1, or rarg2 for a scalar store,
+        which are free at every cold entry; nor + neg, so XER[CA] stays).
+        Only blocks with <= 128 fragments whose first fragment branch is
+        < 16 KB from the cold start count, so the 32 KB branch reach holds.
+      - Windows with vt > 3K (the stats line's vertices per render, the
+        dense test of all runs) add to per-block totals. Every 10 dense
+        windows a `[HOTC]` census: totals, the per-entry average of each
+        class, then the top 64 blocks by entries x hot instructions
+        (entries/s, share and running share of the weight, sizes, cold
+        entries/s, the block's classes).
+      - Classes (`ps3/ps3_jit_hot.h`, counted once per block at compile
+        time over the hot body, the probe's counter left out):
+        instructions, loads, stores, context (r30) accesses,
+        load-hit-stores (a load from a context slot that a store of the
+        last 24 instructions wrote; `lhs_if` when GPR and FPR data meet),
+        `mfcr`, variable shifts and rotates, other microcode (algebraic
+        loads, multi-field `mtcrf`, `lmw`/`stmw`), XER moves, C calls,
+        link-stub calls, `bctr`, conditional branches and those into the
+        cold area, FP arithmetic, FP moves, FPSCR ops, multiply / divide.
+        Weighted by entries, they cover every block, not only the dumped
+        ones. Not seen: load-hit-stores across blocks or through guest
+        memory, and which path of a conditional exit runs.
+      - Dumps: from the 5th dense window, the 4 heaviest blocks not dumped
+        yet per dense window, up to 128 (by SH4 pc): the SH4 source and
+        every PPC word (hot body with the counter, then the cold area).
+        The census gives the share of the weight the dumped blocks hold.
+      - Lines go out in batches of up to 1400 bytes per printf (one UDP
+        datagram each), so a dump is a few datagrams.
+      - Table: 32768 blocks (was 16384; ~15K compile after Crazy Taxi's
+        last cache clear), ~3.3 MB, allocated only with the option ON. A
+        cache clear prints a census first, then resets the totals.
+    - PC (WSL): `misc/hot_check/run.sh` tests `hot_classify` on 138
+      instructions assembled by the build image's ppu-as (`gen.py` writes
+      `hot_words.inc`), on 22 load-hit-store sequences, the probe skip and
+      12 branch and `mtcrf` cases; it checks `emit_hot_cold_count` against
+      the ppu-as words and runs it on a PPC64 model (7 addresses x 6 start
+      values x 4 kinds: the counter gets +1, only r0 and the base register
+      change). PASS, 3226 checks. `mutate.py`: 21 of 21 planted bugs fail.
+    - HW test steps (Step 2, package of 23:13):
+      1. Install the package. Set (an install resets them): EMULATION ->
+         Dynarec ON, JIT Fastmem ON, SH4 Clock 200 (default); AUDIO ->
+         ARM7 Idle Skip SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG
+         -> TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON, JIT HOTBLOCKS
+         ON; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+         VALUES ON, JIT CYCLE CHECK LOOPS ONLY (default). These are the
+         settings of the reference run `run522b2.txt` plus the two probes.
+      2. UDP listener on port 18194.
+      3. Crazy Taxi, dense traffic, ~3 min (the profiler costs speed),
+         then exit to the XMB.
+      4. Check: `[jitcfg]` ... `hotblocks=1`, a `[HOT] table of 32768
+         blocks` line, `[HOTC]` censuses, `[HOT] --- dump` blocks.
+      5. Analysis: the last census (class totals, top 64), the dumps
+         disassembled with ppu-objdump (block address from `host=`), the
+         `[CC]` line. Rank patterns by entries x instructions and the PPE
+         costs; Matt picks what to build.
+  - HW 2026-10-04, package of 23:13, Crazy Taxi, SH4 200, settings as the
+    steps. Logs and scripts: scratchpad of session 29bdd1c1.
+    - Run 1: JIT HOTBLOCKS was OFF at boot (it was set in the in-game menu,
+      which acts at the next boot), so no profile. Its dense VPS 54.9 at vt
+      9.7K (66 windows) is the no-probe reference.
+    - Run 2: profiler ON, but no listener ran in its first part (the VMU
+      session's listener had stopped); only the last census was logged.
+    - Run 3 (`run518b.txt`): complete, 147 s, 68 dense windows, 128 dumps
+      (70.5% of the weight), log clean (the old XMB 3 s fallback only).
+      `hot518.py` disassembles the dumps with the build image's ppu-objdump
+      and classifies them again in Python: 0 mismatches against the
+      census on 64 blocks. `hot518_deep.py` splits the load-hit-stores by
+      a C call between store and load.
+    - Probe cost: dense VPS 51.5 at vt 9.5K against 54.9 at vt 9.7K without
+      it (~6%). With the probe the code cache reaches 81% (warning lines,
+      no clear).
+    - JIT code: 10.4M block entries/s x 40.4 hot PPC instructions = 421M/s.
+      Per entry: 5.8 loads, 3.2 stores (4.7 of them on the context), 2.4
+      guarded RAM accesses (fastmem shape, ~7 instructions each), 2.1 FP
+      ops, 0.34 `mfcr`, 0.25 dynamic ends, 0.13 C calls.
+    - C calls (`[CC]`, dense): sqw 544K/s, sync_fpscr 158K/s, getcode
+      115K/s, writemem 97K/s (a0 51K, a7 23K; a3 25K not from the JIT),
+      timeslice 96K/s.
+    - Ranking (the probe counts instructions, not time; costs are
+      estimates):
+      1. Wait loop, 5.25: 412K turns/s, 12.4% of the JIT instructions, and
+         0.82M of the 2.6M dynamic ends/s.
+      2. Real load-hit-stores ~6M/s (4.46M/s in the dumped 70%), ~40
+         cycles each. Another 2.9M/s are the register save and reload
+         around C calls (IFB, sync_fpscr), not stalls.
+         - T for `bt.s`/`bf.s` 1.9M/s: the compare stores T, and `jcond`
+           reloads it into r31 a few instructions later. New item.
+         - FPUL 0.6M/s and `jit_scratch` 0.57M/s: `lds`, `float`, `flds`,
+           `fsts` through memory (5.24).
+         - Pinned FR values moved through the context ~1M/s; FPSCR 0.22M/s.
+      3. Dynamic ends (`rts`, `jsr @Rn`, `braf`) 2.6M/s, each ~15
+         instructions and an indirect branch: DYN_IC (5.3, forced OFF on
+         the PS3).
+      4. `mfcr` 3.5M/s, always for a set*/tst result: 5.24 (`mfocrf`).
+      5. Store-queue stores that JIT SQ STORES misses: 0.88M slow-path
+         entries/s, mostly `fmov.s FRm,@-Rn` in 0C081D58, 0C081D5A and
+         0C0820C2, whose PREF is in another block. The table tier runs 2
+         microcoded shifts. Fix: test for the store queue first in the
+         slow path, or a wider guess.
+      6. sync_fpscr full path 158K/s: a C call with 16 FPR stores and 16
+         FPR loads around it.
+      7. Small: variable shifts in hot code 0.45M/s, IFB addc/subc/div1
+         ~50K/s.
+    - Against `OPTIMIZATION_POTENTIAL.md`: its C-call rates match (timeslice,
+      getcode, area-0 writes). Its section 4 says idle skip has nothing to
+      take; item 1 shows otherwise. It does not list sync_fpscr.
 - 5.19 SH4 Clock below 150. The option allows 150-200 MHz (`ps3_menu.cpp`).
   A lower floor (e.g. 120-140) buys VPS, but the guest gets fewer cycles per
   frame, so heavy scenes drop more of the game's own frames (already at 150:
@@ -2736,6 +2920,223 @@ clock by VPS.
   - `flds`/`fsts` (FPUL <-> FR), `float` and `ftrc` go through memory: one
     load-hit-store each. `float` has two, because it also builds its magic
     constant in the same slot; a constant table removes that one.
+- 5.25 Wait-loop idle skip (from the 5.18 ranking, item 1). Option a + safety built 2026-10-05.
+  - Facts (5.18 run 3, dense Crazy Taxi, SH4 200):
+    - 0C15A658: `mov.l @(disp,PC),r3; mov.l @r3,r2; jsr @r2; mov.l
+      @(4,r3),r4` calls a hook through a pointer in RAM; the hook at
+      0C158E90 is `rts; nop` (empty).
+    - 0C15A660 reads three RAM words A, B, C and leaves the loop when
+      C > A + B + 1 (`cmp/hi`, `bf`). 0C15A678 reads a flag D (`tst`) and
+      goes back to 0C15A658 while D != 0.
+    - The loop stores nothing and has no slow-path entry: it polls RAM that
+      interrupt handlers change. What it waits for is not known yet.
+    - 412,440 turns/s: 12.4% of the JIT instructions, and 2 dynamic ends
+      per turn (0.82M/s).
+    - The decoder's idle rule (`decoder.cpp`, "Small-n-simple idle loop
+      detector": reads, no writes, no FPU, < 6 ops, conditional end ->
+      cycles x30) fits 0C15A678 only (4 -> 120 cycles). A turn bills 4 + 2
+      + 10 + 120 = 136 cycles, so the loop takes about a third of the
+      emulated SH4 cycles. The `[hb]` line (a monitor thread reads the pc
+      of the last timeslice end once a second, so it samples guest cycles)
+      shows 0C15A678 in 11 of 22 samples.
+    - The host still runs ~13 turns per 1792-cycle timeslice. A block bills
+      at most `max_cycles` = 224 (`SH4_TIMESLICE / 2`), so the rule cannot
+      go below ~7.5 turns per timeslice.
+    - Reicast: the same rule with x3, plus a list of known idle blocks by
+      code hash (BIOS, Soul Calibur, HOTD2, Ikaruga) billed `max_cycles`.
+      Crazy Taxi is not in it.
+  - Options:
+    a. End the timeslice when a block that fits the idle rule takes a
+       backward branch (BranchBlock <= start): about 1 turn per timeslice.
+       Same assumption as the x30 rule, only stronger: a real work loop of
+       that shape would lose more guest time (see the `mac.l` note in
+       `decoder.cpp`).
+    b. A list of known idle blocks by code hash, as Reicast (Crazy Taxi
+       first). Safe, but per game.
+    c. Jump to the next scheduled event, not only to the timeslice end.
+       Needs a "next event" time (`OPTIMIZATION_POTENTIAL.md` P5).
+    d. Make each turn cheaper: DYN_IC for its `jsr`/`rts` (5.3).
+  - Expected: up to ~12% of the JIT instructions, about what full speed
+    needs (~10.6%). The share of time is not measured.
+  - Checks: HW: Crazy Taxi dense VPS at the same load against the 5.18
+    no-probe run (54.9 at vt 9.7K); no change in game speed (frame pacing,
+    music tempo); BIOS boot, Sonic Adventure, Soul Calibur; the probe again
+    to see the loop's share fall.
+  - Matt 2026-10-05: "Let's go with the wait loop"; option "a + safety"
+    (a, with two checks against work loops). Built 2026-10-05, package of
+    00:45. Build clean (the 7 old warnings), `.got` 0xA460, 0 r2off.
+    - Option JIT SPEED -> "JIT IDLE SKIP" (`JitIdleSkip`), default OFF, set
+      before boot; `[jitcfg]` prints `idle=`. While idle loops run, an
+      `[idle]` line per stats window: idle blocks compiled, checks/s and
+      skips/s (timeslices ended).
+    - Decoder (`dc/sh4/rec_v2/idle_loop.h`, run by `dec_DecodeBlock`):
+      `has_store` = the block has a writem, pref or ifb. `idle_loop` = the
+      x30 idle rule (reads, no writes, no FPU, < 6 ops, conditional end),
+      plus a backward branch (BranchBlock <= start), plus a pure turn: only
+      plain integer ops (no div1, mac.*, sync, ifb or float param), and no
+      register read before the block writes it and then written (a counter,
+      a moving pointer). The x30 rule itself is unchanged.
+    - Backend (`ps3/ps3_jit_idle.h`): a block with `has_store` starts with
+      `stw r30,jit_idle_work(r30)` (the context base is never 0). An idle
+      block's backward path, before its link: load and clear the mark,
+      count the check, and with no mark set r29 (cycles left) to 0, so the
+      next poll ends the timeslice; count the skip. 12 instructions, on that
+      path only. r29 >= 0 there (the block's own poll passed), so it only
+      drops the rest of the timeslice.
+    - Crazy Taxi: 0C15A678 is the idle block (r3 from a literal, r2 = @r3,
+      tst: pure). No block of the turn stores, so from the second turn on
+      each turn ends the timeslice: ~1 turn per timeslice, not ~13. A store
+      in the hook or in an interrupt handler (work) costs one more turn.
+    - New fields at the tail of `Sh4Context` (`jit_idle_work`,
+      `jit_idle_checks`, `jit_idle_skips`): no older offset moves.
+    - Comment rule: decoder.cpp (17 blocks) and sh4_registers.h (5)
+      trimmed to 2 lines; two commented-out code blocks in decoder.cpp
+      removed.
+  - PC (WSL): `misc/idle_check/run.sh [seed] [blocks]`.
+    - idle_loop.h against constprop_check's SHIL interpreter: 22 directed
+      cases (the Crazy Taxi blocks, wait shapes, work loops, refused ops,
+      stores) and a fuzzer: a pure block run twice from one state must
+      leave the same registers and read the same addresses, and a memory
+      write needs `has_store`. PASS, 8 seeds x 200000 blocks (~21% pure).
+    - ps3_jit_idle.h: words against the build image's ppu-as (`gen.py`
+      writes `idle_words.inc`), and the check on a PPC64 model (work, count,
+      cycle, base and offset values): PASS, 7230 checks.
+    - `mutate.py`: 20 of 20 planted bugs fail; 13 of the 14 in idle_loop.h
+      fail on the fuzzer alone (the last, float params allowed, is a policy
+      the directed cases hold).
+  - HW test steps (package of 00:45):
+    1. Install. Set (an install resets them): EMULATION -> Dynarec ON, JIT
+       Fastmem ON, SH4 Clock 200 (default); AUDIO -> ARM7 Idle Skip SAFE,
+       SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG -> TA SQ Direct ON, IFB
+       Probe ON, JIT C-Calls ON; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT
+       CONSTPROP, JIT DEAD VALUES ON, JIT CYCLE CHECK LOOPS ONLY (default),
+       JIT IDLE SKIP ON. These are the 5.18 run 1 settings (the no-probe
+       reference) plus JIT IDLE SKIP. Set it on the main menu, not with
+       SELECT (SELECT changes act at the next boot).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Crazy Taxi, dense traffic, ~150 s. Open and close the in-game menu
+       (SELECT) once. Exit to the XMB.
+    4. Check: `[jitcfg]` ... `idle=1`, `[idle]` lines, no hang, game speed
+       and music tempo as before.
+    5. Analysis: same-load VPS against the 5.18 run 1 (`vtbins.py`); the
+       `[idle]` skips/s (the 5.18 profile had 412K loop turns/s).
+    6. Sonic Adventure and Soul Calibur, ~2 min each, option ON: no hang,
+       speed and music as before.
+    7. On a fault: the same boot with JIT IDLE SKIP OFF.
+  - HW 2026-10-05, package of 00:45, Crazy Taxi, 150 s. JIT HOTBLOCKS was
+    ON too, so the reference is the 5.18 run 3 (`run518b.txt`, the same
+    settings with the profiler; dense VPS 51.5 at vt 9.5K), not run 1.
+    Log: this session's scratchpad, `ps3log_525_run1.txt` (Crazy Taxi part
+    `run525_ct.txt`). Log clean; the in-game menu opened and closed; the
+    XMB exit took the old 3 s fallback.
+    - `[jitcfg]` ... `idle=1`. Menus and light scenes: ~103K skips/s (about
+      one per timeslice). Dense windows: 48K checks/s, 36K skips/s.
+    - Wait loop: 412,440 -> 35,978 turns/s (-91%); its share of the JIT
+      instructions 12.4% -> ~1.1%. JIT instructions per emulated frame
+      -12% (421M/s at VPS 51.5 -> 384M/s at VPS 53.6).
+    - 66 dense windows: VPS 53.6 at SPEED 89.3% (mean vt 9.1K), against
+      51.5 at 85.8% (vt 9.5K). Same load (`vtbins.py`): +3.0% VPS (bins
+      8-10K +5.1% and +3.5%).
+    - Dense audio: 19.2 silent blocks/s (run 3: 27.1), output 44.3K
+      samples/s (42.3K).
+    - So the loop cost far less time than its share of instructions (high
+      IPC: L1 loads, predicted branches); the rest of the code stalls.
+    - Matt: sound and game speed normal in Crazy Taxi.
+    - Sonic Adventure (profiler OFF, `run525_sonic.txt`): Matt "It feels
+      much slower". The log agrees: VPS 60 and SPEED 100% all along, but
+      the game draws 20 frames/s in long stretches (the boss: RPS 20.0 in
+      every window) where the 5.17 run drew 30 (634 of 730 windows). The
+      game loses CPU time per frame (3 vblanks, not 2), so a skipped loop
+      does work the two checks miss: a counter or pointer that changes in
+      another block of the turn, with no store.
+    - Soul Calibur (`run525_soul.txt`): as in the 5.20 run, render-bound
+      in the fight (VPS 27.8 of 50, render busy 83.5%); log clean.
+  - Fix (Matt 2026-10-05: "Fix build"), package of 01:13. Build clean (the
+    7 old warnings), `.got` 0xA498, 0 r2off.
+    - Third check: a hash of the SH4 GPRs (the 15 pinned in r14..r28 and
+      r11 from the context; rotate by 5 and xor, low words only, so the
+      junk high words of pinned registers do not count) must equal the
+      hash this block stored at its last check. A counter or pointer that
+      moves anywhere in the turn changes it, so that turn runs on. 47
+      instructions on the idle path (was 12); the work mark is unchanged.
+    - Per idle-loop pc an entry (checks, skips, last hash; 1024 entries,
+      the last shared on overflow, kept across cache clears). The context
+      keeps only `jit_idle_work`.
+    - `[idle]` line: checks/s, skips/s and the 6 busiest idle blocks
+      (pc checks/s / skips/s); then, once per pc (up to 64), its SH4 code
+      from the branch target to the block end (`[idle] code`).
+    - PC: idle_check PASS (8 seeds as before; the analysis is unchanged);
+      emitter: words against ppu-as for three entry addresses (low half
+      positive, negative and 0x7FF0) and the check on the PPC64 model with
+      junk high words, stale hashes, work marks, one changed bit in every
+      GPR and r11, and i++/j-- together: PASS, 91346 checks.
+  - HW test steps (package of 01:13):
+    1. Install. Settings as the runs above, JIT IDLE SKIP ON, JIT
+       HOTBLOCKS OFF.
+    2. Sonic Adventure: the stretches that drew 20 frames/s (the boss),
+       ~2 min. They must draw 30 again. The `[idle]` lines name the loops
+       that still skip.
+    3. Crazy Taxi, dense traffic, ~150 s: same-load VPS against the 5.18
+       run 1 (no probe; copied to this session's scratchpad as
+       `run518_run1_noprobe.txt`, dense VPS 54.9 at vt 9.7K).
+    mutate.py with the new emitter mutants: 26 of 26 planted bugs fail.
+  - HW 2026-10-05, package of 01:13, Crazy Taxi only (Matt: "Sonic
+    Adventure already runs well"; the Sonic check of the fix was not run).
+    Log `run525b.txt` (the listener file after byte 2116220). Log clean,
+    the old XMB 3 s fallback.
+    - 62 dense windows: VPS 57.1 at SPEED 95.3% (mean vt 9.3K), 35% of
+      them at full speed; the 5.18 run 1: 54.9 at 91.5% (vt 9.7K), 26%.
+      Same load: +3.0% VPS (bins 7-9K +8.4% and +6.2%, 10-11K +5.8%).
+    - Dense `[idle]`: 50.8K checks/s, 36.9K skips/s, all from the Crazy
+      Taxi wait loop 0C15A678. Six other idle blocks check up to 3.9K
+      times/s and never skip; their code shows work loops (0C0679F8 scans
+      an array with float compares, 0C172BC2's loop adds to r12 and
+      stores). The first version skipped such loops on turns without a
+      store: the Sonic Adventure slowdown.
+  - Matt 2026-10-05: "Turn it on by default". `JitIdleSkip` defaults to 1
+    since the package of 01:27 (an install resets the settings to it).
+- 5.26 T for `bt.s`/`bf.s` kept in a register (from the 5.18 ranking,
+  item 2). Not built; Matt picks the option.
+  - Facts (5.18 run 3, `hot518b/report.txt` in the scratchpad of session
+    29bdd1c1): load-hit-stores by context slot: sr_T 1.985M/s, the largest
+    (fpul 0.655, jit_scratch 0.567, each FR slot ~0.2, fpscr 0.218).
+  - Today (`ps3/ps3_driver.cpp`, `shop_jcond`): a delayed branch copies T
+    into r31 (djump) before its delay slot. With T FORWARD it takes T from
+    rarg0 only when the compare is the op just before it; else it loads
+    sr_T, a few instructions after the compare stored it.
+  - The 36 dumped blocks with that load (`jcond518.py` on `run518b.txt`,
+    session 1a0d7654's scratchpad; ~1.3M entries/s, 70% of the weight):
+    - The compiler puts 1-4 ops between the compare and `bt.s`/`bf.s`
+      (`tst; add #4,Rn; bf.s` is the top shape, 0.24M/s). Some have 5-24
+      ops between (`dt` near the top of a long block).
+    - `fcmp/gt` just before `bf.s` (0C042D96, 94K/s) reloads too:
+      `shop_fseteq`/`shop_fsetgt` store T without setting `t_in_rarg0`.
+    - One block has no T writer (T comes from the block before).
+  - Options:
+    a. The block's last T writer before a jcond also copies T into r31
+       (`mr r31,rarg0`), when no op between them writes T; that jcond then
+       emits nothing. fseteq/fsetgt get the same copy. r31 is free in a
+       conditional block (only jcond and the block end use it), and C
+       calls keep it (non-volatile).
+    b. Keep sr_T in a pinned register for the whole block (also helps
+       `movt`, `rotcl`, `addc` and other T readers), written back before C
+       calls and at block end. Larger change: every T reader and writer.
+  - Expected: if all ~1.9M/s are such reloads at ~40 cycles each, ~80M
+    PPE cycles/s, up to ~2.5% of the SH4 thread. Not measured.
+  - Checks: PC: the emitted T copy on the hot_check-style PPC64 model
+    (both CR0 forms, delay slots that write T, IFB in between). HW: Crazy
+    Taxi same-load VPS against `run525b.txt`; the profiler again (sr_T
+    load-hit-stores must fall); a Sonic Adventure and a Soul Calibur boot.
+- 5.27 Store-queue stores JIT SQ STORES misses (from the 5.18 ranking,
+  item 5). Not scheduled.
+  - Facts (5.18 run 3): 0.88M slow-path entries/s, mostly `fmov.s
+    FRm,@-Rn` in 0C081D58, 0C081D5A and 0C0820C2, whose PREF is in another
+    block, so 5.17 Step 3's guess (a later PREF on the same base register)
+    does not see them. The slow path's table tier runs 2 microcoded
+    shifts.
+  - Options: test for the store queue first in the slow path, or a wider
+    guess (a store through a register that held a store-queue address in
+    an earlier block).
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

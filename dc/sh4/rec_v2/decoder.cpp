@@ -1,7 +1,4 @@
-/*
-	Ugly, hacky, bad code
-	It decodes sh4 opcodes too
-*/
+// Ugly, hacky, bad code. It decodes sh4 opcodes too.
 
 #include "types.h"
 #include "decoder.h"
@@ -11,6 +8,7 @@
 #include "dc/sh4/sh4_registers.h"
 #include "dc/mem/sh4_mem.h"
 #include "decoder_opcodes.h"
+#include "idle_loop.h"
 
 #define NullAddress 0xFFFFFFFF
 
@@ -45,6 +43,9 @@ void DecodedBlock::Setup(u32 rpc)
 
 	BlockType=BET_SCL_Intr;
 	oplist.clear();
+
+	has_store=false;
+	idle_loop=false;
 }
 
 DecodedBlock block;
@@ -101,10 +102,8 @@ extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
 
-// PC-relative data reads: mova (0xC7xx), mov.w @(disp,PC) (0x9xxx) and
-// mov.l @(disp,PC) (0xDxxx). Their address is baked in at decode time, so a
-// wrong PC or a wrong &~3 only shows at run time. JITPCREL forces them to the
-// interpreter to test exactly that.
+// PC-relative reads (mova 0xC7xx, mov.w 0x9xxx, mov.l 0xDxxx) bake their address at decode time, so a wrong PC
+// or &~3 shows only at run time. JITPCREL sends them to the interpreter to test that.
 static bool dec_is_pcrel(u32 op)
 {
 	const u32 hi = op >> 12;
@@ -123,13 +122,8 @@ static void dec_fallback(u32 op)
 	block.oplist.push_back(opcd);
 }
 
-// JIT_NEWOPS preset (wii/main.cpp). Nine opcodes that always took the shop_ifb
-// interpreter path despite the code to compile them already existing. Eight
-// have hand-written decoder handlers further down this file that were never
-// referenced from OpDesc[].rec_oph; the ninth, stc SR,<REG_N>, reaches
-// dec_generic's DM_ReadSRF mode, which likewise had no table row pointing at
-// it. Both dispatch paths consult this list, so with the preset off all nine
-// fall back exactly as they did before.
+// JIT_NEWOPS: nine opcodes whose handlers existed but no table row reached (eight rec_oph, plus stc SR via
+// dec_generic's DM_ReadSRF). Both dispatch paths check this list, so with the preset off all nine fall back.
 extern "C" int get_jit_newops_preset();
 
 static bool dec_is_newop(u32 op)
@@ -150,23 +144,8 @@ static bool dec_is_newop(u32 op)
 	return false;
 }
 
-// JIT_CARRY preset (wii/main.cpp). The SH4's carry/overflow arithmetic --
-// addc/subc/negc/addv/subv/div1 -- plus cmp/str, xtrct, swap.b and clrmac.
-// Every one of these took the shop_ifb interpreter path because SHIL had no
-// opcode that could express "produce a value AND the new T bit". The shil ops
-// now exist (shop_adc/sbc/negc/addv/subv/div1/cmpstr/swaplb, see
-// dc/sh4/rec_v2/shil_canonical.h) with native PPC codegen behind them; the
-// table rows for these opcodes carry a `decode` word that reaches dec_generic
-// below. With the preset off, this gate sends them back to the interpreter so
-// the change is a clean A/B.
-//
-// The div1 semantics also CHANGE with this preset: the interpreter's
-// i0011_nnnn_mmmm_0100 never applied the `q ^ M ^ carry` step, so its Q (and
-// therefore T) was wrong whenever the bit shifted out of Rn was set, or
-// whenever M was 1 (signed division). shop_div1 implements the architectural
-// sequence. This is invisible in most games because the 32-step rotcl/div1
-// idiom is pattern-matched away by MatchDiv32 -- only the unmatchable
-// prologue/epilogue div1s ever execute (see the [DIV] probe).
+// JIT_CARRY: addc/subc/negc/addv/subv/div1, cmp/str, xtrct, swap.b, clrmac as native shil ops; off sends them
+// back to the interpreter. shop_div1 also adds the q^M^carry step the interpreter's div1 lacks.
 extern "C" int get_jit_carry_preset();
 
 static bool dec_is_carryop(u32 op)
@@ -187,20 +166,8 @@ static bool dec_is_carryop(u32 op)
 	return op==0x0028;	//clrmac
 }
 
-// JIT_MAC preset (wii/main.cpp). mac.l / mac.w — the last two opcodes with no
-// dynarec path at all. Kept OFF the jit_carry switch on purpose: these are the
-// only ones in the set that touch MEMORY, so if something goes wrong on
-// hardware you want to be able to bisect them separately.
-//
-// Two wins, one of them not about speed:
-//   * The two @Rm+/@Rn+ reads become ordinary shop_readm ops, so they go
-//     through FASTMEM. On the shop_ifb path they went through the interpreter's
-//     ReadMem, which does the full address decode every time.
-//   * Saturation (SR.S=1) actually works now. The interpreter's mac.l does
-//     `verify(sr.S == 0)` and DIES; its mac.w prints a line and skips the whole
-//     instruction — including the two register post-increments, so the guest's
-//     pointers silently stop advancing. Neither has ever been hit in practice,
-//     which is why it went unnoticed.
+// JIT_MAC: mac.l / mac.w natively, apart from jit_carry because they touch memory (bisect them alone). Their
+// reads go through fastmem, and SR.S saturation works (the interpreter's mac.l dies on it, mac.w skips it).
 extern "C" int get_jit_mac_preset();
 
 static bool dec_is_macop(u32 op)
@@ -210,18 +177,6 @@ static bool dec_is_macop(u32 op)
 }
 
 #if 1
-/*
-#define		FMT_I32 OMG!THIS!IS!WRONG++!!
-#define 	FMT_F32 OMG!THIS!IS!WRONG++!!
-#define		FMT_F32 OMG!THIS!IS!WRONG++!!
-#define 	FMT_TYPE OMG!THIS!IS!WRONG++!!
-
-#define 	FMT_REG OMG!THIS!IS!WRONG++!!
-#define 	FMT_IMM OMG!THIS!IS!WRONG++!!
-
-#define 	FMT_PARAM OMG!THIS!IS!WRONG++!!
-#define 	FMT_MASK OMG!THIS!IS!WRONG++!!
-*/
 
 static void dec_DynamicSet(u32 regbase,u32 offs=0)
 {
@@ -440,17 +395,8 @@ sh4dec(i1111_0011_1111_1101)
 {
 	//fpscr.SZ is bit 20
 	block.Emit(shop_xor,reg_fpscr,reg_fpscr,mk_imm(1<<20));
-	// SZ-only: flag it so a backend can skip UpdateFPSCR() entirely (see
-	// SYNC_FPSCR_SZ_ONLY in shil.h, consumed by the Wii backend's JIT_FSCHG
-	// preset). Measured at ~1.3 M/s -- 2.3 per transformed vertex -- in ChuChu
-	// mouse mania, of which ~0.05% actually changed FP banks. Dreamcast T&L
-	// brackets its vertex loop with fschg to get pair-width fmov, so every
-	// other one was paying a C call wrapped in a full pinned-FPU spill/reload
-	// for no state change at all.
-	//
-	// The 5th positional argument of Emit() is `flags` (see decoder.h); the
-	// three shil_param()s before it are rd/rs1/rs2, which sync_fpscr does not
-	// use. frchg and the two ldc..FPSCR forms deliberately do NOT set this.
+	// SZ only (flags = SYNC_FPSCR_SZ_ONLY): JIT_FSCHG skips UpdateFPSCR(); T&L loops run ~1.3M fschg/s and
+	// almost none change FP banks. frchg and the ldc..FPSCR forms must not set it.
 	block.Emit(shop_sync_fpscr,shil_param(),shil_param(),shil_param(),SYNC_FPSCR_SZ_ONLY);
 	state.cpu.FSZ64=!state.cpu.FSZ64;
 	
@@ -810,19 +756,8 @@ void dec_param(DecParam p,shil_param& r1,shil_param& r2, u32 op)
 	}
 }
 
-// ============================================================================
-// 32-bit division idiom detection (ported from devcast/reicast)
-//
-// Compilers emit 32/32 division on SH4 as DIV0U/DIV0S followed by exactly
-// 32 repetitions of "ROTCL Rq / DIV1 Rm,Rn" (64 instructions). MatchDiv32
-// scans forward and verifies the full idiom with consistent registers:
-//   reg1 = the ROTCL register (quotient accumulator / dividend)
-//   reg2 = DIV1's Rm          (divisor)
-//   reg3 = DIV1's Rn          (working remainder)
-// A perfect match (score 65) lets the recompiler emit one real divide
-// (shop_div32u/s + T/quotient adjust + shop_div32p2 remainder fixup) and skip
-// the 64 guest opcodes. Anything else falls back to the interpreter (ifb).
-// ============================================================================
+// 32/32 division idiom (devcast/reicast): DIV0U/S + 32 x "ROTCL reg1; DIV1 reg2,reg3". A full match (score 65)
+// becomes one divide (div32u/s + div32p2 fixup) and skips the 64 guest opcodes; anything else stays ifb.
 #define DIV1_KEY      0x3004
 #define ROTCL_KEY     0x4024
 #define DIV_MASK_N    0xF0FF	// masks out the n field
@@ -911,20 +846,11 @@ static bool MatchDiv32s(u32 op, u32 pc)
 	return s_div_match_len == 65;
 }
 
-// ---------------------------------------------------------------------------
-// [DIV1] probe. When the idiom above matches, all 64 guest opcodes collapse
-// into one native divide and no div1 ever reaches the interpreter. Castlevania
-// issues ~11.5k div1/s through the shop_ifb path, so its divisions are NOT the
-// shape MatchDiv32 expects. This dumps the real instruction window around the
-// first few offending sites, plus how far the matcher got, so the actual shape
-// can be identified. Shares the ifb_probe preset — the same runs that want the
-// [IFB] breakdown want this. Self-quieting: DIV1_DUMP_MAX sites, then silent.
-// ---------------------------------------------------------------------------
+// [DIV1] probe (IFB Probe preset): Castlevania runs ~11.5k div1/s through ifb, so its divisions miss MatchDiv32.
+// Dumps the code around the first sites and how far the matcher got.
 extern "C" int get_ifb_probe_preset();
 
-// One line per distinct site, matches included — the whole point is to see
-// whether the real 32-step loops collapse, which a failure-only probe cannot
-// show. Separate budgets so div0 sites and div1 sites can't starve each other.
+// One line per site, matches too (it shows whether the 32-step loops collapse); div0 and div1 budgets apart.
 #define DIV_SITE_MAX 16
 static u32 s_div0_sites[DIV_SITE_MAX];
 static u32 s_div1_sites[DIV_SITE_MAX];
@@ -983,9 +909,7 @@ bool dec_generic(u32 op)
 	if (OpDesc[op]->decode==0)
 		return false;
 
-	// JIT_NEWOPS gate for the opcodes this preset enables through the generic
-	// decoder rather than a rec_oph handler (stc SR,<REG_N> -> DM_ReadSRF).
-	// Off => fall back to the interpreter exactly as before.
+	// JIT_NEWOPS gate for its generic-decoder opcode (stc SR,<REG_N> -> DM_ReadSRF); off falls back as before.
 	if (dec_is_newop(op) && !get_jit_newops_preset())
 		return false;
 
@@ -1053,25 +977,8 @@ bool dec_generic(u32 op)
 		break;
 
 	case DM_MAC:
-		// mac.l/mac.w @<REG_M>+,@<REG_N>+ : e is the access size (4 or 2).
-		//
-		// The two loads are plain shop_readm, which is the entire point — they
-		// pick up fastmem and the pinned-register addressing for free instead
-		// of going through the interpreter's ReadMem. shop_readm with size 2
-		// already sign-extends (lha), which is exactly what mac.w wants.
-		//
-		// Rn is read first, then incremented, then Rm — matching the hardware,
-		// and making `mac.l @Rn+,@Rn+` (m == n) read mem[a] and mem[a+4] with
-		// Rn ending at a+8, which is what the manual specifies.
-		//
-		// DELIBERATELY does NOT set state.info.has_readm. Its only consumer is
-		// the idle-loop heuristic at the bottom of dec_DecodeBlock, which
-		// multiplies a block's cycles by 30 when it is a short conditional loop
-		// that reads and never writes. A MAC accumulation loop —
-		// `mac.l @Rm+,@Rn+ ; dt Rk ; bf loop` — matches that shape exactly and
-		// is real work, not a spin. These blocks took the shop_ifb path before,
-		// which never set the flag either, so leaving it alone keeps their
-		// timing identical to today's.
+		// mac.l/mac.w @Rm+,@Rn+ (e = 4 or 2): plain readm (fastmem; size 2 sign-extends), Rn first as the manual says.
+		// No has_readm on purpose: `mac.l @Rm+,@Rn+; dt Rk; bf loop` is work, not the x30 idle rule's spin.
 		block.Emit(shop_readm, mk_reg(reg_temp),  rs1, shil_param(), e);
 		block.Emit(shop_add,   rs1, rs1, mk_imm(e));
 		block.Emit(shop_readm, mk_reg(reg_temp2), rs2, shil_param(), e);
@@ -1081,9 +988,7 @@ bool dec_generic(u32 op)
 		break;
 
 	case DM_XTRCT:
-		// xtrct <REG_M>,<REG_N> : Rn = (Rn >> 16) | (Rm << 16).
-		// Expressed with existing single-instruction shil ops rather than a
-		// dedicated one -- reg_temp is needed because rd aliases rs1 here.
+		// xtrct Rm,Rn: Rn = (Rn >> 16) | (Rm << 16), with reg_temp because rd aliases rs1.
 		block.Emit(shop_shr, mk_reg(reg_temp), rs1, mk_imm(16));
 		block.Emit(shop_shl, rs1, rs2, mk_imm(16));
 		block.Emit(shop_or,  rs1, rs1, mk_reg(reg_temp));
@@ -1240,13 +1145,8 @@ bool dec_generic(u32 op)
 
 	case DM_DIV0:
 		{
-			// Try to match the full 32-step ROTCL/DIV1 division idiom and
-			// replace it with one real divide. Unmatched div0u/div0s keep the
-			// original native SR bit-manipulation below; only div1 itself (no
-			// decoder entry) goes to the interpreter.
-			//
-			// On a match we must not be in a delay slot (we skip 128 bytes of
-			// guest code, which is meaningless mid-delay-slot).
+			// The full ROTCL/DIV1 idiom becomes one divide; unmatched div0u/div0s keep the SR code below. Never in
+			// a delay slot: a match skips 128 bytes of guest code.
 			bool matched = !state.cpu.is_delayslot &&
 				(e==1 ? MatchDiv32u(op, state.cpu.rpc)
 				      : MatchDiv32s(op, state.cpu.rpc));
@@ -1279,9 +1179,7 @@ bool dec_generic(u32 op)
 				// Non-restoring remainder fixup: reg3 = T ? rem : rem - divisor
 				block.Emit(shop_div32p2, mk_reg(div_som_reg3), mk_reg(div_som_reg3), mk_reg(div_som_reg2), 0, mk_reg(reg_sr_T));
 
-				// Skip the 64 matched guest opcodes (32x rotcl + 32x div1) and
-				// account for their cycles/opcode count (the decode loop won't
-				// see them). Also keeps the idle-loop detector honest.
+				// Skip the 64 matched opcodes and bill them here (the decode loop never sees them; the idle rule counts them).
 				state.cpu.rpc += 128;
 				block.cycles  += CPU_RATIO*64;
 				block.opcodes += 64;
@@ -1296,12 +1194,7 @@ bool dec_generic(u32 op)
 			}
 			else
 			{
-				//sr.Q=r[n]>>31;
-				//sr.M=r[m]>>31;
-				//sr.T=sr.M^sr.Q;
-
-				//This is nasty because there isn't a temp reg ..
-				//VERY NASTY
+				//sr.Q=r[n]>>31; sr.M=r[m]>>31; sr.T=sr.M^sr.Q -- nasty, as there is no temp reg
 
 				//Clear Q & M
 				block.Emit(shop_and,mk_reg(reg_sr_status),mk_reg(reg_sr_status),mk_imm(~((1<<8)|(1<<9))));
@@ -1371,10 +1264,8 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 					if (rec_oph && dec_is_newop(op) && !get_jit_newops_preset())
 						rec_oph=0;
 
-					// JitIfbMask bisect: force this opcode's whole top-nibble group
-					// to the interpreter without disturbing block ends, which is what
-					// JitSafe and JitDynEnds both do as a side effect. JitIfbGroup +
-					// JitIfbLoMask sub-bisect one group by low nibble.
+					// JitIfbMask bisect: a whole top-nibble group to the interpreter, block ends untouched (unlike JitSafe
+					// and JitDynEnds). JitIfbGroup + JitIfbLoMask sub-bisect one group by low nibble.
 					const u32 hi=op>>12;
 					const bool force_ifb=((get_jit_ifb_mask()>>hi)&1)
 					    || ((int)hi==get_jit_ifb_group()
@@ -1426,6 +1317,7 @@ _end:
 	block.NextBlock=state.NextAddr;
 	block.BranchBlock=state.JumpAddr;
 	block.BlockType=state.BlockType;
+	block.has_store=idle_block_stores(block);
 
 	//cycle tricks
 	{
@@ -1435,6 +1327,8 @@ _end:
 			if (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1)
 			{
 				block.cycles*=30;
+				// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice.
+				block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);
 			}
 
 			if (block.BranchBlock==block.start)
@@ -1476,16 +1370,6 @@ _end:
 		{
 			printf("Compile stats:\n");
 			qsort(&stuff[0],stuff.size(),sizeof(stuff[0]),stuffcmp);
-      /* Debug print, enable if you want to see the most common fallbacks
-      !!! This also generates a warning at compilation for now
-			for (u32 i=0;i<10 && i<stuff.size();i++)
-			{
-				printf("%05llu :%04llX %u\n",
-       (unsigned long long)stuff[i].fallbacks,
-       (unsigned long long)stuff[i].rez,
-       stuff[i].diss);
-			}
-      */
 		}
 	}
 	return &block;

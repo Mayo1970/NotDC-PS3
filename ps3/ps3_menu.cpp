@@ -406,6 +406,8 @@ static Option s_video[] = {
 	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
 	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs [CC] C call-outs per second from the JIT. Live." },
+	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Counts JIT block entries: [HOTC] census, code dumps. Slower. Set before boot." },
 	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SPE wake test at boot, [spe] counts in play. Set before boot." },
 	{ "SPE Draw",        &g_spe_draw_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -434,6 +436,8 @@ static Option s_jit[] = {
 	  "Ops whose results are never read are dropped. Takes effect on boot." },
 	{ "JIT CYCLE CHECK", &g_jit_cycle_check_preset, OPT_CHOICE, k_cycle,   0, 0,0,0, NULL,
 	  "Exit out of line; LOOPS ONLY polls only where a loop can close. Set before boot." },
+	{ "JIT IDLE SKIP",   &g_jit_idle_skip_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A wait-loop turn with no memory store ends the timeslice. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

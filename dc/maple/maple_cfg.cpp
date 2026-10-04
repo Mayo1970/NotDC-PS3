@@ -4,15 +4,12 @@
 #include "maple_devs.h"
 #include "maple_cfg.h"
 
-// ============================================================================
-// Per-device update function declarations.
-// Each lives in its own .cpp file in plugs/drkMapleDevices/.
-// ============================================================================
-void UpdateInputState(u32 port);        // Standard controller  (drkMapleDevices.cpp)
-void UpdateLightGunState(u32 port);     // Light gun            (drkMapleLightGun.cpp)
-void UpdateMaracasState(u32 port);      // Maracas              (drkMapleMaracas.cpp)
-void UpdateKeyboardState(u32 port);     // Keyboard             (drkMapleKeyboard.cpp)
-void UpdateFishingRodState(u32 port);   // Fishing rod          (drkMapleFishingRod.cpp)
+// Per-device input hooks; on PS3 they are in ps3/ps3_input.cpp (plugs/drkMapleDevices is not built).
+void UpdateInputState(u32 port);        // Standard controller
+void UpdateLightGunState(u32 port);     // Light gun
+void UpdateMaracasState(u32 port);      // Maracas
+void UpdateKeyboardState(u32 port);     // Keyboard
+void UpdateFishingRodState(u32 port);   // Fishing rod
 
 // Init functions — called once before the emulator starts
 void InitControllers(void);
@@ -21,7 +18,7 @@ void InitMaracas(void);
 void InitKeyboard(void);
 void InitFishingRod(void);
 
-// Controller type selection set by main.cpp options menu
+// From ps3_presets.cpp; always 0 (standard pad) on PS3.
 extern "C" int get_controller_type();  // 0=standard 1=lightgun 2=maracas 3=keyboard 4=fishing
 
 extern u16 kcode[4];
@@ -29,21 +26,14 @@ extern u32 vks[4];
 extern s8  joyx[4], joyy[4];
 extern u8  rt[4], lt[4];
 
-// ----------------------------------------------------------------------------
-// Helper: convert signed axis value [-128..127] to unsigned byte [0..255]
-// Center (0) maps to 0x80.
-// ----------------------------------------------------------------------------
+// Signed axis [-128..127] to the Maple byte [0..255]; centre 0 maps to 0x80.
 static inline u8 SignedToByte(s8 val)
 {
 	return static_cast<u8>(static_cast<s32>(val) + 128);
 }
 
-// ----------------------------------------------------------------------------
-// DispatchUpdateInputState
-// Calls the correct platform update function for the active controller type.
-// The keyboard device calls GetInput(nullptr) and reads its own report
-// separately, so we handle that gracefully too.
-// ----------------------------------------------------------------------------
+// Platform input update for the active controller type. The keyboard also comes
+// through here, via GetInput(nullptr), and reads its own report afterwards.
 static void DispatchUpdateInputState(u32 port)
 {
 	switch (get_controller_type())
@@ -56,15 +46,8 @@ static void DispatchUpdateInputState(u32 port)
 	}
 }
 
-// ----------------------------------------------------------------------------
-// MapleConfigMap
-// Bridges the platform's raw input globals into the PlainJoystickState format
-// expected by the Maple device layer.
-//
-// For the keyboard device, GetInput() is called with pjs=nullptr just to
-// trigger the platform scan; the actual key report is read via
-// GetKeyboardReport() directly in maple_keyboard::dma().
-// ----------------------------------------------------------------------------
+// Bridges the platform input globals to PlainJoystickState. The keyboard passes pjs=nullptr
+// only to trigger the scan; maple_keyboard::dma() reads GetKeyboardReport() itself.
 struct MapleConfigMap : IMapleConfigMap
 {
 	maple_device* dev;
@@ -82,9 +65,8 @@ struct MapleConfigMap : IMapleConfigMap
 		if (!pjs)
 			return;
 
-		// kcode is active-low; bits 0 and 8 and 11-15 are reserved by the
-		// Maple protocol. OR them in so they always read as "not pressed".
-		// Bit layout: F901 = 1111 1001 0000 0001
+		// kcode is active-low; bits 0, 8 and 11-15 (0xF901) are reserved by the Maple
+		// protocol, so they are forced to read as "not pressed".
 		pjs->kcode = kcode[dev->bus_id] | 0xF901;
 
 		pjs->joy[PJAI_X1] = SignedToByte(joyx[dev->bus_id]);
@@ -97,13 +79,9 @@ struct MapleConfigMap : IMapleConfigMap
 
 	void SetImage(void* /*img*/) override
 	{
-		// VMU screen image upload — not implemented for Wii input backend
+		// No VMU LCD output on PS3.
 	}
 };
-
-// ----------------------------------------------------------------------------
-// Device factory helpers
-// ----------------------------------------------------------------------------
 
 // Creates a single Maple device, wires up its config map, and registers it.
 static bool mcfg_Create(MapleDeviceType type, u32 bus, u32 port)
@@ -119,10 +97,7 @@ static bool mcfg_Create(MapleDeviceType type, u32 bus, u32 port)
 	return true;
 }
 
-// ----------------------------------------------------------------------------
-// mcfg_GetControllerDeviceType
-// Maps the user-facing controller type integer to the correct MapleDeviceType.
-// ----------------------------------------------------------------------------
+// Maps the menu's controller type number to its MapleDeviceType.
 static MapleDeviceType mcfg_GetControllerDeviceType()
 {
 	switch (get_controller_type())
@@ -135,12 +110,7 @@ static MapleDeviceType mcfg_GetControllerDeviceType()
 	}
 }
 
-// ----------------------------------------------------------------------------
-// mcfg_InitSpecialDevice
-// Calls the one-time hardware init for whichever special device is selected.
-// Safe to call for the standard controller too (InitControllers already
-// existed before this system was added).
-// ----------------------------------------------------------------------------
+// One-time init for the selected device; the standard pad gets InitControllers().
 static void mcfg_InitSpecialDevice()
 {
 	switch (get_controller_type())
@@ -153,29 +123,15 @@ static void mcfg_InitSpecialDevice()
 	}
 }
 
-// g_player_count is set by main.cpp options menu before EmuMain() is called.
+// g_player_count comes from nullDC.cfg [ps3] Players (ps3_presets.cpp), loaded before EmuMain().
 extern "C" int get_player_count();
 
-// ----------------------------------------------------------------------------
-// mcfg_CreateDevices
-// Instantiates the correct Maple devices for all active player slots.
-//
-// Device layout per player:
-//   port 5 = main controller (sub-device slot for the bus root)
-//   port 0 = VMU slot A1
-//   port 1 = VMU slot A2  (only for standard controller)
-//
-// Special devices (light gun, maracas, keyboard, fishing rod) do not use
-// VMUs — the real DC peripherals didn't expose VMU slots either.
-//
-// Maracas note:
-//   Each DC port represents one "player" who uses 2 Wiimotes physically.
-//   The maracas device for bus N (player N+1) needs Wiimotes 2N & 2N+1, so
-//   2 Wiimotes per player total are required in maracas mode (up to 8 for
-//   4-player mode).
-// ----------------------------------------------------------------------------
+// Per player: port 5 = controller, ports 0 and 1 = VMU slots 1 and 2 (standard pad only).
 void mcfg_CreateDevices()
 {
+	// plugins_Load() runs twice per boot; free the first set so each VMU file has one open handle.
+	mcfg_DestroyDevices();
+
 	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
 	bool isStandard = (ctrlType == MDT_SegaController);
 
@@ -185,12 +141,8 @@ void mcfg_CreateDevices()
 	// --- Bus 0 : Player 1 ---
 	mcfg_Create(ctrlType,       0, 5);  // Main controller
 
-  // Claude Comment this : (probably wrong, because official lightgun has VMU)
-	// VMUs only for standard controller — special devices (lightgun, maracas,
-	// keyboard, fishing rod) have no VMU slots on real hardware.
-	// maple_GetAttachedDevices() reports sub-port occupancy to the DC SH4; if a
-	// VMU is present here for a lightgun port, the DC sees lightgun+VMU which is
-	// an invalid configuration and games (e.g. Confidential Mission) reject it.
+	// No VMUs on special devices: Confidential Mission rejected a lightgun port with one.
+	// Probably wrong, though: the official lightgun has a VMU slot.
 	if (isStandard)
 	{
 		mcfg_Create(MDT_SegaVMU, 0, 0);  // VMU slot A1

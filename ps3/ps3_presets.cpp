@@ -59,8 +59,10 @@ int g_jit_ftrv_preset      = 0;   // 1 = ftrv/fipr without FPR copies, ftrv sums
 int g_jit_constprop_preset = 0;   // 1 = constants in r0-r15 fold into immediates and drop ops (5.21)
 int g_jit_dve_preset       = 0;   // 1 = ops whose results are never read are dropped (5.21)
 int g_jit_cycle_check_preset = 2; // 0 old, 1 exit out of line, 2 also no poll on forward-only ends (5.22, HW)
+int g_jit_idle_skip_preset = 1;   // 1 = an idle loop turn with no store or register change ends the timeslice (5.25, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
+int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
 int g_spe_draw_preset      = 0;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3)
 int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against a PPU control pass (5.13 A1)
@@ -119,9 +121,11 @@ static const CfgItem s_items[] = {
 	{ "JitConstProp",  &g_jit_constprop_preset },
 	{ "JitDve",        &g_jit_dve_preset },
 	{ "JitCycleCheck", &g_jit_cycle_check_preset },
+	{ "JitIdleSkip",   &g_jit_idle_skip_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
+	{ "JitHotblocks",  &g_hotblocks_preset },
 	{ "SpeDoorbell",   &g_spe_bell_preset },
 	{ "SpeDraw",       &g_spe_draw_preset },
 	{ "SpeAicaCheck",  &g_spe_aica_preset },
@@ -268,7 +272,7 @@ int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }
 int get_dyn_ic_preset()        { return 0; }
 int get_fpu_pin_preset()       { return g_fpu_pin_preset; }
-int get_hotblocks_preset()     { return 0; }
+int get_hotblocks_preset()     { return g_hotblocks_preset; }
 int get_ifb_flush_preset()     { return 0; }
 int get_jit_align_preset()     { return 0; }
 int get_jit_cr0_preset()       { return g_jit_cr0_preset; }
@@ -277,6 +281,7 @@ int get_jit_ftrv_preset()      { return g_jit_ftrv_preset; }
 int get_jit_constprop_preset() { return g_jit_constprop_preset; }
 int get_jit_dve_preset()       { return g_jit_dve_preset; }
 int get_jit_cycle_check_preset() { return g_jit_cycle_check_preset; }
+int get_jit_idle_skip_preset() { return g_jit_idle_skip_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }

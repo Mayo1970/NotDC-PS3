@@ -4,6 +4,7 @@
 #include "maple_devs.h"
 #include "maple_cfg.h"
 #include <time.h>
+#include <sys/stat.h>
 
 const char* maple_sega_controller_name = "Dreamcast Controller";
 const char* maple_sega_vmu_name = "Visual Memory";
@@ -223,38 +224,84 @@ struct maple_sega_controller: maple_base
 	}	
 };
 
-// Sega Dreamcast Visual Memory Unit.
+// Sega Dreamcast Visual Memory Unit: one raw 128 KB flash image per slot, Flycast's file format.
+#define VMU_DIR "/dev_hdd0/savedata/vmu"
+
+static void vmu_put16(u8* p, u32 v)
+{
+	p[0] = v & 0xFF;
+	p[1] = (v >> 8) & 0xFF;
+}
+
+// Blank card as the BIOS formats it (Flycast's vmu_default without its stale user bytes).
+// FAT block 254: 0xFFFC free, 0xFFFA end of chain; the directory chains 253 down to 241.
+static void vmu_format(u8* flash)
+{
+	static const u8 color[5] = { 0x01, 0xFF, 0xFF, 0xFF, 0x64 };
+	static const u8 stamp[8] = { 0x19, 0x98, 0x11, 0x27, 0x00, 0x00, 0x59, 0x04 };
+	// Root +0x40: last block, partition, root, FAT, FAT size, dir, dir size, icon, user blocks, ...
+	static const u16 info[12] = { 0xFF, 0, 0xFF, 0xFE, 1, 0xFD, 13, 5, 200, 31, 0, 0x80 };
+
+	memset(flash, 0, 128*1024);
+	u8* fat = flash + 254*512;
+	for (u32 b = 0; b < 256; b++)
+		vmu_put16(fat + b*2, (b == 241 || b >= 254) ? 0xFFFA : (b > 241 ? b - 1 : 0xFFFC));
+	u8* root = flash + 255*512;
+	memset(root, 0x55, 16);
+	memcpy(root + 0x10, color, sizeof(color));
+	memcpy(root + 0x30, stamp, sizeof(stamp));
+	for (u32 i = 0; i < 12; i++)
+		vmu_put16(root + 0x40 + i*2, info[i]);
+}
+
 struct maple_sega_vmu: maple_base
 {
 	FILE* file;
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[48*32];
-	
+
 	virtual void OnSetup()
 	{
 		memset(flash_data,0,sizeof(flash_data));
 		memset(lcd_data,0,sizeof(lcd_data));
-		// Under the emulator data root: a bare name resolves to no writable dir on PS3.
-		wchar temp[512];
-		char* vmu_dir = GetEmuPath("");
-		snprintf(temp, sizeof(temp), "%svmu_save_%s.bin", vmu_dir, logical_port);
-		free(vmu_dir);
-		file=fopen(temp,"rb+");
+		char path[64];
+		mkdir(VMU_DIR, 0777);
+		snprintf(path, sizeof(path), VMU_DIR "/vmu_save_%s.bin", logical_port);
+		file=fopen(path,"rb+");
 		if (!file)
-		{
-			printf("Unable to open vmu save file \"%s\", creating new file\n",temp);
-			file=fopen(temp,"wb");
-		}
+			file=fopen(path,"wb+");
 
+		size_t got=0;
 		if (!file)
+			printf("[vmu] %s: cannot open or create %s, saves are lost on exit\n",logical_port,path);
+		else
+			got=fread(flash_data,1,sizeof(flash_data),file);
+
+		u8 sum=0;
+		for (u32 i=0;i<sizeof(flash_data);i++)
+			sum|=flash_data[i];
+		// An all-zero card reads as unformatted, and games will not save to it.
+		if (sum==0)
 		{
-			printf("Failed to create vmu save file \"%s\"\n",temp);
+			vmu_format(flash_data);
+			printf("[vmu] %s: formatted blank card %s\n",logical_port,path);
+			save(0,sizeof(flash_data));
 		}
 		else
+			printf("[vmu] %s: loaded %s (%u bytes)\n",logical_port,path,(u32)got);
+	}
+	// fflush every write: an XMB exit can end the process without closing the file.
+	bool save(u32 adr,u32 len)
+	{
+		if (!file)
+			return false;
+		if (fseek(file,adr,SEEK_SET)!=0 || fwrite(&flash_data[adr],1,len,file)!=len || fflush(file)!=0)
 		{
-			fread(flash_data,1,sizeof(flash_data),file);
+			printf("[vmu] %s: write error at 0x%X (%u bytes)\n",logical_port,adr,len);
+			return false;
 		}
+		return true;
 	}
 	virtual ~maple_sega_vmu()
 	{
@@ -451,18 +498,17 @@ struct maple_sega_vmu: maple_base
 						u32 Phase = ((SWAP32(bph))>>16)&0xff; 
 						u32 write_adr=Block*512+Phase*(512/4);
 						u32 write_len=r_count();
+						if (write_len>sizeof(flash_data) || write_adr>sizeof(flash_data)-write_len)
+						{
+							printf("[vmu] %s: write out of range, block %u phase %u len %u\n",logical_port,Block,Phase,write_len);
+							return MDRE_FileError;
+						}
 						rptr(&flash_data[write_adr],write_len);
 
-						if (file)
-						{
-							fseek(file,write_adr,SEEK_SET);
-							fwrite(&flash_data[write_adr],1,write_len,file);
-							fflush(file);
-						}
-						else
-						{
-							printf("Failed to save vmu %s data\n",logical_port);
-						}
+						if (file && !save(write_adr,write_len))
+							return MDRE_FileError;
+						if (Phase==3)
+							printf("[vmu] %s: block %u written\n",logical_port,Block);
 						return MDRS_DeviceReply;//just ko
 					}
 					break;

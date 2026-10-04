@@ -4,6 +4,7 @@
 #include <stddef.h>	// offsetof — used for jit_scratch context slot addressing
 #include <math.h>	// sqrtf — fsqrt/fsrra native call targets
 #include <stdlib.h>	// malloc — JIT_HOTBLOCKS lazily allocates its block table
+#include <stdarg.h>	// va_list — JIT_HOTBLOCKS batches its log lines
 #include "dc/sh4/sh4_opcode_list.h"
 #include "dc/sh4/sh4_interpreter.h"	// sh4_GetTimeslice — preset-latched timeslice
 
@@ -18,6 +19,8 @@
 #include "ps3/ps3_jitmem.h"
 #include "ps3/ps3_jit_sq.h"
 #include "ps3/ps3_jit_fv.h"
+#include "ps3/ps3_jit_hot.h"
+#include "ps3/ps3_jit_idle.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -273,6 +276,16 @@ extern "C" int get_jit_cycle_check_preset();
 static ppc_label* s_cycle_exit;	// this block's blt to its out-of-line exit, patched after ngen_End
 static u32 s_cycle_poll, s_cycle_nopoll;	// blocks compiled with and without the poll, for the [cyc] line
 
+// JIT IDLE SKIP (plan 5.25): one entry per idle-loop pc (a cache clear reuses it), the last one shared on
+// overflow. The [idle] line reads the counters; the loop range is for its code dumps.
+extern "C" int get_jit_idle_skip_preset();
+#define IDLE_MAX 1024
+static IdleEnt s_idle_ent[IDLE_MAX] __attribute__((aligned(16)));
+static IdleEnt s_idle_last[IDLE_MAX];	// counters at the last [idle] line
+struct IdleMeta { u32 pc, loop_lo, loop_hi; bool dumped; };
+static IdleMeta s_idle_meta[IDLE_MAX];
+static u32 s_idle_n;
+
 // A block polls if its end can close a loop: a static target at or below its start, or a dynamic or interrupt
 // end. Ends without the poll only reach higher starts, so every loop still polls once per turn.
 static bool cycle_poll_needed(const DecodedBlock* b)
@@ -389,6 +402,10 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 
 		jdst->MarkLabel();
 	}
+
+	// JIT IDLE SKIP: a block that may store marks the turn as work, so the next idle check runs on.
+	if (get_jit_idle_skip_preset() && block->has_store)
+		emit_idle_mark(ppc_contex,offsetof(Sh4Context,jit_idle_work));
 
 	// No GPR reload: pinned r14..r28 hold the SH4 GPRs across blocks, loaded once in the mainloop prologue and
 	// resynced only around shop_ifb and the canonical fallback.
@@ -1063,6 +1080,35 @@ void DoStatic(u32 pc)
 
 // ---- ngen_End: block exit code ----
 
+// JIT IDLE SKIP, before an idle loop's backward link. Cycles are >= 0 here (the block's own poll passed), so the
+// check only drops the rest of the timeslice. rarg1-rarg3 and CR0 are free once the exit is chosen.
+static void idle_check_before_link(const DecodedBlock* block)
+{
+	if (!get_jit_idle_skip_preset() || !block->idle_loop)
+		return;
+	u32 i=0;
+	while (i<s_idle_n && s_idle_meta[i].pc!=block->start)
+		i++;
+	if (i==s_idle_n)
+	{
+		if (s_idle_n<IDLE_MAX)
+			s_idle_n++;
+		else
+			i=IDLE_MAX-1;
+		IdleMeta& m=s_idle_meta[i];
+		m.pc=block->start;
+		m.loop_lo=block->BranchBlock;
+		m.loop_hi=block->start+block->sh4_code_size;
+		m.dumped=false;
+	}
+	// The pinned SH4 GPRs: r0-r10 and r12-r15 in r14..r28 (GetIntReg); r11 lives in the context. The entries
+	// are reached with addis from 0, so they must lie below 2 GB.
+	verify(GetIntReg(reg_r0)==ppc_r14 && GetIntReg(reg_r15)==ppc_r28 && GetIntReg(reg_r11)==ppc_rinvalid);
+	verify((uintptr_t)&s_idle_ent[IDLE_MAX] < 0x7FFF0000u);
+	const IdleRegs g={ (u32)ppc_contex, (u32)ppc_cycles, ppc_rarg1, ppc_rarg2, ppc_rarg3, ppc_r14, 15 };
+	emit_idle_check(g,Sh4cntx.offset(reg_r11),offsetof(Sh4Context,jit_idle_work),&s_idle_ent[i]);
+}
+
 void ngen_End(DecodedBlock* block)
 {
 	// No GPR flush: pinned r14..r28 stay live across block transitions. The BET_*Intr path (UpdateINTC reads
@@ -1090,6 +1136,7 @@ void ngen_End(DecodedBlock* block)
 				jtrue->MarkLabel();
 				ppc_li(ppc_rarg0,want);
 				ppc_sh_store(ppc_rarg0,reg_sr_T);
+				idle_check_before_link(block);
 				DoStatic(block->BranchBlock);
 				break;
 			}
@@ -1117,6 +1164,7 @@ void ngen_End(DecodedBlock* block)
 
 			DoStatic(block->NextBlock);
 			jtrue->MarkLabel();
+			idle_check_before_link(block);
 			DoStatic(block->BranchBlock);
 		}
 		break;
@@ -1553,8 +1601,8 @@ extern "C" void ifb_probe_dump(double seconds)
 	fflush(stdout);
 }
 
-// JIT_HOTBLOCKS: per-block entry counts; once a second the hottest blocks with PPC bytes per SH4 op, and
-// dumps of the top and worst ones. 4 instructions per entry (diagnostic); dense counter array for cache.
+// JIT_HOTBLOCKS (plan 5.18): entry and cold-entry counts per block, summed over dense windows (vt > 3K);
+// the [HOTC] census ranks blocks by entries x hot instructions and weighs ps3_jit_hot.h's classes by entries.
 extern "C" int get_hotblocks_preset();
 
 struct HotBlock
@@ -1563,53 +1611,199 @@ struct HotBlock
 	u32 sh4_size;	// bytes of SH4 source the block consumed
 	u32 sh4_ops;
 	u8* ppc_start;
-	u32 ppc_size;	// bytes of HOT PPC body (filled in at the end of ngen_Compile)
-	u32 ppc_cold;	// bytes of out-of-line mem slow paths FlushCold() appended
+	u32 ppc_size;	// hot body bytes, without the probe's 4-instruction counter
+	u32 ppc_cold;	// out-of-line bytes after the hot body
+	u32 probe_ofs;	// the counter's byte offset in the hot body
+	u32 cold_frags;	// cold fragments that count their entries (0 when the block is too large)
+	u64 dense_hits;
+	u64 dense_cold;
+	u16 cls[HC_COUNT];
 };
 
-// ~10k blocks compile between cache clears in ChuChu; 2048 left most untracked. 16384 * 20 B plus 64 KB
-// of counters, allocated only with the preset on.
-#define HOT_MAX 16384
+// ~15k blocks compile after Crazy Taxi's last cache clear. ~3.3 MB, allocated only with the preset on.
+#define HOT_MAX 32768
 static HotBlock* s_hb = 0;
-static u32* s_hb_hits = 0;	// dense counter array, indexed in step with s_hb
+static u32* s_hb_hits = 0;	// bumped by each block's entry counter
+static u32* s_hb_cold = 0;	// bumped at each counted cold-fragment entry
+static bool s_hb_failed = false;
 static u32 s_hb_n = 0;
 static u32 s_hb_overflow = 0;
-// Blocks already dumped this session, so each hot shape is dumped once; not cleared by hotblocks_reset(),
-// since a cache clear recompiles the same pc.
-#define HOT_DUMP_MAX 16
+static u32 s_hb_dense_n = 0;	// dense windows summed since boot or the last cache clear
+static double s_hb_dense_s = 0.0;
+static u32 s_hb_census_n = 0;
+
+// Dumps: the heaviest blocks not dumped yet, a few per dense window once the ranking has settled. By pc,
+// so the same code recompiled after a cache clear is not dumped twice.
+#define HOT_DUMP_MAX        128
+#define HOT_DUMP_AFTER      5
+#define HOT_DUMP_PER_WINDOW 4
+#define HOT_CENSUS_EVERY    10
+#define HOT_CENSUS_TOP      64
 static u32 s_hb_dumped[HOT_DUMP_MAX];
 static u32 s_hb_dumped_n = 0;
 
-// Worst B/op dumped so far, and how many #1-by-hits dumps have been spent.
-// See the selection logic in hotblocks_dump() for why both exist.
-#define HOT_TOP_DUMPS 4
-static u32    s_hb_top_dumps = 0;
-static double s_hb_worst_bop = 0.0;
-
-// Called from recSh4_ClearCache (dc/sh4/rec_v2/driver.cpp): the compiled code
-// these entries describe no longer exists.
-extern "C" void hotblocks_reset()
+static double hot_weight(u32 i)
 {
-	s_hb_n = 0;
-	s_hb_overflow = 0;
+	return (double)s_hb[i].dense_hits * s_hb[i].cls[HC_INSN];
 }
 
-// Compile time: claim a slot for this block, or -1. The index reaches both the descriptor and the counter.
+static bool hot_dumped(u32 pc)
+{
+	for (u32 i=0;i<s_hb_dumped_n;i++)
+		if (s_hb_dumped[i]==pc)
+			return true;
+	return false;
+}
+
+// The k heaviest blocks, heaviest first; with undumped, only pcs not dumped yet.
+static u32 hot_top(u32* out,u32 k,bool undumped)
+{
+	u32 n=0;
+	for (u32 i=0;i<s_hb_n;i++)
+	{
+		const double w=hot_weight(i);
+		if (w<=0.0 || (n==k && w<=hot_weight(out[k-1])))
+			continue;
+		if (undumped && hot_dumped(s_hb[i].sh4_pc))
+			continue;
+		u32 j=(n<k) ? n++ : k-1;
+		while (j>0 && hot_weight(out[j-1])<w)
+		{
+			out[j]=out[j-1];
+			j--;
+		}
+		out[j]=i;
+	}
+	return n;
+}
+
+// The log sends one UDP datagram per printf, so dump and census lines go out in batches of up to 1400 bytes.
+struct HotOut
+{
+	char buf[1400];
+	int n;
+	HotOut() : n(0) {}
+	~HotOut() { flush(); }
+	void flush()
+	{
+		if (n)
+			printf("%s",buf);
+		n=0;
+	}
+	void line(const char* fmt,...) __attribute__((format(printf,2,3)))
+	{
+		char l[512];
+		va_list ap;
+		va_start(ap,fmt);
+		int k=vsnprintf(l,sizeof(l),fmt,ap);
+		va_end(ap);
+		if (k<0)
+			return;
+		if (k>(int)sizeof(l)-1)
+			k=sizeof(l)-1;
+		if (n+k>=(int)sizeof(buf))
+			flush();
+		memcpy(buf+n,l,k);
+		n+=k;
+		buf[n]=0;
+	}
+};
+
+// Totals over the dense windows, then the top blocks: entries/s, share and running share of the weight,
+// sizes, counted cold entries/s and the block's classes (per entry).
+static void hot_census(const char* why)
+{
+	if (!s_hb || !s_hb_n || s_hb_dense_s<=0.0)
+		return;
+
+	double tot[HC_COUNT]={0}, hits=0.0, cold=0.0, dumped_w=0.0;
+	for (u32 i=0;i<s_hb_n;i++)
+	{
+		const HotBlock& h=s_hb[i];
+		if (!h.dense_hits && !h.dense_cold)
+			continue;
+		hits+=(double)h.dense_hits;
+		cold+=(double)h.dense_cold;
+		for (u32 c=0;c<HC_COUNT;c++)
+			tot[c]+=(double)h.dense_hits*h.cls[c];
+		if (hot_dumped(h.sh4_pc))
+			dumped_w+=hot_weight(i);
+	}
+	if (hits<=0.0)
+		return;
+
+	HotOut o;
+	const double s=s_hb_dense_s, all_w=tot[HC_INSN];
+	o.line("[HOTC] census %u (%s): %u dense windows %.1f s, %u blocks, entries/s %.0f, hot insn/entry %.2f,"
+	       " cold entries/s %.0f, %u dumped = %.1f%% of the weight\n",
+	       ++s_hb_census_n, why, s_hb_dense_n, s, s_hb_n, hits/s, all_w/hits, cold/s,
+	       s_hb_dumped_n, all_w>0.0 ? dumped_w*100.0/all_w : 0.0);
+
+	char buf[512];
+	int m=snprintf(buf,sizeof(buf),"[HOTC] per entry:");
+	for (u32 c=0;c<HC_COUNT && m<(int)sizeof(buf);c++)
+		m+=snprintf(buf+m,sizeof(buf)-m," %s %.3f",k_hc_name[c],tot[c]/hits);
+	o.line("%s\n",buf);
+
+	u32 top[HOT_CENSUS_TOP];
+	const u32 tn=hot_top(top,HOT_CENSUS_TOP,false);
+	m=snprintf(buf,sizeof(buf),"[HOTC] # pc host ent/s w%% cum%% ops hot cold frags coldin/s |");
+	for (u32 c=HC_LD;c<HC_COUNT && m<(int)sizeof(buf);c++)
+		m+=snprintf(buf+m,sizeof(buf)-m," %s",k_hc_name[c]);
+	o.line("%s\n",buf);
+
+	double cum=0.0;
+	for (u32 a=0;a<tn;a++)
+	{
+		const HotBlock& h=s_hb[top[a]];
+		const double w=hot_weight(top[a]);
+		cum+=w;
+		m=snprintf(buf,sizeof(buf),"[HOTC] %u %08X %08X %.0f %.2f %.1f %u %u %u %u %.0f |",
+		           a+1, h.sh4_pc, (u32)(uintptr_t)h.ppc_start, (double)h.dense_hits/s,
+		           w*100.0/all_w, cum*100.0/all_w, h.sh4_ops, h.ppc_size, h.ppc_cold,
+		           h.cold_frags, (double)h.dense_cold/s);
+		for (u32 c=HC_LD;c<HC_COUNT && m<(int)sizeof(buf);c++)
+			m+=snprintf(buf+m,sizeof(buf)-m," %u",h.cls[c]);
+		o.line("%s%s\n",buf,hot_dumped(h.sh4_pc) ? " D" : "");
+	}
+	o.flush();
+	fflush(stdout);
+}
+
+// Called from recSh4_ClearCache (dc/sh4/rec_v2/driver.cpp): the code these entries describe is gone.
+extern "C" void hotblocks_reset()
+{
+	if (s_hb_dense_n)
+		hot_census("cache clear");
+	s_hb_n = 0;
+	s_hb_overflow = 0;
+	s_hb_dense_n = 0;
+	s_hb_dense_s = 0.0;
+}
+
+// Compile time: claim a slot for this block, or -1. The index reaches the descriptor and both counters.
 static s32 hotblocks_slot(DecodedBlock* block)
 {
-	if (!get_hotblocks_preset())
+	if (!get_hotblocks_preset() || s_hb_failed)
 		return -1;
 
 	if (!s_hb)
 	{
 		s_hb = (HotBlock*)malloc(sizeof(HotBlock)*HOT_MAX);
 		s_hb_hits = (u32*)malloc(sizeof(u32)*HOT_MAX);
-		if (!s_hb || !s_hb_hits)
+		s_hb_cold = (u32*)malloc(sizeof(u32)*HOT_MAX);
+		// Generated code reaches the counters with lis + a 16-bit offset, so they must lie below 2 GB.
+		const uintptr_t hi = (uintptr_t)(s_hb_hits>s_hb_cold ? s_hb_hits : s_hb_cold) + sizeof(u32)*HOT_MAX;
+		if (!s_hb || !s_hb_hits || !s_hb_cold || hi>=0x7FFF0000u)
 		{
+			printf("[HOT] disabled: table %p, counters %p %p\n",(void*)s_hb,(void*)s_hb_hits,(void*)s_hb_cold);
 			free(s_hb);      s_hb = 0;
 			free(s_hb_hits); s_hb_hits = 0;
+			free(s_hb_cold); s_hb_cold = 0;
+			s_hb_failed = true;
 			return -1;
 		}
+		printf("[HOT] table of %u blocks, %u KB\n",(u32)HOT_MAX,(u32)((sizeof(HotBlock)+8)*HOT_MAX/1024));
 	}
 
 	if (s_hb_n >= HOT_MAX)
@@ -1620,67 +1814,107 @@ static s32 hotblocks_slot(DecodedBlock* block)
 
 	const s32 idx = (s32)s_hb_n++;
 	HotBlock* h = &s_hb[idx];
-	h->sh4_pc    = block->start;
-	h->sh4_size  = block->sh4_code_size;
-	h->sh4_ops   = block->opcodes;
-	h->ppc_start = 0;
-	h->ppc_size  = 0;
-	h->ppc_cold  = 0;
+	memset(h,0,sizeof(*h));
+	h->sh4_pc   = block->start;
+	h->sh4_size = block->sh4_code_size;
+	h->sh4_ops  = block->opcodes;
 	s_hb_hits[idx] = 0;
+	s_hb_cold[idx] = 0;
 	return idx;
 }
 
+// SH4 source and every PPC word (hot body with the counter, then the cold area), 8 words per line.
 static void hotblocks_disasm(const HotBlock& h)
 {
-	printf("[HOT] --- disasm pc=%08X : %u SH4 ops / %u B  ->  %u B hot + %u B cold ---\n",
-		h.sh4_pc, h.sh4_ops, h.sh4_size, h.ppc_size, h.ppc_cold);
+	HotOut o;
+	const u32 raw = h.ppc_size+16;
+	const double s = s_hb_dense_s>0.0 ? s_hb_dense_s : 1.0;
+	o.line("[HOT] --- dump pc=%08X host=%08X: %u SH4 ops / %u B -> hot %u B (counter at +%X) cold %u B,"
+	       " %u counted frags | ent/s %.0f coldin/s %.0f\n",
+	       h.sh4_pc, (u32)(uintptr_t)h.ppc_start, h.sh4_ops, h.sh4_size, raw, h.probe_ofs, h.ppc_cold,
+	       h.cold_frags, (double)h.dense_hits/s, (double)h.dense_cold/s);
 
-	printf("[HOT] SH4:\n");
 	u32 n = h.sh4_size/2;
-	if (n > 64) n = 64;
+	if (n > 256) n = 256;
 	for (u32 i=0;i<n;i++)
 	{
-		u32 a = h.sh4_pc + i*2;
-		u16 o = ReadMem16(a);
-		printf("[HOT]   %08X: %04X  %s\n", a, o, OpDesc[o]->diss);
+		const u32 a = h.sh4_pc + i*2;
+		const u16 op = ReadMem16(a);
+		o.line("[HOT] sh4 %08X %04X %s\n", a, op, OpDesc[op]->diss);
 	}
-	if (h.sh4_size/2 > n)
-		printf("[HOT]   ... (%u more)\n", h.sh4_size/2 - n);
 
-	printf("[HOT] PPC hot body (%u B):\n", h.ppc_size);
-	if (h.ppc_start)
+	const u32* w = (const u32*)h.ppc_start;
+	u32 wn = (raw+h.ppc_cold)/4;
+	if (wn > 2048) wn = 2048;
+	for (u32 i=0;i<wn;i+=8)
 	{
-		const u32* w = (const u32*)h.ppc_start;
-		u32 wn = h.ppc_size/4;
-		if (wn > 160) wn = 160;
-		for (u32 i=0;i<wn;i+=4)
-		{
-			printf("[HOT]   +%04X:", i*4);
-			for (u32 j=0;j<4 && (i+j)<wn;j++)
-				printf(" %08X", w[i+j]);
-			printf("\n");
-		}
-		if (h.ppc_size/4 > wn)
-			printf("[HOT]   ... (%u more words)\n", h.ppc_size/4 - wn);
+		char buf[128];
+		int m=snprintf(buf,sizeof(buf),"[HOT] ppc +%04X",i*4);
+		for (u32 j=0;j<8 && i+j<wn;j++)
+			m+=snprintf(buf+m,sizeof(buf)-m," %08X",w[i+j]);
+		o.line("%s\n",buf);
 	}
 }
 
-// Disassemble this block unless its pc has already been dumped. Returns true
-// if it actually emitted a dump.
-static bool hotblocks_dump_once(const HotBlock& h)
+// Plan 5.25's [idle] lines, while idle loops run: checks and skips per second, the busiest idle blocks
+// (checks/skips per second), then once per pc the SH4 code from its branch target to its end.
+#define IDLE_TOP 6
+#define IDLE_DUMP_MAX 64
+static void idle_dump(double seconds)
 {
-	if (s_hb_dumped_n >= HOT_DUMP_MAX)
-		return false;
-	for (u32 i=0;i<s_hb_dumped_n;i++)
-		if (s_hb_dumped[i]==h.sh4_pc)
-			return false;
+	static u32 dumped_n;
+	double chk=0.0, skp=0.0, tc[IDLE_TOP], ts[IDLE_TOP];
+	u32 top[IDLE_TOP], tn=0;
+	for (u32 i=0;i<s_idle_n;i++)
+	{
+		const double c=(double)(u32)(s_idle_ent[i].checks-s_idle_last[i].checks);
+		const double s=(double)(u32)(s_idle_ent[i].skips-s_idle_last[i].skips);
+		s_idle_last[i]=s_idle_ent[i];
+		chk+=c;
+		skp+=s;
+		if (c<=0.0 || (tn==IDLE_TOP && c<=tc[IDLE_TOP-1]))
+			continue;
+		u32 j=(tn<IDLE_TOP) ? tn++ : IDLE_TOP-1;
+		while (j>0 && tc[j-1]<c)
+		{
+			top[j]=top[j-1]; tc[j]=tc[j-1]; ts[j]=ts[j-1];
+			j--;
+		}
+		top[j]=i; tc[j]=c; ts[j]=s;
+	}
+	if (chk<=0.0)
+		return;
 
-	s_hb_dumped[s_hb_dumped_n++] = h.sh4_pc;
-	hotblocks_disasm(h);
-	return true;
+	HotOut o;
+	char buf[400];
+	int m=snprintf(buf,sizeof(buf),"[idle] blocks=%u checks/s %.0f skips/s %.0f | top",s_idle_n,chk/seconds,skp/seconds);
+	for (u32 a=0;a<tn && m<(int)sizeof(buf);a++)
+		m+=snprintf(buf+m,sizeof(buf)-m," %08X %.0f/%.0f",s_idle_meta[top[a]].pc,tc[a]/seconds,ts[a]/seconds);
+	o.line("%s\n",buf);
+
+	for (u32 a=0;a<tn && dumped_n<IDLE_DUMP_MAX;a++)
+	{
+		IdleMeta& mt=s_idle_meta[top[a]];
+		if (mt.dumped)
+			continue;
+		mt.dumped=true;
+		dumped_n++;
+		// A plain loop is one range; otherwise its head and the idle block.
+		const bool one=mt.loop_hi>mt.loop_lo && mt.loop_hi-mt.loop_lo<=96;
+		o.line("[idle] code %08X, loop %08X-%08X:\n",mt.pc,mt.loop_lo,mt.loop_hi);
+		// Not `r`: sh4_registers.h defines it as a macro.
+		const u32 rng[2][2]={ { mt.loop_lo, one ? mt.loop_hi : mt.loop_lo+24 }, { mt.pc, one ? mt.pc : mt.loop_hi } };
+		for (u32 k=0;k<2;k++)
+			for (u32 pc=rng[k][0];pc<rng[k][1];pc+=2)
+			{
+				const u16 op=ReadMem16(pc);
+				o.line("[idle]  %08X %04X %s\n",pc,op,OpDesc[op]->diss);
+			}
+	}
 }
 
-extern "C" void hotblocks_dump(double seconds)
+// Stats window (SPG.cpp, once a second, SH4 thread): one line per window; dense windows add to the census.
+extern "C" void hotblocks_dump(double seconds,double vt_k)
 {
 	// The stats window calls this every second, so plan 5.22's [cyc] line rides on it (after new compiles only).
 	static u32 cyc_last;
@@ -1690,95 +1924,52 @@ extern "C" void hotblocks_dump(double seconds)
 		printf("[cyc] mode=%d blocks: poll=%u nopoll=%u\n", get_jit_cycle_check_preset(), s_cycle_poll, s_cycle_nopoll);
 	}
 
+	if (get_jit_idle_skip_preset() && seconds>0.0)
+		idle_dump(seconds);
+
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
 
-	// Totals first, so a block's share of all executed blocks is visible.
-	double all_hits = 0.0, all_ppc = 0.0, all_ops = 0.0;
+	const bool dense = vt_k > 3.0;
+	double hits=0.0, insn=0.0, cold=0.0;
 	for (u32 i=0;i<s_hb_n;i++)
 	{
-		all_hits += s_hb_hits[i];
-		all_ppc  += (double)s_hb_hits[i] * s_hb[i].ppc_size;
-		all_ops  += (double)s_hb_hits[i] * s_hb[i].sh4_ops;
-	}
-
-	if (all_hits <= 0.0)
-		return;
-
-	printf("[HOT] %.2fs  %u blocks tracked, %.0f entries/s, %.1f PPC B per SH4 op (execution-weighted)\n",
-		seconds, s_hb_n, all_hits/seconds, all_ops>0.0?(all_ppc/all_ops):0.0);
-
-	// Top 8 by hits. Repeated max-scan — 8 passes over <=HOT_MAX entries once a
-	// second is free and avoids dragging a sort in.
-	u32 top[8];
-	u32 tn = 0;
-	for (u32 a=0;a<8;a++)
-	{
-		u32 best = 0xFFFFFFFF;
-		for (u32 i=0;i<s_hb_n;i++)
+		const u32 e=s_hb_hits[i], c=s_hb_cold[i];
+		if (!e && !c)
+			continue;
+		hits+=e;
+		insn+=(double)e*s_hb[i].cls[HC_INSN];
+		cold+=c;
+		if (dense)
 		{
-			if (!s_hb_hits[i])
-				continue;
-			bool taken = false;
-			for (u32 k=0;k<tn;k++)
-				if (top[k]==i) { taken=true; break; }
-			if (taken)
-				continue;
-			if (best==0xFFFFFFFF || s_hb_hits[i] > s_hb_hits[best])
-				best = i;
+			s_hb[i].dense_hits+=e;
+			s_hb[i].dense_cold+=c;
 		}
-		if (best==0xFFFFFFFF)
-			break;
-		top[tn++] = best;
+		s_hb_hits[i]=0;
+		s_hb_cold[i]=0;
 	}
-
-	for (u32 a=0;a<tn;a++)
-	{
-		const HotBlock& h = s_hb[top[a]];
-		const u32 hits = s_hb_hits[top[a]];
-		printf("[HOT]   %u: pc=%08X %8u (%7.0f/s) %5.1f%%  sh4 %3u ops  hot %5u B  %5.1f B/op  cold %5u B\n",
-			a+1, h.sh4_pc, hits, hits/seconds,
-			hits*100.0/all_hits,
-			h.sh4_ops, h.ppc_size,
-			h.sh4_ops?((double)h.ppc_size/h.sh4_ops):0.0,
-			h.ppc_cold);
-	}
-
+	printf("[HOT] %.2fs dense=%d vt %.1fK: %u blocks, entries/s %.0f, hot insn/entry %.2f, cold entries/s %.0f\n",
+	       seconds, dense?1:0, vt_k, s_hb_n, hits/seconds, hits>0.0 ? insn/hits : 0.0, cold/seconds);
 	if (s_hb_overflow)
-		printf("[HOT]   (%u blocks did not fit the %u-entry table)\n", s_hb_overflow, (u32)HOT_MAX);
+		printf("[HOT] (%u blocks did not fit the %u-entry table)\n", s_hb_overflow, (u32)HOT_MAX);
 
-	// Dump the #1 block and the worst B/op among the hot ones (usually different), each pc once: a fixed
-	// budget spent itself on boot menus (ChuChu's 8C1074E6, 72 B/op, is hot only in the heavy scene).
-	if (tn)
+	if (dense)
 	{
-		// #1 by hits is contextual only, so it gets a small fixed budget and
-		// cannot starve the outlier hunt below.
-		if (s_hb_top_dumps < HOT_TOP_DUMPS && hotblocks_dump_once(s_hb[top[0]]))
-			s_hb_top_dumps++;
-
-		u32 worst = top[0];
-		double worst_bop = 0.0;
-		for (u32 a=0;a<tn;a++)
+		s_hb_dense_n++;
+		s_hb_dense_s+=seconds;
+		if (s_hb_dense_n>=HOT_DUMP_AFTER && s_hb_dumped_n<HOT_DUMP_MAX)
 		{
-			const HotBlock& h = s_hb[top[a]];
-			const double d = h.sh4_ops ? (double)h.ppc_size/h.sh4_ops : 0.0;
-			if (d > worst_bop)
+			u32 pick[HOT_DUMP_PER_WINDOW];
+			const u32 pn=hot_top(pick,HOT_DUMP_PER_WINDOW,true);
+			for (u32 a=0;a<pn && s_hb_dumped_n<HOT_DUMP_MAX;a++)
 			{
-				worst_bop = d;
-				worst = top[a];
+				s_hb_dumped[s_hb_dumped_n++]=s_hb[pick[a]].sh4_pc;
+				hotblocks_disasm(s_hb[pick[a]]);
 			}
 		}
-
-		// Only a new worst: requiring each dump to beat the last converges on the outlier and limits itself.
-		if (worst_bop > s_hb_worst_bop)
-		{
-			s_hb_worst_bop = worst_bop;
-			hotblocks_dump_once(s_hb[worst]);
-		}
+		if (s_hb_dense_n%HOT_CENSUS_EVERY==0)
+			hot_census("periodic");
 	}
-
-	for (u32 i=0;i<s_hb_n;i++)
-		s_hb_hits[i] = 0;
 
 	fflush(stdout);
 }
@@ -2035,8 +2226,12 @@ static ppc_label* emit_vmem_tier(const ColdFrag& c)
 }
 
 
-static void FlushCold()
+// cold_ctr (JIT HOTBLOCKS): count each fragment's entries, 20 B more per fragment, only while hot body + cold
+// area stay far inside the 32 KB branch reach. Returns the fragments counted.
+static u32 FlushCold(u32* cold_ctr)
 {
+	const u32 frags = s_cold_n;
+	const bool count = cold_ctr && frags && frags<=128 && (u8*)emit_GetCCPtr()-(u8*)s_cold[0].beq < 16384;
 	for (u32 i = 0; i < s_cold_n; i++)
 	{
 		ColdFrag& c = s_cold[i];
@@ -2044,6 +2239,8 @@ static void FlushCold()
 		snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
 		verify(beq_disp >= 0 && beq_disp < 32768);
 		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
+		if (count)
+			emit_hot_cold_count(cold_ctr,c.kind);
 
 		// FASTMEM: try the generic table first, so only true MMIO pays a C call.
 		if (c.vmem_tier)
@@ -2126,6 +2323,7 @@ static void FlushCold()
 		ppc_bx(c.done,0);                // backward unconditional b -> done (join)
 	}
 	s_cold_n = 0;
+	return count ? frags : 0;
 }
 
 // FASTMEM (Wii PPC-MMU, kept for reference; the PS3 has no resumable DSI): branchless rlwinm-EA accesses
@@ -2568,8 +2766,10 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 	// JIT_HOTBLOCKS: count real body entries (after the SMC check and the cycle exit); rarg0/rarg1 are free.
 	const s32 hb = hotblocks_slot(block);
+	u32 hb_probe = 0;
 	if (hb>=0)
 	{
+		hb_probe = (u32)((u8*)emit_GetCCPtr()-(u8*)rv);
 		u32 lo = ppc_addr_high(ppc_rarg1,(void*)&s_hb_hits[hb]);
 		ppc_lwz(ppc_rarg0,ppc_rarg1,lo);
 		ppc_addi(ppc_rarg0,ppc_rarg0,1);
@@ -4065,18 +4265,22 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		ppc_jump(loop_do_update_write);
 	}
 
-	FlushCold();          // emit the out-of-line mem slow paths after the block tail
+	// Emit the out-of-line mem slow paths after the block tail.
+	const u32 hb_frags = FlushCold(hb>=0 ? &s_hb_cold[hb] : 0);
 	make_address_range_executable((u8*)rv, (u8*)emit_GetCCPtr()-(u8*)rv);
 
-	// Hot body and cold fragments recorded separately — B/op is built on the HOT
-	// size only, since that is what actually executes.
+	// Sizes and classes cover the hot body (it runs on every entry) without the probe's own counter.
 	if (hb>=0)
 	{
-		u32 hot = (u32)(_hb_cold_start-(u8*)rv);
-		// Discount the probe's own 4-instruction counter, so B/op describes the codegen.
-		s_hb[hb].ppc_start = (u8*)rv;
-		s_hb[hb].ppc_size  = hot>16 ? hot-16 : hot;
-		s_hb[hb].ppc_cold  = (u32)((u8*)emit_GetCCPtr()-_hb_cold_start);
+		HotBlock& h = s_hb[hb];
+		const u32 hot = (u32)(_hb_cold_start-(u8*)rv);
+		h.ppc_start  = (u8*)rv;
+		h.ppc_size   = hot-16;
+		h.ppc_cold   = (u32)((u8*)emit_GetCCPtr()-_hb_cold_start);
+		h.probe_ofs  = hb_probe;
+		h.cold_frags = hb_frags;
+		hot_classify((const u32*)rv, hot/4, hb_probe/4, (uintptr_t)rv, (uintptr_t)_hb_cold_start,
+		             (uintptr_t)CodeCache, (uintptr_t)CodeCache+CODE_SIZE, h.cls);
 	}
 
 	return rv;
@@ -4205,12 +4409,13 @@ static void ps3_jit_dump_toggles()
 	       get_jit_pcrel_preset(), get_debug_loop(), get_jit_ifb_mask(),
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
-	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d\n",
+	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
 	       get_jit_fastmem_preset(), get_jit_sq_store_preset(), get_jit_ftrv_preset(),
-	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset());
+	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset(),
+	       get_jit_idle_skip_preset());
 }
 
 void ngen_mainloop()

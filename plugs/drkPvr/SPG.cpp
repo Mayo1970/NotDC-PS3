@@ -22,7 +22,8 @@ extern "C" int get_render_delay_preset();
 
 // IFB_PROBE breakdown (wii_driver.cpp); silent when the preset is off, shares the 1 s stats block.
 extern "C" void ifb_probe_dump(double seconds);
-extern "C" void hotblocks_dump(double seconds);
+// JIT HOTBLOCKS (ps3_driver.cpp, plan 5.18); vt_k is the stats line's vt, which marks dense windows.
+extern "C" void hotblocks_dump(double seconds, double vt_k);
 // C call-out census (dc/sh4/rec_v2/ccall_census.h). Takes vblanks/sec too,
 // so it can report the per-FRAME rate dave actually asked for.
 extern "C" void ccall_census_dump(double seconds, double vbs);
@@ -353,7 +354,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 fflush(stdout); // once per 1s: keep the log tail intact if the Wii is powered off
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
-                hotblocks_dump(tdiff);   // no-op unless the JIT HOTBLOCKS preset is on
+                hotblocks_dump(tdiff, spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0);   // no-op unless JIT HOTBLOCKS is on
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
