@@ -52,6 +52,7 @@ extern int g_jit_constprop_preset;
 extern int g_jit_dve_preset;
 extern int g_jit_cycle_check_preset;
 extern int g_jit_idle_skip_preset;
+extern int g_jit_tcopy_preset;
 extern int g_arm7_jit_preset;
 extern int g_ifb_probe_preset;
 extern int g_hotblocks_preset;

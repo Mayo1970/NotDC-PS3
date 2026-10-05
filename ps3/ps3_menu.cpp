@@ -438,6 +438,8 @@ static Option s_jit[] = {
 	  "Exit out of line; LOOPS ONLY polls only where a loop can close. Set before boot." },
 	{ "JIT IDLE SKIP",   &g_jit_idle_skip_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A wait-loop turn with no memory store ends the timeslice. Set before boot." },
+	{ "JIT T COPY",      &g_jit_tcopy_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "bt.s/bf.s take T from the compare's register copy, not memory. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

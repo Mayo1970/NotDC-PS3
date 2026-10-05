@@ -21,6 +21,7 @@
 #include "ps3/ps3_jit_fv.h"
 #include "ps3/ps3_jit_hot.h"
 #include "ps3/ps3_jit_idle.h"
+#include "ps3/ps3_jit_tcopy.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -231,6 +232,8 @@ struct
 	u32  cr0_bit;        // BI_CR0_xx index holding the condition
 	bool cr0_invert;     // sr_T is the INVERSE of that bit (e.g. >= is !<)
 
+	TCopy tc;            // JIT T COPY: which op's sr_T store also fills djump for the jcond
+
 	void Reset()
 	{
 		has_jcond=false;
@@ -239,6 +242,7 @@ struct
 		cr0_live=false;
 		cr0_bit=0;
 		cr0_invert=false;
+		tcopy_begin(tc,0);
 	}
 } compile_state;
 u32 last_block;
@@ -285,6 +289,11 @@ static IdleEnt s_idle_last[IDLE_MAX];	// counters at the last [idle] line
 struct IdleMeta { u32 pc, loop_lo, loop_hi; bool dumped; };
 static IdleMeta s_idle_meta[IDLE_MAX];
 static u32 s_idle_n;
+
+// JIT T COPY (plan 5.26). jcond sites compiled since boot, for the [tcopy] line: T already in djump, moved from
+// rarg0 (T FORWARD), loaded from sr_T, and loaded although a writer was armed (its store was not inline).
+extern "C" int get_jit_tcopy_preset();
+static u32 s_tc_copy, s_tc_fwd, s_tc_load, s_tc_miss;
 
 // A block polls if its end can close a loop: a static target at or below its start, or a dynamic or interrupt
 // end. Ends without the poll only reach higher starts, so every loop still polls once per turn.
@@ -532,6 +541,8 @@ void ppc_sh_store(u32 D,u32 sh4_reg)
 		}
 	}
 	ppc_stw(D,ppc_contex,Sh4cntx.offset(sh4_reg));
+	if (sh4_reg==reg_sr_T && tcopy_store(compile_state.tc))
+		ppc_ori(ppc_djump,D,0);		// JIT T COPY: mr djump,D for the block's jcond
 }
 void ppc_sh_store(u32 D,shil_param prm)
 {
@@ -1924,6 +1935,13 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 		printf("[cyc] mode=%d blocks: poll=%u nopoll=%u\n", get_jit_cycle_check_preset(), s_cycle_poll, s_cycle_nopoll);
 	}
 
+	static u32 tc_last;
+	if (get_jit_tcopy_preset() && s_tc_copy+s_tc_fwd+s_tc_load!=tc_last)
+	{
+		tc_last=s_tc_copy+s_tc_fwd+s_tc_load;
+		printf("[tcopy] jcond sites: copy=%u fwd=%u load=%u miss=%u\n", s_tc_copy, s_tc_fwd, s_tc_load, s_tc_miss);
+	}
+
 	if (get_jit_idle_skip_preset() && seconds>0.0)
 		idle_dump(seconds);
 
@@ -2763,6 +2781,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
 	ngen_Begin(block,force_checks);
+	tcopy_begin(compile_state.tc,get_jit_tcopy_preset() ? block : 0);
 
 	// JIT_HOTBLOCKS: count real body entries (after the SMC check and the cycle exit); rarg0/rarg1 are free.
 	const s32 hb = hotblocks_slot(block);
@@ -2784,6 +2803,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// cancels the forward.
 		const bool t_prev = compile_state.t_in_rarg0;
 		compile_state.t_in_rarg0 = false;
+		tcopy_op_begin(compile_state.tc,i);
 
 		// JIT_CR0: only the last op, on a block that exits on sr_T, writing sr_T; has_jcond exits test ppc_djump.
 		compile_state.t_exit_cr0 =
@@ -3468,10 +3488,23 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			{
 				compile_state.has_jcond=true;
 				// Delay-slot branches capture T before the slot; if the compare was the previous op, T is still in rarg0.
-				if (t_prev && op->rs1.is_reg() && op->rs1._reg==reg_sr_T)
-					ppc_ori(ppc_djump,ppc_rarg0,0);		// mr djump,rarg0
+				const bool t_rs1 = op->rs1.is_reg() && op->rs1._reg==reg_sr_T;
+				if (compile_state.tc.held && t_rs1)
+					s_tc_copy++;		// JIT T COPY: the T writer's store already filled djump
 				else
-					ppc_sh_load(ppc_djump,op->rs1);
+				{
+					s_tc_miss += compile_state.tc.k>=0;
+					if (t_prev && t_rs1)
+					{
+						ppc_ori(ppc_djump,ppc_rarg0,0);		// mr djump,rarg0
+						s_tc_fwd++;
+					}
+					else
+					{
+						ppc_sh_load(ppc_djump,op->rs1);
+						s_tc_load++;
+					}
+				}
 			}
 			break;
 			
@@ -4245,8 +4278,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			reg_reload_all();
 			reg_reload_all_fpu();
 			break;
-      
+
 		}
+		tcopy_op_end(compile_state.tc,*op);
 	}
 
 	ngen_End(block);
@@ -4409,13 +4443,14 @@ static void ps3_jit_dump_toggles()
 	       get_jit_pcrel_preset(), get_debug_loop(), get_jit_ifb_mask(),
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
-	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d\n",
+	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d"
+	       " tcopy=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
 	       get_jit_fastmem_preset(), get_jit_sq_store_preset(), get_jit_ftrv_preset(),
 	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset(),
-	       get_jit_idle_skip_preset());
+	       get_jit_idle_skip_preset(), get_jit_tcopy_preset());
 }
 
 void ngen_mainloop()
