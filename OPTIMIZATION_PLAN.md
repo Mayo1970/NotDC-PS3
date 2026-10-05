@@ -13,6 +13,44 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-05)
 
+**Done: 5.28, a larger SH4 code cache (Matt 2026-10-05: "We gotta move
+to the next goal", then picked "Larger SH4 code cache"), default 24 MB
+since the package of 19:08 (Matt: "Let's keep it 24 as default then").**
+EMULATION -> "JIT Code Cache" (`JitCodeCache`): 6 MB / 12 MB / 24 MB, set
+before boot. The `.text` array is 24 MB (`CODE_SIZE`); the option sets
+how much of it the JIT uses. The row is on the EMULATION page: the JIT
+SPEED page has 19 rows and already reaches the footer at 720p. HW
+2026-10-05 at 24 MB (package of 17:08): Sonic Adventure clean, no full
+clear in 157 s of play (`run53c`: 3), the cache grew to 7.8 MB and slowed
+to 10-20 KB/s, dense SPEED 99.7% (99.6%); Crazy Taxi clean, same-load VPS
+-0.2% against `run53b` (noise). Matt asked about 12 MB: the option alone
+frees no memory (the array stays 24 MB), and Sonic would reach its 11 MB
+flush mark after ~6-7 min in one area; he kept 24 MB. Next: Matt picks
+(left from the list: the XMB exit 3 s fallback P6). The 5.28 listener
+(PID 24244, `ps3log_528_run1.txt` in the scratchpad of session 849b7627)
+was stopped at Matt's request; port 18194 is free.
+
+**Done: 5.3 DYN_IC (Matt 2026-10-05: "Go with DYN_IC (5.3) this
+session"), default JSR/JMP since the package of 16:42.** Matt after the HW
+runs: "It kind of felt the same across both runs? We could mark it as done
+anyway", then "Place it on" (level JSR/JMP, his pick: same speed as + RTS,
+fewer misses, less code). An install resets the settings to it. HW 2026-10-05 (5.3
+"HW"): all three boots clean; Crazy Taxi same-load VPS +1.0% at JSR/JMP and
+at + RTS against `run524a.txt` (noise level, the levels not apart); Sonic
+Adventure equal within noise; code +3-4%. Rts sites miss ~0.86M/s in dense
+Crazy Taxi. Our listener (PID 32812) was stopped from outside at ~16:15,
+after the Sonic run, when the Halo-PS3 session took port 18194 back (PID
+23760). Next: Matt picks (left from the earlier list: a larger SH4 code
+cache, the XMB exit 3 s fallback P6). Package of 14:19: JIT SPEED
+-> "JIT DYN IC" (`JitDynIc`): OFF / JSR/JMP / + RTS, default OFF, set before
+boot. Each dynamic block end (jsr/bsrf, jmp/braf; rts at + RTS) gets a
+4-word site, and its first target is written over it as a guard (`xoris`,
+`cmplwi`, `bne`, `b target`): a repeat of that target skips the lookup's 3
+dependent loads, its `lookups` store and the `bctr`. Misses take the old
+lookup. PS3 fix: the fill stub now zero-extends the pc it passes to C. PC:
+`misc/dynic_check/run.sh` PASS (637371 checks), `mutate.py` 25 of 25
+planted bugs fail. HW steps and results in 5.3.
+
 **Done: 5.24, `mfcr` -> `mfocrf` and the FPUL moves (Matt 2026-10-05:
 "Go with 5.24 in the Optimization plan"), default ON.** Built and PC
 tested, package of 13:01: JIT SPEED -> "JIT MFOCRF" (`JitMfocrf`) and "JIT
@@ -756,6 +794,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.25 | Wait-loop idle skip (Crazy Taxi 0C15A658-0C15A67E, from 5.18) | `[x]` option a + safety (Matt 2026-10-05), JIT SPEED "JIT IDLE SKIP", default OFF; HW 2026-10-05 (package 00:45): Crazy Taxi +3.0% same-load VPS, Sonic Adventure 30 -> 20 frames/s (work loop skipped); fix with a register-hash check, package of 01:13: HW Crazy Taxi +3.0% same-load VPS (dense 57.1), work loops no longer skip; Sonic not rechecked; default ON since the package of 01:27 (Matt) |
 | 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[~]` option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before); default ON since the package of 10:13 (Matt) |
 | 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
+| 5.28 | Larger SH4 code cache (6 MB was a Wii size; Sonic Adventure refills it every 44-55 s) | `[x]` HW, default 24 MB since the package of 19:08 (Matt); built 2026-10-05 (Matt picked it): EMULATION "JIT Code Cache" 6 MB / 12 MB / 24 MB, array 24 MB, `bl` reach 27549 KB of 32768; package of 17:08; HW 2026-10-05 at 24 MB: Sonic Adventure no full clear in 157 s of play (6 MB: 3), cache 7.8 MB, dense SPEED 99.7% (99.6%); Crazy Taxi same-load VPS -0.2% (noise) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -764,7 +803,7 @@ Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
 | 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
-| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `[ ]` |
+| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]` |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
 
 - 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
@@ -3521,6 +3560,223 @@ clock by VPS.
       the likely "worse"; one run each cannot tie them to 5.27.
   - Matt 2026-10-05: "I think It's fine for now" (no LOOK-AHEAD ONLY
     level). JIT SQ MISS stays default OFF.
+- 5.3 DYN_IC: a per-site inline cache on dynamic block ends (Matt
+  2026-10-05: "Go with DYN_IC (5.3) this session"). Built, PC tested and
+  HW tested 2026-10-05; done (Matt), default JSR/JMP since the package of
+  16:42 (Matt).
+  - Facts: 5.18 run 3 counted 2.6M dynamic ends/s (`rts`, `jsr @Rn`,
+    `braf`) in dense Crazy Taxi, 0.82M/s of them in the wait loop that
+    5.25 now mostly skips. Each runs the inline lookup: 16 instructions, 3
+    dependent loads (`cache[]`, `addr`, `code`), the `lookups` store and an
+    indirect `bctr`.
+  - The code was in `ps3/ps3_driver.cpp` since the port, with
+    `get_dyn_ic_preset()` fixed at 0. PS3 review (Dynarec.MD 3.2,
+    `jit-64bit-poison`):
+    - The fill stub passed djump to the C fill (`u32 pc`) without
+      zero-extending it, and djump can hold a junk high word (`shop_jdyn`
+      adds to pinned registers). It now gets `clrldi`, as the static link
+      stub has. The C side only used the low word, so no fault was seen.
+    - The guard was right: `cmplwi` compares the low word only.
+    - The cache sync works on 128-byte lines from any start address.
+    - Every invalidation is a full clear (`recSh4_ClearCache`; nothing
+      calls `bm_RemoveCode` or `bm_InvalidateRange`), as static links
+      already need: guards and targets go together.
+  - Built: option JIT SPEED -> "JIT DYN IC" (`JitDynIc`): OFF / JSR/JMP
+    (jsr, bsrf, jmp, braf and the other dynamic jumps) / + RTS, default
+    OFF, set before boot; `[jitcfg]` prints `dyn_ic=`. Code in
+    `ps3/ps3_jit_dynic.h`:
+    - Site, after `mr r3,r31`: `bl` to the fill stub, then 3 branches to
+      site+16. Site+16 counts a miss (4 instructions; only filled sites
+      reach it), then the old lookup.
+    - Fill (`ngen_LinkBlock_Dynamic_IC`, once per site): finds or compiles
+      the target; if slot 0 still holds its `bl` (a cache clear in the
+      compile can reuse the address), it writes the guard `xoris
+      r4,r31,hi; cmplwi r4,lo; bne site+16; b target`.
+    - Hit: 4 instructions and a direct branch, no load. Miss: 3 more
+      instructions and the counter, then the old lookup.
+    - A `[dynic]` line per stats window: sites compiled by kind (call,
+      jump, ret) and filled since boot, misses of filled sites per second
+      by kind.
+  - PC (WSL): `misc/dynic_check/run.sh`.
+    - Words against the build image's ppu-as (`gen.py` writes
+      `dynic_words.inc`): 50 words; sites with the stub below and above,
+      guards with the low half 0, bit 15 set and all ones, the reach of `b`
+      both ways, counters with the low half positive, negative and 0x7FFC.
+    - A PPC64 model runs the whole path: the unfilled site calls the stub,
+      the stub calls a model of the C fill (which checks the zero-extended
+      pc, the site and the return address), the fill writes the guard,
+      then hits and misses with junk high words in r31, near misses (each
+      single bit, the halves swapped) and random pcs, targets on both
+      sides. A hit changes only r3, r4 and CR0 (not LR); a miss also r5,
+      r6 and the counter (+1). A cache clear in the fill: an overwritten
+      site is left alone, a site rebuilt at the address is filled. PASS,
+      637371 checks.
+    - `mutate.py`: 25 of 25 planted bugs fail; 23 also on the model (the
+      other two are in slots 1-3, which never run).
+  - Build: the 7 old warnings, `.got` 0xA5B8, 0 `r2off`; `s_ic_miss` at
+    0x114B2F10 (below 2 GB). Package of 14:19.
+  - Expected: a hit saves the lookup's loads and the `bctr`, est. 20-30
+    cycles. With ~1.8M ends/s left after 5.25, ~1% if most of them hit;
+    a miss costs a few cycles more. Rts sites are often polymorphic (one
+    function, many callers), hence the two levels. Not measured.
+  - HW test steps (package of 14:19):
+    1. Install. Settings as `run524a.txt` (an install resets them):
+       EMULATION -> Dynarec ON, JIT Fastmem ON, SH4 Clock 200; AUDIO ->
+       ARM7 Idle Skip SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG
+       -> TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON, JIT HOTBLOCKS
+       OFF; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+       VALUES ON, JIT SQ MISS + LOOK-AHEAD (JIT CYCLE CHECK LOOPS ONLY, JIT
+       IDLE SKIP, JIT T COPY, JIT MFOCRF and JIT FPUL MOVES ON are the
+       defaults). Set JIT DYN IC on the main menu, not with SELECT (SELECT
+       changes act at the next boot).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: JIT DYN IC = JSR/JMP. Crazy Taxi, dense traffic, ~150 s,
+       then exit to the XMB. Log: `[jitcfg] ... dyn_ic=1`; `[dynic]` with
+       call and jump sites above 0, ret=0, filled above 0.
+    4. Boot 2: JIT DYN IC = + RTS, the same run. Log: `dyn_ic=2`, ret
+       sites above 0.
+    5. Analysis: same-load VPS of each boot against `run524a.txt`
+       (scratchpad of session fc4e881b) with `vtbins.py`; misses/s by
+       kind.
+    6. Boot 3: Sonic Adventure with the better level, a few minutes: no
+       hang, game speed and music as before (against `run524b.txt` with
+       `sonicbins.py`).
+    7. On a fault: the same boot with JIT DYN IC OFF.
+  - HW 2026-10-05, package of 14:19, settings as `run524a.txt` (same
+    `[sndcfg]`; `[jitcfg]` differs only in `dyn_ic=`). Log
+    `ps3log_53_run1.txt` in the scratchpad of session 48f8af9b, split into
+    `run53a.txt` (Crazy Taxi, JSR/JMP), `run53b.txt` (Crazy Taxi, + RTS)
+    and `run53c.txt` (Sonic Adventure, + RTS); scripts `dynic.py` (misses
+    by kind in dense windows), `bins.py`, `vtbins.py`, `sonicbins.py`,
+    `cleardip.py`. All three logs clean: no fault line, the old XMB 3 s
+    fallback, the line tags of the references plus `[dynic]`.
+
+    | Run | dense n | VPS | SPEED | full speed | 12K+ VPS (n, vt) | same load vs 524a |
+    |---|---|---|---|---|---|---|
+    | `run524a` (OFF) | 61 | 58.4 | 97.4% | 51% | 54.7 (6, 14.0K) | - |
+    | `run53a` JSR/JMP | 60 | 59.0 | 98.4% | 62% | 55.7 (8, 13.7K) | +1.0% |
+    | `run53b` + RTS | 60 | 59.3 | 98.9% | 63% | 56.2 (6, 13.9K) | +1.0% |
+
+    - `run53b` against `run53a` at the same load: +0.2%; the levels are
+      not apart. +1.0% is about the noise of one run.
+    - Crazy Taxi sites at the end: call 5079, jump 459 (ret 2318 at +
+      RTS); 15 cache clears in each boot, as in `run524a.txt`. Misses of
+      filled sites in dense windows: call 11K/s, jump 92K/s, ret 860K/s
+      (+ RTS). Rts sites return to many callers, so many miss, and the
+      misses cost about what the hits save.
+    - Sonic Adventure (+ RTS, 209 windows): 150 NTSC windows with vt > 3K,
+      SPEED 99.6%, full speed 95%, 25+ frames/s in 92%; `run524b.txt`:
+      167, 99.7%, 95%, 89%. Equal within noise. Misses: call 9K/s, jump
+      3K/s, ret 437K/s.
+    - Code size: +3-4% at the same early clears (1383960 -> 1423708 bytes,
+      3685312 -> 3823076), from the 8 words per dynamic end. Sonic's
+      cache-full clears came at t=79, 134, 178 s (`run524b.txt`: 95, 153,
+      203); the window after the second ran at 81.2% SPEED (before: 86.8%
+      after the second).
+  - Matt 2026-10-05: "It kind of felt the same across both runs? We could
+    mark it as done anyway." Then "Place it on": `JitDynIc` defaults to 1
+    (JSR/JMP, Matt's pick of the two levels) since the package of 16:42
+    (`.got` 0xA5B8, 0 `r2off`). Its sites also ran in the Sonic boot at +
+    RTS, which holds the JSR/JMP sites too.
+- 5.28 Larger SH4 code cache (Matt 2026-10-05: "We gotta move to the
+  next goal", then picked "Larger SH4 code cache" from section 0's
+  list). Built 2026-10-05, HW pending.
+  - Facts (`run53c.txt`, Sonic Adventure, 6 MB cache): after the last
+    code load (t=58 s) the cache reached the 92% flush mark at t=79, 134
+    and 178 s, one refill every 44-55 s; a code load cleared it at t=211 s
+    with 5.7 MB used. The windows after the clears at 134 and 211 s ran at
+    81.2% and 79.2% SPEED, the others at 96% or more. The run has 8155
+    "warning zone" lines: one per block compiled between 80% and 92%.
+    Crazy Taxi stays below 80% (`run53a/b.txt`: 15 clears, all the game's
+    I-cache invalidations, at most 1.4 MB used, no warning line).
+  - Limits. Memory is not one: the boot log shows 164683 KB free with the
+    6 MB array. The limit is the reach of `bl`, 32 MB: generated code
+    calls C in `.text` with `bl` (`ppc_bx` verifies it), so every cache
+    byte must reach all of `.text`. With a 24 MB array: 27549 KB (cache
+    start to `__etext`), 5 MB of headroom. The ARM7 JIT cache (2 MB,
+    after it, its own `verify`) reaches 27.4 MB back to the start of
+    `.text`.
+  - Built (package of 17:08):
+    - `CODE_SIZE` 6 MB -> 24 MB (`dc/sh4/rec_v2/ngen.h`). ELF 13.3 ->
+      32.2 MB; package 961 -> 981 KB (the zeros compress).
+    - EMULATION -> "JIT Code Cache" (`JitCodeCache`): 6 MB / 12 MB / 24
+      MB, default 6 MB, set before boot. `recSh4_Init` latches it
+      (`s_code_size` in `dc/sh4/rec_v2/driver.cpp`); free space, the 80%
+      and 92% marks and the init clear use it. `[jitcfg]` prints
+      `ccache=`.
+    - Boot line `recSh4: code cache at ... (N of 24576 KB in use, PS3
+      .text), bl reach N KB of 32768`, from the linker's
+      `__executable_start` and `__etext`; an ERROR line at 32 MB or more.
+    - A cache clear now syncs only the code written since the last clear
+      (blocks and patches are synced when written), so its cost follows
+      the code made, not the array size. Before, it synced all of
+      CODE_SIZE.
+    - The warning-zone line prints once per fill.
+    - New `[jcache]` line per stats window with new code: used KB of the
+      size, compiled KB/s, clears since boot (`full` = out of room, `all`).
+    - The main-loop dump (`dynarec_*.bin`) now writes the loop's size; it
+      wrote `CODE_SIZE - free`, which would be 18 MB+ at 6 MB of 24.
+    - At 6 MB the JIT behaves as before, except the two log changes and
+      the clear's sync range.
+  - Build: the 7 old warnings, `.got` 0xA618, 0 `r2off`; CodeCache at
+    0x42600, `__etext` 0x1B29A98, ARM7 cache at 0x1882000.
+  - Expected: Sonic Adventure has no full clear until ~22 MB of code, so
+    the dips after full clears go; Crazy Taxi does not change. Risk: hot
+    code spread over more memory (more I-ERAT and TLB misses) may cost a
+    little; the Crazy Taxi boot shows it.
+  - HW test steps (package of 17:08):
+    1. Install. Settings as `run53b.txt` and `run53c.txt` (an install
+       resets them): EMULATION -> Dynarec ON, JIT Fastmem ON, SH4 Clock
+       200, JIT Code Cache 24 MB; AUDIO -> ARM7 Idle Skip SAFE, SPE AICA
+       Sound ON, SPE ARM7 ON; VIDEO / DEBUG -> TA SQ Direct ON, IFB Probe
+       ON, JIT C-Calls ON; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT
+       CONSTPROP, JIT DEAD VALUES ON, JIT SQ MISS + LOOK-AHEAD, JIT DYN
+       IC + RTS. Set them on the main menu, not with SELECT.
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Sonic Adventure, about 4 minutes of play as in
+       `run53c.txt`. Log: `[jitcfg] ... ccache=2`; `[jitprobe] test B`
+       passes (it runs code in the last KB of the 24 MB array); the reach
+       line; `[jcache]` lines; no "cache above flush threshold" line;
+       `[ps3] largest free block at boot` about 18 MB below 164683 KB.
+    4. Boot 2: Crazy Taxi, dense traffic, about 150 s, then exit to the
+       XMB. Same-load VPS against `run53b.txt` (scratchpad of session
+       48f8af9b) with `vtbins.py`.
+    5. On a fault: the same boot with JIT Code Cache 6 MB.
+  - HW boot 1 2026-10-05 (Sonic Adventure, 24 MB; log `run528a.txt` in the
+    scratchpad of session 849b7627, cut from `ps3log_528_run1.txt`, lines
+    1-12319). Settings as `run53c.txt` (`[sndcfg]` equal, `[jitcfg]` adds
+    `ccache=2`). Log clean, the old XMB 3 s fallback. `[jitprobe] test B`
+    PASS at 0x1842200; reach line 27549 KB; free at boot 146251 KB (18432
+    KB less, as expected).
+    - The same code loads and clears as `run53c.txt`, up to the last load
+      (`run53c` t=58 s, here t=142 s). After it, 157 s of play: no full
+      clear (`run53c`: full clears 21, 76 and 120 s after its last load,
+      then a load clear with 5.6 MB used). The cache grew to 4.9 MB in 9 s,
+      5.8 MB in 29 s (where 6 MB clears), then slowly: 6.6 MB at +75 s,
+      7.8 MB at +157 s (10-20 KB/s).
+    - 156 dense NTSC windows: SPEED 99.7%, 97% at full speed, 94% at 25+
+      frames/s (`run53c`: 150, 99.6%, 95%, 92%). In play after the last
+      load, one window under 95%: t=220 s, 89.3% SPEED, 16.6 frames/s,
+      with a 129 KB/s compile burst (new code, no clear). `run53c` in the
+      same span: 81.2% after the full clear at t=134 s, 94.9% at t=205 s,
+      79.2% twice after the load clear at t=211 s.
+    - Tool: `lowwin.py` (windows under a SPEED limit, with the last clear
+      before each).
+  - HW boot 2 2026-10-05 (Crazy Taxi, 24 MB; `run528b.txt`, lines
+    12320-19771 of `ps3log_528_run1.txt`). Settings as `run53b.txt`
+    (`[sndcfg]` equal, `[jitcfg]` adds `ccache=2`). Log clean, the old XMB
+    3 s fallback. 15 clears as in `run53b` (the game's I-cache
+    invalidations), no full clear, no warning line; 4884 KB used at the
+    end.
+    - 60 dense windows: VPS 59.2, SPEED 98.7%, 68% at full speed
+      (`run53b`: 60, 59.3, 98.9%, 63%). Same-load VPS -0.2% against
+      `run53b` (`vtbins.py`): noise, no cost from the larger cache.
+  - Matt then asked about 12 MB. Answer: 12 MB is a menu setting, but it
+    frees no memory (the array stays 24 MB; a 12 MB array needs a
+    rebuild and gives ~12 MB back, with 146 MB free now); at ~15 KB/s
+    Sonic would reach the 11 MB flush mark after ~6-7 min in one area
+    without a level load. Matt: "Let's keep it 24 as default then":
+    `JitCodeCache` defaults to 2 (24 MB) since the package of 19:08.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

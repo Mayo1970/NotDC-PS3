@@ -1,0 +1,54 @@
+# Plan 5.3 (gen.py): what ps3_jit_dynic.h must emit. Sites with the stub 0x40000 below and 0x123450 above.
+	bl .-0x40000
+	b .+12
+	b .+8
+	b .+4
+	bl .+0x123450
+	b .+12
+	b .+8
+	b .+4
+# Guards (t, djump, pc, target): the low half 0 and with bit 15 set, all ones, 0, and the reach of b both ways.
+	xoris 4,31,0x8C01
+	cmplwi 0,4,0
+	bne 0,.+8
+	b .+0x1000
+	xoris 4,31,0x0C15
+	cmplwi 0,4,0xA660
+	bne 0,.+8
+	b .-0x2000
+	xoris 4,31,0xFFFF
+	cmplwi 0,4,0xFFFF
+	bne 0,.+8
+	b .+0x1fffffc
+	xoris 4,31,0
+	cmplwi 0,4,0
+	bne 0,.+8
+	b .-0x2000000
+	xoris 6,30,0x1234
+	cmplwi 0,6,0x5678
+	bne 0,.+8
+	b .+0x10
+# Miss counters at 0x10B23450, 0x10B2FFF0 (negative low half), 0x10B27FFC (top of the reach), 0x1000.
+	lis 5,0x10B2
+	lwz 6,0x3450(5)
+	addi 6,6,1
+	stw 6,0x3450(5)
+	lis 5,0x10B3
+	lwz 6,-16(5)
+	addi 6,6,1
+	stw 6,-16(5)
+	lis 5,0x10B2
+	lwz 6,0x7FFC(5)
+	addi 6,6,1
+	stw 6,0x7FFC(5)
+	lis 7,0
+	lwz 8,0x1000(7)
+	addi 8,8,1
+	stw 8,0x1000(7)
+# Fill stub heads (a0, a1) = (3, 4), (5, 6).
+	mflr 4
+	addi 4,4,-4
+	clrldi 3,3,32
+	mflr 6
+	addi 6,6,-4
+	clrldi 5,5,32

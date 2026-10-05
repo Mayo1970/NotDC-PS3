@@ -56,6 +56,8 @@ extern int g_jit_tcopy_preset;
 extern int g_jit_sq_miss_preset;
 extern int g_jit_mfocrf_preset;
 extern int g_jit_fpul_moves_preset;
+extern int g_jit_dyn_ic_preset;
+extern int g_jit_code_cache_preset;
 extern int g_arm7_jit_preset;
 extern int g_ifb_probe_preset;
 extern int g_hotblocks_preset;

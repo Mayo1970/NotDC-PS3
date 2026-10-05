@@ -1,7 +1,4 @@
-/*
-	Header file for native generator interface
-	Needs some cleanup
-*/
+// Native generator interface: code cache emitters, rdv_* driver entry points, ngen_* backend hooks.
 
 #pragma once
 #include "rec_config.h"
@@ -9,7 +6,9 @@
 #include "blockmanager.h"
 
 
-#define CODE_SIZE   (6291456) // =(6*1024*1024) // 4 or 6 MB for Wii ?
+// Array size; "JIT Code Cache" (plan 5.28) sets how much of it is used. At 24 MB all of .text stays
+// within a `bl`'s 32 MB reach of every cache byte (recSh4_Init logs the reach).
+#define CODE_SIZE   (24*1024*1024)
 
 
 #if HOST_OS==OS_LINUX
@@ -25,6 +24,8 @@ void emit_Skip(u32 sz);
 u32 emit_FreeSpace();
 void* emit_GetCCPtr();
 void emit_SetBaseAddr();
+// [jcache] line for the stats window (plan 5.28).
+void recSh4_CacheDump(double seconds);
 
 //Called from ngen_FailedToFindBlock
 DynarecCodeEntry* rdv_FailedToFindBlock();

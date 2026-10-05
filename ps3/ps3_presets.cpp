@@ -64,6 +64,8 @@ int g_jit_tcopy_preset     = 1;   // 1 = the last T writer before bt.s/bf.s also
 int g_jit_sq_miss_preset   = 0;   // 1 = SQ test first in a store's cold path, 2 also the look-ahead guess (5.27)
 int g_jit_mfocrf_preset    = 1;   // 1 = compares read CR0 with mfocrf, not the microcoded mfcr (5.24, HW)
 int g_jit_fpul_moves_preset = 1;  // 1 = flds, fsts, ftrc, float with one trip through memory less (5.24, HW)
+int g_jit_dyn_ic_preset    = 1;   // 1 = jsr/jmp exits test their first target inline (DYN_IC), 2 also rts (5.3, HW)
+int g_jit_code_cache_preset = 2;  // SH4 code cache in use: 0 = 6 MB, 1 = 12 MB, 2 = 24 MB (5.28, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
@@ -130,6 +132,8 @@ static const CfgItem s_items[] = {
 	{ "JitSqMiss",     &g_jit_sq_miss_preset },
 	{ "JitMfocrf",     &g_jit_mfocrf_preset },
 	{ "JitFpulMoves",  &g_jit_fpul_moves_preset },
+	{ "JitDynIc",      &g_jit_dyn_ic_preset },
+	{ "JitCodeCache",  &g_jit_code_cache_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -278,7 +282,8 @@ int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
 int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }
-int get_dyn_ic_preset()        { return 0; }
+int get_dyn_ic_preset()        { return g_jit_dyn_ic_preset; }
+int get_jit_code_cache_preset() { return g_jit_code_cache_preset; }
 int get_fpu_pin_preset()       { return g_fpu_pin_preset; }
 int get_hotblocks_preset()     { return g_hotblocks_preset; }
 int get_ifb_flush_preset()     { return 0; }

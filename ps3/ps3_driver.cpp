@@ -24,6 +24,7 @@
 #include "ps3/ps3_jit_tcopy.h"
 #include "ps3/ps3_jit_sqla.h"
 #include "ps3/ps3_jit_ppe.h"
+#include "ps3/ps3_jit_dynic.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -72,7 +73,7 @@ const ppc_ireg ppc_rinvalid = static_cast<ppc_ireg>(-1);  // sentinel: out-of-ra
 // This is defined in main.cpp
 extern "C" int get_debug_loop();
 extern "C" int get_bcache_preset();	// main.cpp: 0=off (default), 1=flat dispatch cache
-extern "C" int get_dyn_ic_preset();	// main.cpp: 0=off (default), 1=call+jump, 2=+rts
+extern "C" int get_dyn_ic_preset();	// ps3_presets.cpp: 0=off (default), 1=call+jump, 2=+rts
 extern "C" int get_fpu_pin_preset();	// main.cpp: 0=off (default), 1=pin fr[0..15] to f14..f29
 extern "C" int get_jit_align_preset();	// main.cpp: 0=off (default), 1=32-byte-align block entries
 extern "C" int get_ifb_flush_preset();	// main.cpp: 0=off (default, full bracket), 1=selective
@@ -308,6 +309,11 @@ static u32 s_tc_copy, s_tc_fwd, s_tc_load, s_tc_miss;
 extern "C" int get_jit_mfocrf_preset();
 extern "C" int get_jit_fpul_moves_preset();
 static u32 s_ppe_focrf, s_ppe_flds, s_ppe_fsts, s_ppe_ftrc, s_ppe_float;
+
+// DYN_IC (plan 5.3), since boot: sites compiled and misses of filled sites (counted at site+16), each by kind
+// (call, jump, ret), and sites filled. Generated code reaches s_ic_miss with addis from 0: it must lie below 2 GB.
+static u32 s_ic_sites[3], s_ic_fills;
+static u32 s_ic_miss[3];
 
 // A block polls if its end can close a loop: a static target at or below its start, or a dynamic or interrupt
 // end. Ends without the poll only reach higher starts, so every loop still polls once per turn.
@@ -1202,24 +1208,20 @@ void ngen_End(DecodedBlock* block)
 		//mov reg,djump
 		ppc_ori(ppc_rarg0,ppc_djump,0);  // mr rarg0, djump
 
-		// DYN_IC: per-site monomorphic inline cache. A 4-instruction guard (xoris/cmplwi/bne/b target), patched
-		// with the first target; before that, and on a miss, the generic lookup. Every invalidation is a full clear.
+		// DYN_IC: a monomorphic inline cache per site (ps3_jit_dynic.h), filled with the first target; unfilled sites
+		// and misses take the lookup below. Every invalidation is a full clear, which drops guards and targets together.
 		{
 			const int ic = get_dyn_ic_preset();
-			const bool ic_here = ngen_LinkBlock_Dynamic_IC_stub &&
-			                     ((ic >= 2) ||
-			                      (ic == 1 && block->BlockType != BET_DynamicRet));
-			if (ic_here)
+			const u32 kind = block->BlockType==BET_DynamicCall ? 0 : block->BlockType==BET_DynamicJump ? 1 : 2;
+			if (ngen_LinkBlock_Dynamic_IC_stub && (ic>=2 || (ic==1 && kind!=2)))
 			{
-				// 4 words. `generic` is site+16, so each unpatched slot is a
-				// plain forward branch onto it (LI is in instructions).
-				ppc_call(ngen_LinkBlock_Dynamic_IC_stub);	// +0  -> xoris
-				ppc_bx(3,0,0);					// +4  -> cmplwi
-				ppc_bx(2,0,0);					// +8  -> bne generic
-				ppc_bx(1,0,0);					// +12 -> b target
+				verify((uintptr_t)&s_ic_miss[3] < 0x7FFF0000u);
+				emit_dynic_site(ngen_LinkBlock_Dynamic_IC_stub);
+				emit_dynic_miss_count(ppc_rarg2,ppc_rarg3,&s_ic_miss[kind]);
+				s_ic_sites[kind]++;
 			}
 		}
-		// generic path starts here (the IC's fall-through target)
+		// generic path: rarg0 = target pc; rarg1-rarg3 and CR0 are free
 
 		if (get_bcache_preset())
 		{
@@ -1942,6 +1944,8 @@ static void idle_dump(double seconds)
 // Stats window (SPG.cpp, once a second, SH4 thread): one line per window; dense windows add to the census.
 extern "C" void hotblocks_dump(double seconds,double vt_k)
 {
+	recSh4_CacheDump(seconds);
+
 	// The stats window calls this every second, so plan 5.22's [cyc] line rides on it (after new compiles only).
 	static u32 cyc_last;
 	if (get_jit_cycle_check_preset() && s_cycle_poll+s_cycle_nopoll!=cyc_last)
@@ -1968,6 +1972,19 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 
 	if (get_jit_idle_skip_preset() && seconds>0.0)
 		idle_dump(seconds);
+
+	// Plan 5.3's [dynic] line: sites compiled by kind and filled since boot, misses of filled sites per second.
+	static u32 ic_last[5];
+	if (get_dyn_ic_preset() && seconds>0.0)
+	{
+		const u32 sites=s_ic_sites[0]+s_ic_sites[1]+s_ic_sites[2];
+		const u32 m0=s_ic_miss[0]-ic_last[2], m1=s_ic_miss[1]-ic_last[3], m2=s_ic_miss[2]-ic_last[4];
+		if (sites!=ic_last[0] || s_ic_fills!=ic_last[1] || (m0|m1|m2))
+			printf("[dynic] sites call=%u jump=%u ret=%u filled=%u | miss/s call %.0f jump %.0f ret %.0f\n",
+			       s_ic_sites[0], s_ic_sites[1], s_ic_sites[2], s_ic_fills, m0/seconds, m1/seconds, m2/seconds);
+		ic_last[0]=sites; ic_last[1]=s_ic_fills;
+		ic_last[2]=s_ic_miss[0]; ic_last[3]=s_ic_miss[1]; ic_last[4]=s_ic_miss[2];
+	}
 
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
@@ -4448,45 +4465,26 @@ void* FASTCALL ngen_LinkBlock_Static(u32 pc,u32* patch)
 	return (void*)rv;
 }
 
-// The `bl` word ngen_End() emitted into slot 0 of an IC site, recomputed for a
-// given site address. Used to prove the site still exists before patching it.
-static inline u32 ic_site_bl_word(const u32* site)
-{
-	snat offs = ((u8*)ngen_LinkBlock_Dynamic_IC_stub - (u8*)site) >> 2;
-	return 0x48000000u | ((0xffffffu & (u32)offs) << 2) | 1u;
-}
-
-// DYN_IC fill, from the `bl` in slot 0 of a site: pc is the target taken, site is slot 0. Rewrites the
-// four slots with the guard (once per site) and returns the target for the stub's bctr.
+// DYN_IC fill, from the `bl` in slot 0 of a site: pc is the target taken, site is slot 0. Writes the guard over
+// the site (once) and returns the target's code for the stub's bctr.
 void* FASTCALL ngen_LinkBlock_Dynamic_IC(u32 pc,u32* site)
 {
 	next_pc=pc;
 
 	DynarecCodeEntry* rv=rdv_FindOrCompile();
 
-	// A cache clear in rdv_FindOrCompile overwrote this site with another block: patch nothing.
-	if (*site != ic_site_bl_word(site))
+	if (!dynic_site_live(site,ngen_LinkBlock_Dynamic_IC_stub))
 		return (void*)rv;
 
+	// The guard's `b` reaches 32 MB, which covers the whole cache (CODE_SIZE); a failed compile (rv 0) would not.
+	const snat d=(u8*)rv-(u8*)(site+3);
+	verify(d<33554432 && d>-33554432);
 	emit_ptr=site;
-	{
-		ppc_xoris(ppc_rarg1,ppc_djump,pc>>16);		// rarg1 = djump ^ (hi<<16)
-		ppc_cmpli(ppc_cr0,ppc_rarg1,(u16)pc,0);		// cmplwi rarg1, lo
-		ppc_bcx(BO_FALSE,BI_CR0_EQ,2,0,0);		// bne +8 -> generic (site+16)
-		ppc_jump(rv);					// b target
-	}
+	emit_dynic_guard(ppc_rarg1,ppc_djump,pc,(void*)rv);
 	emit_ptr=0;
 
 	make_address_range_executable(site, 4*sizeof(u32));
-
-	// [DYN_IC] engagement counter, quiet since the preset ships ON (Wii 2026-09-07); one increment per site.
-#if 0
-	{
-		static u32 ic_patched=0;
-		if ((++ic_patched % 1000)==0)
-			printf("[DYN_IC] %u sites patched\n", ic_patched);
-	}
-#endif
+	s_ic_fills++;
 
 	return (void*)rv;
 }
@@ -4503,6 +4501,7 @@ extern "C" int get_jit_pcrel_preset();
 extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
+extern "C" int get_jit_code_cache_preset();
 
 // One line per session with every JIT toggle in force: an install wipes nullDC.cfg, so a log needs its own.
 static void ps3_jit_dump_toggles()
@@ -4517,14 +4516,14 @@ static void ps3_jit_dump_toggles()
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
 	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d"
-	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d\n",
+	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d ccache=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
 	       get_jit_fastmem_preset(), get_jit_sq_store_preset(), get_jit_ftrv_preset(),
 	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset(),
 	       get_jit_idle_skip_preset(), get_jit_tcopy_preset(), get_jit_sq_miss_preset(),
-	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset());
+	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset(), get_jit_code_cache_preset());
 }
 
 void ngen_mainloop()
@@ -4642,8 +4641,7 @@ void ngen_mainloop()
 		// DYN_IC fill stub, entered by slot 0's `bl`: LR = site+4, rarg0 = target pc; patch and jump to the result.
 		ngen_LinkBlock_Dynamic_IC_stub=emit_GetCCPtr();
 		{
-			ppc_mfspr(ppc_rarg1,ppc_spr_lr);
-			ppc_addi(ppc_rarg1,ppc_rarg1,(u32)-4);
+			emit_dynic_stub_args(ppc_rarg0,ppc_rarg1);
 			ppc_call_and_jump_c(&ngen_LinkBlock_Dynamic_IC);
 		}
 
@@ -4664,7 +4662,7 @@ void ngen_mainloop()
 
 		if (f)
 		{
-			fwrite((void*)loop_code, 1, CODE_SIZE - emit_FreeSpace(), f);
+			fwrite((void*)loop_code, 1, (u8*)emit_GetCCPtr()-(u8*)loop_code, f);
 			fclose(f);  // fclose flushes; explicit fflush is redundant
 		}
 		

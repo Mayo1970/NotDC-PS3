@@ -1,20 +1,5 @@
-/*
-	driver.cpp - Dynarec Driver for Dreamcast Emulator on Wii
-	
-	This file is the JIT recompiler driver. It manages:
-	  - The native code cache (a fixed buffer where compiled PPC blocks live)
-	  - Emission of raw machine code into the cache
-	  - Block lookup, compilation, and invalidation
-	  - Cache pressure monitoring and eviction
-	  - Wii-specific D-cache/I-cache coherency
-
-	Improvements over previous version:
-	  - Fixed boot-detect cache clear bug (was invalidating freshly added blocks)
-	  - Cache pressure eviction uses a deferred/hysteresis model instead of
-	    a single hard threshold, reducing thrashing
-	  - All Wii cache flushes are properly bounded and guarded
-	  - Code quality pass: consistent style, better comments, dead code removed
-*/
+// Dynarec driver: the native code cache and emission into it, block compile, lookup and invalidation,
+// cache pressure (warn/flush hysteresis) and D-cache/I-cache coherency.
 
 #include "types.h"
 
@@ -68,11 +53,12 @@ extern "C" int get_jit_sbp_preset();
 // JIT_HOTBLOCKS probe (wii_driver.cpp) — drop the tracked-block table when the
 // code cache it describes is thrown away. No-op unless the preset is on.
 extern "C" void hotblocks_reset();
+#if HOST_OS == OS_PS3
+extern "C" int get_jit_code_cache_preset();	// ps3_presets.cpp: 0 = 6 MB, 1 = 12 MB, 2 = CODE_SIZE (plan 5.28)
+extern "C" char __executable_start[], __etext[];	// lv2.ld: the bounds of .text
+#endif
 
-// ============================================================================
-// Optional performance counters
-// Uncomment to enable; negligible overhead, useful for tuning cache thresholds
-// ============================================================================
+// Optional performance counters: negligible overhead, for tuning the cache thresholds.
 // #define ENABLE_PERF_MONITORING
 
 #ifdef ENABLE_PERF_MONITORING
@@ -81,21 +67,10 @@ static u32 perf_cache_clears       = 0;
 static u32 perf_block_check_fails  = 0;
 #endif
 
-// ============================================================================
-// Forward declarations
-// ============================================================================
 void recSh4_ClearCache();
 
-// ============================================================================
-// Code cache storage
-//
-// CODE_SIZE is defined in ngen.h (currently 6 MB). Do NOT redefine here —
-// a smaller local definition caused premature cache clears while the real
-// array still had room, causing rdv_FailedToFindBlock spam.
-//
-// Wii: aligned to 32-byte cache lines so DCFlushRange/ICInvalidateRange
-// operate on natural boundaries without partial-line contamination.
-// ============================================================================
+// CODE_SIZE comes from ngen.h: a smaller local copy once cleared the cache early (rdv_FailedToFindBlock spam).
+// Wii: 32-byte aligned so DCFlushRange/ICInvalidateRange work on whole lines.
 
 extern volatile bool sh4_int_bCpuRun;
 
@@ -119,34 +94,26 @@ u32  LastAddr_min = 0;
 // Optional override pointer used during back-patching
 u32* emit_ptr     = 0;
 
-// ============================================================================
-// Cache pressure thresholds (Wii-specific)
-//
-// CACHE_WARN_THRESHOLD  — log a warning, no action yet
-// CACHE_FLUSH_THRESHOLD — proactive clear before we run out mid-compilation
-//
-// Hysteresis between the two avoids rapid clear/refill thrashing.
-// Both expressed as fractions of CODE_SIZE.
-// ============================================================================
+// Bytes of CodeCache in use, set by recSh4_Init (PS3: the "JIT Code Cache" option, plan 5.28).
+static u32 s_code_size = CODE_SIZE;
+
+// Plan 5.28 [jcache] counters: code emitted by compiles since boot, cache clears (full = out of room).
+static u64 s_compiled_bytes = 0;
+static u32 s_clears = 0, s_clears_full = 0;
+
+// Cache pressure: WARN logs once per fill, FLUSH clears before a compile can run out of room. The gap
+// between them avoids clear/refill thrashing; both are fractions of the size in use.
 #if JIT_MANAGED_CACHE
 static u32 cache_high_water_mark = 0;
-#define CACHE_WARN_THRESHOLD   ((CODE_SIZE * 80) / 100)   // 80 %
-#define CACHE_FLUSH_THRESHOLD  ((CODE_SIZE * 92) / 100)   // 92 %
+#define CACHE_WARN_THRESHOLD   ((u32)(((u64)s_code_size * 80) / 100))   // 80 %
+#define CACHE_FLUSH_THRESHOLD  ((u32)(((u64)s_code_size * 92) / 100))   // 92 %
 // Minimum free bytes required before attempting a new compilation.
 // 128 KB gives room for the largest typical PPC block expansion.
 #define CACHE_MIN_FREE         (128 * 1024)
 #endif
 
-// ============================================================================
-// Wii cache coherency helpers
-//
-// On the Wii's Broadway (PowerPC 750CL) the data cache and instruction cache
-// are independent. After writing new native code we must:
-//   1. DCFlushRange  — write D-cache lines back to RAM
-//   2. ICInvalidateRange — discard stale I-cache lines so the CPU fetches fresh
-//
-// Both functions require 32-byte alignment and a size rounded up to 32 bytes.
-// ============================================================================
+// New code must reach the instruction fetch: write the D-cache lines back, then drop the stale I-cache
+// lines (Wii: 32-byte lines via libogc; PS3: 128-byte lines in ps3_jit_icache_sync).
 #if JIT_MANAGED_CACHE
 static inline u32 align_up_32(u32 v) { return (v + 31u) & ~31u; }
 
@@ -163,10 +130,6 @@ static inline void jit_sync_icache(const void* start, u32 size)
 }
 #endif
 
-// ============================================================================
-// Emit helpers — write code bytes / words into the cache
-// ============================================================================
-
 void* emit_GetCCPtr()
 {
 	return emit_ptr ? (void*)emit_ptr : (void*)&CodeCache[LastAddr];
@@ -180,14 +143,14 @@ void emit_SetBaseAddr()
 void emit_Write8(u8 data)
 {
 	verify(!emit_ptr);
-	verify(LastAddr + 1 <= CODE_SIZE);
+	verify(LastAddr + 1 <= s_code_size);
 	CodeCache[LastAddr++] = data;
 }
 
 void emit_Write16(u16 data)
 {
 	verify(!emit_ptr);
-	verify(LastAddr + 2 <= CODE_SIZE);
+	verify(LastAddr + 2 <= s_code_size);
 	*(u16*)&CodeCache[LastAddr] = data;
 	LastAddr += 2;
 }
@@ -200,7 +163,7 @@ void emit_Write32(u32 data)
 	}
 	else
 	{
-		verify(LastAddr + 4 <= CODE_SIZE);
+		verify(LastAddr + 4 <= s_code_size);
 		*(u32*)&CodeCache[LastAddr] = data;
 		LastAddr += 4;
 	}
@@ -208,18 +171,15 @@ void emit_Write32(u32 data)
 
 void emit_Skip(u32 sz)
 {
-	verify(LastAddr + sz <= CODE_SIZE);
+	verify(LastAddr + sz <= s_code_size);
 	LastAddr += sz;
 }
 
 u32 emit_FreeSpace()
 {
-	return CODE_SIZE - LastAddr;
+	return s_code_size - LastAddr;
 }
 
-// ============================================================================
-// Code cache dump (debug utility)
-// ============================================================================
 void emit_WriteCodeCache()
 {
 	char path[512];
@@ -238,24 +198,20 @@ void emit_WriteCodeCache()
 	}
 }
 
-// ============================================================================
-// recSh4_ClearCache
-//
-// Resets the write pointer and invalidates all compiled blocks.
-// On Wii we also flush the instruction cache so the CPU cannot execute
-// stale code that happened to sit in I-cache lines.
-// ============================================================================
+// Drops every compiled block; the write pointer goes back to the end of the main loop (LastAddr_min).
 void recSh4_ClearCache()
 {
 #ifdef ENABLE_PERF_MONITORING
 	perf_cache_clears++;
 	printf("recSh4: cache clear #%u at pc=%08X (used %u / %u bytes)\n",
-	       perf_cache_clears, curr_pc, LastAddr, CODE_SIZE);
+	       perf_cache_clears, curr_pc, LastAddr, s_code_size);
 #else
 	printf("recSh4: cache clear at pc=%08X (used %u / %u bytes)\n",
-	       curr_pc, LastAddr, CODE_SIZE);
+	       curr_pc, LastAddr, s_code_size);
 #endif
 
+	const u32 written = LastAddr;
+	s_clears++;
 	LastAddr = LastAddr_min;
 	bm_Reset();
 
@@ -264,35 +220,21 @@ void recSh4_ClearCache()
 	hotblocks_reset();
 
 #if JIT_MANAGED_CACHE
-	// Invalidate the entire I-cache region we may have written into.
-	// This is safe even if LastAddr_min == 0 (full reset).
+	// Blocks and patches are synced when written. This second pass covers what was written since the last
+	// clear, so its cost follows the code made, not the array size (plan 5.28).
 #if HOST_OS == OS_WII
 	ICInvalidateRange(CodeCache, CODE_SIZE);
 #else
-	ps3_jit_icache_sync(CodeCache, CODE_SIZE);
+	ps3_jit_icache_sync(CodeCache + LastAddr_min, written - LastAddr_min);
 #endif
 	cache_high_water_mark = LastAddr;
 #endif
 }
 
-// ============================================================================
-// Block analysis
-// ============================================================================
 void AnalyseBlock(DecodedBlock* blk);
 
-// DoCheck: should this block get a runtime self-check guard emitted at its
-// entry (see ngen_Begin)? The guard re-reads the first byte of the block's SH4
-// source and bails to rdv_BlockCheckFail if it no longer matches what we
-// compiled — i.e. the game overwrote its own code.
-//
-// Controlled by the JIT_SBP preset:
-//   0 = off      — no guards at all (legacy behaviour, zero protection)
-//   1 = known    — guard only the addresses known to self-modify (default)
-//   2 = all RAM  — guard every block that lives in RAM (slow, for diagnosis)
-//
-// Note the GetMemPtr(pc, len) probe: a block straddling the end of a mapped
-// region has no contiguous host pointer to compare against, so it must not be
-// guarded. This is why the decoder now records sh4_code_size.
+// JIT_SBP entry guard against self-modifying code: 0 off, 1 known SMC addresses (default), 2 all RAM. A block
+// with no contiguous host mapping (BIOS, MMIO, region edge) has nothing to compare, so it gets no guard.
 static bool DoCheck(u32 pc, u32 len)
 {
 	const int mode = get_jit_sbp_preset();
@@ -325,31 +267,23 @@ static bool DoCheck(u32 pc, u32 len)
 	}
 }
 
-// ============================================================================
-// rdv_CompileBlock
-//
-// Decodes, analyses, and compiles one SH4 basic block into native PPC code.
-// Returns a pointer to the entry point, or NULL on failure.
-//
-// Cache pressure check:
-//   We use CACHE_MIN_FREE as a hard floor. If we are below it we clear first.
-//   Between CACHE_WARN_THRESHOLD and CACHE_FLUSH_THRESHOLD we log a warning
-//   but continue — giving time for blocks that are rarely re-used to be
-//   displaced naturally before forcing a full eviction.
-// ============================================================================
+// Decode, analyse and compile one SH4 block; NULL on failure. Below CACHE_MIN_FREE or past the flush
+// threshold the cache is cleared first; the warning zone only logs.
 DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 {
 #if JIT_MANAGED_CACHE
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
 	{
+		const u32 prev = cache_high_water_mark;
 		cache_high_water_mark = LastAddr;
 
-		if (cache_high_water_mark >= CACHE_WARN_THRESHOLD &&
+		// Once per fill: a line per block compiled in the zone sent 8155 lines in one Sonic run (plan 5.28).
+		if (prev < CACHE_WARN_THRESHOLD && cache_high_water_mark >= CACHE_WARN_THRESHOLD &&
 		    cache_high_water_mark < CACHE_FLUSH_THRESHOLD)
 		{
 			printf("recSh4: cache %u%% full (warning zone)\n",
-			       (cache_high_water_mark * 100u) / CODE_SIZE);
+			       (cache_high_water_mark * 100u) / s_code_size);
 		}
 	}
 
@@ -358,13 +292,15 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	{
 		printf("recSh4: cache below min-free threshold, clearing (free=%u bytes)\n",
 		       emit_FreeSpace());
+		s_clears_full++;
 		recSh4_ClearCache();
 	}
 	// Proactive clear at high-water threshold
 	else if (LastAddr >= CACHE_FLUSH_THRESHOLD)
 	{
 		printf("recSh4: cache above flush threshold (%u%%), clearing\n",
-		       (LastAddr * 100u) / CODE_SIZE);
+		       (LastAddr * 100u) / s_code_size);
+		s_clears_full++;
 		recSh4_ClearCache();
 	}
 #else
@@ -399,6 +335,7 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	{
 		u32 code_size = (u32)((u8*)emit_GetCCPtr() - (u8*)code_start);
 		jit_sync_icache(code_start, code_size);
+		s_compiled_bytes += code_size;
 
 		// Bring-up trace: the last line before a freeze names the block that
 		// ran off, which the heartbeat pc alone cannot.
@@ -429,36 +366,8 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	return rv;
 }
 
-// ============================================================================
-// rdv_CompilePC
-//
-// Compiles the block at next_pc, registers it with the block manager, and
-// returns its entry point.
-//
-// Boot detection (part of JIT_SBP — JIT Stale Block Protection):
-//   0x..08300 is the IP.BIN bootstrap entry and 0x..10000 is the 1ST_READ.BIN
-//   entry. IP.BIN draws the SEGA licence screen, loads the game binary OVER
-//   that RAM, then jumps to 0x8C010000. Every block we compiled from the
-//   pre-load contents of that RAM is now stale, so the cache MUST be dropped
-//   on this transition or the JIT keeps executing translations of code that no
-//   longer exists (symptom: logo renders, then the game stalls while vblank —
-//   and therefore the FPS counter — keeps running). This is real-world
-//   correctness, not a diagnostic, so JIT_SBP defaults ON; the OFF position
-//   exists only to reproduce the legacy zero-protection behavior for A/B
-//   comparison.
-//
-//   History: this used to clear AFTER bm_AddCode(), which invalidated the block
-//   just added and forced an immediate recompile. That was then "fixed" by
-//   DEFERRING the clear to the next compile cycle — but that is unsound: if
-//   execution settles entirely into already-cached stale blocks, no further
-//   compile ever happens and the deferred clear never fires at all.
-//
-//   Correct order is to clear BEFORE compiling. The block we then compile is
-//   built from post-load memory and stays valid, so there is no wasted compile
-//   and no window where stale blocks remain reachable. Self-limiting: this path
-//   is only reached on a cache miss, so once the boot block is cached again we
-//   stop clearing.
-// ============================================================================
+// JIT_SBP boot rule: IP.BIN (0x..08300) loads 1ST_READ.BIN (0x..10000) over RAM the JIT compiled, so clear
+// BEFORE compiling either entry; a clear after bm_AddCode or deferred to a later compile leaves stale blocks.
 
 u32 rdv_FailedToFindBlock_pc;
 
@@ -498,10 +407,6 @@ DynarecCodeEntry* rdv_CompilePC()
 	return rv;
 }
 
-// ============================================================================
-// Block lookup and fallback handlers
-// ============================================================================
-
 DynarecCodeEntry* rdv_FailedToFindBlock()
 {
 	next_pc = rdv_FailedToFindBlock_pc;
@@ -512,19 +417,8 @@ DynarecCodeEntry* rdv_FailedToFindBlock()
 	return rdv_CompilePC();
 }
 
-// Entered from a block's entry guard (see ngen_Begin) when the SH4 source no
-// longer matches what we compiled — the game rewrote its own code.
-//
-// This does a FULL cache clear rather than just bm_RemoveCode(pc). Reason:
-// ngen_LinkBlock_Static() permanently patches a caller's exit into a direct
-// `b <target code address>`. Dropping only the map entry would leave those
-// patched branches pointing at the stale code, whose guard would fail again on
-// every execution — recompiling the same block forever. A full clear discards
-// the patched links along with the code, so the next execution re-links to the
-// fresh translation.
-//
-// The block we compile below is built after the clear, so it stays valid for
-// the return into it.
+// A block's entry guard saw its SH4 source change. Full clear, not bm_RemoveCode: static links patched into
+// callers would keep reaching the stale code and recompile it forever. The block compiled after it stays valid.
 DynarecCodeEntry* FASTCALL rdv_BlockCheckFail(u32 pc)
 {
 	next_pc = pc;
@@ -553,20 +447,12 @@ DynarecCodeEntry* rdv_FindOrCompile()
 	return rv;
 }
 
-// ============================================================================
-// Main execution loop
-// ============================================================================
-
 void recSh4_Run()
 {
 	sh4_int_bCpuRun = true;
 
-	// Latch the accuracy-preset timing parameters BEFORE ngen_mainloop():
-	// the mainloop is emitted once, on first entry, with the timeslice baked
-	// into the generated code. Without this the JIT always ran the ACCURATE
-	// 448-cycle timeslice while UpdateSystem advanced peripherals by
-	// s_timeslice — consistent only because the preset was never applied in
-	// rec mode. Now FAST/BALANCED cut the UpdateSystem call rate 4x/2x.
+	// Latch the accuracy preset before ngen_mainloop(): its timeslice is baked into the main loop, emitted once,
+	// and UpdateSystem must advance the peripherals by the same slice.
 	Sh4_ApplyAccuracyPreset();
 
 	printf("recSh4: starting dynarec execution\n");
@@ -585,10 +471,6 @@ void recSh4_Run()
 	sh4_int_bCpuRun = false;
 }
 
-// ============================================================================
-// Emulator control
-// ============================================================================
-
 void recSh4_Stop()  { Sh4_int_Stop(); }
 void recSh4_Step()  { Sh4_int_Step(); }
 void recSh4_Skip()  { Sh4_int_Skip(); }
@@ -598,10 +480,6 @@ void recSh4_Reset(bool Manual)
 	Sh4_int_Reset(Manual);
 	recSh4_ClearCache();
 }
-
-// ============================================================================
-// Initialization
-// ============================================================================
 
 void recSh4_Init()
 {
@@ -636,12 +514,23 @@ void recSh4_Init()
 	memset(CodeCache, 0xCD, CODE_SIZE);
 
 #elif HOST_OS == OS_PS3
-	printf("recSh4: code cache at %p (%u KB, PS3 .text)\n",
-	       CodeCache, CODE_SIZE / 1024);
+	{
+		const int p = get_jit_code_cache_preset();
+		s_code_size = (p == 2) ? CODE_SIZE : (p == 1) ? (12u << 20) : (6u << 20);
+
+		// Generated code calls C with `bl`, which reaches 32 MB, so every cache byte must reach all of .text.
+		const u32 up    = (u32)((u8*)__etext - CodeCache);
+		const u32 down  = (u32)(CodeCache + CODE_SIZE - (u8*)__executable_start);
+		const u32 reach = up > down ? up : down;
+		printf("recSh4: code cache at %p (%u of %u KB in use, PS3 .text), bl reach %u KB of 32768\n",
+		       CodeCache, s_code_size / 1024, CODE_SIZE / 1024, reach / 1024);
+		if (reach >= (32u << 20))
+			printf("recSh4: ERROR - .text is wider than a bl reaches; C calls from the cache will fail\n");
+	}
 
 	// No protection call exists or is needed: lv2 already maps .text RWX.
-	memset(CodeCache, 0x00, CODE_SIZE);
-	ps3_jit_icache_sync(CodeCache, CODE_SIZE);
+	memset(CodeCache, 0x00, s_code_size);
+	ps3_jit_icache_sync(CodeCache, s_code_size);
 
 #elif HOST_OS == OS_WII
 	printf("recSh4: code cache at %p (%u KB, Wii)\n",
@@ -663,12 +552,8 @@ void recSh4_Init()
 	emit_ptr     = 0;
 
 	printf("recSh4: initialization complete (cache=%u KB)\n",
-	       CODE_SIZE / 1024);
+	       s_code_size / 1024);
 }
-
-// ============================================================================
-// Termination
-// ============================================================================
 
 void recSh4_Term()
 {
@@ -680,11 +565,11 @@ void recSh4_Term()
 	printf("  cache clears      : %u\n", perf_cache_clears);
 	printf("  block check fails : %u\n", perf_block_check_fails);
 	printf("  cache usage       : %u / %u bytes (%.1f%%)\n",
-	       LastAddr, CODE_SIZE, (LastAddr * 100.0f) / CODE_SIZE);
+	       LastAddr, s_code_size, (LastAddr * 100.0f) / s_code_size);
 #if JIT_MANAGED_CACHE
 	printf("  high water mark   : %u bytes (%.1f%%)\n",
 	       cache_high_water_mark,
-	       (cache_high_water_mark * 100.0f) / CODE_SIZE);
+	       (cache_high_water_mark * 100.0f) / s_code_size);
 #endif
 
 #ifdef BM_ENABLE_STATS
@@ -712,15 +597,23 @@ bool recSh4_IsCpuRunning()
 	return Sh4_int_IsCpuRunning();
 }
 
-// ============================================================================
-// Debug utilities
-// ============================================================================
-
 void recSh4_GetCacheStats(u32* total_size, u32* used_size, u32* free_size)
 {
-	if (total_size) *total_size = CODE_SIZE;
+	if (total_size) *total_size = s_code_size;
 	if (used_size)  *used_size  = LastAddr;
-	if (free_size)  *free_size  = CODE_SIZE - LastAddr;
+	if (free_size)  *free_size  = s_code_size - LastAddr;
+}
+
+// Plan 5.28: one [jcache] line per stats window that compiled code: fill, compile rate, clears since boot.
+void recSh4_CacheDump(double seconds)
+{
+	static u64 last;
+	if (seconds <= 0.0 || s_compiled_bytes == last)
+		return;
+	printf("[jcache] used %u of %u KB, compiled %.0f KB/s, clears full=%u all=%u\n",
+	       LastAddr / 1024, s_code_size / 1024, (double)(s_compiled_bytes - last) / 1024.0 / seconds,
+	       s_clears_full, s_clears);
+	last = s_compiled_bytes;
 }
 
 #ifdef ENABLE_PERF_MONITORING
@@ -740,10 +633,6 @@ void recSh4_ResetPerfStats()
 #endif // ENABLE_PERF_MONITORING
 
 #endif // HOST_NO_REC
-
-// ============================================================================
-// Interface table
-// ============================================================================
 
 void Get_Sh4Recompiler(sh4_if* rv)
 {

@@ -298,6 +298,8 @@ static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
 static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", NULL };
+static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
+static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -341,6 +343,8 @@ static Option s_emu[] = {
 	  "On = no static block linking; every exit goes via the dispatcher." },
 	{ "JIT Fastmem",     &g_jit_fastmem_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Inlines main-RAM loads and stores. Other regions go out of line." },
+	{ "JIT Code Cache",  &g_jit_code_cache_preset, OPT_CHOICE, k_ccache,   0, 0,0,0, NULL,
+	  "SH4 recompiler cache size; when full it is cleared. Set before boot." },
 	{ "Scheduler",       &g_sched_preset,         OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Cycle-accurate event scheduling for AICA, DMA and GD-ROM." },
 	{ "DMA Fix",         &g_dma_fix_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -447,6 +451,8 @@ static Option s_jit[] = {
 	  "Compares read CR0 with mfocrf, not the microcoded mfcr. Set before boot." },
 	{ "JIT FPUL MOVES",  &g_jit_fpul_moves_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
 	  "flds, fsts, ftrc and float skip one trip through memory. Set before boot." },
+	{ "JIT DYN IC",      &g_jit_dyn_ic_preset,    OPT_CHOICE, k_dynic,     0, 0,0,0, NULL,
+	  "Dynamic exits test their first target inline, not the lookup. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
