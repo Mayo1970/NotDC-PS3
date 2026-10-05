@@ -1,5 +1,5 @@
-// Host-only check for plan 5.17 Step 3: runs the code emit_sq_store emits on a small PPC64 model and
-// compares it with the canonical store-queue write. Not part of the PS3 build.
+// Host-only check for plans 5.17 Step 3 and 5.27: runs what emit_sq_store and emit_sq_first emit on a small
+// PPC64 model against the canonical store-queue write. Not part of the PS3 build.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +15,18 @@ void ppc_emit(u32 insn) { g_code[g_n++] = insn; }
 void* emit_GetCCPtr() { return &g_code[g_n]; }
 
 #include "emitter/PPCEmit/ppc_emitter.h"
-#include "ps3/ps3_jit_sq.h"
+// mutate.py swaps in an edited copy.
+#ifndef SQ_HEADER
+#define SQ_HEADER "ps3/ps3_jit_sq.h"
+#endif
+#include SQ_HEADER
+
+// As ps3_driver.cpp's: a relative b to dst.
+void ppc_bx(void* dst, u32 LK)
+{
+	const snat offs = (u8*)dst - (u8*)emit_GetCCPtr();
+	ppc_bx((u32)(offs >> 2), 0, LK);
+}
 
 // Below 2 GB and 64-byte aligned, like sq_both on the PS3.
 static const u32 SQ_BASE = 0x11E4D300;
@@ -96,6 +107,10 @@ static u32 run(Cpu& c, u32 done, u32 other)
 		case 15: // addis
 			c.gpr[rS] = (rA ? c.gpr[rA] : 0) + ((u64)d << 16);
 			break;
+		case 18: // b
+			if (i & 3) { c.bad = 6; return pc; }
+			pc = (u32)((s64)pc + (((s32)(i << 6) >> 6) >> 2));
+			continue;
 		case 36: // stw
 			store32(c, (rA ? c.gpr[rA] : 0) + d, (u32)c.gpr[rS]);
 			break;
@@ -187,5 +202,64 @@ int main()
 		}
 	}
 	printf("%s: %u cases, %u store-queue addresses, %u failures\n", fails ? "FAIL" : "PASS", cases, sq_hits, fails);
-	return fails != 0;
+
+	// Plan 5.27: emit_sq_first with the registers FlushCold passes. A store-queue address stores and takes the
+	// b to done; any other reaches the table-tier label with only r0 changed.
+	u32 fails2 = 0, cases2 = 0, sq_hits2 = 0;
+	const u32 DONE = 60;
+	for (int shape = 0; shape < 4; shape++)
+	{
+		const bool pair = shape & 1, fpr = (shape >> 1) & 1;
+		for (u32 pi = 0; pi < 6; pi++)
+		{
+			const u32 areg = pair ? ppc_rarg0 : (pi < 5 ? pinned[pi] : (u32)ppc_rarg0);
+			const u32 datareg = pi < 5 ? pinned[(pi + 1) % 5] : (u32)ppc_rarg1;
+			const u32 fdreg = fpr ? 14 + pi * 2 : 0xFF;
+			const u32 ea = pair ? ppc_rarg1 : ppc_rarg2;
+			const u32 d0 = fpr ? fdreg : (pair ? (u32)ppc_rarg2 : datareg);
+			const u32 d1 = fpr ? fdreg + 1 : (u32)ppc_rarg3;
+			g_n = 0;
+			ppc_label* other = emit_sq_first(pair, areg, datareg, fdreg, &g_code[DONE], SQ_BASE);
+			other->MarkLabel();
+			const u32 other_pc = g_n;
+			for (u32 t = 0; t < 200000; t++, cases2++)
+			{
+				Cpu c;
+				for (u32 r = 0; r < 32; r++) { c.gpr[r] = rnd(); c.fpr[r] = (u32)rnd(); }
+				memset(c.sq, 0xA5, sizeof(c.sq));
+				c.cr0 = 0; c.bad = 0;
+				const u32 addr = pick_addr(pair);
+				c.gpr[areg] = (rnd() & 1 ? rnd() << 32 : 0) | addr;
+				Cpu before = c;
+				const u32 end = run(c, DONE, other_pc);
+				Cpu want = before;
+				const bool is_sq = (addr >> 26) == 0x38;
+				if (is_sq)
+				{
+					const u32 w = (addr & (pair ? 0x38 : 0x3C)) >> 2;
+					want.sq[w] = fpr ? before.fpr[d0] : (u32)before.gpr[d0];
+					if (pair)
+						want.sq[w + 1] = fpr ? before.fpr[d1] : (u32)before.gpr[d1];
+					sq_hits2++;
+				}
+				bool ok = !c.bad && end == (is_sq ? DONE : other_pc) && !memcmp(c.sq, want.sq, sizeof(c.sq));
+				for (u32 r = 1; r < 32 && ok; r++)
+					if (c.gpr[r] != before.gpr[r] && !(is_sq && r == ea))
+						ok = false;
+				for (u32 r = 0; r < 32 && ok; r++)
+					if (c.fpr[r] != before.fpr[r])
+						ok = false;
+				if (!ok)
+				{
+					if (fails2 < 5)
+						printf("FAIL cold pair=%d fpr=%d areg=r%u addr=%08X bad=%d end=%u (done %u other %u)\n",
+						       pair, fpr, areg, addr, c.bad, end, DONE, other_pc);
+					fails2++;
+				}
+			}
+		}
+	}
+	printf("%s: cold head %u cases, %u store-queue addresses, %u failures\n", fails2 ? "FAIL" : "PASS", cases2,
+	       sq_hits2, fails2);
+	return fails != 0 || fails2 != 0;
 }

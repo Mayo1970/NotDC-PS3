@@ -83,11 +83,11 @@ void ta_split_dump(double seconds)
         path = (sum - 4.0 * mftb_ns) * ta_per_s / 1e9 * 100.0;
     }
     printf("[ta-split] sq=%.0fk/s n=%u/%u long=%u ns: in %.1f copy %.1f fsm %.1f out %.1f = %.1f mftb %.1f"
-           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d sqst=%u\n",
+           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d sqst=%u sqla=%u sqcold=%u\n",
            calls / seconds / 1000.0, s_split_n, s_split_taken, s_split_long,
            seg[0], seg[1], seg[2], seg[3], sum, mftb_ns, path,
            s_dma_calls, s_dma_blocks, (double)s_dma_ticks * tick_ns / 1e9 / seconds * 100.0,
-           g_ta_sq_direct_preset, g_jit_sq_sites);
+           g_ta_sq_direct_preset, g_jit_sq_sites, g_jit_sq_la_sites, g_jit_sq_cold_sites);
 
     for (int i = 0; i < 4; i++)
         s_split_sum[i] = 0;

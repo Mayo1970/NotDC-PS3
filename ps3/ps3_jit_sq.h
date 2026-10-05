@@ -29,3 +29,19 @@ static inline ppc_label* emit_sq_store(u32 areg, u32 ea, bool pair, bool fpr, u3
 	}
 	return other;
 }
+
+void ppc_bx(void* dst, u32 LK);
+
+// Plan 5.27 SLOW PATH: head of the cold fragment of a 32-bit or pair store whose RAM guard failed. A
+// store-queue address is stored and jumps back to done; any other falls to the returned label (table tier).
+static inline ppc_label* emit_sq_first(bool pair, u32 areg, u32 datareg, u32 fdreg, void* done, u32 sq_base)
+{
+	// Registers as the fast path: a pair's address is in rarg0 and its EA goes to rarg1; a scalar's EA to rarg2.
+	const bool fpr = fdreg != 0xFF;
+	ppc_label* other = pair
+		? emit_sq_store(ppc_rarg0, ppc_rarg1, true, fpr, fpr ? fdreg : (u32)ppc_rarg2,
+		                fpr ? fdreg + 1 : (u32)ppc_rarg3, sq_base)
+		: emit_sq_store(areg, ppc_rarg2, false, fpr, fpr ? fdreg : datareg, 0, sq_base);
+	ppc_bx(done, 0);
+	return other;
+}

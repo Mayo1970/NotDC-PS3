@@ -297,6 +297,7 @@ static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
 static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
+static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -440,6 +441,12 @@ static Option s_jit[] = {
 	  "A wait-loop turn with no memory store ends the timeslice. Set before boot." },
 	{ "JIT T COPY",      &g_jit_tcopy_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "bt.s/bf.s take T from the compare's register copy, not memory. Set before boot." },
+	{ "JIT SQ MISS",     &g_jit_sq_miss_preset,   OPT_CHOICE, k_sqmiss,    0, 0,0,0, NULL,
+	  "Missed SQ stores skip the table; LOOK-AHEAD needs JIT SQ STORES. Set before boot." },
+	{ "JIT MFOCRF",      &g_jit_mfocrf_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Compares read CR0 with mfocrf, not the microcoded mfcr. Set before boot." },
+	{ "JIT FPUL MOVES",  &g_jit_fpul_moves_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "flds, fsts, ftrc and float skip one trip through memory. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

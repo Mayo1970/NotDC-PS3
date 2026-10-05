@@ -22,6 +22,8 @@
 #include "ps3/ps3_jit_hot.h"
 #include "ps3/ps3_jit_idle.h"
 #include "ps3/ps3_jit_tcopy.h"
+#include "ps3/ps3_jit_sqla.h"
+#include "ps3/ps3_jit_ppe.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -268,6 +270,12 @@ extern "C" int get_jit_fmov_preset();
 extern "C" int get_jit_sq_store_preset();
 u32 g_jit_sq_sites;
 
+// JIT SQ MISS (plan 5.27): 1 store-queue test first in a store's cold fragment, 2 also the look-ahead guess.
+// Sites compiled since boot: look-ahead shapes (part of g_jit_sq_sites) and cold fragments with the test.
+extern "C" int get_jit_sq_miss_preset();
+u32 g_jit_sq_la_sites, g_jit_sq_cold_sites;
+static u32 sqla_read16(u32 addr) { return ReadMem16(addr); }
+
 // JIT FTRV (plan 5.20): ftrv/fipr without FPR copies, ftrv's sums interleaved, fldi from a table.
 extern "C" int get_jit_ftrv_preset();
 
@@ -294,6 +302,12 @@ static u32 s_idle_n;
 // rarg0 (T FORWARD), loaded from sr_T, and loaded although a writer was armed (its store was not inline).
 extern "C" int get_jit_tcopy_preset();
 static u32 s_tc_copy, s_tc_fwd, s_tc_load, s_tc_miss;
+
+// Plan 5.24: JIT MFOCRF reads CR0 with mfocrf; JIT FPUL MOVES takes a memory trip out of flds, fsts, ftrc and
+// float. Sites compiled since boot with the new forms, for the [ppe] line.
+extern "C" int get_jit_mfocrf_preset();
+extern "C" int get_jit_fpul_moves_preset();
+static u32 s_ppe_focrf, s_ppe_flds, s_ppe_fsts, s_ppe_ftrc, s_ppe_float;
 
 // A block polls if its end can close a loop: a static target at or below its start, or a dynamic or interrupt
 // end. Ends without the poll only reach higher starts, so every loop still polls once per turn.
@@ -955,11 +969,12 @@ static void fmove_reg(u32 dst_reg,u32 src_reg)
 }
 
 // ---- Compare -> boolean ----
-// SH4 set* ops want 0/1: mfcr, then rlwinm rotates CR0 bit b (IBM: LT 0, GT 1, EQ 2) by b+1 into bit 31.
+// SH4 set* ops want 0/1: mfcr (JIT MFOCRF: mfocrf), then rlwinm rotates CR0 bit b (IBM: LT 0, GT 1, EQ 2) to 31.
 static void emit_cr0_bit_to_rarg0(u32 cr0_bit_index)
 {
-	ppc_mfcr(ppc_rarg0);
-	ppc_rlwinmx(ppc_rarg0,ppc_rarg0,cr0_bit_index+1,31,31,0);
+	const bool focrf=get_jit_mfocrf_preset()!=0;
+	s_ppe_focrf+=focrf;
+	emit_cr0_bit(ppc_rarg0,cr0_bit_index,focrf);
 }
 
 // JIT_CR0: a block-ending compare leaves T in CR0; true means the caller emits nothing more, and ngen_End
@@ -1023,7 +1038,7 @@ static void carry_dest_store(shil_opcode* op,u32 d)
 }
 
 // Compare rs1 with rs2 into CR0, pinned operands in place, small immediates folded (cmpi s16, cmpli u16).
-// The following mfcr writes only rarg0, so comparing pinned regs in place is safe.
+// The following mfcr / mfocrf writes only rarg0, so comparing pinned regs in place is safe.
 static void emit_cmp_into_cr0(shil_opcode* op,bool is_signed)
 {
 	// rs1 in a pinned reg -> use it directly; else load into rarg0 scratch.
@@ -1942,6 +1957,15 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 		printf("[tcopy] jcond sites: copy=%u fwd=%u load=%u miss=%u\n", s_tc_copy, s_tc_fwd, s_tc_load, s_tc_miss);
 	}
 
+	static u32 ppe_last;
+	const u32 ppe_n=s_ppe_focrf+s_ppe_flds+s_ppe_fsts+s_ppe_ftrc+s_ppe_float;
+	if (ppe_n!=ppe_last)
+	{
+		ppe_last=ppe_n;
+		printf("[ppe] sites: mfocrf=%u flds=%u fsts=%u ftrc=%u float=%u\n",
+		       s_ppe_focrf, s_ppe_flds, s_ppe_fsts, s_ppe_ftrc, s_ppe_float);
+	}
+
 	if (get_jit_idle_skip_preset() && seconds>0.0)
 		idle_dump(seconds);
 
@@ -2006,6 +2030,20 @@ static f32 rec_fsrra(f32 x)  { CCALL(CC_FSRRA); return 1.0f / sqrtf(x); }
 
 // JIT FTRV (plan 5.20): fldi0 / fldi1 constants, and FV elements as ps3_jit_fv.h takes them.
 static const u32 s_fldi_tab[2] = { 0x00000000, 0x3F800000 };
+
+// JIT FPUL MOVES (plan 5.24): float's subtrahend 2^52 + 2^31, loaded with lfd, not built in jit_scratch.
+static const u64 s_i2f_bias = 0x4330000080000000ull;
+
+// JIT FPUL MOVES: an integer register an FPR store may write in place (unpinned; not sr_T, whose store also feeds
+// JIT T COPY), or an FPR load may read in place (unpinned).
+static bool fpul_slot_dst(const shil_param& p)
+{
+	return p.is_r32i() && GetIntReg(p._reg)==ppc_rinvalid && p._reg!=reg_sr_T;
+}
+static bool fpul_slot_src(const shil_param& p)
+{
+	return p.is_r32i() && GetIntReg(p._reg)==ppc_rinvalid;
+}
 static FvElem fv_elem(u32 sh4_reg)
 {
 	FvElem e;
@@ -2102,8 +2140,8 @@ struct ColdFrag
 	u8         fdreg;   // pinned FPR for the float bounce, or 0xFF = int path
 	u16        fofs;    // context byte offset of the FR's memory slot
 	void*      fuct;    // slow C function (ReadMem*/WriteMem*); 0 -> default by sz
-	// FASTMEM: the inline path covers main RAM only, so the fragment runs the
-	// generic _vmem table tier first and only then falls back to the C call.
+	// FASTMEM: the inline path covers main RAM only, so the fragment runs the generic _vmem table tier (1)
+	// before the C call; 2 (plan 5.27) tests for the store queue first.
 	u8         vmem_tier;
 };
 // Cannot overflow: a block emits < 4096 instructions (ngen_Compile needs 16 KB free) and a mem op >= 7.
@@ -2259,6 +2297,14 @@ static u32 FlushCold(u32* cold_ctr)
 		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
 		if (count)
 			emit_hot_cold_count(cold_ctr,c.kind);
+
+		if (c.vmem_tier==2)
+		{
+			// Plan 5.27 SLOW PATH: a store-queue address skips the table's load and its two microcoded shifts.
+			verify((c.kind==2 && c.sz==4) || (c.kind==3 && c.areg==ppc_rarg0));
+			ppc_label* other=emit_sq_first(c.kind==3,c.areg,c.datareg,c.fdreg,c.done,(u32)(uintptr_t)sq_both);
+			other->MarkLabel();
+		}
 
 		// FASTMEM: try the generic table first, so only true MMIO pays a C call.
 		if (c.vmem_tier)
@@ -3278,7 +3324,16 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 					c.vmem_tier=1;
 
-					if (get_jit_sq_store_preset() && (op->flags==4 || op->flags==8) && sq_store_guess(block,i))
+					// 5.27 JIT SQ MISS: 2 also looks for the PREF in the static successors, 1 puts the SQ test first
+					// in the cold path of the other 32-bit and pair stores.
+					const int sqm=get_jit_sq_miss_preset();
+					const bool sq_size=op->flags==4 || op->flags==8;
+					bool sq_guess=get_jit_sq_store_preset() && sq_size && sq_store_guess(block,i);
+					bool sq_la=false;
+					if (!sq_guess && sqm>=2 && get_jit_sq_store_preset() && sq_size)
+						sq_guess=sq_la=sqla_guess(block,i,sqla_read16);
+
+					if (sq_guess)
 					{
 						// A pair keeps its address in rarg0 (areg) and data in rarg2:rarg3; EA in rarg1.
 						const bool pair=op->flags==8;
@@ -3288,9 +3343,15 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						                    fdirect?fs0:(pair?(u32)ppc_rarg2:datareg),
 						                    fdirect?fs1:(u32)ppc_rarg3,sqb);
 						g_jit_sq_sites++;
+						g_jit_sq_la_sites+=sq_la;
 					}
 					else
 					{
+						if (sqm>=1 && sq_size)
+						{
+							c.vmem_tier=2;
+							g_jit_sq_cold_sites++;
+						}
 						fm_emit_guard(areg);
 						c.beq=ppc_CreateLabel();
 						ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
@@ -3523,8 +3584,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			{
 				verify(op->rd.is_r32());
 
-				// fmov FRm,FRn: fmove_reg. The mixed int/float cases (flds, fsts, imm) take the GPR path below, whose
-				// ppc_sh_load/store bounce a pinned FR through its slot.
+				// fmov FRm,FRn: fmove_reg. The mixed int/float cases (flds, fsts, imm) take the GPR path below unless 5.20
+				// or 5.24 applies; its ppc_sh_load/store bounce a pinned FR through its slot.
 				if (op->rd.is_r32f() && op->rs1.is_r32f())
 				{
 					fmove_reg(op->rd._reg,op->rs1._reg);
@@ -3538,6 +3599,23 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					u32 lo=ppc_addr_high(ppc_rarg0,(void*)&s_fldi_tab[op->rs1._imm ? 1 : 0]);
 					ppc_lfs(GetFloatReg(op->rd._reg),ppc_rarg0,lo);
 					break;
+				}
+
+				// 5.24 JIT FPUL MOVES: flds / fsts between a pinned FR and an unpinned integer slot in one stfs / lfs.
+				if (get_jit_fpul_moves_preset() && get_fpu_pin_preset())
+				{
+					if (op->rs1.is_r32f() && GetFloatReg(op->rs1._reg)!=ppc_finvalid && fpul_slot_dst(op->rd))
+					{
+						emit_flds_direct(GetFloatReg(op->rs1._reg),ppc_contex,Sh4cntx.offset(op->rd._reg));
+						s_ppe_flds++;
+						break;
+					}
+					if (op->rd.is_r32f() && GetFloatReg(op->rd._reg)!=ppc_finvalid && fpul_slot_src(op->rs1))
+					{
+						emit_fsts_direct(GetFloatReg(op->rd._reg),ppc_contex,Sh4cntx.offset(op->rs1._reg));
+						s_ppe_fsts++;
+						break;
+					}
 				}
 
 				// Resolve dest: a pinned (integer) rd is written in place; a
@@ -3984,7 +4062,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// (set*/test do their own operand load + immediate folding internally.)
 		case shop_test:	// rd = (r1 & r2) == 0
 			{
-				// and./andi. read pinned rs1/rs2 in place and write scratch rarg0, which mfcr then reads.
+				// and./andi. read pinned rs1/rs2 in place and write scratch rarg0, which the CR0 read then overwrites.
 				u32 a1=src_or_load(op->rs1,ppc_rarg0);
 
 				if (op->rs2.is_imm_u16())
@@ -4045,36 +4123,31 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// Float<->int conversions bounce bit patterns through the context's 8-byte jit_scratch slot, not a red zone.
 		case shop_cvt_f2i_t:	// (s32)truncate(f)
 			{
-				// rs1 float read in place (pinned) or into farg0; rd is int.
+				// rs1 float read in place (pinned) or into farg0. JIT FPUL MOVES: stfiwx straight into an unpinned rd;
+				// else the result goes through jit_scratch into rarg0.
 				u32 a=fsrc_or_load(op->rs1,ppc_farg0);
-				u32 so = (u32)offsetof(Sh4Context, jit_scratch);
-				ppc_fctiwzx(ppc_f0,a,0);			// f0[low32] = (s32)trunc(a)
-				ppc_stfd(ppc_f0,ppc_contex,so);			// spill the double
-				ppc_lwz(ppc_rarg0,ppc_contex,so+4);		// low word (BE) = integer result
-				ppc_sh_store(ppc_rarg0,op->rd);
+				const bool direct=get_jit_fpul_moves_preset() && fpul_slot_dst(op->rd);
+				emit_ftrc(a,ppc_contex,(u32)offsetof(Sh4Context,jit_scratch),Sh4cntx.offset(op->rd._reg),ppc_rarg0,direct);
+				if (direct)
+					s_ppe_ftrc++;
+				else
+					ppc_sh_store(ppc_rarg0,op->rd);
 			}
 			break;
 		case shop_cvt_i2f_n:	// (float)(s32)  round-to-nearest
 		case shop_cvt_i2f_z:	// (float)(s32)  (s32->f32 is identical for both modes here)
-			// s32 -> double: bitcast(0x43300000_00000000 | (r1 ^ 0x80000000)) - 0x4330000080000000.0 is exact; frsp
-			// narrows to single.
 			{
+				// f0 = (double)(s32)r1 (exact), then frsp straight into the pinned rd. JIT FPUL MOVES loads the bias
+				// from s_i2f_bias, not built in jit_scratch (a second load-hit-store).
 				unop_start(op);					// rarg0 = r1
-				u32 so = (u32)offsetof(Sh4Context, jit_scratch);
-				// Build the biased value double: hi=0x43300000, lo=r1^0x80000000
-				ppc_xoris(ppc_rarg0,ppc_rarg0,0x8000);		// flip sign bit
-				ppc_addis(ppc_rarg1,0,0x4330);			// rarg1 = 0x43300000 (lis)
-				ppc_stw(ppc_rarg1,ppc_contex,so);		// scratch.hi
-				ppc_stw(ppc_rarg0,ppc_contex,so+4);		// scratch.lo
-				ppc_lfd(ppc_f0,ppc_contex,so);			// f0 = magic|value (double)
-				// Build the subtrahend 0x4330000080000000 in the same slot.
-				ppc_addis(ppc_rarg1,0,0x4330);
-				ppc_stw(ppc_rarg1,ppc_contex,so);
-				ppc_addis(ppc_rarg1,0,0x8000);
-				ppc_stw(ppc_rarg1,ppc_contex,so+4);
-				ppc_lfd(ppc_farg1,ppc_contex,so);		// farg1 = 0x4330000080000000
-				ppc_fsubx(ppc_f0,ppc_f0,ppc_farg1,0);		// f0 = (double)(s32)r1
-				// Narrow straight into the pinned rd (no trailing fmr/stfs).
+				u32 bias_at=0;
+				if (get_jit_fpul_moves_preset())
+				{
+					verify((uintptr_t)&s_i2f_bias < 0x7FFF0000u);	// addis + lfd reach it
+					bias_at=(u32)(uintptr_t)&s_i2f_bias;
+					s_ppe_float++;
+				}
+				emit_i2f(ppc_rarg0,ppc_rarg1,ppc_farg1,ppc_contex,(u32)offsetof(Sh4Context,jit_scratch),bias_at);
 				u32 d=fdst_reg(op->rd,ppc_farg0);
 				ppc_frspx(d,ppc_f0,0);				// narrow to single
 				fdst_store(op->rd,d,ppc_farg0);
@@ -4444,13 +4517,14 @@ static void ps3_jit_dump_toggles()
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
 	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d"
-	       " tcopy=%d\n",
+	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
 	       get_jit_fastmem_preset(), get_jit_sq_store_preset(), get_jit_ftrv_preset(),
 	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset(),
-	       get_jit_idle_skip_preset(), get_jit_tcopy_preset());
+	       get_jit_idle_skip_preset(), get_jit_tcopy_preset(), get_jit_sq_miss_preset(),
+	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset());
 }
 
 void ngen_mainloop()

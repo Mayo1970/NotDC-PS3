@@ -13,14 +13,81 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-05)
 
-**Next: 5.26, T for `bt.s`/`bf.s` (the jcond load-hit-store), from the
-5.18 ranking.** Not built; Matt picks the option (5.26 a-b) before any
-build. Matt 2026-10-05: "Can you update the OPTIMIZATION plan so it
-resumes from there?"
+**Done: 5.24, `mfcr` -> `mfocrf` and the FPUL moves (Matt 2026-10-05:
+"Go with 5.24 in the Optimization plan"), default ON.** Built and PC
+tested, package of 13:01: JIT SPEED -> "JIT MFOCRF" (`JitMfocrf`) and "JIT
+FPUL MOVES" (`JitFpulMoves`), set before boot (default ON since 13:49). PC:
+`misc/ppe_check/run.sh` PASS (68 words against ppu-as, a PPC64 model with
+bit-exact lfs/stfs/fctiwz, new forms against old); `mutate.py` 22 of 22
+planted bugs fail. The package also holds 5.27 (JIT SQ MISS, default OFF)
+from the same tree. HW boot 1 2026-10-05 (Crazy Taxi, with JIT SQ MISS = +
+LOOK-AHEAD as in `run527b.txt`): log clean, `[ppe]` sites in all five
+forms, dense VPS 58.4 at SPEED 97.4% (vt 9.2K), 51% of dense windows at
+full speed; same-load VPS +1.2% against `run527b.txt` (about the noise of
+one run), +2.0% against `run526a.txt`. HW boot 2 (Sonic Adventure): log
+clean, speed equal within noise against `run527c.txt` (SPEED 99.7%, 95%
+of dense windows at full speed). Both steps done. Matt: "I want them ON by
+default": `JitMfocrf` and `JitFpulMoves` default to 1 since the package of
+13:49. The listener of session 468f5b68 was stopped (Matt). Since 13:46 a
+Halo-PS3 session's listener (PID 16436, `ps3log_g3_run1.txt`) holds port
+18194; not ours, left running. Start a listener only when Matt says so.
+Next: Matt picks (the other candidates are in the block below: 5.3
+DYN_IC, a larger code cache, the XMB exit fallback P6).
+
+**Earlier next: Matt picks (2026-10-05, after 5.27: "What's next?"); Matt
+picked 5.24.** Candidates by
+evidence: 5.24 `mfcr` -> `mfocrf` (3.5M/s microcoded `mfcr`, one
+instruction swapped); 5.3 DYN_IC (code exists on the PS3, preset fixed at
+0); a larger SH4 code cache (`CODE_SIZE` 6 MB in `dc/sh4/rec_v2/ngen.h`,
+a Wii size: Sonic Adventure fills it every ~55 s, each clear a short dip;
+it also hides 5.27's +8% code); not speed: the XMB exit 3 s fallback
+(P6).
+
+**Done: 5.27, the store-queue stores JIT SQ STORES misses (Matt
+2026-10-05: "Work on 5.27 then", option "both, 3 levels").** Built and PC
+tested, package of 11:19: JIT SPEED -> "JIT SQ MISS" (`JitSqMiss`), OFF / SLOW PATH / +
+LOOK-AHEAD, default OFF, set before boot; LOOK-AHEAD needs JIT SQ STORES
+ON. HW 2026-10-05 (Crazy Taxi, one boot per level, logs clean):
+same-load VPS +1.7% with SLOW PATH and +0.9% with + LOOK-AHEAD against
+`run526a.txt` (JIT SQ MISS OFF, scratchpad of session 3f596c0b); the
+levels are not apart in one run each; + LOOK-AHEAD best in heavy scenes
+(Matt: "Boot 2 run much better"). Sonic Adventure (+ LOOK-AHEAD, Matt:
+"It ran worse?"): gameplay speed equal within noise, but the code is ~8%
+larger (the SLOW PATH test), so the cache fills sooner: 4 cache-full
+clears in 271 s against 3 in 216 s, two followed by a 1 s dip to 64-73%
+SPEED (5.27 "HW", boot 3). No Soul Calibur for these tests (Matt). Default
+ON is Matt's call. The listener of session 468f5b68 stopped at 13:44
+(killed from outside); its `ps3log_527_run1.txt` also holds two later
+boots of another session's build (`mfocrf=1 fpul=1`): Crazy Taxi from line
+36567, Sonic Adventure from line 44391. Before it (Matt asked "which
+ones will give a gain?"): no candidate is measured; 5.27 has the best
+evidence (5.17 Step 3), then `mfcr` -> `mfocrf` (5.24), then DYN_IC (5.3,
+its PS3 code exists, `get_dyn_ic_preset()` is fixed at 0). Texture decode
+is 0.8% of the render thread's wall in dense Crazy Taxi (`run526a.txt`)
+and the SH4 thread waits ~0 for it, so work there does not help Crazy
+Taxi.
+
+**Done: 5.26, T for `bt.s`/`bf.s` (Matt 2026-10-05: "Let's start with
+5.26", option a).** JIT SPEED -> "JIT T COPY" (`JitTCopy`), set before
+boot, default ON since the package of 10:13 (Matt: "And make it default
+ON"). The last T writer before the jcond also leaves T in r31, so the
+jcond skips its reload. PC: `misc/tcopy_check` PASS, 18 of 18 planted
+bugs fail it. HW 2026-10-05 (package of 09:28): Crazy Taxi log clean, no
+reload at 2107 of 2124 jcond sites, miss=0, same-load VPS -0.1% against
+`run525b.txt` (no measurable gain); Sonic Adventure and Soul Calibur
+clean. The profiler boot was not run. Lesson: the 5.18 static
+load-hit-store count overstates the cost of these reloads, so the
+remaining load-hit-store items (5.24) may gain little too. Next: Matt
+picks. The UDP listener of session 3f596c0b was stopped (Matt); port
+18194 is free. Logs: `run526a/b/c.txt` in its scratchpad.
+
+**Earlier next: 5.26, T for `bt.s`/`bf.s` (the jcond load-hit-store), from
+the 5.18 ranking.** Matt 2026-10-05: "Can you update the OPTIMIZATION plan
+so it resumes from there?"
 - Candidates after 5.25, in the order of the 5.18 ranking (item 1, the
   wait loop, is done):
   1. Load-hit-stores, ~6M/s real stalls of ~40 cycles each:
-     - T for `bt.s`/`bf.s`, ~1.9M/s: 5.26 (new). Recommended first.
+     - T for `bt.s`/`bf.s`, ~1.9M/s: 5.26, built (option a), HW pending.
      - FPUL and `jit_scratch` ~1.2M/s (`lds`, `float`, `ftrc`, `flds`,
        `fsts` through memory): 5.24.
      - Pinned FR values through the context ~1M/s; FPSCR 0.22M/s.
@@ -685,10 +752,10 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.21 | Minicast M3 + M4: constant propagation (no memory baking) + dead value elimination | `[x]` HW, correct, no gain, default OFF; built + PC tested 2026-10-04 ("JIT CONSTPROP", "JIT DEAD VALUES", default OFF; fuzzer PASS 1.6 M blocks, 31/31 mutants fail), package of 22:06; HW 2026-10-04: Crazy Taxi log clean, SHIL ops -2.9%, same-load VPS +0.2% (noise); geometry and sound right (Matt) |
 | 5.22 | Minicast M5: cycle check out of line, then only on backward branches | `[x]` HW, LOOPS ONLY default since 2026-10-04 (Matt); built 2026-10-04 ("JIT CYCLE CHECK": OLD / COLD EXIT / LOOPS ONLY, default OLD), package of 22:27; HW 2026-10-04: logs clean, same-load VPS +0.8% (COLD EXIT), +1.9% (LOOPS ONLY) against 5.21 |
 | 5.23 | Minicast M6: `fmov.s @Rn+` pair fusion | `[ ]` not scheduled (low) |
-| 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[ ]` not scheduled |
+| 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[x]` HW, default ON since the package of 13:49 (Matt); built + PC tested 2026-10-05 (Matt: "Go with 5.24"): JIT SPEED "JIT MFOCRF" and "JIT FPUL MOVES"; ppe_check PASS, 22/22 mutants fail; package of 13:01; HW 2026-10-05 (JIT SQ MISS + LOOK-AHEAD ON too): Crazy Taxi log clean, same-load VPS +1.2% vs `run527b` (same settings without 5.24, about the noise); Sonic Adventure clean, speed equal within noise (95% of dense windows at full speed) |
 | 5.25 | Wait-loop idle skip (Crazy Taxi 0C15A658-0C15A67E, from 5.18) | `[x]` option a + safety (Matt 2026-10-05), JIT SPEED "JIT IDLE SKIP", default OFF; HW 2026-10-05 (package 00:45): Crazy Taxi +3.0% same-load VPS, Sonic Adventure 30 -> 20 frames/s (work loop skipped); fix with a register-hash check, package of 01:13: HW Crazy Taxi +3.0% same-load VPS (dense 57.1), work loops no longer skip; Sonic not rechecked; default ON since the package of 01:27 (Matt) |
-| 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[ ]` next candidate, not built; Matt picks the option |
-| 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[ ]` not scheduled |
+| 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[~]` option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before); default ON since the package of 10:13 (Matt) |
+| 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
@@ -2912,7 +2979,10 @@ clock by VPS.
   (~6 instructions) per pair. The second word can cross the 16 MB RAM end
   (our window has no mirror past it). Many games use `fschg` + 64-bit moves
   instead. Not scheduled.
-- 5.24 PPE codegen seen during the review (not Minicast). Not scheduled.
+- 5.24 PPE codegen seen during the review (not Minicast). Built and PC
+  tested 2026-10-05 (Matt: "Go with 5.24 in the Optimization plan"), HW
+  tested the same day (Crazy Taxi, Sonic Adventure), default ON since the
+  package of 13:49 (Matt).
   - Compares read CR0 with `mfcr` (`emit_cr0_bit_to_rarg0`): `set*` and
     `tst` when the block-end CR0 path does not apply, `fseteq`/`fsetgt`
     always. `mfcr` is microcoded over all fields; `mfocrf rD,0x80` reads
@@ -2920,6 +2990,130 @@ clock by VPS.
   - `flds`/`fsts` (FPUL <-> FR), `float` and `ftrc` go through memory: one
     load-hit-store each. `float` has two, because it also builds its magic
     constant in the same slot; a constant table removes that one.
+  - Facts (5.18 run 3, `run518b.txt` and `hot518b/report.txt` in the
+    scratchpad of session 29bdd1c1):
+    - Census (all blocks): `mfcr` 3.52M/s, each followed by the `rlwinm`
+      of `emit_cr0_bit_to_rarg0`. Load-hit-stores by store -> load pair:
+      stfs -> lwz 0.525M/s and stw -> lfs 0.523M/s (pinned FR values through
+      their own slot), stw -> lfd 0.444M/s (`float`'s two loads of
+      jit_scratch), stfd -> lwz 0.123M/s (`ftrc`).
+    - The dumps (70.5% of the weight; entries/s at dump time, which run
+      above the census): fsts 0.49M/s (13 sites), flds 0.44M/s (14), float
+      0.17M/s (2, both in 0C0759C8), ftrc 0.11M/s (8), fcmp/gt 0.59M/s
+      (17), lds 0.24M/s, sts 0.19M/s.
+    - The old code in the dumps: flds FR15,FPUL in 0C081B9A is `stfs
+      f29,124(r30); lwz r3,124(r30); stw r3,268(r30)`; fsts FPUL,FR2 in
+      0C081BAA is `lwz r3,268(r30); stw r3,72(r30); lfs f16,72(r30)`; ftrc
+      in 0C081D40 is `fctiwz f0,f25; stfd f0,128(r30); lwz r3,132(r30); stw
+      r3,268(r30)`, and the `sts FPUL,R0` after it reloads 268(r30).
+  - Built 2026-10-05, package of 13:01. Two options, JIT SPEED page, both
+    default OFF until 13:49, set before boot; `[jitcfg]` prints `mfocrf=`
+    and `fpul=`.
+    A `[ppe] sites:` line (after new compiles) counts the compiled sites of
+    each new form since boot. Code in `ps3/ps3_jit_ppe.h`.
+    - "JIT MFOCRF" (`JitMfocrf`): `emit_cr0_bit_to_rarg0` emits `mfocrf
+      rarg0,0x80` (CR0 only) in place of `mfcr rarg0`. The `rlwinm` after it
+      keeps only the CR0 bit, so the fields mfocrf leaves undefined do not
+      matter.
+    - "JIT FPUL MOVES" (`JitFpulMoves`):
+      - flds FRm,FPUL with FRm pinned: one `stfs fRm,fpul(r30)`.
+      - fsts FPUL,FRn with FRn pinned: one `lfs fRn,fpul(r30)`.
+      - ftrc: `fctiwz f0,fA; li r3,fpul; stfiwx f0,r30,r3` (no jit_scratch
+        bounce).
+      - float: the subtrahend 2^52 + 2^31 comes from `s_i2f_bias` (`lis` +
+        `lfd`, before the value's stores), not built in jit_scratch.
+      - The direct forms need FPU PIN for flds/fsts, and an integer side
+        that is not pinned and, for flds and ftrc, not sr_T (its store also
+        feeds JIT T COPY). Anything else keeps the old path.
+    - Bit-exact: the same stfs, lfs, fctiwz and frsp as before, only fewer
+      copies. What stays: the FPUL slot's own load-hit-stores (lds ->
+      float, ftrc or flds -> sts: the PPE has no GPR <-> FPR move) and
+      `float`'s first one.
+  - PC (WSL): `misc/ppe_check/run.sh [cases]`.
+    - Words against the build image's ppu-as (`gen.py` writes
+      `ppe_words.inc`): 68 words, both forms of each op; the bias at three
+      addresses (low half positive, negative and 0x7FF8).
+    - A PPC64 model with bit-exact lfs / stfs (Power ISA rules, SNaN
+      payloads and denormals) and fctiwz; the bits mfocrf and fctiwz leave
+      undefined are random. Each new form runs against the old one from
+      the same random state: equal results, and the new form changes
+      nothing else (no other GPR, FPR, CR or context word). flds and fsts
+      on random and special singles, ftrc on NaN, infinity, the s32 edges,
+      float on random s32 with junk in the upper word. PASS, 1000069
+      checks.
+    - `mutate.py`: 22 of 22 planted bugs fail; 20 also on the model alone
+      (the other two use another instruction for the same result).
+  - Build: the 7 old warnings, `.got` 0xA570, 0 `r2off`; `s_i2f_bias` at
+    0x1000DB80.
+  - Expected: not measured. 3.5M/s microcoded `mfcr` and ~1.2M/s GPR <->
+    FPR load-hit-stores go. 5.26 removed ~1.9M/s sr_T reloads with no
+    measurable gain, so this may be within the noise too.
+  - HW test steps (package of 13:01):
+    1. Install. Settings as `run526a.txt` (an install resets them):
+       EMULATION -> Dynarec ON, JIT Fastmem ON, SH4 Clock 200; AUDIO ->
+       ARM7 Idle Skip SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG
+       -> TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON, JIT HOTBLOCKS
+       OFF; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+       VALUES ON (JIT CYCLE CHECK LOOPS ONLY, JIT IDLE SKIP ON, JIT T COPY
+       ON and JIT SQ MISS OFF are the defaults), then JIT MFOCRF ON and JIT
+       FPUL MOVES ON. Set them on the main menu, not with SELECT (SELECT
+       changes act at the next boot).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Crazy Taxi, dense traffic, ~150 s, then exit to the XMB.
+       Log: `[jitcfg] ... mfocrf=1 fpul=1`; `[ppe] sites:` with all five
+       counts above 0.
+    4. Analysis: same-load VPS against `run526a.txt` (scratchpad of session
+       3f596c0b) with `vtbins.py`.
+    5. Boot 2: Sonic Adventure, a few minutes: no hang, game speed and
+       music as before.
+    6. On a fault: JIT FPUL MOVES OFF first, then JIT MFOCRF OFF, one boot
+       each.
+  - HW 2026-10-05, boot 1 (package of 13:01; Matt: "Gonna test Crazy Taxi
+    first"), Crazy Taxi, 144 stats windows. The boot had JIT SQ MISS = +
+    LOOK-AHEAD (`sqmiss=2`), not OFF as step 1 says, so the reference with
+    the same settings is `run527b.txt` (5.27 boot 2), not `run526a.txt`. Log
+    `run524a.txt` in the scratchpad of session fc4e881b, cut from the 5.27
+    listener's `ps3log_527_run1.txt` after byte 2623117. Log clean: the same
+    line tags as `run527b.txt` plus `[ppe]`; `[tcopy]` miss=0; the XMB exit
+    took the old 3 s fallback.
+    - `[jitcfg]` ... `sqmiss=2 mfocrf=1 fpul=1`. `[ppe]` at the end:
+      mfocrf=2928 flds=61 fsts=102 ftrc=198 float=343 sites.
+
+    | Run | dense n | VPS | SPEED | vt | full speed | 12K+ VPS (n, vt) |
+    |---|---|---|---|---|---|---|
+    | `run526a` (JIT SQ MISS OFF) | 62 | 57.1 | 95.2% | 9.3K | 32% | 48.2 (4, 14.7K) |
+    | `run527b` (+ LOOK-AHEAD) | 61 | 57.6 | 96.1% | 9.5K | 41% | 54.8 (10, 13.4K) |
+    | `run524a` (+ LOOK-AHEAD, 5.24 ON) | 61 | 58.4 | 97.4% | 9.2K | 51% | 54.7 (6, 14.0K) |
+
+    - Same load (`vtbins.py`): +1.2% against `run527b.txt` (bins 9-10K
+      +3.6%, 10-11K +4.0%, 6-9K -0.5% to 0, 12K+ +0.8% to +1.4%); +2.0%
+      against `run526a.txt` (5.27 and 5.24 together). +1.2% is about the
+      noise of one run.
+    - Dense audio: 4.6 silent blocks/s (`run527b.txt`: 7.7), output ~47.8K
+      samples/s.
+  - HW 2026-10-05, boot 2 (Matt: "Doing the Sonic run"): Sonic Adventure
+    (PAL disc), same settings (`sqmiss=2 mfocrf=1 fpul=1`), 233 s. Log
+    `run524b.txt` (same scratchpad, the listener file after byte 3250802).
+    Log clean: the same line tags as `run527c.txt` (5.27 boot 3, the same
+    settings without 5.24) plus `[ppe]`; `[tcopy]` miss=0; the old XMB 3 s
+    fallback. `[ppe]` at the end: mfocrf=15625 flds=12 fsts=349 ftrc=1103
+    float=1799 sites.
+    - NTSC windows with vt > 3K (`sonicbins.py`): 167, SPEED 99.7%, full
+      speed 95%, 30 frames/s in 89%. `run527c.txt`: 206, 99.2%, 92%, 89%;
+      `run526b.txt` (no 5.27, no 5.24): 163, 99.6%, 94%, 90%. Equal within
+      noise; the windows below 30 frames/s are the heavy scenes as before.
+    - Code size about as `run527c.txt` (the same early clears within
+      -0.9% to +0.2%). Cache-full clears: 3 in 233 s (t=95, 153, 203);
+      the windows after them ran at 96.6%, 86.8% and 97.6% SPEED (5.27
+      boot 3: 91.7%, 98.0%, 72.8%, 64.4%). Dense audio: 0.5 silent
+      blocks/s (`run527c.txt`: 1.5).
+  - Result: correct in Crazy Taxi and Sonic Adventure. Crazy Taxi
+    same-load VPS +1.2% (about the noise of one run).
+  - Matt 2026-10-05: "I want them ON by default". `JitMfocrf` and
+    `JitFpulMoves` default to 1 since the package of 13:49 (an install resets
+    the settings to them). The listener of session 468f5b68 (PID 20640) was stopped (Matt:
+    "Also close the listener"). Since 13:46 a Halo-PS3 session's listener
+    (PID 16436) holds port 18194; not ours, left running.
 - 5.25 Wait-loop idle skip (from the 5.18 ranking, item 1). Option a + safety built 2026-10-05.
   - Facts (5.18 run 3, dense Crazy Taxi, SH4 200):
     - 0C15A658: `mov.l @(disp,PC),r3; mov.l @r3,r2; jsr @r2; mov.l
@@ -3096,7 +3290,7 @@ clock by VPS.
   - Matt 2026-10-05: "Turn it on by default". `JitIdleSkip` defaults to 1
     since the package of 01:27 (an install resets the settings to it).
 - 5.26 T for `bt.s`/`bf.s` kept in a register (from the 5.18 ranking,
-  item 2). Not built; Matt picks the option.
+  item 2). Option a built 2026-10-05 (Matt's pick), HW pending.
   - Facts (5.18 run 3, `hot518b/report.txt` in the scratchpad of session
     29bdd1c1): load-hit-stores by context slot: sr_T 1.985M/s, the largest
     (fpul 0.655, jit_scratch 0.567, each FR slot ~0.2, fpscr 0.218).
@@ -3127,8 +3321,84 @@ clock by VPS.
     (both CR0 forms, delay slots that write T, IFB in between). HW: Crazy
     Taxi same-load VPS against `run525b.txt`; the profiler again (sr_T
     load-hit-stores must fall); a Sonic Adventure and a Soul Calibur boot.
+  - Matt 2026-10-05: "Let's start with 5.26", option a. Built and PC
+    tested 2026-10-05, package of 09:28: JIT SPEED -> "JIT T COPY"
+    (`JitTCopy`), default OFF, set before boot; `[jitcfg]` prints
+    `tcopy=1`.
+    - `ps3/ps3_jit_tcopy.h`: `tcopy_writer()` finds the last op before the
+      jcond that may write T (rd or rd2 is sr_T, an IFB op, a jdyn). If
+      that op stores sr_T inline (set*, tst, cmp/str, fcmp/eq, fcmp/gt,
+      and/or/xor/shl/shr/sar, mov32, addc/subc/negc/addv/subv, div1), its
+      store in `ppc_sh_store` also emits `mr r31,rX`, and the jcond emits
+      nothing. Else the jcond loads sr_T as before. An IFB or jdyn after
+      the copy drops it.
+    - The 5.18 dumps: every jcond block with a T writer has one of these
+      writers (dt, tst, cmp/*, fcmp/gt); only the 5.4K/s block without a
+      writer keeps its load.
+    - `[tcopy] jcond sites: copy= fwd= load= miss=` (compiled sites since
+      boot, after new compiles): copy = no reload, fwd = T FORWARD's
+      `mr`, load = the old `lwz`. miss counts armed writers that did not
+      copy; it must stay 0.
+    - PC (WSL): `misc/tcopy_check/run.sh` runs the header as ngen_Compile
+      drives it, on constprop_check's SHIL interpreter: 40 directed blocks
+      (the 5.18 shapes, every writer op, IFB / jdyn / readm / delay-slot
+      cases, the drop rule) and 200000 random blocks (decoder shapes, 0-24
+      ops between writer and jcond, CONSTPROP and DEAD VALUES on and off),
+      3 start states each. At every block end r31 equals the sr_T that
+      the old code loads at the jcond: PASS (seeds 1 and 7). `mutate.py`:
+      18 of 18 planted bugs fail it, 14 in the fuzzer alone (the other 4
+      need shapes the decoder does not emit: jdyn or readm before the
+      jcond, a jcond on another register, a forced writer).
+    - Not built: the PPC64-model check of the plan's "Checks". The new PPC
+      code is one `mr r31,rX` after the writer's existing `stw rX` to
+      sr_T, so the check runs at the SHIL level.
+    - Build: the 7 old warnings, `.got` 0xA4D8, 0 `r2off`.
+  - HW test steps (package of 09:28):
+    1. Install. Settings as `run525b.txt` (an install resets them):
+       EMULATION -> Dynarec ON, JIT Fastmem ON, SH4 Clock 200; AUDIO ->
+       ARM7 Idle Skip SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG
+       -> TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON, JIT HOTBLOCKS
+       OFF; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+       VALUES ON, JIT CYCLE CHECK LOOPS ONLY, JIT IDLE SKIP ON, and the
+       new JIT T COPY ON.
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Crazy Taxi, dense traffic, ~150 s, then exit to the XMB.
+       Log: `[jitcfg] ... tcopy=1`, `[tcopy] ... miss=0`. Same-load VPS
+       against `run525b.txt`.
+    4. Boot 2: the same with JIT HOTBLOCKS ON (set on the main menu before
+       boot), ~3 min: sr_T load-hit-stores must fall (5.18 run 3:
+       1.985M/s).
+    5. Boot 3: Sonic Adventure, a few minutes. Boot 4: Soul Calibur, one
+       fight. Both must play as before.
+  - HW 2026-10-05, boot 1 (package of 09:28, Crazy Taxi, 142 s). Log
+    `run526a.txt` in the scratchpad of session 3f596c0b. `[sndcfg]` and
+    `[jitcfg]` as `run525b.txt`, plus `tcopy=1`. Log clean (the old XMB
+    3 s fallback only).
+    - `[tcopy]` at the end: copy=2107 fwd=0 load=17 miss=0. 99% of the
+      compiled jcond sites no longer reload sr_T.
+    - 62 dense windows: VPS 57.1 at SPEED 95.2% (vt 9.3K), 32% at full
+      speed; `run525b.txt`: 57.1 at 95.3% (vt 9.3K), 35%. Same load: -0.1%
+      (bins from -1.1% to +0.4%, the few outer windows aside): no
+      measurable gain. So the ~1.9M/s reloads cost far less than the
+      ~40-cycle estimate (or under ~1%, below the noise of one run).
+  - HW 2026-10-05, boot 3 (Sonic Adventure, PAL disc, 216 s; log
+    `run526b.txt`, same scratchpad). Log clean (XMB fallback only);
+    `[tcopy]` copy=10360 fwd=0 load=30 miss=0. 149 NTSC windows at RPS 30
+    (SPEED 99.4%); 20 at RPS 20, all in heavy scenes (vt 12.4K, SPEED
+    91.5%), so the game misses its frame there, not a wrong branch. The
+    faulty 5.25 run had 54 windows at RPS 20 at SPEED 98%.
+  - HW 2026-10-05, boot 4 (Soul Calibur (U), 86 s; log `run526c.txt`).
+    Log clean (XMB fallback only); `[tcopy]` copy=4126 fwd=0 load=48
+    miss=0. Fight windows as the 5.25 run (`run525_soul.txt`): RPS ~10-15,
+    VPS 27.8 (was 28.5) at vt 15.4K; still render-bound (texture decode
+    82% of the render thread, busy ~91%).
+  - Result: correct in all three games, no measurable speed gain. Boot 2
+    (profiler) not run.
+  - Matt 2026-10-05: "And make it default ON". `JitTCopy` defaults to 1
+    since the package of 10:13 (an install resets the settings to it).
 - 5.27 Store-queue stores JIT SQ STORES misses (from the 5.18 ranking,
-  item 5). Not scheduled.
+  item 5). Both options built 2026-10-05 (Matt's pick). HW 2026-10-05:
+  same-load VPS +1.7% (SLOW PATH) and +0.9% (+ LOOK-AHEAD), logs clean.
   - Facts (5.18 run 3): 0.88M slow-path entries/s, mostly `fmov.s
     FRm,@-Rn` in 0C081D58, 0C081D5A and 0C0820C2, whose PREF is in another
     block, so 5.17 Step 3's guess (a later PREF on the same base register)
@@ -3137,6 +3407,120 @@ clock by VPS.
   - Options: test for the store queue first in the slow path, or a wider
     guess (a store through a register that held a store-queue address in
     an earlier block).
+  - The dumps (`run518b.txt`, read 2026-10-05): the three blocks are Crazy
+    Taxi's vertex loops (SZ=1). Each writes 32 bytes through R6 with four
+    `fmov DRm,@-R6` (0C081D58/5A also `mov.l R7,@R6` in the `bt.s` slot)
+    and ends at `bt.s`. The `pref @R6` is in the next block: 0C081D72 (the
+    target) starts with it, 0C081D6E (the fall-through) has it in its
+    `bra` slot, 0C0820DA (0C0820C2's fall-through) has it as its third op.
+    Cold entries/s: 0C081D5A 231K, 0C081D58 144K, 0C0820C2 136K (0.51M of
+    the 0.88M), 0C081966 47K (its PREF is on another register), 0C0804C4
+    44K (a copy loop). Each such store runs the guard, the table load, 2
+    microcoded shifts and 2 taken branches.
+  - Estimate: 5.17 Step 3 gained +4.2% for ~1.7-3.5M stores/s moved to the
+    inline shape, so the 0.51M/s give ~+1%; the slow-path test saves part
+    of that for every missed store. About the noise of one run.
+  - Matt 2026-10-05: "Work on 5.27 then"; option "both, 3 levels". Built
+    and PC tested 2026-10-05: JIT SPEED -> "JIT SQ MISS" (`JitSqMiss`):
+    OFF / SLOW PATH / + LOOK-AHEAD, default OFF, set before boot;
+    `[jitcfg]` prints `sqmiss=`. JitFastmem path only.
+    - SLOW PATH (1): a 32-bit or pair store that keeps the RAM guard gets
+      `ColdFrag::vmem_tier` 2. Its cold fragment starts with
+      `emit_sq_first` (`ps3/ps3_jit_sq.h`): 5.17 Step 3's test and store
+      (`emit_sq_store`, the fast path's registers), then `b done`. Other
+      addresses fall into the table tier as before. 7 (scalar) or 8 (pair)
+      instructions more per such fragment, none on the fast path.
+    - + LOOK-AHEAD (2, needs JIT SQ STORES ON): `sqla_guess`
+      (`ps3/ps3_jit_sqla.h`) also takes a store as a store-queue store when
+      its base register keeps its value to the block end (steps by an
+      immediate aside; no IFB or sync_sr after it) and a static successor
+      (bt/bf: target and fall-through; static jump: target) runs `pref
+      @Rn` within its first 6 SH4 ops. The scan reads guest code in main
+      RAM only (`ReadMem16`); it stops at any op that may write Rn, switch
+      banks or branch, and a delayed branch's slot is its last op. Such a
+      store gets 5.17 Step 3's inline shape: no taken branch. A wrong guess
+      only costs speed (RAM stores then take the cold path).
+    - `[ta-split]` adds `sqla=` (look-ahead sites, part of `sqst`) and
+      `sqcold=` (cold fragments with the test), both since boot.
+  - PC (WSL):
+    - `misc/sqstore_check/run.sh`: `emit_sq_first` with FlushCold's
+      registers on the PPC64 model (now with `b`): a store-queue address
+      stores and jumps to done, any other reaches the table label with only
+      r0 changed. PASS, 4.8M cases, plus the 4.8M Step 3 cases. `mutate.py`
+      (new): 12 of 12 planted bugs fail (Step 3's six, six new).
+    - `misc/sqla_check/run.sh [seed] [n]`: `gen.py` builds a reference from
+      `dc/sh4/sh4_opcode_list.cpp` as BuildOpcodeTables fills OpDesc (PC
+      writers, delay slots, bank switches, GPRs written from the
+      disassembly text). The classifier against it on all 65536 opcodes x
+      16 registers: 0 wrong, 12976 conservative stops. Directed: the Crazy
+      Taxi blocks and successors; R6 overwritten, IFB, sync_sr, a step by a
+      register, other block ends, an immediate base; BIOS, VRAM, P4 and odd
+      pcs are never read. 2M random successor sequences against the
+      reference scan: 0 wrong. PASS (seeds 1 and 7). `mutate.py`: 26 of 26
+      planted bugs fail; 13 fail on the reference checks alone (all 12
+      classifier bugs), the scan and block-rule bugs on directed cases.
+  - Build: the 7 old warnings, `.got` 0xA518, 0 `r2off`; package of 11:19.
+  - HW test steps (package of 11:19):
+    1. Install. Settings as `run526a.txt` (an install resets them):
+       EMULATION -> Dynarec ON, JIT Fastmem ON, SH4 Clock 200; AUDIO ->
+       ARM7 Idle Skip SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG
+       -> TA SQ Direct ON, IFB Probe ON, JIT C-Calls ON, JIT HOTBLOCKS
+       OFF; JIT SPEED -> JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD
+       VALUES ON (JIT CYCLE CHECK LOOPS ONLY, JIT IDLE SKIP ON and JIT T
+       COPY ON are the defaults). Set JIT SQ MISS on the main menu, not
+       with SELECT (SELECT changes act at the next boot).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: JIT SQ MISS = SLOW PATH. Crazy Taxi, dense traffic, ~150 s,
+       then exit to the XMB. Log: `[jitcfg] ... sqmiss=1`, `[ta-split]
+       ... sqcold=` above 0, `sqla=0`.
+    4. Boot 2: JIT SQ MISS = + LOOK-AHEAD, the same run. Log: `sqmiss=2`,
+       `sqla=` above 0 (the three loop blocks alone give 14 sites).
+    5. Analysis: same-load VPS of each boot against `run526a.txt` (JIT SQ
+       MISS OFF, same settings) with `vtbins.py`. The expected gain is
+       about the noise of one run, so a second boot per level helps.
+    6. Optional: boot 2 again with JIT HOTBLOCKS ON. The cold entries of
+       0C081D58, 0C081D5A and 0C0820C2 must be 0.
+    7. Sonic Adventure and Soul Calibur, one boot each with + LOOK-AHEAD:
+       no hang, game speed and music as before.
+    8. On a fault: the same boot with JIT SQ MISS OFF.
+  - HW 2026-10-05, package of 11:19, Crazy Taxi, settings as `run526a.txt`
+    (same `[sndcfg]` and `[jitcfg]` lines plus `sqmiss=`). Log
+    `ps3log_527_run1.txt` in the scratchpad of session 468f5b68, split into
+    `run527a.txt` (boot 1) and `run527b.txt` (boot 2). Both logs clean: the
+    old XMB 3 s fallback and the `[DIV]` probe lines, as in `run526a.txt`.
+
+    | Run | dense n | VPS | SPEED | vt | full speed | 12K+ VPS (n, vt) | same load vs 526a |
+    |---|---|---|---|---|---|---|---|
+    | `run526a` OFF | 62 | 57.1 | 95.2% | 9.3K | 32% | 48.2 (4, 14.7K) | - |
+    | boot 1 SLOW PATH | 61 | 58.2 | 97.1% | 9.0K | 46% | 52.5 (4, 13.9K) | +1.7% |
+    | boot 2 + LOOK-AHEAD | 61 | 57.6 | 96.1% | 9.5K | 41% | 54.8 (10, 13.4K) | +0.9% |
+
+    - Boot 1: `sqcold=17851` (cold fragments with the test), `sqla=0`.
+      Boot 2: `sqla=80` (look-ahead sites; the three loop blocks give 14),
+      `sqst=309` (was 232), `sqcold=17830`.
+    - Boot 2 against boot 1 at the same load: -0.6% (bins -3.1% to +4.9%):
+      the two levels are not apart in one run each. Boot 2 had the most
+      heavy windows and the best VPS in them (12-13K: 57.5 in 6 windows).
+      Matt: "Boot 2 run much better".
+    - Dense audio: 5.3 (boot 1) and 7.7 (boot 2) silent blocks/s, against
+      9.0 in `run526a.txt`; output ~47K samples/s in all three.
+    - Matt 2026-10-05: Soul Calibur is no use for these tests while its
+      renderer dominates. Step 7 is Sonic Adventure only.
+  - HW 2026-10-05, boot 3: Sonic Adventure (PAL disc), + LOOK-AHEAD, 271
+    s; log `run527c.txt` (same scratchpad). Matt: "It ran worse?". Against
+    `run526b.txt` (5.26 boot 3, JIT SQ MISS OFF), NTSC windows with vt >
+    3K (`sonicbins.py`): 206 windows, SPEED 99.2%, full speed 92%, 30
+    frames/s in 89%; before: 163, 99.6%, 94%, 90%. Equal within noise; the
+    20 frames/s windows are the heavy scenes as before (15K+ vertices).
+    - The code is ~8% larger (the SLOW PATH test in every 32-bit and pair
+      store's cold fragment): 1277332 -> 1381328 bytes at the same early
+      clear. Cache-full clears (92%): 4 in 271 s (windows 89, 153, 202,
+      254), against 3 in 216 s; the window after two of them ran at 72.8%
+      and 64.4% SPEED (before: 97.5%, 91.5%, 86.7%). One intro window ran at
+      37.6% (before, the same stretch: 61% or more). These short dips are
+      the likely "worse"; one run each cannot tie them to 5.27.
+  - Matt 2026-10-05: "I think It's fine for now" (no LOOK-AHEAD ONLY
+    level). JIT SQ MISS stays default OFF.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

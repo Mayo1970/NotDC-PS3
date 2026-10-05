@@ -60,7 +60,10 @@ int g_jit_constprop_preset = 0;   // 1 = constants in r0-r15 fold into immediate
 int g_jit_dve_preset       = 0;   // 1 = ops whose results are never read are dropped (5.21)
 int g_jit_cycle_check_preset = 2; // 0 old, 1 exit out of line, 2 also no poll on forward-only ends (5.22, HW)
 int g_jit_idle_skip_preset = 1;   // 1 = an idle loop turn with no store or register change ends the timeslice (5.25, HW)
-int g_jit_tcopy_preset     = 0;   // 1 = the last T writer before bt.s/bf.s also copies T into the jcond register (5.26)
+int g_jit_tcopy_preset     = 1;   // 1 = the last T writer before bt.s/bf.s also copies T into the jcond register (5.26, HW)
+int g_jit_sq_miss_preset   = 0;   // 1 = SQ test first in a store's cold path, 2 also the look-ahead guess (5.27)
+int g_jit_mfocrf_preset    = 1;   // 1 = compares read CR0 with mfocrf, not the microcoded mfcr (5.24, HW)
+int g_jit_fpul_moves_preset = 1;  // 1 = flds, fsts, ftrc, float with one trip through memory less (5.24, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
@@ -124,6 +127,9 @@ static const CfgItem s_items[] = {
 	{ "JitCycleCheck", &g_jit_cycle_check_preset },
 	{ "JitIdleSkip",   &g_jit_idle_skip_preset },
 	{ "JitTCopy",      &g_jit_tcopy_preset },
+	{ "JitSqMiss",     &g_jit_sq_miss_preset },
+	{ "JitMfocrf",     &g_jit_mfocrf_preset },
+	{ "JitFpulMoves",  &g_jit_fpul_moves_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -285,6 +291,9 @@ int get_jit_dve_preset()       { return g_jit_dve_preset; }
 int get_jit_cycle_check_preset() { return g_jit_cycle_check_preset; }
 int get_jit_idle_skip_preset() { return g_jit_idle_skip_preset; }
 int get_jit_tcopy_preset()     { return g_jit_tcopy_preset; }
+int get_jit_sq_miss_preset()   { return g_jit_sq_miss_preset; }
+int get_jit_mfocrf_preset()    { return g_jit_mfocrf_preset; }
+int get_jit_fpul_moves_preset() { return g_jit_fpul_moves_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }
