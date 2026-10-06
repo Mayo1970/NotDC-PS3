@@ -83,7 +83,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2 |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
 | P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults |
-| P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | merged: plan 5.38 |
+| P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | = plan 5.38, HW SUCCESS 2026-10-06, default FIXED |
 | P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict) |
 | P21 | CD-DA during data reads, GD-ROM status timing | bug | Hydro Thunder, NFL Blitz 2001, Cool Boarders Burrrn, Ms. Pac-Man, Bust-a-Move 4 | 1 line, then ~60 | merged: plan 3h |
 | P22 | GD-ROM command hangs and DMA rules | bug | Pro Pinball Trilogy, WSB 2K2, Sakura Taisen 3 | ~30-40 lines | DMA part merged: plan 5.34; commands: extends P9; corrects section 4 |
@@ -860,7 +860,7 @@ Games affected: unknown for each.
 - HW check: Soul Calibur fight (background stable); Crazy Taxi, Sonic
   Adventure and the BIOS menu without new depth faults.
 
-### P19 div32 match gives wrong results  `[ ]` merged: plan 5.38
+### P19 div32 match gives wrong results  `[x]` = plan 5.38, HW SUCCESS 2026-10-06
 
 - Ours: the matched `div0u`/`div0s` + 32 x (`rotcl`; `div1`) becomes one
   divide (`dc/sh4/rec_v2/decoder.cpp:1158-1186`). But rs3 is empty (:1163,
@@ -891,6 +891,10 @@ Games affected: unknown for each.
   World, Aqua GT, Rayman 2, Elysion, Silent Scope, Power Stone, Metropolis
   Street Racer, Donald Duck. `e0949fb9a` fixed Pro Pinball Trilogy, Star
   Wars Racer, Record of Lodoss War and Surf Rocket Racers.
+- Correction (5.38 HW, 2026-10-06): 8C09108C and 8C0911EC are the BIOS
+  boot animation's SDK division routine, run before every game. Game code:
+  Sonic Adventure and Rayman 2 match the same routine at their own
+  addresses; Crazy Taxi decoded no div0u/div0s after the game started.
 - PS3 notes:
   - `divdu`/`divd` read 64 bits. Build the dividend with `clrldi` on reg1
     and `rldimi` for reg3, and `extsw` the signed divisor (pinned registers

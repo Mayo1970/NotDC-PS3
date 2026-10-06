@@ -13,6 +13,29 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-06)
 
+**Open, separate (Matt 2026-10-06: "let's keep this as an open, separated
+issue"): Rayman 2 draws level surfaces untextured.** US GDI, first level:
+large level polygons show only smooth vertex-colour gradients; Rayman and
+the far tree backdrop are textured. The same with JIT Div32 OLD and FIXED
+(5.38 HW). Log: `blacktex=0`, no YUV, palette or stride textures, mip and
+VQ textures in use, modifier volumes (52 tris), W up to 1e9, 50 Hz mode.
+Not tried yet: Strip Merge OFF and Vertex Arrays OFF (both live).
+
+**Done: 5.38 JIT DIV32 (OPTIMIZATION_POTENTIAL P19; Matt 2026-10-06: "do
+5.38"), HW SUCCESS, default FIXED since the package of 21:02 (Matt: "Yes,
+let's put it as default").** Crazy Taxi, Sonic Adventure and Rayman 2
+clean (5.38 "HW"). Built in the package of 19:40. EMULATION
+-> "JIT Div32" (`JitDiv32`): OLD / FIXED, set before boot.
+FIXED makes a matched division (`div0u`/`div0s` + 32 x `rotcl`; `div1`)
+Flycast's 64/32 form in one's complement (`dc/sh4/rec_v2/div32_match.h`,
+`ps3/ps3_jit_div32.h`), with one fix Flycast lacks: r1's top bit comes
+from div0s's T (Flycast's `sar` is wrong for INT_MIN / 1). The matcher also
+rejects `div1 Rn,Rn`, and the `[DIV]` probe skips sites below 0x8C010000.
+PC: `misc/div32_check/run.sh` PASS, 2.48M checks; `mutate.py` 48 of 48
+planted bugs fail; `constprop_check` PASS. The OLD forms on the same rows:
+unsigned 64/32 93% wrong, the signed idiom 50%. HW steps in section 5
+after 5.36-5.40. Start a UDP listener only when Matt says so.
+
 **Merged 2026-10-06: the OPTIMIZATION_POTENTIAL items that have a plan
 goal (Matt: "Can you do the merge, then?").** Nothing is built. Each item
 now sits at its goal with a short entry. The full text (evidence, file and
@@ -963,7 +986,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
 | 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | `[ ]` merged 2026-10-06; estimate 1% or less (scheduler), 0.1-0.5% (TA peak store) |
 | 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level |
-| 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[ ]` merged 2026-10-06; every game (the signed idiom matches in Crazy Taxi, Sonic Adventure and Soul Calibur); ~60 lines, PC check first |
+| 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
 | 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]` |
 | 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first |
 
@@ -971,6 +994,7 @@ FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Mat
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
 default ON since the package of 23:22 on 2026-10-05 (Matt).
 GD-ROM Async (+ CD-DA) and JIT Exit are default ON since the package of 18:19 on 2026-10-06 (Matt: "Keep toggles on").
+JIT Div32 defaults to FIXED since the package of 21:02 on 2026-10-06 (Matt: "Yes, let's put it as default").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -4560,6 +4584,97 @@ clock by VPS.
     `mtfsfi 7,(DN?4:0)|RM` (NI). A gain only if the PPE stalls on
     denormals: check what NI does on the PPE first. 1 line, own option.
     The render thread keeps its own FPSCR.
+- 5.38 JIT DIV32 (P19; Matt 2026-10-06: "do 5.38"). Built and PC tested,
+  package of 19:40, HW pending.
+  - `dc/sh4/rec_v2/div32_match.h` (`div32_emit`, called by DM_DIV0) holds
+    the SHIL of both forms. FIXED, unsigned: `div32u` with rs3 = r3 (the
+    dividend's high word), then T = quo & 1, r1 = quo >> 1, `div32p2`.
+    FIXED, signed: T = (r3 ^ r2) & 0x80000000 (div0s's T), `div32s` (one's
+    complement: +1 before the divide when negative, then quo - 1 when the
+    signs differ, else rem - 1 when r3 < 0), r1 = (quo >> 1) | T, T |=
+    quo & 1, `div32p2` (with the sign: rem - (b > 0) + (bit 0 ? b : 0)),
+    T &= 1. OLD: the ops before 5.38 (rs3 empty).
+  - Not Flycast's: Flycast shifts r1 with `sar`, which copies the one's
+    complement quotient's bit 31. The chain's top bit is always div0s's T;
+    the two differ only for a quotient of -2^31 (INT_MIN / 1 in the SH
+    manual idiom), found by the PC check. One more op (`shr` + `or`).
+  - `ps3/ps3_jit_div32.h`: `divdu`/`divd` on `clrldi` + `rldimi r3,32`,
+    `extsw` divisor, remainder by `mulld`/`mullw` and `subf`; divide by 0
+    masked to quotient 0 (`neg`, `sradi 63`), remainder = the dividend's low
+    word (Flycast). `div32p2` branch-free, 14 instructions. The driver
+    picks the form by rs3; `div32p2` always takes the new form (the same
+    results for T = 0/1, checked).
+  - `shil_canonical.h`: div32u, div32s and div32p2 are Flycast's forms
+    without signed overflow. The matcher rejects `div1 Rn,Rn` (a changing
+    divisor); the `[DIV]` probe skips pc < 0x8C010000. `[jitcfg]` prints
+    `Div32=`.
+  - PC (WSL): `misc/div32_check/run.sh`: the SHIL of `div32_emit` run with
+    the real canonical ops (`canon.cpp`) and with the PPU forms on a PPC64
+    model (junk above pinned values, the driver's register choices) against
+    the interpreter's `div0` + 32 x (`rotcl`; `div1`) chain: 0 wrong in
+    200000 cases per row (unsigned 32/32, unsigned 64/32 with r3 < r2, the
+    SH manual signed idiom, signed with dividend >= 0, signed 64/32 whose
+    quotient fits s32), Flycast's `div32_test.cpp` cases, 15 signed
+    boundaries; PPU forms = canonical ops for every input; 88 words =
+    ppu-as (`gen.py`). PASS, 2480214 checks. `mutate.py`: 48 of 48 planted
+    bugs fail, 46 on the model alone (2 change only the encoding).
+    `misc/constprop_check` now builds its division ops with `div32_emit`:
+    PASS, 200000 blocks.
+  - OLD forms on the same rows (report): unsigned 32/32 0%, unsigned 64/32
+    93.4%, signed idiom 49.8%, signed with dividend >= 0 0%, signed 64/32
+    74.7% wrong.
+  - Not changed: outside those rows (a quotient that overflows, a divisor
+    of 0) both forms differ from the chain, as Flycast's; a divide by 0
+    gives quotient 0 (the chain gives other values). Neither form sets
+    SR.Q and SR.M, which the chain leaves set; only a `div1` after the 32
+    steps would read them.
+  - Build: the old warnings, `.got` 0xC070, 0 `r2off`.
+  - Expected: correctness only, no measurable speed change.
+  - HW test steps (package of 19:40):
+    1. Install. The install keeps `nullDC.cfg`. On the main menu:
+       EMULATION -> JIT Div32 FIXED, VIDEO / DEBUG -> IFB Probe ON; SH4
+       Clock 200 and the other options at their defaults.
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Crazy Taxi at 60 Hz, ~2 min of play, exit to the XMB. Log:
+       `[jitcfg] ... Div32=1`, `[DIV] div0s pc=8C... MATCHED 65/65`
+       lines, no fault. The game plays as before.
+    4. Boot 2: Sonic Adventure, a level load and a few minutes of play.
+    5. Boot 3 (optional): Soul Calibur, one fight (it has a matched signed
+       division too; correctness only).
+    6. On a fault: the same boot with JIT Div32 OLD.
+  - HW 2026-10-06 (package of 19:40, listener PID 17680 at Matt's request;
+    log `ps3log_538_run1.txt`, Crazy Taxi part `run538_ct.txt`, scratchpad
+    of session 2b073cf1). Reference: `run534_ct.txt` (5.34, the same JIT
+    settings but Div32 OLD and GD-ROM Async DATA; no CD-DA in either run).
+    - Every boot first runs the BIOS boot animation, whose SDK division
+      routine matches: div0s 8C09108C and 8C0911EC, div0u 8C091138 and
+      8C0912AC (before `boot address AC008300`). These are the sites P19
+      attributed to Crazy Taxi, Sonic Adventure and Soul Calibur.
+    - Crazy Taxi, 164 s (60 Hz after the boot): `Div32=1`, log clean, one
+      `or.b` fallback. After `boot address AC010000` the game decodes no
+      div0u/div0s, so only the BIOS animation ran FIXED. Clean XMB exit
+      (JIT EXIT), flash saved. Same load VPS -0.0%; dense SPEED 99.8%
+      (100.0%), 87% of dense windows at full speed (95%): the 10 slower
+      seconds are heavy frames of 21-24 ms with no disc stall, at equal
+      VPS per load bin. Matt: "it looked and played as before".
+    - Sonic Adventure (`run538_sonic.txt`, reference `run534_sonic.txt`):
+      game code matches the same SDK routine at div0s 8C10E68C and
+      8C10E7EC, div0u 8C10E738 and 8C10E8AC. Log clean, one `or.b`
+      fallback, clean XMB exit. Same load VPS -0.1%; dense SPEED 100.0%,
+      97% of dense windows at full speed (98%). Matt: "Sonic looked
+      right".
+    - Rayman 2 (US GDI, on Flycast's old list of games with this bug;
+      `run538_rayman_fixed.txt`, 349 s): game code matches div0s 8C067950
+      and 8C067AB0, div0u 8C0679FC and 8C09C28C. Log clean, clean XMB
+      exit, 50 Hz mode at full speed (97% of dense windows). Level
+      surfaces draw untextured (Matt's screenshot); the same with JIT
+      Div32 OLD (`run538_rayman_old.txt`, 207 s, `Div32=0`), so not 5.38:
+      a separate open issue (section 0).
+    - Matt, asked for SUCCESS and the default: "Yes, let's put it as
+      default". `JitDiv32` defaults to 1 (FIXED) since the package of
+      21:02 (`.got` 0xC070, 0 `r2off`). A default only reaches a cfg
+      without the key (`cfgLoadInt` writes it back), and Matt's ran OLD
+      last: set FIXED once in the menu.
 
 ---
 

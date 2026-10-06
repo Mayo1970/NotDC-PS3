@@ -9,6 +9,7 @@
 #include "dc/mem/sh4_mem.h"
 #include "decoder_opcodes.h"
 #include "idle_loop.h"
+#include "div32_match.h"
 
 #define NullAddress 0xFFFFFFFF
 
@@ -756,8 +757,10 @@ void dec_param(DecParam p,shil_param& r1,shil_param& r2, u32 op)
 	}
 }
 
-// 32/32 division idiom (devcast/reicast): DIV0U/S + 32 x "ROTCL reg1; DIV1 reg2,reg3". A full match (score 65)
-// becomes one divide (div32u/s + div32p2 fixup) and skips the 64 guest opcodes; anything else stays ifb.
+// Division idiom: DIV0U/S + 32 x "ROTCL reg1; DIV1 reg2,reg3". A full match (score 65) becomes one divide
+// (div32_match.h, JIT DIV32 picks the form) and skips the 64 guest opcodes; anything else stays as decoded.
+extern "C" int get_jit_div32_preset();
+
 #define DIV1_KEY      0x3004
 #define ROTCL_KEY     0x4024
 #define DIV_MASK_N    0xF0FF	// masks out the n field
@@ -806,6 +809,10 @@ static u32 MatchDiv32(u32 pc, Sh4RegType& reg1, Sh4RegType& reg2, Sh4RegType& re
 			if (reg3 == reg1)
 				break;
 
+			// div1 Rn,Rn divides by a changing value, not by a fixed divisor.
+			if (reg3 == reg2)
+				break;
+
 			match++;
 		}
 		else
@@ -851,7 +858,9 @@ static bool MatchDiv32s(u32 op, u32 pc)
 extern "C" int get_ifb_probe_preset();
 
 // One line per site, matches too (it shows whether the 32-step loops collapse); div0 and div1 budgets apart.
+// Sites below 0x8C010000 (the BIOS, IP.BIN) are skipped: boot code filled all 16 slots (plan 5.38).
 #define DIV_SITE_MAX 16
+#define DIV_SITE_MIN 0x8C010000
 static u32 s_div0_sites[DIV_SITE_MAX];
 static u32 s_div1_sites[DIV_SITE_MAX];
 static u32 s_div0_site_n = 0;
@@ -872,7 +881,7 @@ static bool dec_div_site_new(u32* tab, u32& n, u32 pc)
 // Every div0u/div0s the decoder sees, matched or not.
 static void dec_div0_probe(u32 pc, bool is_unsigned, bool matched)
 {
-	if (!get_ifb_probe_preset())
+	if (!get_ifb_probe_preset() || pc < DIV_SITE_MIN)
 		return;
 	if (!dec_div_site_new(s_div0_sites, s_div0_site_n, pc))
 		return;
@@ -894,7 +903,7 @@ static void dec_div0_probe(u32 pc, bool is_unsigned, bool matched)
 // A div1 about to take the interpreter path.
 static void dec_div1_probe(u32 op, u32 pc)
 {
-	if ((op & DIV_MASK_N_M) != DIV1_KEY || !get_ifb_probe_preset())
+	if ((op & DIV_MASK_N_M) != DIV1_KEY || !get_ifb_probe_preset() || pc < DIV_SITE_MIN)
 		return;
 	if (!dec_div_site_new(s_div1_sites, s_div1_site_n, pc))
 		return;
@@ -1157,27 +1166,7 @@ bool dec_generic(u32 op)
 
 			if (matched)
 			{
-				if (e==1)
-				{
-					// div0u: unsigned divide. quo -> reg1, rem -> reg3
-					block.Emit(shop_div32u, mk_reg(div_som_reg1), mk_reg(div_som_reg1), mk_reg(div_som_reg2), 0, shil_param(), mk_reg(div_som_reg3));
-
-					// The 32nd quotient bit is still "in T" after the sequence;
-					// the register holds the upper 31 bits.
-					block.Emit(shop_and, mk_reg(reg_sr_T), mk_reg(div_som_reg1), mk_imm(1));
-					block.Emit(shop_shr, mk_reg(div_som_reg1), mk_reg(div_som_reg1), mk_imm(1));
-				}
-				else
-				{
-					// div0s: signed divide
-					block.Emit(shop_div32s, mk_reg(div_som_reg1), mk_reg(div_som_reg1), mk_reg(div_som_reg2), 0, shil_param(), mk_reg(div_som_reg3));
-
-					block.Emit(shop_and, mk_reg(reg_sr_T), mk_reg(div_som_reg1), mk_imm(1));
-					block.Emit(shop_sar, mk_reg(div_som_reg1), mk_reg(div_som_reg1), mk_imm(1));
-				}
-
-				// Non-restoring remainder fixup: reg3 = T ? rem : rem - divisor
-				block.Emit(shop_div32p2, mk_reg(div_som_reg3), mk_reg(div_som_reg3), mk_reg(div_som_reg2), 0, mk_reg(reg_sr_T));
+				div32_emit(block, e==1, get_jit_div32_preset()!=0, div_som_reg1, div_som_reg2, div_som_reg3);
 
 				// Skip the 64 matched opcodes and bill them here (the decode loop never sees them; the idle rule counts them).
 				state.cpu.rpc += 128;

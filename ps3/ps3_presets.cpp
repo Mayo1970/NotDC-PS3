@@ -33,6 +33,7 @@ int g_jit_safe_preset      = 0;   // 1 = bring-up mode, see ngen_GetFeatures
 int g_jit_newops_preset    = 1;
 int g_jit_carry_preset     = 1;   // 1 = addc/subc/negc/addv/subv/div1 and friends native, T without XER (5.2, HW)
 int g_jit_mac_preset       = 0;
+int g_jit_div32_preset     = 1;   // 1 = a matched division as a 64/32 divide in one's complement, as hw (5.38, HW)
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking
 int g_jit_fastmem_preset   = 1;   // 1 = inline main-RAM window in the JIT
@@ -111,6 +112,7 @@ static const CfgItem s_items[] = {
 	{ "JitNewOps",     &g_jit_newops_preset },
 	{ "JitCarry",      &g_jit_carry_preset },
 	{ "JitMac",        &g_jit_mac_preset },
+	{ "JitDiv32",      &g_jit_div32_preset },
 	{ "JitPcRelIfb",   &g_jit_pcrel_preset },
 	{ "JitDynEnds",    &g_jit_dynends_preset },
 	{ "JitFastmem",    &g_jit_fastmem_preset },
@@ -251,6 +253,7 @@ int get_ifb_probe_preset()     { return g_ifb_probe_preset; }
 int get_jit_newops_preset()    { return g_jit_newops_preset; }
 int get_jit_carry_preset()     { return g_jit_carry_preset; }
 int get_jit_mac_preset()       { return g_jit_mac_preset; }
+int get_jit_div32_preset()     { return g_jit_div32_preset; }
 int get_jit_pcrel_preset()     { return g_jit_pcrel_preset; }
 int get_jit_dynends_preset()   { return g_jit_dynends_preset; }
 int get_jit_ifb_mask()         { return g_jit_ifb_mask; }

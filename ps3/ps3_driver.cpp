@@ -28,6 +28,7 @@
 #include "ps3/ps3_jit_pref.h"
 #include "ps3/ps3_jit_greuse.h"
 #include "ps3/ps3_jit_carry.h"
+#include "ps3/ps3_jit_div32.h"
 #include "ps3/ps3_jit_exit.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
@@ -3853,33 +3854,49 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			ppc_sh_store(ppc_rarg2,op->rd2);
 			break;
 
-		// Matched ROTCL/DIV1 idiom: hardware divide, remainder = dividend - quo*divisor. Divide by zero is
-		// undefined, not a trap; these are compiler-generated divisions.
+		// Matched ROTCL/DIV1 idiom (div32_match.h), forms in ps3_jit_div32.h. With rs3 (JIT DIV32 FIXED) a 64/32
+		// divide, sources pinned or in rarg0-2; without it the OLD 32/32 divide on binop_start's copies.
 		case shop_div32u:
-			binop_start(op);				// rarg0=dividend, rarg1=divisor
-			ppc_divwux(ppc_rarg2,ppc_rarg0,ppc_rarg1,0,0);	// quo = divwu
-			ppc_mullwx(ppc_rarg3,ppc_rarg2,ppc_rarg1,0,0);	// quo*divisor
-			ppc_subfx(ppc_rarg3,ppc_rarg3,ppc_rarg0,0,0);	// rem = dividend - quo*divisor
-			ppc_sh_store(ppc_rarg2,op->rd);
-			ppc_sh_store(ppc_rarg3,op->rd2);
-			break;
 		case shop_div32s:
-			// divw truncates toward zero, same as the C canonical.
-			binop_start(op);
-			ppc_divwx(ppc_rarg2,ppc_rarg0,ppc_rarg1,0,0);	// quo = divw
-			ppc_mullwx(ppc_rarg3,ppc_rarg2,ppc_rarg1,0,0);
-			ppc_subfx(ppc_rarg3,ppc_rarg3,ppc_rarg0,0,0);
-			ppc_sh_store(ppc_rarg2,op->rd);
-			ppc_sh_store(ppc_rarg3,op->rd2);
+			{
+				const bool u=(op->op==shop_div32u);
+				u32 q=ppc_rarg2, rem=ppc_rarg3;
+				if (op->rs3.is_reg())
+				{
+					u32 a=src_or_load(op->rs1,ppc_rarg0);
+					u32 b=src_or_load(op->rs2,ppc_rarg1);
+					u32 h=src_or_load(op->rs3,ppc_rarg2);
+					q=ppc_rarg3;
+					rem=ppc_rarg4;
+					if (u)
+						emit_div32u(q,rem,a,b,h,ppc_rarg5,ppc_rarg6);
+					else
+						emit_div32s(q,rem,a,b,h,ppc_rarg5,ppc_rarg6,ppc_rarg7);
+				}
+				else
+				{
+					binop_start(op);			// rarg0=dividend, rarg1=divisor
+					if (u)
+						emit_div32u_old(q,rem,ppc_rarg0,ppc_rarg1);
+					else
+						emit_div32s_old(q,rem,ppc_rarg0,ppc_rarg1);
+				}
+				ppc_sh_store(q,op->rd);
+				ppc_sh_store(rem,op->rd2);
+			}
 			break;
 		case shop_div32p2:
-			// rd = T ? a : a-b (non-restoring fixup); T is 0/1 (the decoder emits and T,quo,1), so mask = T-1.
-			binop_start(op);				// rarg0=a, rarg1=b
-			ppc_sh_load(ppc_rarg2,op->rs3);			// T
-			ppc_addi(ppc_rarg2,ppc_rarg2,-1);		// mask = T-1
-			ppc_andx(ppc_rarg1,ppc_rarg1,ppc_rarg2,0);	// b &= mask
-			ppc_subfx(ppc_rarg0,ppc_rarg1,ppc_rarg0,0,0);	// a -= (T ? 0 : b)
-			binop_end(op);
+			{
+				// rd = rs1 = the remainder, rs2 = the divisor, rs3 = T; the form writes d last, so d may be a.
+				u32 a=src_or_load(op->rs1,ppc_rarg0);
+				u32 b=src_or_load(op->rs2,ppc_rarg1);
+				ppc_sh_load(ppc_rarg2,op->rs3);
+				ppc_ireg dp=GetIntReg(op->rd._reg);
+				u32 d=(dp!=ppc_rinvalid) ? (u32)dp : (u32)ppc_rarg7;
+				emit_div32p2(d,a,b,ppc_rarg2,ppc_rarg3,ppc_rarg4,ppc_rarg5,ppc_rarg6);
+				if (d==(u32)ppc_rarg7)
+					ppc_sh_store(ppc_rarg7,op->rd);
+			}
 			break;
 
 		// --- Shifts with dynamic SH4 semantics (branchless) -------------------
@@ -4516,6 +4533,7 @@ extern "C" int get_jit_dynends_preset();
 extern "C" int get_jit_newops_preset();
 extern "C" int get_jit_carry_preset();
 extern "C" int get_jit_mac_preset();
+extern "C" int get_jit_div32_preset();
 extern "C" int get_jit_pcrel_preset();
 extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
@@ -4532,9 +4550,9 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] Dynarec=%d JitSafe=%d JitDynEnds=%d -> static_linking=%s\n",
 	       get_dynarec_preset(), get_jit_safe_preset(), get_jit_dynends_preset(),
 	       (get_jit_safe_preset()||get_jit_dynends_preset()) ? "OFF" : "ON");
-	printf("[jitcfg] NewOps=%d Carry=%d Mac=%d PcRelIfb=%d DebugLoop=%d IfbMask=%04X"
+	printf("[jitcfg] NewOps=%d Carry=%d Mac=%d Div32=%d PcRelIfb=%d DebugLoop=%d IfbMask=%04X"
 	       " IfbGroup=%d IfbLoMask=%04X\n",
-	       get_jit_newops_preset(), get_jit_carry_preset(), get_jit_mac_preset(),
+	       get_jit_newops_preset(), get_jit_carry_preset(), get_jit_mac_preset(), get_jit_div32_preset(),
 	       get_jit_pcrel_preset(), get_debug_loop(), get_jit_ifb_mask(),
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"

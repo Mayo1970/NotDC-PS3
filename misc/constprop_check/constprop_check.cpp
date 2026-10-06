@@ -22,6 +22,7 @@ int msgboxf(const char* text, unsigned int, ...)
 #define CP_HEADER "dc/sh4/rec_v2/shil_opt.h"
 #endif
 #include CP_HEADER
+#include "dc/sh4/rec_v2/div32_match.h"
 
 #define CHECK(x) do { if (!(x)) { printf("CHECK failed %s:%d: %s\n", __FILE__, __LINE__, #x); fflush(stdout); abort(); } } while (0)
 
@@ -486,18 +487,28 @@ struct Interp
 			out(o.rd2, (u32)(p >> 32));
 			break;
 		}
+		// rs3 (JIT DIV32 FIXED) is the dividend's high word. The values only need to depend on every input.
 		case shop_div32u:
 		{
-			const u32 a = in(o.rs1), b = in(o.rs2);
-			out(o.rd, b ? a / b : 0xFFFFFFFF);
-			out(o.rd2, b ? a % b : a);
+			const u64 a = ((u64)in0(o.rs3) << 32) | in(o.rs1);
+			const u32 b = in(o.rs2);
+			out(o.rd, b ? (u32)(a / b) : 0xFFFFFFFF);
+			out(o.rd2, b ? (u32)(a % b) : (u32)a);
 			break;
 		}
 		case shop_div32s:
 		{
 			const s32 a = (s32)in(o.rs1), b = (s32)in(o.rs2);
 			u32 q, m;
-			if (b == 0)                                    { q = 0xFFFFFFFF; m = (u32)a; }
+			if (!o.rs3.is_null())
+			{
+				// one's complement step first, so no divide overflows
+				s64 x = (s64)(((u64)in(o.rs3) << 32) | (u32)a);
+				x += x < 0;
+				q = b ? (u32)(x / b) : 0;
+				m = (u32)x - q * (u32)b;
+			}
+			else if (b == 0)                               { q = 0xFFFFFFFF; m = (u32)a; }
 			else if (a == (s32)0x80000000 && b == -1)      { q = 0x80000000; m = 0; }
 			else                                           { q = (u32)(a / b); m = (u32)(a % b); }
 			out(o.rd, q);
@@ -506,10 +517,13 @@ struct Interp
 		}
 		case shop_div32p2:
 		{
+			// T bit 31 is div32s's quotient sign (FIXED); OLD's T is 0/1
 			u32 a = in(o.rs1);
-			const u32 b = in(o.rs2);
-			if (!in(o.rs3))
-				a -= b;
+			const u32 b = in(o.rs2), T = in(o.rs3);
+			if (!(T & 0x80000000))
+				a -= (T & 1) ? 0 : b;
+			else
+				a += ((T & 1) ? b : 0) - ((s32)b > 0);
 			out(o.rd, a);
 			break;
 		}
@@ -1199,14 +1213,17 @@ struct Gen
 			break;
 		case 26:
 		{
-			// the matched 32-bit division
+			// the matched division, as div32_match.h emits it (OLD or FIXED, div0u or div0s)
 			u32 r1 = gp(), r2 = gp(), r3 = gp();
 			if (r2 == r1) r2 = r1 ^ 1;
 			if (r3 == r1 || r3 == r2) r3 = reg_r15 - (r1 & 3);
-			L.push_back(OP(rnd(2) ? shop_div32u : shop_div32s, R(r1), R(r1), R(r2), 0, P(), R(r3)));
-			L.push_back(OP(shop_and, R(reg_sr_T), R(r1), I(1)));
-			L.push_back(OP(rnd(2) ? shop_shr : shop_sar, R(r1), R(r1), I(1)));
-			L.push_back(OP(shop_div32p2, R(r3), R(r3), R(r2), 0, R(reg_sr_T)));
+			DecodedBlock d;
+			div32_emit(d, rnd(2), rnd(2), (Sh4RegType)r1, (Sh4RegType)r2, (Sh4RegType)r3);
+			for (shil_opcode& o : d.oplist)
+			{
+				o.Flow = 0;
+				L.push_back(o);
+			}
 			break;
 		}
 		case 27:   // mac.l / mac.w, clrmac sometimes first

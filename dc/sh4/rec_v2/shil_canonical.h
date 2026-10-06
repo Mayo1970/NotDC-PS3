@@ -434,19 +434,21 @@ shil_opc(mul_i32) BIN_OP_I4(s32, *, u32, s32) shil_opc_end()
 shil_opc(mul_u64) BIN_OP_I4(u64, *, u64, u32) shil_opc_end()
 shil_opc(mul_s64) BIN_OP_I4(s64, *, u64, s32) shil_opc_end()
 
-// ---- 32-bit division (ROTCL/DIV1 idiom, MatchDiv32 in decoder.cpp; from devcast/reicast). quo -> rd, rem -> rd2 ----
-// Pointer-cast packing: word[0] lands in the FIRST return register on both endians. ps3_driver.cpp has native cases.
+// ---- Division (div32_match.h), Flycast's forms: r3 = the dividend's high word, quo -> rd (word[0]), rem -> rd2 ----
+// Without rs3 (JIT DIV32 OLD) div32u/div32s are the 32/32 forms before 5.38, native only (ps3_jit_div32.h).
 shil_opc(div32u)
 shil_canonical(
-    u64, f1, (u32 r1, u32 r2),
-    u32 quo = r1 / r2;
-    u32 rem = r1 % r2;
+    u64, f1, (u32 r1, u32 r2, u32 r3),
+    u64 dividend = ((u64)r3 << 32) | r1;
+    u32 quo = r2 ? (u32)(dividend / r2) : 0;
+    u32 rem = r2 ? (u32)(dividend % r2) : (u32)dividend;
     u64 rv;
     ((u32*)&rv)[0] = quo;
     ((u32*)&rv)[1] = rem;
     return rv;
 )
 shil_compile(
+    shil_cf_arg_u32(rs3);
     shil_cf_arg_u32(rs2);
     shil_cf_arg_u32(rs1);
     shil_cf(f1);
@@ -454,17 +456,26 @@ shil_compile(
 )
 shil_opc_end()
 
+// One's complement in and out, as div0s/div1: +1 before the divide when negative, then back.
 shil_opc(div32s)
 shil_canonical(
-    u64, f1, (s32 r1, s32 r2),
-    u32 quo = r1 / r2;
-    u32 rem = r1 % r2;
+    u64, f1, (u32 r1, u32 r2, u32 r3),
+    s64 dividend = (s64)(((u64)r3 << 32) | r1);
+    if (dividend < 0)
+        dividend++;
+    u32 quo = r2 ? (u32)(dividend / (s32)r2) : 0;
+    u32 rem = (u32)dividend - quo * r2;
+    if ((r3 ^ r2) & 0x80000000)
+        quo--;
+    else if ((s32)r3 < 0)
+        rem--;
     u64 rv;
     ((u32*)&rv)[0] = quo;
     ((u32*)&rv)[1] = rem;
     return rv;
 )
 shil_compile(
+    shil_cf_arg_u32(rs3);
     shil_cf_arg_u32(rs2);
     shil_cf_arg_u32(rs1);
     shil_cf(f1);
@@ -472,13 +483,22 @@ shil_compile(
 )
 shil_opc_end()
 
-// div32 fixup step: reproduces the architectural register state the
-// non-restoring DIV1 sequence leaves behind (rd = T ? a : a-b).
+// div32 fixup: the remainder register the non-restoring DIV1 chain leaves. T bit 31 is div32s's quotient sign.
 shil_opc(div32p2)
 shil_canonical(
-    u32, f1, (s32 a, s32 b, s32 T),
-    if (!T)
-        a -= b;
+    u32, f1, (u32 a, u32 b, u32 T),
+    if (!(T & 0x80000000))
+    {
+        if (!(T & 1))
+            a -= b;
+    }
+    else
+    {
+        if ((s32)b > 0)
+            a--;
+        if (T & 1)
+            a += b;
+    }
     return a;
 )
 shil_compile(

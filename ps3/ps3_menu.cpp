@@ -301,6 +301,7 @@ static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", NULL };
 static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
 static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
 static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
+static const char* k_div32[]     = { "OLD", "FIXED", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -338,6 +339,8 @@ static Option s_emu[] = {
 	  "Native carry and borrow opcodes. Off = interpreter fallback." },
 	{ "JIT MAC",         &g_jit_mac_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Native mac.l and mac.w with saturation. Off = interpreter fallback." },
+	{ "JIT Div32",       &g_jit_div32_preset,     OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "Matched divisions. FIXED: 64-bit and signed results as on hw. Set before boot." },
 	{ "JIT PCrel IFB",   &g_jit_pcrel_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "On = mova and PC-relative loads run on the interpreter. Bisect aid." },
 	{ "JIT DynEnds",     &g_jit_dynends_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

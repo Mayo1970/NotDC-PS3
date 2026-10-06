@@ -29,6 +29,7 @@ extern int g_jit_safe_preset;
 extern int g_jit_newops_preset;
 extern int g_jit_carry_preset;
 extern int g_jit_mac_preset;
+extern int g_jit_div32_preset;
 extern int g_jit_pcrel_preset;
 extern int g_jit_dynends_preset;
 extern int g_jit_fastmem_preset;
