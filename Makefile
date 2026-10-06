@@ -5,7 +5,7 @@ $(error "PS3DEV is not set")
 endif
 PSL1GHT ?= $(PS3DEV)
 
-TARGET     := nulldc_ps3
+TARGET     := notdc_ps3
 TITLE      := NotDC
 TITLE_ID   := NOTDC0000
 CONTENT_ID := UP0001-$(TITLE_ID)_00-0000000000000000

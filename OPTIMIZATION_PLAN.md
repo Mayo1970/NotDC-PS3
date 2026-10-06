@@ -11,7 +11,22 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-05)
+## 0. Resume here (updated 2026-10-06)
+
+**Done: 5.2 JIT Carry (Matt 2026-10-06: "I'd say to work on 5.2 since It's
+a known issue."), default ON in the source since 2026-10-06 (Matt: "Sure"),
+not in a package yet.** The carry ops (addc, subc, negc, addv, subv, div1)
+took CA and OV from 64 bits. The new forms in `ps3/ps3_jit_carry.h` use no
+XER: 64-bit arithmetic on extended operands, T from bit 32 or from the
+overflow test. EMULATION -> "JIT Carry" (`JitCarry`), set before boot. PC:
+`misc/carry_check` PASS (1.6M checks), 39 of 39 planted bugs fail. HW
+2026-10-06 (package of 09:16): both boots clean, one interpreter fallback
+per boot. Crazy Taxi same load -0.4% (noise); Matt: "It looked the same".
+Sonic Adventure FMV after boot (P41) +23% VPS (SPEED 69-71% -> 86-87%),
+play equal. Matt: "Sonic felt choppier"; the log shows no cause in 5.2
+(see 5.2 "HW"). An install keeps the settings now (`nullDC.cfg` is in
+`/dev_hdd0/data/NotDC/`), so HW steps must list every option to check.
+Found, not fixed: JitMac (5.3) has the same 64-bit carry defect.
 
 **Active: Crazy Taxi at full speed (Matt 2026-10-05: "I'd like to get Crazy
 Taxi in full speed").** Dense Crazy Taxi (`run528b.txt`): VPS 59.2, SPEED
@@ -479,7 +494,8 @@ JIT C-Calls (VIDEO / DEBUG) give `[IFB]`/`[CC]`/`[ARMJIT]`; the `[rend] busy=`
 `[rend] draw split %:` and `[rend] tex split %:` lines are always on.
 
 Other open items: the XMB exit always takes the "SH4 did not stop in 3 s"
-fallback (seen in every run, not new). JitCarry is broken on PS3 (5.2).
+fallback (seen in every run, not new). JitCarry was broken on PS3; fixed in
+5.2 (HW 2026-10-06).
 Why the ARM7 JIT time saving did not show as SPEED: likely SMT sharing with
 the render thread (5.6).
 
@@ -840,7 +856,7 @@ Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
-| 5.2 | `JitCarry`: fix, then test | `[ ]` BROKEN on PS3, see below |
+| 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON in the source (Matt), not in a package yet; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log |
 | 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]` |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
 
@@ -4079,6 +4095,81 @@ clock by VPS.
 - 5.2: `adde`/`subfe`/`subfze`/`addo`/`subfo` set CA and OV from 64 bits on the
   PPU. Pinned regs have garbage upper halves (`jit-64bit-poison`), so T is
   wrong. Fix: zero-extend the operands and take the carry from bit 32.
+- 5.2 JIT Carry fix (Matt 2026-10-06: "I'd say to work on 5.2 since It's a
+  known issue."). Built and PC tested, package of 09:16, HW pending.
+  - `ps3/ps3_jit_carry.h`, no XER: addc, subc and negc zero-extend the
+    operands (`clrldi`), add or subtract T in 64 bits and take T from bit 32
+    (`rldicl t,d,32,63`). addv and subv sign-extend (`extsw`) and set T when
+    the exact 64-bit result is not the sign extension of its low word
+    (`extsw`, `xor`, bit 63). div1 zero-extends Rm or ~Rm and takes its
+    carry from bit 32. cmp/str and swap.b moved to the header with the same
+    words, so the check covers every op the toggle turns on; xtrct and
+    clrmac use the base shift, or and mov32 forms.
+  - Option: EMULATION -> "JIT Carry" (`JitCarry`), as before: default OFF,
+    read at compile time (set before boot); `[jitcfg]` prints `Carry=`.
+  - PC (WSL): `misc/carry_check/run.sh` checks the header against ppu-as
+    (98 words, `gen.py`), then each form on a PPC64 model in 64-bit mode
+    against the SH4 interpreter's code, with junk above the low word of
+    pinned registers and each register choice of the driver (Rn and Rm
+    pinned, the same, or r11): PASS, 1.6M checks. `mutate.py`: 39 of 39
+    planted bugs fail, 37 on the model alone (2 give the same results
+    through another bit). On the same model the pre-5.2 forms (`run.sh N
+    old`) are wrong in addc 43-46%, subc 0-30%, negc 0-2%, addv 21-28%, subv
+    8-11%, div1 21-37% of the cases (clean / junk upper halves).
+  - Build: the 7 old warnings, `.got` 0xBED8, 0 `r2off`.
+  - Expected: correctness only. ~40K interpreter fallbacks/s leave dense
+    Crazy Taxi (5.0 census: addc 18.8K, subc 15.3K, div1 5.0K), below the
+    noise of one run.
+  - Not in 5.2: JitMac (5.3) builds MACL/MACH with `addc`/`adde` in 64-bit
+    mode, the same defect.
+  - HW test steps (package of 09:16):
+    1. Install. An install resets the settings to the defaults. On the main
+       menu: EMULATION -> JIT Carry ON, VIDEO / DEBUG -> IFB Probe ON.
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Crazy Taxi at 60 Hz, dense traffic, ~150 s, exit to the XMB.
+       Log: `[jitcfg] NewOps=1 Carry=1`, the `[IFB]` lines without addc,
+       subc and div1, no fault. The game plays as before.
+    4. Boot 2: Sonic Adventure, a level load and a few minutes of play.
+    5. On a fault: the same boot with JIT Carry OFF.
+  - HW 2026-10-06 (package of 09:16, our listener at Matt's request; log
+    `ps3log_52_run1.txt`, cut into `run52_ct.txt` and `run52_sonic.txt` in
+    the scratchpad of session 48d69156). Reference: `run533_ct.txt` and
+    `run533_sonic.txt` (5.33, JIT Carry OFF).
+    - The install kept the earlier settings: `nullDC.cfg` is in
+      `/dev_hdd0/data/NotDC/`, outside the installed game. Crazy Taxi ran
+      with JIT FRCHG and JIT PREFETCH ON (noise in 5.29/5.30); Sonic ran
+      with both OFF, so its JIT settings match 5.33 except JIT Carry.
+    - Crazy Taxi, 60 Hz, 137 s: `[jitcfg] NewOps=1 Carry=1`, log clean.
+      Interpreter fallbacks: one `or.b` in the whole boot (5.33: 34K/s on
+      average, 92K/s at most; subc, div1, addc, swap.b, cmp/str). Same load
+      -0.4% (noise). 6K+ windows: SPEED 99.2-99.7%, 77% at full speed
+      (5.33: 70%). The deepest dip is the known 328 ms disc read (5.33).
+      Matt: "It looked the same".
+    - Sonic Adventure, 60 Hz, 210 s: log clean, one `or.b` fallback (5.33:
+      1.4-3.5M/s in the FMV, ~8.4K/s in play). The FMV after boot (P41),
+      in its two seconds with no disc read: SPEED 69.3/71.2% -> 87.2/86.1%,
+      VPS 41.6/42.7 -> 52.3/51.6 (+23%). The SH4 still never sleeps there.
+      An older build ran the same FMV at 73-87% (P41), so one run each does
+      not give a precise size. Play: dense SPEED 99.8% in both runs, 96%
+      (95%) of dense windows at full speed, same load -0.1%.
+    - Matt: "Sonic felt choppier". The log shows no cause in 5.2:
+      - Game frame pacing is the same: `[ps3gl] frame time` mostly 30 fps
+        with 29-38 ms frames in both runs; play seconds below 29 RPS 20%
+        (5.33: 23%); worst frame per second median 22.8 ms (22.3), p90
+        25.9 ms (24.7).
+      - This run had one 330 ms disc read in play (one second at SPEED
+        74.6%, 48 silent audio blocks). The 5.33 Sonic play had none (its
+        longest: 190 ms). It is the known first read after seconds with no
+        reads (5.33), not 5.2.
+      - Emulated time does not change: each op bills CPU_RATIO with or
+        without the fallback (`decoder.cpp` decode loop), and
+        `dec_fallback` sets no flag that the x30 idle rule reads. A loop
+        with addc, subc, negc, addv, subv, div1 or xtrct reads and then
+        writes a register, so JIT IDLE SKIP never takes it as an idle turn
+        (`idle_turn_is_pure`); idle blocks in play: 229 in both runs.
+    - Matt: "Sure" to default ON: `JitCarry` defaults to 1 in
+      `ps3/ps3_presets.cpp` since 2026-10-06, not in a package yet. Matt's
+      own `nullDC.cfg` already has it ON.
 - `jit_fmov` does not apply: it needs the Wii DSI fastmem, which is off.
 - Dropped: `SmcCheckLevel` (the guard is 2 halfword loads), `regalloc`, SSA.
 

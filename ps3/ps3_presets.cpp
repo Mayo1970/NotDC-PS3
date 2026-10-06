@@ -31,7 +31,7 @@ int g_dynarec_preset       = 1;   // 0 SH4 interpreter, 1 SH4 dynarec
 int g_jit_safe_preset      = 0;   // 1 = bring-up mode, see ngen_GetFeatures
 // Extra native opcode groups. Off until each one is cleared on hardware.
 int g_jit_newops_preset    = 1;
-int g_jit_carry_preset     = 0;
+int g_jit_carry_preset     = 1;   // 1 = addc/subc/negc/addv/subv/div1 and friends native, T without XER (5.2, HW)
 int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking

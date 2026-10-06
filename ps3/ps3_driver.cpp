@@ -27,6 +27,7 @@
 #include "ps3/ps3_jit_frchg.h"
 #include "ps3/ps3_jit_pref.h"
 #include "ps3/ps3_jit_greuse.h"
+#include "ps3/ps3_jit_carry.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -1009,41 +1010,8 @@ static bool emit_t_to_cr0(u32 cr0_bit_index,bool invert)
 	return true;
 }
 
-// JIT_CARRY: SH4 T <-> XER[CA]. rlwinm/rlwimi use IBM bit numbers (0 = MSB): CA (value bit 29) extracts
-// with SH=3, writes with SH=29; SR.Q (value bit 8) uses SH=24 and SH=8, MB=ME=23. Wrong pairs fail silently.
-
-// XER[CA] = sr_T (optionally inverted, for the borrow-polarity ops). `t` is a
-// scratch GPR that must not alias either operand of the following adde/subfe.
-static void emit_T_to_ca(u32 t,bool invert)
-{
-	ppc_sh_load(t,reg_sr_T);
-	if (invert)
-		ppc_xori(t,t,1);
-	ppc_rlwinmx(t,t,29,2,2,0);	// value bit 0 -> XER[CA]
-	ppc_mtxer(t);
-}
-
-// sr_T = XER[CA] (optionally inverted). SH4 subc/negc define T as a BORROW,
-// PPC defines CA as "no borrow", hence the inversion on those.
-static void emit_ca_to_T(u32 t,bool invert)
-{
-	ppc_mfxer(t);
-	ppc_rlwinmx(t,t,3,31,31,0);	// XER[CA] -> value bit 0
-	if (invert)
-		ppc_xori(t,t,1);
-	ppc_sh_store(t,reg_sr_T);
-}
-
-// sr_T = XER[OV], set by the OE=1 form of add/subf (addv/subv).
-static void emit_ov_to_T(u32 t)
-{
-	ppc_mfxer(t);
-	ppc_rlwinmx(t,t,2,31,31,0);	// XER[OV] -> value bit 0
-	ppc_sh_store(t,reg_sr_T);
-}
-
-// Dest of a carry op: pinned unless r11. adde/subfe/subfze/addo/subfo read both sources before writing,
-// so the dest may alias a source.
+// Dest of a carry op: pinned unless r11. The ps3_jit_carry.h forms read the sources before writing it, so it
+// may alias a source.
 static u32 carry_dest(shil_opcode* op)
 {
 	ppc_ireg d=GetIntReg(op->rd._reg);
@@ -3971,82 +3939,54 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			}
 			break;
 
-		// JIT_CARRY ops (were shop_ifb): sources in rarg0/rarg1, the T<->XER shuffle in rarg2, the dest pinned or
-		// rarg3, so none alias.
+		// JIT_CARRY ops (were shop_ifb), forms in ps3_jit_carry.h: sources in rarg0/rarg1 or pinned, T in rarg2,
+		// the dest pinned or rarg3, so none alias.
 
 		case shop_adc:		// addc Rm,Rn : Rn = Rn + Rm + T ; T = carry
-			{
-				u32 a=src_or_load(op->rs1,ppc_rarg0);
-				u32 b=src_or_load(op->rs2,ppc_rarg1);
-				u32 d=carry_dest(op);
-				emit_T_to_ca(ppc_rarg2,false);
-				ppc_addex(d,a,b,0,0);			// adde d,a,b
-				emit_ca_to_T(ppc_rarg2,false);
-				carry_dest_store(op,d);
-			}
-			break;
-
 		case shop_sbc:		// subc Rm,Rn : Rn = Rn - Rm - T ; T = borrow
 			{
-				// subfe d,b,a = a - b - 1 + CA: CA carries the inverted T in and returns "no borrow", so invert both ends.
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 b=src_or_load(op->rs2,ppc_rarg1);
 				u32 d=carry_dest(op);
-				emit_T_to_ca(ppc_rarg2,true);
-				ppc_subfex(d,b,a,0,0);			// subfe d,b,a
-				emit_ca_to_T(ppc_rarg2,true);
+				ppc_sh_load(ppc_rarg2,reg_sr_T);
+				if (op->op==shop_adc)
+					emit_carry_addc(d,a,b,ppc_rarg2,ppc_rarg0,ppc_rarg1);
+				else
+					emit_carry_subc(d,a,b,ppc_rarg2,ppc_rarg0,ppc_rarg1);
+				ppc_sh_store(ppc_rarg2,reg_sr_T);
 				carry_dest_store(op,d);
 			}
 			break;
 
 		case shop_negc:		// negc Rm,Rn : Rn = 0 - Rm - T ; T = borrow
 			{
-				// rs1 is Rm here (DM_NEGC), rs2 is the T input which
-				// emit_T_to_ca reads straight from the context.
+				// rs1 is Rm here (DM_NEGC), rs2 the T input.
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 d=carry_dest(op);
-				emit_T_to_ca(ppc_rarg2,true);
-				ppc_subfzex(d,a,0,0);			// subfze d,a  = ~a + CA
-				emit_ca_to_T(ppc_rarg2,true);
+				ppc_sh_load(ppc_rarg2,reg_sr_T);
+				emit_carry_negc(d,a,ppc_rarg2,ppc_rarg0);
+				ppc_sh_store(ppc_rarg2,reg_sr_T);
 				carry_dest_store(op,d);
 			}
 			break;
 
 		case shop_addv:		// addv Rm,Rn : Rn = Rn + Rm ; T = signed overflow
-			{
-				u32 a=src_or_load(op->rs1,ppc_rarg0);
-				u32 b=src_or_load(op->rs2,ppc_rarg1);
-				u32 d=carry_dest(op);
-				ppc_addx(d,a,b,1,0);			// addo d,a,b
-				emit_ov_to_T(ppc_rarg2);
-				carry_dest_store(op,d);
-			}
-			break;
-
 		case shop_subv:		// subv Rm,Rn : Rn = Rn - Rm ; T = signed overflow
 			{
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 b=src_or_load(op->rs2,ppc_rarg1);
 				u32 d=carry_dest(op);
-				ppc_subfx(d,b,a,1,0);			// subfo d,b,a = a - b
-				emit_ov_to_T(ppc_rarg2);
+				emit_carry_ovf(d,a,b,ppc_rarg2,ppc_rarg0,ppc_rarg1,op->op==shop_subv);
+				ppc_sh_store(ppc_rarg2,reg_sr_T);
 				carry_dest_store(op,d);
 			}
 			break;
 
 		case shop_cmpstr:	// cmp/str Rm,Rn : T = any byte lane is equal
 			{
-				// Has-zero-byte test on Rn ^ Rm: (t - 0x01010101) & ~t, rotl 1, & 0x01010101; the mask's MSB is clear,
-				// so CR0[GT] is exactly "non-zero".
 				u32 a=src_or_load(op->rs1,ppc_rarg0);
 				u32 b=src_or_load(op->rs2,ppc_rarg1);
-
-				ppc_xorx(ppc_rarg2,a,b,0);			// rarg2 = t
-				ppc_li(ppc_rarg3,0x01010101);
-				ppc_subfx(ppc_r0,ppc_rarg3,ppc_rarg2,0,0);	// r0 = t - const
-				ppc_andcx(ppc_r0,ppc_r0,ppc_rarg2,0);		// r0 &= ~t
-				ppc_rlwinmx(ppc_r0,ppc_r0,1,0,31,0);		// rotl 1
-				ppc_andx(ppc_r0,ppc_r0,ppc_rarg3,1);		// and. -> CR0
+				emit_carry_cmpstr(a,b,ppc_rarg2,ppc_rarg3,ppc_r0);
 				emit_cr0_bit_to_rarg0(BI_CR0_GT);
 				binop_end(op);					// rd is sr_T
 			}
@@ -4054,29 +3994,16 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 		case shop_swaplb:	// swap.b Rm,Rn : swap the two LOW bytes
 			{
-				// rlwimi rotates source bit (i+n)%32 into dest bit i: bits 16-23 from 24-31 (n=8), 24-31 from 16-23
-				// (n=24). Built in scratch, so a dest that aliases the source is safe.
+				// Built in scratch, so a dest that aliases the source is safe.
 				u32 s=src_or_load(op->rs1,ppc_rarg0);
-				ppc_rlwinmx(ppc_rarg1,s,0,0,15,0);	// keep the upper half
-				ppc_rlwimix(ppc_rarg1,s,8,16,23,0);
-				ppc_rlwimix(ppc_rarg1,s,24,24,31,0);
+				emit_carry_swaplb(ppc_rarg1,s);
 				ppc_sh_store(ppc_rarg1,op->rd);
 			}
 			break;
 
 		case shop_div1:		// div1 Rm,Rn : one non-restoring division step
 			{
-				// div1: sel = oldQ ^ M, Rn = ((Rn<<1)|T) + (sel ? Rm : ~Rm) + !sel, q_new = q ^ oldQ ^ CA ^ 1, T = (q_new
-				// == M). Rm is read before Rn shifts, so div1 Rn,Rn works.
-				const u32 t0=ppc_rarg0;		// SR.status, live to the end
-				const u32 t1=ppc_rarg1;		// M, live to the T test
-				const u32 t2=ppc_rarg2;		// oldQ, then general scratch
-				const u32 t3=ppc_rarg3;		// q accumulator
-				const u32 t4=ppc_r0;		// rmx
-				const u32 t5=ppc_rarg4;		// sel
-
-				// Rn is updated in place when it is pinned (rd == rs1 always
-				// holds for DM_ADC), else through rarg7.
+				// Rn is updated in place when it is pinned (rd == rs1 always holds for DM_ADC), else through rarg7.
 				ppc_ireg dpin=GetIntReg(op->rd._reg);
 				u32 A;
 				bool a_scratch=false;
@@ -4090,34 +4017,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				}
 				u32 B=src_or_load(op->rs2,ppc_rarg6);
 
-				ppc_sh_load(t0,reg_sr_status);
-				ppc_rlwinmx(t1,t0,23,31,31,0);		// M    = SR value bit 9
-				ppc_rlwinmx(t2,t0,24,31,31,0);		// oldQ = SR value bit 8
-				ppc_xorx(t5,t2,t1,0);			// sel  = oldQ ^ M
-				ppc_addi(t4,t5,-1);			// mask = ~0 when sel==0
-				ppc_xorx(t4,B,t4,0);			// rmx  = Rm ^ mask
-				ppc_xori(t5,t5,1);			// cin  = !sel
-				ppc_rlwinmx(t5,t5,29,2,2,0);		// -> XER[CA]
-				ppc_mtxer(t5);				// (nothing below touches XER
-									//  until the adde)
-
-				ppc_rlwinmx(t3,A,1,31,31,0);		// q = MSB(Rn), pre-shift
-				ppc_xorx(t3,t3,t2,0);			// q ^= oldQ
-
-				ppc_sh_load(t2,reg_sr_T);
-				ppc_rlwinmx(A,A,1,0,30,0);		// Rn <<= 1
-				ppc_orx(A,A,t2,0);			// Rn |= T
-				ppc_addex(A,A,t4,0,0);			// Rn += rmx + cin
-
-				ppc_mfxer(t2);
-				ppc_rlwinmx(t2,t2,3,31,31,0);		// CA
-				ppc_xorx(t3,t3,t2,0);			// q ^= CA
-				ppc_xori(t3,t3,1);			// q_new = q ^ oldQ ^ CA ^ 1
-				ppc_xorx(t2,t3,t1,0);
-				ppc_xori(t2,t2,1);			// T = (q_new == M)
-				ppc_sh_store(t2,reg_sr_T);
-				ppc_rlwimix(t0,t3,8,23,23,0);		// SR.Q (value bit 8) = q_new
-				ppc_sh_store(t0,reg_sr_status);
+				ppc_sh_load(ppc_rarg0,reg_sr_status);
+				ppc_sh_load(ppc_rarg2,reg_sr_T);
+				emit_carry_div1(A,B,ppc_rarg0,ppc_rarg2,ppc_rarg1,ppc_rarg3,ppc_rarg5,ppc_rarg4);
+				ppc_sh_store(ppc_rarg2,reg_sr_T);
+				ppc_sh_store(ppc_rarg0,reg_sr_status);
 
 				if (a_scratch)
 					ppc_sh_store(A,op->rd);
