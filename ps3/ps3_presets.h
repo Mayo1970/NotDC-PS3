@@ -42,6 +42,7 @@ extern int g_ta_sq_direct_preset;
 extern int g_drop_policy_preset;
 extern int g_strip_merge_preset;
 extern int g_vertex_array_preset;
+extern int g_tex_slot_hash_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;

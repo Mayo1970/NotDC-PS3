@@ -7,6 +7,7 @@
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
 #include "dc/pvr/pvr_if.h"
+#include "ps3_tex_slot.h"
 
 
 
@@ -17,7 +18,9 @@ extern "C" {
 }
 #pragma GCC diagnostic pop
 
-#define CACHE_SLOTS 1024
+extern "C" int get_tex_slot_hash_preset();
+
+#define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
 // Textures unused this many frames give back their RSX memory.
 #define CACHE_MAX_AGE 180
@@ -38,6 +41,8 @@ static u32 s_sweep;
 static u32 s_decodes;
 static u32 s_black_tex, s_alpha0_tex;
 static u32 s_live;
+static int s_slot_hash = -1;
+static u32 s_evict, s_evict_hot;
 
 // Temporary G7 texture-mix counters, reset with the other per-window stats.
 static u32 s_fmt_count[8];
@@ -398,6 +403,15 @@ static void free_entry(TexEntry& e)
 
 void ps3tex_frame_begin()
 {
+	// Entries sit where the other slot function put them, so a switch starts from an empty cache.
+	const int slot_hash = get_tex_slot_hash_preset() != 0;
+	if (slot_hash != s_slot_hash)
+	{
+		ps3tex_reset();
+		s_slot_hash = slot_hash;
+		printf("[tex] slot hash %s, cache cleared\n", slot_hash ? "ON" : "OFF");
+	}
+
 	s_frame++;
 	// Age out a slice per frame so the sweep cost stays flat.
 	for (u32 i = 0; i < CACHE_SLOTS / 64; i++)
@@ -439,7 +453,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((g_rr.pal_ram_ctrl & 3) << 7)
 	         | (mirror << 9);
 
-	u32 slot = ((key0 * 2654435761u) ^ key1) % CACHE_SLOTS;
+	u32 slot = tex_slot(key0, key1, s_slot_hash > 0);
 	TexEntry* hit = 0;
 	TexEntry* victim = 0;
 	for (u32 i = 0; i < CACHE_PROBE; i++)
@@ -482,6 +496,13 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 	{
 		if (d.w > 1024 || d.h > 1024)
 			return false;
+		if (victim->name)
+		{
+			s_evict++;
+			// Drawn in the last 4 frames: its probe window holds more textures than it fits (P16).
+			if (s_frame - victim->last_frame <= 4)
+				s_evict_hot++;
+		}
 		free_entry(*victim);
 		hit = victim;
 		hit->key0 = key0;
@@ -555,15 +576,16 @@ void ps3tex_stats(u32* decodes, u32* live)
 
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
-	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u\n",
+	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
-	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex);
+	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
 	s_bind_total = s_bind_mirror = 0;
 	s_black_tex = s_alpha0_tex = 0;
+	s_evict = s_evict_hot = 0;
 }

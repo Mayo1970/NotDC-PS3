@@ -412,6 +412,8 @@ static Option s_video[] = {
 	  "Same-state strips share one draw call; inf vertices are dropped. Live." },
 	{ "Vertex Arrays",   &g_vertex_array_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Merged strips go to the RSX as vertex-array ranges, not glBegin. Live." },
+	{ "Tex Slot Hash",   &g_tex_slot_hash_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Texture cache slot from a hash of the whole key (P16). Live." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -887,7 +889,7 @@ static int* const k_live_opts[] = {
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
-	&g_aica_kyonb_preset, &g_ta_sq_direct_preset,
+	&g_aica_kyonb_preset, &g_ta_sq_direct_preset, &g_tex_slot_hash_preset,
 };
 
 #define MAX_INGAME_OPTS 96

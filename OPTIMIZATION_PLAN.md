@@ -13,6 +13,27 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-06)
 
+**Active: P16 Tex Slot Hash (Matt 2026-10-06: "Ok then, do P16."), built and PC
+tested, package of 23:16, HW pending.** The first of the parked Soul Calibur
+leads (below).
+- VIDEO / DEBUG -> "Tex Slot Hash" (`TexSlotHash`), default OFF, live. A
+  change clears the texture cache at the next frame and logs `[tex] slot
+  hash ON|OFF, cache cleared` (also once at boot).
+- ON: the slot is the top 10 bits of `(key0 ^ key1 * 0x9E3779B1) *
+  0x85EBCA6B` (`ps3/ps3_tex_slot.h`). OFF: the slot before P16, unchanged.
+- `[texfmt]` ends in `evict=` (misses that freed a live texture) and `hot=`
+  (of those, textures drawn in the last 4 frames). With OFF, `hot` near the
+  decode count confirms the collisions.
+- PC: `misc/texslot_check/run.sh` PASS, on the cache's probe, victim and
+  aging rules. 80 FMV tiles 8 KB apart: OLD misses 91% of binds, HASH 0.
+  Stride sets up to 88 textures, palette and TSP variant sets: HASH 0.
+  Random sets: HASH no worse than an ideal random slot. `mutate.py`: 8 of 8
+  planted bugs fail. Link: `.got` 0xC1B8, 0 `r2off`.
+- HW steps: Soul Calibur opening FMV, OFF then ON (SELECT menu); one fight,
+  ON then OFF, ~60 s each; Crazy Taxi and Sonic Adventure with ON (no stale
+  or wrong textures). Read `tex decodes`, `live`, `evict`, `hot`, render
+  `busy` and RPS. Start a UDP listener only when Matt says so.
+
 **Done: 5.36 SYS GATE (Matt 2026-10-06: "5.36"; then "Gate + Resume
 levels" and, for the TA peak, "Own toggle, as in the plan"), HW SUCCESS
 (Matt: "SYSGATE is a success"), default + RESUME since the package of
@@ -621,7 +642,8 @@ not caused by S3 (5.12 S3 runs 2-3).
      and flags share one 8-slot window. In the fight every decode is a
      cache miss with only 88 textures live (fits eviction; measure). The
      opening has the same misses. Measure the fight again after it: it can
-     change the facts of P1 and P2.
+     change the facts of P1 and P2. Built 2026-10-06 as "Tex Slot Hash"
+     (package of 23:16), HW pending: see the top of this section.
   2. P18, depth precision, option (a): RSX float depth with z = n/W (~15
      lines, no shader). Today the 1/W step is 6-75% of the value at the
      stage's W (500-2500), so the background z-fights: the probable cause
@@ -982,7 +1004,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.4 | ARM7 JIT port (JIT SPEED page, `Arm7Jit` 0..5) | `[x]` HW, self-test PASS, sound fine, `arm%` 9.1 -> 5.4 |
 | 5.5 | SH4 Clock 150 MHz (existing Emulation option, speed over accuracy) | `[x]` HW, dense VPS +16%, not full speed |
 | 5.6 | Render thread busy % (`[rend] busy=` line) + SPEED/VPS target vs effective clock | `[x]` HW, dense busy 61% |
-| 5.7 | Draw split (`[rend] draw split %:` line) | `[~]` built, HW pending (runs with 5.8) |
+| 5.7 | Draw split (`[rend] draw split %:` line) | `[x]` HW 2026-09-23 with 5.8: dense draw ~42% of wall (vtx+other ~22, tex bind ~12); the line is always on |
 | 5.8 | Vertex arrays for merged strips (VIDEO / DEBUG, `VertexArrays`) | `[x]` HW, dense VPS +6%, busy 61 -> 57%, default ON |
 | 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
@@ -991,9 +1013,9 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending; merged 2026-10-06: P20 (A3 by default, gaps G2-G4) |
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
-| 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
+| 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[x]` HW, default ON since the package of 23:22 on 2026-10-05 (Matt); HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
 | 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[x]` HW 2026-10-05: same load +0.5% (10K+ bins +2.4% to +5.0%), render busy 56 -> 32%, 80% of dense windows at full speed; SPE Draw default ON since the package of 20:13 (Matt); SPE Wait Yield (db16cyc in the fence spin) HW: no gain, default OFF |
-| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06: P55 + P7 (VRAM writes from SQ and DMA) |
+| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | Steps 1-3 `[x]` HW, TA SQ Direct and JIT SQ STORES default ON since the package of 23:22 on 2026-10-05 (Matt); Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06, open: P55 + P7 (VRAM writes from SQ and DMA) |
 | 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]`; merged 2026-10-06: P15 (freerunning, a dynamic form) |
 | 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[~]` HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean; Soul Calibur pending |
@@ -1002,7 +1024,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.23 | Minicast M6: `fmov.s @Rn+` pair fusion | `[ ]` not scheduled (low) |
 | 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[x]` HW, default ON since the package of 13:49 (Matt); built + PC tested 2026-10-05 (Matt: "Go with 5.24"): JIT SPEED "JIT MFOCRF" and "JIT FPUL MOVES"; ppe_check PASS, 22/22 mutants fail; package of 13:01; HW 2026-10-05 (JIT SQ MISS + LOOK-AHEAD ON too): Crazy Taxi log clean, same-load VPS +1.2% vs `run527b` (same settings without 5.24, about the noise); Sonic Adventure clean, speed equal within noise (95% of dense windows at full speed) |
 | 5.25 | Wait-loop idle skip (Crazy Taxi 0C15A658-0C15A67E, from 5.18) | `[x]` option a + safety (Matt 2026-10-05), JIT SPEED "JIT IDLE SKIP", default OFF; HW 2026-10-05 (package 00:45): Crazy Taxi +3.0% same-load VPS, Sonic Adventure 30 -> 20 frames/s (work loop skipped); fix with a register-hash check, package of 01:13: HW Crazy Taxi +3.0% same-load VPS (dense 57.1), work loops no longer skip; Sonic not rechecked; default ON since the package of 01:27 (Matt) |
-| 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[~]` option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before); default ON since the package of 10:13 (Matt) |
+| 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[x]` HW, no gain, default ON since the package of 10:13 (Matt); option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before) |
 | 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
 | 5.28 | Larger SH4 code cache (6 MB was a Wii size; Sonic Adventure refills it every 44-55 s) | `[x]` HW, default 24 MB since the package of 19:08 (Matt); built 2026-10-05 (Matt picked it): EMULATION "JIT Code Cache" 6 MB / 12 MB / 24 MB, array 24 MB, `bl` reach 27549 KB of 32768; package of 17:08; HW 2026-10-05 at 24 MB: Sonic Adventure no full clear in 157 s of play (6 MB: 3), cache 7.8 MB, dense SPEED 99.7% (99.6%); Crazy Taxi same-load VPS -0.2% (noise) |
 | 5.29 | JIT FRCHG: an FPSCR sync that only flips FR swaps the pinned bank inline (~140K full syncs/s in dense Crazy Taxi) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (frpref_check PASS, 23/23 mutants fail), VIDEO / DEBUG "JIT FRCHG"; package of 20:40; HW 2026-10-05 (one boot with 5.30): clean, sync_fpscr 187K/s -> 2.4K/s, same load -0.6% against `run516` (noise) |
@@ -1029,9 +1051,9 @@ Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
-| 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON in the source (Matt), not in a package yet; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log; = OPTIMIZATION_POTENTIAL P41 (the FMV fallbacks) |
+| 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON (Matt), in the packages since 17:35; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log; = OPTIMIZATION_POTENTIAL P41 (the FMV fallbacks) |
 | 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]`; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w) |
-| 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
+| 5.4 | ARM7 JIT port (`arm7_jit.cpp` was Wii-gated) | `[x]` HW 2026-09-23, same item as the 5.4 row above |
 
 - 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
   time, so set it before boot. The log gets `[IFB]` and `[CC]` lines once a

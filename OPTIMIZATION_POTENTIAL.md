@@ -80,7 +80,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
 | P14 | Fog and offset colour shader reference | reference | 3a, 3b | - | merged: plan 3a, 3b (open) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
-| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2 |
+| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; built 2026-10-06, HW pending |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
 | P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults |
 | P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | = plan 5.38, HW SUCCESS 2026-10-06, default FIXED |
@@ -387,7 +387,11 @@ thread. P3 stays parked (Matt 2026-10-05).
 - ps3gl bind scan: see 5.10 in the plan (not chosen). It weighs more in the
   render-bound Soul Calibur than in Crazy Taxi.
 
-### P16 Texture cache slots collide  `[ ]` merged: plan section 0 (Soul Calibur faults)
+### P16 Texture cache slots collide  `[~]` built + PC tested 2026-10-06, HW pending; merged: plan section 0 (Soul Calibur faults)
+
+Built 2026-10-06 (package of 23:16): VIDEO / DEBUG -> "Tex Slot Hash", default OFF, live, with the fix formula
+below (`ps3/ps3_tex_slot.h`) and `evict=` / `hot=` on the `[texfmt]` line. No 16 probes: one change per HW run.
+PC: `misc/texslot_check` PASS, 8 of 8 planted bugs fail. State and HW steps: plan section 0.
 
 Our bug, found by the Flycast comparison. Flycast keeps its textures in an
 `unordered_map` with a 64-bit key (TSP size bits + TCW,
