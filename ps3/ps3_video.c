@@ -262,6 +262,16 @@ int ps3_video_begin_frame(void)
 	return 1;
 }
 
+// P18: CONTROL0's depth format. FLOAT reads the Z24 surface as f32 bits >> 7 (RPCS3's d24f); a FIFO
+// write, so a deferred ps3gl GL_POLYGON batch goes out first.
+void ps3_video_depth_float(int on)
+{
+	if (!s_ready)
+		return;
+	ps3gl_flush_polygon_batch();
+	rsxSetDepthFormat(s_ctx, on ? GCM_DEPTH_FORMAT_FLOAT : GCM_DEPTH_FORMAT_FIXED);
+}
+
 // Ends a frame that must not reach the screen (render to texture): the draw
 // commands still have to be flushed, but no flip is queued and the buffer stays.
 void ps3_video_end_frame_noflip(void)
@@ -270,9 +280,8 @@ void ps3_video_end_frame_noflip(void)
 	rsxFlushBuffer(s_ctx);
 }
 
-// Copies w*h pixels of the current back buffer into the staging buffer and
-// waits for the RSX. x/y are GL window coordinates, so y counts from the bottom.
-// Returns the pixels as native A8R8G8B8 rows, or NULL when the copy cannot run.
+// Copies w*h pixels of the back buffer into the staging buffer and waits for the RSX. x/y are GL window
+// coordinates (y from the bottom). Returns native A8R8G8B8 rows, or NULL when the copy cannot run.
 const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
 {
 	if (!s_ready || !s_rb_addr || w == 0 || h == 0)

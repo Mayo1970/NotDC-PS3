@@ -12,6 +12,8 @@ void ps3_video_size(u32* w, u32* h);
 // Returns 0 when no back buffer is free; the caller then skips the frame.
 int  ps3_video_begin_frame(void);
 void ps3_video_end_frame(void);
+// P18: 1 = the depth buffer holds floats (RSX float depth), 0 = fixed-point Z24.
+void ps3_video_depth_float(int on);
 // Render-to-texture: flush the frame without flipping, then read the drawn rect
 // back as native A8R8G8B8 rows (x/y are GL window coordinates, y from the bottom).
 void ps3_video_end_frame_noflip(void);

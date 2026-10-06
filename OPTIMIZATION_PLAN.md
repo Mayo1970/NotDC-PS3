@@ -11,14 +11,87 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-06)
+## 0. Resume here (updated 2026-10-07)
 
-**Active: P16 Tex Slot Hash (Matt 2026-10-06: "Ok then, do P16."), built and PC
-tested, package of 23:16, HW pending.** The first of the parked Soul Calibur
-leads (below).
-- VIDEO / DEBUG -> "Tex Slot Hash" (`TexSlotHash`), default OFF, live. A
-  change clears the texture cache at the next frame and logs `[tex] slot
-  hash ON|OFF, cache cleared` (also once at boot).
+**Done: P18 Depth Float (Matt 2026-10-07: "We now work on P18."), HW SUCCESS
+(Matt: "It was"), default ON since the package of 01:01 (Matt: "Yes,
+absolutely!").** Built and PC tested in the package of 00:42. The second of
+the parked Soul Calibur leads (below), option (a). The UDP listener of
+session 783a0c22 was stopped at Matt's request; port 18194 is free.
+- VIDEO / DEBUG -> "Depth Float" (`DepthFloat`), live. A change acts at the
+  next frame and logs `[rend] depth float ON|OFF` (also once at boot). A
+  default only reaches a cfg without the key; Matt's has ON already.
+- ON (`ps3/ps3_depth.h`): the RSX depth format is FLOAT (`rsxSetDepthFormat`,
+  CONTROL0 bit 12; the Z24 surface then holds f32 bits >> 7, RPCS3's
+  `d24f`). z = n/W (m[10] = 0, m[14] = n), the clear is 0 (1/W = 0), the DC
+  tests without the flip (punch-through and autosort GEQUAL, modifier
+  volumes GREATER), and `glDepthRange(-1, 1)`, so ps3gl's viewport z has
+  scale 1 and offset 0. The end of `draw_scene` sets FIXED and the range
+  0..1 back for the UI. OFF: the mapping before P18, unchanged.
+- Change against the P18 sketch: m[10] = -1, m[14] = 2n through GL's depth
+  range 0..1 computes (z/w + 1) / 2, which rounds n/W to the same 2^-24 step
+  as Z24 (NVIDIA "Depth Precision Visualized": reversed Z needs a 0..1 clip
+  z). On the PC model it gets 68% of the Soul Calibur pairs wrong.
+- Why (`ps3log_p16_run1.txt`, scratchpad of session f65e2239; `zstep.py`
+  in that of session 783a0c22): in the Soul Calibur boot (32 windows) near is
+  0.000473 (median; min 2.7e-6) and the opaque list runs to W 2083 (median)
+  and 10000. The Z24 step in 1/W is then 26% of the value at W 2083 and
+  126% at W 10000, and 62748 of the 63062 opaque strips in the `[rendz]`
+  frames use DepthMode 4 (greater): far polygons tie and fail. Crazy Taxi:
+  about 1% at W 8000; Sonic Adventure 0.01% at W 2093.
+- PC: `misc/depth_check/run.sh` PASS. The real header on a model of the RSX
+  depth path (dp4, divide or rcp with up to 2 ulp error, fused or separate
+  viewport z, rounded or truncated store; 8 variants): FLOAT gives 0 wrong
+  DC compares at 1/W gaps from 2^-14 over every range the renderer allows.
+  Soul Calibur stage (gaps 0.1-10%): FIXED 77.5% of pairs wrong, FLOAT 0;
+  far Crazy Taxi: FIXED 17.5%, FLOAT 0. FIXED stays right where its step is
+  fine; no FLOAT vertex leaves the depth range; the clear is raw 0 in both
+  encodings. `mutate.py`: 19 of 19 planted bugs fail.
+- Link: `.got` 0xC1E0, 0 `r2off`. The package also holds P16's default ON
+  (`TexSlotHash` = 1, not committed).
+- Not built: leaving modifier-volume z out of n (P18's extra step). With
+  FLOAT, n only scales z; the precision does not depend on it.
+- HW steps (package of 00:42):
+  1. Install. The install keeps `nullDC.cfg`. On the main menu: VIDEO /
+     DEBUG -> Depth Float OFF, Tex Slot Hash ON, Strip Merge ON, Vertex
+     Arrays ON; SH4 Clock 200 and the rest as in the P16 runs.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1: Soul Calibur, one fight on a stage with a far background, ~60
+     s with Depth Float OFF, then SELECT -> VIDEO / DEBUG -> Depth Float ON
+     -> SELECT, ~60 s more. Look at the background (flicker, malformed
+     polygons), the fighters and the HUD. Log: `[rend] depth float OFF` at
+     boot, `[rend] depth float ON` at the switch, no fault, render `busy`
+     and RPS as before.
+  4. Boot 2: Crazy Taxi with Depth Float ON, ~2 min: far buildings, the
+     road, the car shadows (modifier volumes), the HUD.
+  5. Boot 3: Sonic Adventure with ON: a level and the menus.
+  6. On a fault (black screen, missing geometry): SELECT -> Depth Float
+     OFF. The SELECT menu draws with no depth test, so it still shows.
+- HW 2026-10-07 (package of 00:42, our listener at Matt's request;
+  `ps3log_p18_run1.txt` in the scratchpad of session 783a0c22). Depth Float
+  ON in every boot. The log starts at t=56 s of the Soul Calibur boot, so
+  that boot's `[rend] depth float` line is missing; the other boots log ON
+  at the first frame. All exits to the XMB clean.
+  - Soul Calibur fight: Matt: "The flicker is gone! And also some other
+    graphical glitches." VPS and RPS 50 of 50 at 15K vertices, render busy
+    42% (the P16 fight: 42-43%), near down to 5.9e-6.
+  - Sonic Adventure: Matt: "Some text now displays properly." 68 windows,
+    SPEED 99.4%, at most 3K vertices (light scenes only). Its wrong
+    textures (open since P16) are fixed too (Matt).
+  - Rayman 2: the untextured level surfaces stay (Matt), so they are not a
+    depth fault. 205 windows at SPEED 100%, render busy at most 13%.
+  - Power Stone 2 (second boot): Matt: "An issue in Power Stone 2 is also
+    fixed." 50 windows at SPEED 100%.
+  - Not run: Crazy Taxi (car shadows, modifier volumes with GREATER).
+
+**Done: P16 Tex Slot Hash (Matt 2026-10-06: "Ok then, do P16."), HW SUCCESS
+(Matt: "It's a success"), default ON since the package of 23:46 (Matt: "Tex
+Slot Hash should become the default ON").** Built and PC tested in the
+package of 23:16. The first of the parked Soul Calibur leads (below).
+- VIDEO / DEBUG -> "Tex Slot Hash" (`TexSlotHash`), live. A change clears
+  the texture cache at the next frame and logs `[tex] slot hash ON|OFF,
+  cache cleared` (also once at boot). The refill after a clear made one
+  render job of 290-367 ms in the Soul Calibur fight.
 - ON: the slot is the top 10 bits of `(key0 ^ key1 * 0x9E3779B1) *
   0x85EBCA6B` (`ps3/ps3_tex_slot.h`). OFF: the slot before P16, unchanged.
 - `[texfmt]` ends in `evict=` (misses that freed a live texture) and `hot=`
@@ -29,10 +102,25 @@ leads (below).
   Stride sets up to 88 textures, palette and TSP variant sets: HASH 0.
   Random sets: HASH no worse than an ideal random slot. `mutate.py`: 8 of 8
   planted bugs fail. Link: `.got` 0xC1B8, 0 `r2off`.
-- HW steps: Soul Calibur opening FMV, OFF then ON (SELECT menu); one fight,
-  ON then OFF, ~60 s each; Crazy Taxi and Sonic Adventure with ON (no stale
-  or wrong textures). Read `tex decodes`, `live`, `evict`, `hot`, render
-  `busy` and RPS. Start a UDP listener only when Matt says so.
+- HW 2026-10-06 (`ps3log_p16_run1.txt`, scratchpad of session f65e2239),
+  per 5 s window:
+  - Soul Calibur opening FMV, OFF: 11178 decodes, 11149 of them `hot`
+    evictions, 3596 black tiles, render busy 67% (decode 61.5% of its
+    wall). The FMV with ON was not measured: it had ended before the switch.
+  - Soul Calibur fight, ON (~85 s): SPEED 100%, VPS and RPS 50.0 of 50, no
+    dropped renders, 0-8 decodes, 0 evictions, 40-56 textures live. Render
+    busy 42-43%: decode 0.2-1.0% of its wall (was 82-85%), hash 16-17% (~5
+    MB per render). Before P16: ~1054 decodes, VPS ~26, half the renders
+    dropped. A short OFF stretch: 414 `hot` evictions. Matt: "Soul Calibur
+    runs much faster". The black textures that flicker stay (Matt).
+  - Crazy Taxi, ON: the same as before (Matt); 0 evictions, 19 of 20
+    windows at full speed, up to 257 textures live.
+  - Space Channel 5, ON: full speed (Matt), 0 evictions. Its FMV is one
+    texture, decoded once per frame; no OFF compare.
+  - Sonic Adventure, ON: FMV SPEED 86-97% (one texture, so not P16; the 5.2
+    run had 86-87%); play at full speed in 44 of 44 windows, up to 323
+    textures live, 0 evictions. Its wrong textures are the same as before
+    P16 (open item below).
 
 **Done: 5.36 SYS GATE (Matt 2026-10-06: "5.36"; then "Gate + Resume
 levels" and, for the TA peak, "Own toggle, as in the plan"), HW SUCCESS
@@ -628,11 +716,19 @@ not caused by S3 (5.12 S3 runs 2-3).
 - Background geometry flickers and is malformed, with S3 ON and OFF. It
   flickers more often when the render thread is slower. Not seen on
   2026-09-23 (before 5.8 Vertex Arrays and 5.10). First check: in the same
-  fight, turn Vertex Arrays OFF, then Strip Merge OFF (both live).
-- One texture went black for about 1 s.
-- Fight load: texture decode 82-85% of wall (~15 re-decodes and 4.7 MB
-  hashed per render, mostly pal4/pal8), VPS ~26 of 50, half the renders
-  dropped.
+  fight, turn Vertex Arrays OFF, then Strip Merge OFF (both live). FIXED
+  2026-10-07 by P18 Depth Float (Matt: "The flicker is gone!").
+- One texture went black for about 1 s. With P16 ON (2026-10-06, Matt):
+  "some black textures that often flickered". CLOSED 2026-10-07, after P18
+  (Matt: "Soul Calibur's black flickering textures are closed.").
+- Open (Matt 2026-10-06): Sonic Adventure draws wrong textures, the same
+  before and after P16. Matt: "It's most likely tied to whatever Soul
+  Calibur's issue is." FIXED 2026-10-07 by P18 Depth Float (Matt: "Sonic's
+  wrong textures were tied to Soul Calibur's issue! So IT IS fixed for it
+  too!").
+- Fight load before P16: texture decode 82-85% of wall (~15 re-decodes and
+  4.7 MB hashed per render, mostly pal4/pal8), VPS ~26 of 50, half the
+  renders dropped. With P16 ON: full speed, decode 0.2-1.0% of wall.
 - S2 compare: the SPU writes min_w = 0 where the PPU keeps a denormal
   (`wden`); stats only, but it stops the compare of those fences.
 - Leads merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md`, in its order.
@@ -642,12 +738,16 @@ not caused by S3 (5.12 S3 runs 2-3).
      and flags share one 8-slot window. In the fight every decode is a
      cache miss with only 88 textures live (fits eviction; measure). The
      opening has the same misses. Measure the fight again after it: it can
-     change the facts of P1 and P2. Built 2026-10-06 as "Tex Slot Hash"
-     (package of 23:16), HW pending: see the top of this section.
+     change the facts of P1 and P2. Done 2026-10-06 as "Tex Slot Hash", HW
+     SUCCESS, default ON since the package of 23:46 (top of this section).
+     New facts for P1 and P2: in the fight, decode is 0.2-1.0% of the render
+     thread (was 82-85%), hashing 16-17%, no renders dropped.
   2. P18, depth precision, option (a): RSX float depth with z = n/W (~15
      lines, no shader). Today the 1/W step is 6-75% of the value at the
      stage's W (500-2500), so the background z-fights: the probable cause
-     of the flicker.
+     of the flicker. Done 2026-10-07 as "Depth Float", HW SUCCESS (the
+     flicker is gone), default ON since the package of 01:01 (top of this
+     section).
   3. P2 step 1 (no code): Frame Drop DROP against the default in one
      fight. P1 step 0 (split the re-decodes into palette and texel
      changes), if still needed after P16.
@@ -1046,6 +1146,8 @@ default ON since the package of 23:22 on 2026-10-05 (Matt).
 GD-ROM Async (+ CD-DA) and JIT Exit are default ON since the package of 18:19 on 2026-10-06 (Matt: "Keep toggles on").
 JIT Div32 defaults to FIXED since the package of 21:02 on 2026-10-06 (Matt: "Yes, let's put it as default").
 JIT SYS GATE defaults to + RESUME since the package of 22:52 on 2026-10-06 (Matt: "Yes, make +RESUME the default").
+Tex Slot Hash (P16) defaults to ON since the package of 23:46 on 2026-10-06 (Matt: "Tex Slot Hash should become the default ON").
+Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt: "Yes, absolutely!").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -4893,6 +4995,14 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 - F3 Looney Tunes: the twin and nullAICA boots match for 11 log windows,
   then split. With the twin the driver loops one MSLC write + one monitor
   read per 34.76 samples (1269/s); with nullAICA all AICA writes stop.
+- F3, HW log 2026-10-07 (`ps3log_p16_run1.txt`, scratchpad of session
+  f65e2239, SPE ARM7 ON): the ARM7 gets FIQs at ~700-990/s until the
+  game's ARM7 reset (~t=18 s), then 69-156, then 0 for the rest of the boot
+  (the other games: FIQs in every window, ~950-1880/s). Music plays; voices
+  and effects stay silent with JIT Div32 OLD and FIXED alike. On return: a
+  probe of the interrupt latch at each ARM7 reset and of the driver's timer
+  and interrupt register writes (6.5, 6.8, P44). Parked (Matt: "Park it for
+  now").
 - Quake 3: Matt cannot recall the issue. No Quake 3 PS3 audio bug makes a
   sound slower. Dropped.
 - ARM7 cycles per AICA sample: ours 170 at SH4 150, 226.7 at 200; Reicast

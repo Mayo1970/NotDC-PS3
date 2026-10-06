@@ -50,7 +50,8 @@ int g_ta_sq_direct_preset  = 1;   // 1 = a PREF to TA polygon data runs one flat
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vring block
-int g_tex_slot_hash_preset = 0;   // 1 = texture cache slot from a hash of the whole key, not TexAddr bits 0-9 (P16)
+int g_tex_slot_hash_preset = 1;   // 1 = texture cache slot from a hash of the whole key, not TexAddr bits 0-9 (P16, HW)
+int g_depth_float_preset   = 1;   // 1 = RSX float depth with z = n/W, not Z24 with z = 1 - n/W (P18, HW)
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -129,6 +130,7 @@ static const CfgItem s_items[] = {
 	{ "StripMerge",    &g_strip_merge_preset },
 	{ "VertexArrays",  &g_vertex_array_preset },
 	{ "TexSlotHash",   &g_tex_slot_hash_preset },
+	{ "DepthFloat",    &g_depth_float_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -286,6 +288,7 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
 int get_vertex_array_preset()  { return g_vertex_array_preset; }
 int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
+int get_depth_float_preset()   { return g_depth_float_preset; }
 
 // OPTIMIZATION_PLAN 5.12 S0, S3 and 5.16, read once in InitRenderer.
 int get_spe_bell_preset()      { return g_spe_bell_preset; }

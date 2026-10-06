@@ -80,9 +80,9 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
 | P14 | Fog and offset colour shader reference | reference | 3a, 3b | - | merged: plan 3a, 3b (open) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
-| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; built 2026-10-06, HW pending |
+| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; HW SUCCESS 2026-10-06, default ON |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
-| P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults |
+| P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults; "Depth Float" HW SUCCESS 2026-10-07, default ON |
 | P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | = plan 5.38, HW SUCCESS 2026-10-06, default FIXED |
 | P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict) |
 | P21 | CD-DA during data reads, GD-ROM status timing | bug | Hydro Thunder, NFL Blitz 2001, Cool Boarders Burrrn, Ms. Pac-Man, Bust-a-Move 4 | 1 line, then ~60 | merged: plan 3h |
@@ -387,11 +387,12 @@ thread. P3 stays parked (Matt 2026-10-05).
 - ps3gl bind scan: see 5.10 in the plan (not chosen). It weighs more in the
   render-bound Soul Calibur than in Crazy Taxi.
 
-### P16 Texture cache slots collide  `[~]` built + PC tested 2026-10-06, HW pending; merged: plan section 0 (Soul Calibur faults)
+### P16 Texture cache slots collide  `[x]` HW SUCCESS 2026-10-06, default ON; merged: plan section 0 (Soul Calibur faults)
 
-Built 2026-10-06 (package of 23:16): VIDEO / DEBUG -> "Tex Slot Hash", default OFF, live, with the fix formula
-below (`ps3/ps3_tex_slot.h`) and `evict=` / `hot=` on the `[texfmt]` line. No 16 probes: one change per HW run.
-PC: `misc/texslot_check` PASS, 8 of 8 planted bugs fail. State and HW steps: plan section 0.
+Built 2026-10-06 (package of 23:16): VIDEO / DEBUG -> "Tex Slot Hash", live, with the fix formula below
+(`ps3/ps3_tex_slot.h`) and `evict=` / `hot=` on the `[texfmt]` line. No 16 probes: one change per HW run.
+PC: `misc/texslot_check` PASS, 8 of 8 planted bugs fail. HW (Matt: "It's a success"): the Soul Calibur fight runs
+at full speed, 0-8 decodes per 5 s. Default ON since the package of 23:46. Results: plan section 0.
 
 Our bug, found by the Flycast comparison. Flycast keeps its textures in an
 `unordered_map` with a 64-bit key (TSP size bits + TCW,
@@ -834,7 +835,7 @@ Games affected: unknown for each.
   localtime - gmtime offset (`hw/aica/aica_mmio.cpp:46-59`). On PS3 `isdst` is
   probably 0, so it may never fire (unverified). One line.
 
-### P18 Depth precision (Soul Calibur background)  `[ ]` merged: plan section 0 (Soul Calibur faults)
+### P18 Depth precision (Soul Calibur background)  `[x]` merged: plan section 0 (Soul Calibur faults); option (a) as "Depth Float", HW SUCCESS 2026-10-07, default ON
 
 - Ours: `ps3/ps3_rend.cpp` `draw_scene()` (:1827-1858) maps depth to
   z = 1 - n/W (:1854 `m[14] = -2n`) in a fixed-point Z24S8 buffer
@@ -863,6 +864,14 @@ Games affected: unknown for each.
   - Small extra step for both: leave modifier-volume z out of n.
 - HW check: Soul Calibur fight (background stable); Crazy Taxi, Sonic
   Adventure and the BIOS menu without new depth faults.
+- Built 2026-10-07 (plan section 0, "Depth Float"), with one correction to
+  (a): m[10] = -1, m[14] = 2n under GL's depth range 0..1 computes
+  (z/w + 1) / 2, which rounds n/W back to the 2^-24 step. The build uses
+  m[10] = 0, m[14] = n and `glDepthRange(-1, 1)` (ps3gl viewport z scale 1,
+  offset 0), and also GEQUAL for punch-through and autosort.
+  `misc/depth_check` checks it on a model of the RSX depth path. HW SUCCESS
+  2026-10-07: the Soul Calibur flicker is gone, and Sonic Adventure text and
+  a Power Stone 2 fault are fixed too; default ON since the package of 01:01.
 
 ### P19 div32 match gives wrong results  `[x]` = plan 5.38, HW SUCCESS 2026-10-06
 

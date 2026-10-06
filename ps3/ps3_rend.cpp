@@ -5,6 +5,7 @@
 #include "ps3_video.h"
 #include "ps3_tex.h"
 #include "ps3_rend_regs.h"
+#include "ps3_depth.h"
 #include "ps3_spe.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
@@ -39,6 +40,7 @@ extern "C" int get_ta_fast_preset();
 extern "C" int get_drop_policy_preset();
 extern "C" int get_strip_merge_preset();
 extern "C" int get_vertex_array_preset();
+extern "C" int get_depth_float_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -1231,10 +1233,17 @@ static void bg_eval(const BgVertex* v, float x, float y, BgVertex* out)
 
 // Draws ps3gl actually emitted for the translucent pass, against draws offered.
 
-// DC compares 1/W; our depth grows with W, so each test flips direction.
-static const GLenum depth_func[8] = {
-	GL_NEVER, GL_GREATER, GL_EQUAL, GL_GEQUAL, GL_LESS, GL_NOTEQUAL, GL_LEQUAL, GL_ALWAYS
-};
+// P18 Depth Float, latched per scene so the clear, the projection and the tests agree (ps3_depth.h).
+static bool s_zfloat;
+
+// PVR DepthMode values with a fixed use below.
+enum { DC_GREATER = 4, DC_GEQUAL = 6 };
+
+// DepthMode 0-7 is in GL's NEVER..ALWAYS order; depth_cmp picks the test for the scene's depth mapping.
+static inline GLenum dc_depth_func(u32 mode)
+{
+	return GL_NEVER + depth_cmp(s_zfloat, mode);
+}
 
 // TSP SrcInstr/DstInstr; "other color" is the destination for src and the source for dst.
 static const GLenum blend_src[8] = {
@@ -1299,13 +1308,13 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		else
 			glDisable(GL_ALPHA_TEST);
 		// Autosort ignores DepthMode and compares ">=" on 1/W.
-		glDepthFunc(g_rr.autosort ? GL_LEQUAL : depth_func[p.isp.DepthMode]);
+		glDepthFunc(dc_depth_func(g_rr.autosort ? DC_GEQUAL : p.isp.DepthMode));
 	}
 	else
 	{
 		glDisable(GL_BLEND);
 		// Punch-through ignores DepthMode and compares ">=" on 1/W.
-		glDepthFunc(list == ListType_Punch_Through ? GL_LEQUAL : depth_func[p.isp.DepthMode]);
+		glDepthFunc(dc_depth_func(list == ListType_Punch_Through ? DC_GEQUAL : p.isp.DepthMode));
 	}
 	glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
 	set_cull(p.isp.CullMode);
@@ -1648,8 +1657,8 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 	glDisable(GL_ALPHA_TEST);
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	glDepthMask(GL_FALSE);
-	// The DC compares 1/W with "greater"; our depth is W, so the test flips.
-	glDepthFunc(GL_LESS);
+	// The DC compares 1/W with "greater".
+	glDepthFunc(dc_depth_func(DC_GREATER));
 	glEnable(GL_STENCIL_TEST);
 
 	s32 mod_base = -1;
@@ -1864,20 +1873,21 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	s_stat_bg_inv_w = bg_inv_w;
 	s_stat_bg_zw = g_rr.bg_param.isp.ZWriteDis;
 
-	// Input (x*W, y*W, W): clip.w = W, so attributes interpolate with perspective
-	// and z_ndc = 1 - 2n/W, which is -1 at W = n and +1 at 1/W = 0.
+	// Input (x*W, y*W, W): clip.w = W, so attributes interpolate with perspective. FIXED: z_ndc = 1 - 2n/W,
+	// -1 at W = n and +1 at 1/W = 0. FLOAT: z = n/W, unchanged by the depth range (-1, 1).
 	float m[16] = { 0 };
+	float range_near;
 	m[0] = 2.0f / cw;
 	m[8] = -1.0f - 2.0f * cx0 / cw;
 	m[5] = -2.0f / ch;
 	m[9] = 1.0f + 2.0f * cy0 / ch;
-	m[10] = 1.0f;
-	m[14] = -2.0f * n;
+	depth_proj(s_zfloat, n, &m[10], &m[14], &range_near);
 	m[11] = 1.0f;
 	glMatrixMode(GL_PROJECTION);
 	glLoadMatrixf(m);
 	glMatrixMode(GL_MODELVIEW);
 	glLoadIdentity();
+	glDepthRange(range_near, 1.0);
 
 	// nullDC-v1 always shades Gouraud; its winding is judged as seen on screen.
 	glShadeModel(GL_SMOOTH);
@@ -1949,6 +1959,23 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glDisable(GL_CULL_FACE);
 	glDisable(GL_STENCIL_TEST);
 	glDepthMask(GL_TRUE);
+	// The UI and the framebuffer presents draw with ps3gl's default depth.
+	glDepthRange(0.0, 1.0);
+	ps3_video_depth_float(0);
+}
+
+// P18: the scene's depth format and its clear value (1/W = 0), set before the clear; draw_scene resets them.
+static void depth_begin()
+{
+	static int s_logged = -1;
+	s_zfloat = get_depth_float_preset() != 0;
+	if ((int)s_zfloat != s_logged)
+	{
+		s_logged = s_zfloat;
+		printf("[rend] depth float %s\n", s_zfloat ? "ON" : "OFF");
+	}
+	ps3_video_depth_float(s_zfloat);
+	glClearDepth(depth_clear(s_zfloat));
 }
 
 static void draw_frame()
@@ -1969,7 +1996,7 @@ static void draw_frame()
 	glViewport(0, 0, sw, sh);
 	ps3gl_apply_states();
 	glClearColor(0, 0, 0, 1);
-	glClearDepth(1.0);
+	depth_begin();
 	glClearStencil(0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
@@ -2026,7 +2053,7 @@ static void rtt_render()
 	glViewport(0, 0, w, h);
 	ps3gl_apply_states();
 	glClearColor(0, 0, 0, 1);
-	glClearDepth(1.0);
+	depth_begin();
 	glClearStencil(0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	draw_scene((float)x0, (float)y0, (float)w, (float)h);
