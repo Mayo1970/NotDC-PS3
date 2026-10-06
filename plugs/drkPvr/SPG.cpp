@@ -7,6 +7,7 @@
 #include "ps3/ps3_stall.h"
 #include "ps3/ps3_arm_spe.h"
 #include "ps3_timebase.h"
+#include "dc/sh4/sys_gate.h"
 #include <unistd.h>
 
 // Game-preset controlled toggle (ps3/ps3_presets.cpp).
@@ -140,8 +141,10 @@ void spg_SchedListEndIrq(u32 list)
         return;
     }
 
+    sys_sync();
     s_list_irq_cycles[list] = LIST_END_IRQ_DELAY;
     s_list_irq_active |= 1u << list;
+    sys_kick();
 }
 
 // Frame pacer, once per emulated vblank: early -> sleep the surplus (speed limiter); late -> publish
@@ -370,6 +373,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 gda_stats(tdiff);
                 snd_thread_stats();
                 arm_spe_stats(tdiff);
+                sys_gate_stats(tdiff);
 #endif
                 snd_unlock();
                 stall_pop();
@@ -437,6 +441,76 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
     }
 }
 
+// Plan 5.36: lines with an effect beyond SPG_STATUS (interrupts, the vblank edges and the work at vbstart).
+static inline bool spg_event_line(u32 line)
+{
+    return line == SPG_VBLANK_INT.vblank_in_interrupt_line_number ||
+           line == SPG_VBLANK_INT.vblank_out_interrupt_line_number ||
+           line == SPG_VBLANK.vbstart || line == SPG_VBLANK.vbend;
+}
+
+static inline s32 spg_slices_to_count(s32 cycles, s32 ts, s32 max)
+{
+    if (cycles <= 0)
+        return max;
+    const s32 n = (cycles + ts - 1) / ts;
+    return n < max ? n : max;
+}
+
+// Plan 5.36: slice ends up to the next one where libPvr_UpdatePvr does more than move SPG_STATUS, at most max.
+s32 spg_slices_to_event(s32 ts, s32 max)
+{
+    max = spg_slices_to_count(render_end_pending_cycles, ts, max);
+    max = spg_slices_to_count(render_isp_pending_cycles, ts, max);
+    max = spg_slices_to_count(render_tsp_pending_cycles, ts, max);
+    max = spg_slices_to_count(render_vd_pending_cycles, ts, max);
+    for (u32 i = 0; i < 5; i++)
+        if (s_list_irq_active & (1u << i))
+            max = s_list_irq_cycles[i] <= 0 ? 1 : spg_slices_to_count(s_list_irq_cycles[i], ts, max);
+
+    const bool every = EXIT_HOST_POLL();
+    s32 c = spg_ScanlineSh4CycleCounter;
+    u32 line = spg_CurrentScanline;
+    for (s32 n = 1; n < max; n++)
+    {
+        c -= ts;
+        if (c < spg_LineSh4Cycles)
+        {
+            line = (line + 1) % spg_ScanlineCount;
+            c += spg_LineSh4Cycles;
+            if (every || spg_event_line(line))
+                return n;
+        }
+    }
+    return max;
+}
+
+// The skipped slices hold no event line (spg_slices_to_event), so they move only the line and the field.
+u32 spg_read_status()
+{
+    s32 k = sys_pending();
+    if (k <= 0)
+        return SPG_STATUS.full;
+    const s32 ts = sh4_GetTimeslice();
+    s32 c = spg_ScanlineSh4CycleCounter;
+    u32 line = spg_CurrentScanline;
+    SPG_STATUS_type st;
+    st.full = SPG_STATUS.full;
+    while (k-- > 0)
+    {
+        c -= ts;
+        if (c < spg_LineSh4Cycles)
+        {
+            line = (line + 1) % spg_ScanlineCount;
+            c += spg_LineSh4Cycles;
+            st.fieldnum = SPG_CONTROL.interlace ? (~st.fieldnum & 1) : 0;
+            st.vsync    = spg_InVblank;
+            st.scanline = line;
+        }
+    }
+    return st.full;
+}
+
 bool spg_Init()
 {
     return true;
@@ -462,4 +536,5 @@ void spg_Reset(bool Manual)
     spg_PaceFrameSec = 0.0;
 
     CalculateSync();
+    sys_kick();
 }

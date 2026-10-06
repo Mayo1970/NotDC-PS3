@@ -20,6 +20,7 @@
 #include "dc/mem/sh4_mem.h"
 #include "ccn.h"
 #include "sh4_sched.h"   // SCHED preset: unified cycle-deadline event scheduler
+#include "sys_gate.h"
 #include "ps3/ps3_stall.h"
 
 // SCHED preset accessor (ps3_presets.cpp). When on, migrated completion/IRQ events
@@ -129,6 +130,8 @@ void Sh4_int_Stop()
 {
 	if (sh4_int_bCpuRun)
 		sh4_int_bCpuRun = false;
+	// SYS GATE: the next slice end runs the update, which reports the stop. Any thread may land here.
+	Sh4cntx.sys_due = 0;
 }
 
 // Debugger single step.
@@ -188,6 +191,8 @@ void Sh4_int_Reset(bool /*Manual*/)
 
 	// Drop in-flight SCHED deadlines so a reset never fires a stale completion.
 	sh4_sched_reset();
+	Sh4cntx.sys_elapsed = 0;
+	Sh4cntx.sys_due = 0;
 
 	printf("Sh4 Reset\n");
 }
@@ -303,7 +308,8 @@ void FASTCALL MediumUpdate()
 		SlowUpdate();
 }
 
-int FASTCALL UpdateSystem()
+// One timeslice of the update without the interrupt check. Touches no SH4 GPRs.
+static inline void sys_slice()
 {
 	if (!(update_cnt & (s_medium_period - 1)))
 		MediumUpdate();
@@ -314,10 +320,21 @@ int FASTCALL UpdateSystem()
 	UpdatePvr(s_timeslice);
 	UpdateAicaDma(s_timeslice);     // deferred AICA G2-DMA completion IRQ (DMA_FIX)
 
-	// SCHED: fire due completions before UpdateINTC so their IRQs are seen this timeslice.
+	// SCHED: fire due completions before the interrupt check so their IRQs are seen this timeslice.
 	if (get_sched_preset())
 		sh4_sched_tick(s_timeslice);
+}
 
+int FASTCALL UpdateSystem()
+{
+	// SYS GATE: SLEEP's loop (an interpreter fallback under the JIT) counts as one more slice end.
+	if (g_sys_gate_on)
+	{
+		Sh4cntx.sys_elapsed++;
+		UpdateSystem_gate();
+		return UpdateINTC();
+	}
+	sys_slice();
 	return UpdateINTC();
 }
 
@@ -330,20 +347,110 @@ int FASTCALL UpdateSystem_no_event()
 {
 	StallScope st_(ST_SYS);
 	CCALL(CC_TIMESLICE);
-	if (!(update_cnt & (s_medium_period - 1)))
-		MediumUpdate();
-
-	update_cnt++;
-
-	UpdateTMU(s_timeslice);
-	UpdatePvr(s_timeslice);
-	UpdateAicaDma(s_timeslice);     // deferred AICA G2-DMA completion IRQ (DMA_FIX)
-
-	// SCHED: fire due completions before the pending check.
-	if (get_sched_preset())
-		sh4_sched_tick(s_timeslice);
-
+	sys_slice();
 	return UpdateINTC_pending() | (int)(g_jit_exit_on && !sh4_int_bCpuRun);
+}
+
+// ---- Plan 5.36 SYS GATE ----
+// The JIT counts slice ends in Sh4cntx.sys_elapsed and calls UpdateSystem_gate() once the count reaches sys_due.
+bool g_sys_gate_on;
+
+enum { GR_MED, GR_TMU, GR_SPG, GR_DMA, GR_SCHED, GR_KICK, GR_N };
+static const char* const k_gate_why[GR_N] = { "med", "tmu", "spg", "dma", "sched", "kick" };
+static u32 s_gate_runs, s_gate_slices, s_gate_syncs, s_gate_kicks, s_gate_why[GR_N];
+static s32 s_gate_plan;        // slice ends left in the last plan; a run below it was kicked
+static u32 s_gate_plan_why;
+
+// Slice ends up to the next one that must run the update: the medium tick, a TMU underflow, an SPG event, an
+// AICA DMA end. The medium period bounds it, so the dry runs stay short.
+static s32 sys_plan()
+{
+	if (get_sched_preset())
+	{
+		s_gate_plan_why = GR_SCHED;
+		return 1;
+	}
+	const s32 ts = s_timeslice;
+	const u32 m = s_medium_period;
+	s32 n = (s32)(((m - (update_cnt & (m - 1))) & (m - 1)) + 1);
+	u32 why = GR_MED;
+	s32 t = tmu_slices_to_event(ts, n);
+	if (t < n) { n = t; why = GR_TMU; }
+	t = spg_slices_to_event(ts, n);
+	if (t < n) { n = t; why = GR_SPG; }
+	t = aica_dma_slices_to_event(ts, n);
+	if (t < n) { n = t; why = GR_DMA; }
+	s_gate_plan_why = why;
+	return n;
+}
+
+// The slices the gate skipped and this one, then the next plan. Same return as _no_event().
+int FASTCALL UpdateSystem_gate()
+{
+	StallScope st_(ST_SYS);
+	CCALL(CC_TIMESLICE);
+	s32 k = Sh4cntx.sys_elapsed;
+	s_gate_runs++;
+	s_gate_slices += k;
+	s_gate_why[k < s_gate_plan ? GR_KICK : s_gate_plan_why]++;
+	Sh4cntx.sys_elapsed = 0;
+	while (k-- > 0)
+		sys_slice();
+	s_gate_plan = sys_plan();
+	Sh4cntx.sys_due = s_gate_plan;
+	return UpdateINTC_pending() | (int)(g_jit_exit_on && !sh4_int_bCpuRun);
+}
+
+// None of the skipped slices holds an event, so running them before a write changes nothing the guest saw.
+void sys_gate_sync_slow()
+{
+	s32 k = Sh4cntx.sys_elapsed;
+	if (k <= 0)
+		return;
+	StallScope st_(ST_SYS);
+	s_gate_syncs++;
+	s_gate_slices += k;
+	Sh4cntx.sys_elapsed = 0;
+	Sh4cntx.sys_due -= k;
+	s_gate_plan -= k;
+	while (k-- > 0)
+		sys_slice();
+}
+
+void sys_gate_kick_slow()
+{
+	s_gate_kicks++;
+	Sh4cntx.sys_due = 0;
+}
+
+s32 sys_gate_pending_slow()
+{
+	return Sh4cntx.sys_elapsed;
+}
+
+// By the JIT main loop, once, before the first block runs.
+void sys_gate_install()
+{
+	g_sys_gate_on = true;
+	Sh4cntx.sys_elapsed = 0;
+	Sh4cntx.sys_due = 0;
+	s_gate_plan = 0;
+	tmu_gate_install();
+}
+
+void sys_gate_stats(double secs)
+{
+	if (!g_sys_gate_on || secs <= 0.0)
+		return;
+	char buf[256];
+	int n = snprintf(buf, sizeof(buf), "[gate] slices=%.0f/s runs=%.0f/s syncs=%.0f/s kicks=%.0f/s |",
+	                 s_gate_slices / secs, s_gate_runs / secs, s_gate_syncs / secs, s_gate_kicks / secs);
+	for (u32 i = 0; i < GR_N && n < (int)sizeof(buf); i++)
+		n += snprintf(buf + n, sizeof(buf) - n, " %s %.0f", k_gate_why[i], s_gate_why[i] / secs);
+	printf("%s\n", buf);
+	s_gate_runs = s_gate_slices = s_gate_syncs = s_gate_kicks = 0;
+	for (u32 i = 0; i < GR_N; i++)
+		s_gate_why[i] = 0;
 }
 
 int FASTCALL UpdateSystem_handle_event()

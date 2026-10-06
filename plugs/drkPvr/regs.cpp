@@ -2,6 +2,7 @@
 #include "Renderer_if.h"
 #include "ta.h"
 #include "spg.h"
+#include "dc/sh4/sys_gate.h"
 
 // Basic PVR register emulation for the PowerVR CLX2 ("Holly"): a flat 32KB byte array, accessed via PvrReg().
 // TODO: full TA emulation is still needed for accurate rendering.
@@ -19,8 +20,30 @@ u32 FASTCALL libPvr_ReadReg(u32 addr, u32 size)
 	if (size != 4)
 		return 0;
 
+	if (g_sys_gate_on && (addr & RegMask) == SPG_STATUS_addr)
+		return spg_read_status();
+
 	return PvrReg(addr, u32);
 }
+
+// Plan 5.36: registers the SYS GATE's line plan reads (CalculateSync and the event lines).
+static bool spg_plan_reg(u32 addr)
+{
+	switch (addr)
+	{
+		case FB_R_CTRL_addr:
+		case SPG_VBLANK_INT_addr:
+		case SPG_CONTROL_addr:
+		case SPG_LOAD_addr:
+		case SPG_VBLANK_addr:
+		case SCALER_CTL_addr:
+			return true;
+		default:
+			return false;
+	}
+}
+
+static void pvr_write_reg(u32 addr, u32 data);
 
 void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 {
@@ -29,8 +52,21 @@ void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 	if (size != 4)
 		return;
 
-	u32 addr = paddr & RegMask;
+	const u32 addr = paddr & RegMask;
 
+	// With the SYS GATE, the skipped slices run at the old timing; the next slice end plans again.
+	if (g_sys_gate_on && spg_plan_reg(addr))
+	{
+		sys_gate_sync_slow();
+		pvr_write_reg(addr, data);
+		sys_gate_kick_slow();
+		return;
+	}
+	pvr_write_reg(addr, data);
+}
+
+static void pvr_write_reg(u32 addr, u32 data)
+{
 	switch (addr)
 	{
 		// ---- Read-only registers: ignore writes ----

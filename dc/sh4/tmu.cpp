@@ -1,30 +1,11 @@
-/*
-	TMU - Timer Unit (SH4)
-	Three independent countdown timers used for OS scheduling, audio sync,
-	and general game timing on the Sega Dreamcast.
-
-	Each channel counts down from TCNT toward zero using a prescaled clock
-	derived from the peripheral clock (Pclk). On underflow, TCNT is reloaded
-	from TCOR and an interrupt is optionally raised.
-
-	Clock prescaler options (TCR bits [2:0]):
-	  0 -> Pclk/4    (shift 2)
-	  1 -> Pclk/16   (shift 4)
-	  2 -> Pclk/64   (shift 6)
-	  3 -> Pclk/256  (shift 8)
-	  4 -> Pclk/1024 (shift 10)
-	  5 -> reserved
-	  6 -> RTC input (unsupported on DC)
-	  7 -> external  (unsupported on DC)
-
-	Note: We accumulate in CPU (Icyc) cycles, so an extra +2 shift is applied
-	to account for the Icyc-to-Pclk ratio.
-*/
+// TMU: the SH4's three countdown timers (OS ticks, audio sync, game timing). Each channel counts TCNT down at
+// Pclk/4..1024 and reloads TCOR on underflow. We count Icyc (4 x Pclk), so each prescaler shift is 2 more.
 
 #include "types.h"
 #include "tmu.h"
 #include "intc.h"
 #include "dc/mem/sh4_internal_reg.h"
+#include "dc/sh4/sys_gate.h"
 
 // TCR register bit definitions
 #define TMU_TCR_UNF		0x0100	// Underflow flag
@@ -54,11 +35,39 @@ u16  tmu_regs_CR[3];	// TCR  - control/status register
 u8   TMU_TOCR;			// Timer output control register
 u8   TMU_TSTR;			// Timer start register (channel enable bits)
 
-// ---------------------------------------------------------------------------
-// UpdateTMU_chan<ch>
-//   Advance channel ch by clc CPU cycles.
-//   Handles single and multiple underflows correctly.
-// ---------------------------------------------------------------------------
+// One channel step of clc CPU cycles on the given state; true on an underflow. The SYS GATE's planner and its TCNT
+// reads run the same step on copies.
+static INLINE bool tmu_step(u32& pres, u32& cnt, u32 shift, u32 mask, u32 cor, u32 clc)
+{
+	pres += clc;
+	u32 steps = pres >> shift;
+
+	// Remove consumed sub-steps from accumulator
+	pres &= mask;
+
+	if (steps == 0)
+		return false;
+
+	bool unf = false;
+	if (steps > cnt)
+	{
+		// At least one underflow occurred
+		steps -= cnt;
+		unf = true;
+
+		// More full periods: only when the update runs rarely against a very fast timer.
+		if (cor > 0 && steps > cor)
+			steps %= cor;
+
+		// Reload counter from TCOR
+		cnt = cor;
+	}
+
+	cnt -= steps;
+	return unf;
+}
+
+// Advances channel ch by clc CPU cycles; also takes several underflows in one call.
 template<u32 ch>
 INLINE void UpdateTMU_chan(u32 clc)
 {
@@ -66,36 +75,13 @@ INLINE void UpdateTMU_chan(u32 clc)
 	if ((TMU_TSTR & tmu_ch_bit[ch]) == 0)
 		return;
 
-	tmu_prescaler[ch] += clc;
-	u32 steps = tmu_prescaler[ch] >> tmu_prescaler_shift[ch];
-
-	// Remove consumed sub-steps from accumulator
-	tmu_prescaler[ch] &= tmu_prescaler_mask[ch];
-
-	if (steps == 0)
-		return;
-
-	if (steps > tmu_regs_CNT[ch])
+	if (tmu_step(tmu_prescaler[ch], tmu_regs_CNT[ch], tmu_prescaler_shift[ch], tmu_prescaler_mask[ch],
+	             tmu_regs_COR[ch], clc))
 	{
-		// At least one underflow occurred
-		steps -= tmu_regs_CNT[ch];
-
 		// Signal underflow interrupt
 		tmu_regs_CR[ch] |= TMU_TCR_UNF;
 		InterruptPend(tmu_intID[ch], 1);
-
-		// Absorb any additional full-period underflows.
-		// This is rare in practice (only if UpdateTMU is called very infrequently
-		// relative to a very fast timer), but must be handled correctly.
-		const u32 cor = tmu_regs_COR[ch];
-		if (cor > 0 && steps > cor)
-			steps %= cor;
-
-		// Reload counter from TCOR
-		tmu_regs_CNT[ch] = cor;
 	}
-
-	tmu_regs_CNT[ch] -= steps;
 }
 
 void UpdateTMU(u32 Cycles)
@@ -105,11 +91,39 @@ void UpdateTMU(u32 Cycles)
 	UpdateTMU_chan<2>(Cycles);
 }
 
-// ---------------------------------------------------------------------------
-// UpdateTMUCounts
-//   Called whenever TCR is written. Syncs interrupt state and recalculates
-//   the prescaler shift/mask when the prescaler mode changes.
-// ---------------------------------------------------------------------------
+// Plan 5.36: slice ends up to the first underflow of a running channel, at most max.
+s32 tmu_slices_to_event(s32 ts, s32 max)
+{
+	for (u32 ch = 0; ch < 3; ch++)
+	{
+		if ((TMU_TSTR & tmu_ch_bit[ch]) == 0)
+			continue;
+		u32 pres = tmu_prescaler[ch], cnt = tmu_regs_CNT[ch];
+		for (s32 n = 1; n < max; n++)
+			if (tmu_step(pres, cnt, tmu_prescaler_shift[ch], tmu_prescaler_mask[ch], tmu_regs_COR[ch], (u32)ts))
+			{
+				max = n;
+				break;
+			}
+	}
+	return max;
+}
+
+// TCNT after the slices the SYS GATE skipped. None of them underflows, so TCNT is the only thing they move.
+static u32 tmu_tcnt_now(u32 ch)
+{
+	u32 cnt = tmu_regs_CNT[ch];
+	s32 k = sys_pending();
+	if (k <= 0 || (TMU_TSTR & tmu_ch_bit[ch]) == 0)
+		return cnt;
+	u32 pres = tmu_prescaler[ch];
+	const u32 ts = (u32)sh4_GetTimeslice();
+	while (k-- > 0)
+		tmu_step(pres, cnt, tmu_prescaler_shift[ch], tmu_prescaler_mask[ch], tmu_regs_COR[ch], ts);
+	return cnt;
+}
+
+// Called whenever TCR is written: syncs the interrupt state and the prescaler when the mode changes.
 void UpdateTMUCounts(u32 reg)
 {
 	// Sync interrupt pending/mask state to current TCR flags
@@ -150,20 +164,23 @@ void UpdateTMUCounts(u32 reg)
 	tmu_prescaler[reg]       = 0;
 }
 
-// ---------------------------------------------------------------------------
-// TCR write handlers (one per channel — required by the register dispatch)
-// ---------------------------------------------------------------------------
-void TMU_TCR0_write(u32 data) { tmu_regs_CR[0] = (u16)data; UpdateTMUCounts(0); }
-void TMU_TCR1_write(u32 data) { tmu_regs_CR[1] = (u16)data; UpdateTMUCounts(1); }
-void TMU_TCR2_write(u32 data) { tmu_regs_CR[2] = (u16)data; UpdateTMUCounts(2); }
+// TCR writes, one handler per channel for the register table. A new prescaler mode moves the next underflow:
+// with the SYS GATE the skipped slices run first at the old mode, and the next slice end plans again.
+template<u32 ch>
+static void TMU_TCR_write(u32 data)
+{
+	const bool remode = ((data & TMU_TCR_TPSC) != tmu_old_mode[ch]);
+	if (remode)
+		sys_sync();
+	tmu_regs_CR[ch] = (u16)data;
+	UpdateTMUCounts(ch);
+	if (remode)
+		sys_kick();
+}
 
-// ---------------------------------------------------------------------------
-// TCPR2 - channel 2 input capture register.
-// Not used / not connected on Dreamcast hardware.
-// ---------------------------------------------------------------------------
+// TCPR2 - channel 2 input capture register. Not used / not connected on Dreamcast hardware.
 u32 TMU_TCPR2_read()
 {
-	// EMUERROR("TMU_TCPR2 read — register not used on Dreamcast");
 	// printf instead of EMUERROR because tiny freeze otherwise
 	printf("TMU_TCPR2 read — register not used on Dreamcast\n");
 	return 0;
@@ -171,14 +188,33 @@ u32 TMU_TCPR2_read()
 
 void TMU_TCPR2_write(u32 data)
 {
-	// EMUERROR2("TMU_TCPR2 write (data=0x%08X) — register not used on Dreamcast", data);
 	// printf instead of EMUERROR because tiny freeze otherwise
 	printf("TMU_TCPR2 write (data=0x%08X) — register not used on Dreamcast\n", data);
 }
 
-// ---------------------------------------------------------------------------
+// Plan 5.36 SYS GATE handlers: TCNT reads add the skipped slices; TCNT and TSTR writes run them first.
+template<u32 ch>
+static u32 TMU_TCNT_read()
+{
+	return tmu_tcnt_now(ch);
+}
+
+template<u32 ch>
+static void TMU_TCNT_write(u32 data)
+{
+	sys_sync();
+	tmu_regs_CNT[ch] = data;
+	sys_kick();
+}
+
+static void TMU_TSTR_write(u32 data)
+{
+	sys_sync();
+	TMU_TSTR = (u8)data;
+	sys_kick();
+}
+
 // tmu_Init  — register memory-mapped I/O bindings
-// ---------------------------------------------------------------------------
 void tmu_Init()
 {
 	// Helper macro to reduce repetition in the register table setup
@@ -198,19 +234,19 @@ void tmu_Init()
 	TMU_REG(TMU_TSTR_addr,  REG_8BIT_READWRITE  | REG_READ_DATA | REG_WRITE_DATA, 0, 0, data8  = &TMU_TSTR);
 
 	// Channel 0
-	TMU_REG(TMU_TCOR0_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_COR[0]);
-	TMU_REG(TMU_TCNT0_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_CNT[0]);
-	TMU_REG(TMU_TCR0_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR0_write, data16 = &tmu_regs_CR[0]);
+	TMU_REG(TMU_TCOR0_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_COR[0]);
+	TMU_REG(TMU_TCNT0_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_CNT[0]);
+	TMU_REG(TMU_TCR0_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR_write<0>, data16 = &tmu_regs_CR[0]);
 
 	// Channel 1
-	TMU_REG(TMU_TCOR1_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_COR[1]);
-	TMU_REG(TMU_TCNT1_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_CNT[1]);
-	TMU_REG(TMU_TCR1_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR1_write, data16 = &tmu_regs_CR[1]);
+	TMU_REG(TMU_TCOR1_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_COR[1]);
+	TMU_REG(TMU_TCNT1_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_CNT[1]);
+	TMU_REG(TMU_TCR1_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR_write<1>, data16 = &tmu_regs_CR[1]);
 
 	// Channel 2
-	TMU_REG(TMU_TCOR2_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_COR[2]);
-	TMU_REG(TMU_TCNT2_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,              data32 = &tmu_regs_CNT[2]);
-	TMU_REG(TMU_TCR2_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR2_write, data16 = &tmu_regs_CR[2]);
+	TMU_REG(TMU_TCOR2_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_COR[2]);
+	TMU_REG(TMU_TCNT2_addr, REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA, 0, 0,                 data32 = &tmu_regs_CNT[2]);
+	TMU_REG(TMU_TCR2_addr,  REG_16BIT_READWRITE | REG_READ_DATA,                  0, TMU_TCR_write<2>, data16 = &tmu_regs_CR[2]);
 
 	// TCPR2 - input capture (not connected on DC)
 	TMU_REG(TMU_TCPR2_addr, REG_32BIT_READWRITE, TMU_TCPR2_read, TMU_TCPR2_write, data32 = 0);
@@ -218,9 +254,25 @@ void tmu_Init()
 #undef TMU_REG
 }
 
-// ---------------------------------------------------------------------------
+// Plan 5.36: with the SYS GATE on, TCNT and the TSTR write go through the handlers above.
+void tmu_gate_install()
+{
+	static RegReadFP* const rd[3] = { TMU_TCNT_read<0>, TMU_TCNT_read<1>, TMU_TCNT_read<2> };
+	static RegWriteFP* const wr[3] = { TMU_TCNT_write<0>, TMU_TCNT_write<1>, TMU_TCNT_write<2> };
+	static const u32 cnt_addr[3] = { TMU_TCNT0_addr, TMU_TCNT1_addr, TMU_TCNT2_addr };
+	for (u32 i = 0; i < 3; i++)
+	{
+		RegisterStruct& e = TMU[(cnt_addr[i] & 0xFF) >> 2];
+		e.flags &= ~(u32)(REG_READ_DATA | REG_WRITE_DATA);
+		e.readFunction  = rd[i];
+		e.writeFunction = wr[i];
+	}
+	RegisterStruct& t = TMU[(TMU_TSTR_addr & 0xFF) >> 2];
+	t.flags &= ~(u32)REG_WRITE_DATA;
+	t.writeFunction = TMU_TSTR_write;
+}
+
 // tmu_Reset  — restore power-on defaults
-// ---------------------------------------------------------------------------
 void tmu_Reset(bool Manual)
 {
 	TMU_TOCR = TMU_TSTR = 0;
@@ -237,6 +289,7 @@ void tmu_Reset(bool Manual)
 	UpdateTMUCounts(0);
 	UpdateTMUCounts(1);
 	UpdateTMUCounts(2);
+	sys_kick();
 }
 
 void tmu_Term()

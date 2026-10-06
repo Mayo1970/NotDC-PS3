@@ -85,6 +85,7 @@ int FASTCALL UpdateSystem();
 // be dispatched); _handle_event() runs the GPR-touching dispatch. Equivalence invariant: see sh4_interpreter.cpp.
 int FASTCALL UpdateSystem_no_event();
 int FASTCALL UpdateSystem_handle_event();
+int FASTCALL UpdateSystem_gate();   // plan 5.36: _no_event() for every slice end the SYS GATE skipped
 extern bool g_jit_exit_on;   // P6 JIT EXIT: _no_event() also reports a stop request
 
 // For the recompiler: Sh4_ApplyAccuracyPreset() latches the preset's timing (as Sh4_int_Run does on entry), and

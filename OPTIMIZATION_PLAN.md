@@ -13,6 +13,34 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-06)
 
+**Done: 5.36 SYS GATE (Matt 2026-10-06: "5.36"; then "Gate + Resume
+levels" and, for the TA peak, "Own toggle, as in the plan"), HW SUCCESS
+(Matt: "SYSGATE is a success"), default + RESUME since the package of
+22:52 (Matt: "Yes, make +RESUME the default").** Built and PC tested in
+the package of 22:27. HW 2026-10-06 (5.36 "HW"): three boots clean (Crazy
+Taxi GATE, Crazy Taxi + RESUME, Sonic Adventure + RESUME); dense Crazy
+Taxi at full speed in 94.5% of windows with + RESUME (86.3% in the 5.38
+run), ~2-3% more spare time; Matt: "It felt much smoother now". TA Peak
+Frame: built, default OFF, not run on HW (expected gain none).
+- Found first: the 5.38 logs (JIT C-Calls ON) give the per-timeslice
+  update 61-73 ms/s of the SH4 thread (`[stall]` sys), 6-7%, at 112K
+  calls/s: 550-650 ns per call. HW then showed this is work per slice:
+  the gate leaves it as it is and saves only the calls and lookups.
+- JIT SPEED -> "JIT SYS GATE" (`SysGate`): OFF / GATE / + RESUME, default
+  OFF, set before boot. GATE: the JIT counts slice ends in `Sh4cntx` and
+  runs the update only at the slice end of the next event; the skipped
+  slices then run, unchanged. At FAST the medium tick (every 4th slice)
+  bounds it: ~28K updates/s, not 112K. + RESUME: with nothing due, a
+  block's cycle exit enters the block again without bm_GetCode.
+- VIDEO / DEBUG -> "TA Peak Frame" (`TaPeakFrame`), default OFF, set
+  before boot: no peak store per TA record. Its fast path in the binary is
+  one instruction longer (GCC saves 3 more registers): expect no gain.
+- PC: `misc/sysgate_check/run.sh` PASS (the real TMU, INTC, SPG, PVR
+  register, AICA DMA and update code: 300 random timelines give the same
+  trace with the gate off and on; 1.42M checks of the JIT words against
+  ppu-as and a PPC64 model); `mutate.py` 30 of 30 planted bugs fail.
+- Start a UDP listener only when Matt says so.
+
 **Open, separate (Matt 2026-10-06: "let's keep this as an open, separated
 issue"): Rayman 2 draws level surfaces untextured.** US GDI, first level:
 large level polygons show only smooth vertex-colour gradients; Rayman and
@@ -984,7 +1012,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
 | 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp) |
 | 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
-| 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | `[ ]` merged 2026-10-06; estimate 1% or less (scheduler), 0.1-0.5% (TA peak store) |
+| 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[ ]` not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
 | 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level |
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
 | 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]` |
@@ -995,6 +1023,7 @@ Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE 
 default ON since the package of 23:22 on 2026-10-05 (Matt).
 GD-ROM Async (+ CD-DA) and JIT Exit are default ON since the package of 18:19 on 2026-10-06 (Matt: "Keep toggles on").
 JIT Div32 defaults to FIXED since the package of 21:02 on 2026-10-06 (Matt: "Yes, let's put it as default").
+JIT SYS GATE defaults to + RESUME since the package of 22:52 on 2026-10-06 (Matt: "Yes, make +RESUME the default").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -4551,7 +4580,8 @@ clock by VPS.
     PVR counters, AICA DMA, the INTC check): estimate 1% or less, medium
     refactor. And `raw_note_peak()` (`ps3/ps3_rend.cpp`) stores to a
     global on every 32-byte TA record: update the peak at reset and at
-    STARTRENDER instead (estimate 0.1-0.5% of the SH4 thread).
+    STARTRENDER instead (estimate 0.1-0.5% of the SH4 thread). Built
+    2026-10-06 as "JIT SYS GATE" and "TA Peak Frame": see 5.36 below.
   - 5.37 (P17 fschg): Flycast's fschg is an xor on FPSCR plus a decoder SZ
     flip, and it does not end the block. Ours (`dc/sh4/rec_v2/decoder.cpp`)
     emits a sync and ends the block outside delay slots; the SZ-only sync
@@ -4675,6 +4705,125 @@ clock by VPS.
       21:02 (`.got` 0xC070, 0 `r2off`). A default only reaches a cfg
       without the key (`cfgLoadInt` writes it back), and Matt's ran OLD
       last: set FIXED once in the menu.
+- 5.36 SYS GATE and TA Peak Frame (Matt 2026-10-06: "5.36"; asked for
+  the scope after the cost below, he picked "Gate + Resume levels"; TA
+  peak: "Own toggle, as in the plan"). Built and PC tested, package of
+  22:27, HW pending.
+  - Cost found first. The 5.38 logs have JIT C-Calls ON, so `[stall]`
+    splits the SH4 thread. Its sys section (UpdateSystem_no_event and the
+    interrupt dispatch, nested sections out) in `run538_ct.txt`: 61.7 ms/s
+    at 3-6K vertices, 73.0 at 6K+, 63.3 in light windows; Sonic Adventure
+    64.8 / 60.6 ms/s. That is 112K calls/s, 550-650 ns per call. Of it,
+    `arm_spe_update` (every 4th slice) is ~14 ms/s (`aica:` 1.4%). The
+    probe adds a part; the cost with C-Calls OFF is not measured.
+  - Probable cause, not measured: L1 misses. The update calls ~8
+    functions on both sides of the 24 MB code cache in .text (UpdateTMU
+    near 0x3C800, libPvr_UpdatePvr near 0x1A91000) and reads globals in
+    many lines.
+  - JIT SPEED -> "JIT SYS GATE" (`SysGate`): OFF / GATE / + RESUME,
+    default OFF, set before boot; `[jitcfg] sysgate=`.
+    - GATE: `loop_do_update_write` adds 1 to `Sh4cntx.sys_elapsed` and
+      compares it with `sys_due` (`ps3/ps3_jit_gate.h`, 5 words). Below
+      it: `blt loop_no_update`, no C call. Else `UpdateSystem_gate()` runs
+      the skipped slices with the old per-slice code (`sys_slice()`), then
+      `sys_plan()` sets the next due count: the next medium tick (every 4
+      slices at FAST; ARM7/AICA, DMA, GD-ROM, maple, RTC), the first TMU
+      underflow, the next SPG line with an interrupt or a vblank edge
+      (SCANINT1/2, vbstart, vbend; every line with Exit Fix 3), a
+      render-done or list-end countdown, an AICA DMA end; with SCHED ON
+      every slice. Each module dry-runs its own per-slice code
+      (`tmu_slices_to_event`, `spg_slices_to_event`,
+      `aica_dma_slices_to_event`), so the plan follows that code.
+    - Kicks set `sys_due` to 0, so the next slice end runs the update as
+      every slice end did before: an interrupt that becomes acceptable
+      (`SetInterruptPend`, `SetInterruptMask`, `SRdecode`, the SIID
+      rebuild) and a stop request.
+    - Hooks (`dc/sh4/sys_gate.h`): TCNT0-2 and SPG_STATUS reads add the
+      skipped slices to a copy (the plan puts no event among them). Writes
+      that move a deadline run the skipped slices first, then kick: TSTR,
+      TCNT, a TCR prescaler change (TMU handlers swapped in by
+      `tmu_gate_install`), FB_R_CTRL, SPG_VBLANK_INT, SPG_CONTROL,
+      SPG_LOAD, SPG_VBLANK, SCALER_CTL, STARTRENDER's countdowns, a list-end
+      IRQ with Render Delay, an AICA DMA start. SLEEP (an interpreter
+      fallback) counts each of its UpdateSystem() calls as a slice end.
+    - + RESUME: a block's cycle exit is `li r3,pc; bl loop_gate; b
+      <block entry>`. `loop_gate` adds the slice's cycles and counts; with
+      nothing due it returns (`bltlr`) and the block starts again as after
+      bm_GetCode (SMC check and cycle check again), else it stores next_pc
+      and runs the update. A block with a cycle exit grows by 1 word.
+    - `[gate]` each second: slices/s, runs/s (updates), syncs/s, kicks/s
+      and why each run came (med, tmu, spg, dma, sched, kick). `[CC]
+      timeslice` and the `[stall]` sys count now count runs.
+  - VIDEO / DEBUG -> "TA Peak Frame" (`TaPeakFrame`): OFF / ON, default
+    OFF, set before boot; `[jitcfg] tapeak=`. ON: PREF calls
+    `do_sqw_nommu_frame`, which has no peak store per TA record; the DMA
+    and old SQ paths skip it too. Both settings note the peak at list
+    init, STARTRENDER and the `[rend]` stats line, so `peak=` reads the
+    same. In the binary the new fast path is 49 instructions, the old one
+    48 (GCC saves 3 more registers in it): expect no gain.
+  - PC (WSL), `misc/sysgate_check/run.sh`:
+    - `sysgate_check`: the real `tmu.cpp`, `intc.cpp`, `SPG.cpp`,
+      `regs.cpp`, `sh4_interpreter.cpp`, `aica_if.cpp` and `sh4_sched.cpp`,
+      run with the gate off and on in forked children over the same random
+      guest timeline (TCNT and SPG_STATUS reads; TMU, SPG and STARTRENDER
+      writes; AICA DMA starts; list-end IRQs; IMASK changes; SLEEP loops;
+      bare syncs; an interrupt handler with rte). The traces (reads, Holly
+      raises, dispatches, medium ticks, vblanks, end state) must be equal.
+      PASS: 300 timelines x 4000 slices, all three Accuracy presets, Render
+      Delay, SCHED and Exit Fix 3 (1.13M trace lines).
+    - `gate_emit_check`: the GATE count, `loop_gate` and a cycle exit, 24
+      words = ppu-as (`gen.py`), then on a PPC64 model over the signed
+      edges: count, path, r29, next_pc, LR, no other register changed.
+      PASS, 1.42M checks.
+    - `mutate.py`: 30 of 30 planted bugs fail. `tr4_check` and
+      `div32_check` still PASS.
+  - Build: the 7 old warnings, `.got` 0xC180, 0 `r2off`.
+  - Expected: at FAST, ~28K updates/s in play, not 112K. With C-Calls ON
+    that could save ~30-50 ms/s (3-5%); + RESUME also skips ~84K
+    bm_GetCode calls/s. Less with C-Calls OFF (not measured).
+  - HW test steps (package of 22:27). Reference: `run538_ct.txt` and
+    `run538_sonic.txt` (scratchpad of session 2b073cf1; C-Calls ON).
+    1. Install. The install keeps `nullDC.cfg`. On the main menu: JIT
+       SPEED -> JIT SYS GATE GATE; VIDEO / DEBUG -> TA Peak Frame OFF and
+       JIT C-Calls ON; the rest as in the 5.38 runs (SH4 Clock 200).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1 (GATE): Crazy Taxi at 60 Hz, ~2 min of play, exit to the
+       XMB. Log: `[jitcfg] ... sysgate=1 tapeak=0`, `[gate]` lines, no
+       fault. The game, the sound and the FMVs play as before.
+    4. Boot 2: the same with JIT SYS GATE + RESUME (`sysgate=2`).
+    5. Boot 3 (+ RESUME): Sonic Adventure, a level load and a few
+       minutes of play.
+    6. Boot 4 (optional): Crazy Taxi, + RESUME and TA Peak Frame ON.
+    7. On a fault: the same boot with JIT SYS GATE OFF.
+    Read: same-load VPS (`vtbins.py`) against the reference, `[gate]`
+    runs/s, `[stall]` sys ms/s, `[CC] getcode` with + RESUME.
+  - HW 2026-10-06 (package of 22:27, our listener at Matt's request;
+    log `ps3log_536_run1.txt`, cut into `run536_gate_ct.txt`,
+    `run536_resume_ct.txt`, `run536_sonic.txt` in the scratchpad of
+    session f245bc41, with `dense.py` and `sleepbins.py`). Matt's cfg had
+    JIT Div32 OLD (`Div32=0`), the references FIXED; Crazy Taxi's game code
+    has no matched division.
+    - All three boots clean, clean XMB exits. `[gate]`: 111.6K slices/s,
+      28.4K updates/s (med 27.9K, spg ~225, kick ~250, tmu and dma ~0),
+      syncs ~35/s. `[CC] timeslice` 112K -> 28.4K/s; with + RESUME `[CC]
+      getcode` ~116K -> 32.6K/s.
+    - Crazy Taxi at 60 Hz, dense windows (6K+ vertices), against
+      `run538_ct.txt` (86.3% at full speed, worst frame mean 21.2 ms, p90
+      22.7, sleep 135.9 ms/s): GATE 89.1%, 21.4 / 23.5 ms, sleep 158.8;
+      + RESUME 94.5%, 20.8 / 22.1 ms, sleep 163.5 ms/s. Matt on + RESUME:
+      "It felt much smoother now". VPS is capped at 60 in both, so the
+      gain shows as sleep: +23 and +28 ms/s (55 windows each, noisy).
+    - Sonic Adventure, + RESUME, 155 dense windows: 99.4% at full speed
+      (`run538_sonic.txt` 97.7%, `run534_sonic.txt` 98.4%), worst frame
+      mean 22.9 ms (24.0, 23.4).
+    - The `[stall]` sys time did not fall: 63-79 ms/s with the gate, as
+      before. So it is work per slice, not cost per call; my "3-5%" took
+      it for call cost and was wrong. The gain is the C calls and lookups
+      the JIT no longer makes: ~2-3% spare time in dense Crazy Taxi.
+    - Matt: "SYSGATE is a success", then "Yes, make +RESUME the default":
+      `SysGate` defaults to 2 since the package of 22:52 (`.got` 0xC180, 0
+      `r2off`). A default only reaches a cfg without the key; Matt's has
+      2 already. TA Peak Frame was not run (default OFF).
 
 ---
 

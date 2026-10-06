@@ -10,6 +10,7 @@
 #include "dc/mem/sh4_internal_reg.h"
 #include "dc/asic/asic.h"
 #include "dc/maple/maple_if.h"
+#include "sys_gate.h"
 
 // Level-triggered: a request is re-accepted until its handler lowers it. Holly mixes 21 normal, 4 external and 32 error
 // irqs into 3 IRL lines; the INTC adds internal sources (only timers emulated, no exceptions); highest priority wins.
@@ -131,10 +132,18 @@ u32 decoded_srimask;	//-1 kills all interrupts,including rebuild ones.
 
 //bits 28:31: 0 = nothing (disabled), 1 = rebuild interrupt list and retest interrupts, else undefined
 
+// Plan 5.36 SYS GATE: an acceptable interrupt makes the next slice end run the update, as it did every slice.
+static inline void intc_gate_check()
+{
+	if ((interrupt_vpend&interrupt_vmask)>decoded_srimask)
+		sys_kick();
+}
+
 //Rebuild sorted interrupt id table (priorities where updated)
 void RequestSIIDRebuild()
 {
 	interrupt_vpend|=2<<28;
+	intc_gate_check();
 }
 bool SRdecode()
 {
@@ -144,7 +153,10 @@ bool SRdecode()
 	if (sr.BL)
 		decoded_srimask=0x0FFFFFFF;
 
-	return (interrupt_vpend&interrupt_vmask)>decoded_srimask;
+	const bool pend=(interrupt_vpend&interrupt_vmask)>decoded_srimask;
+	if (pend)
+		sys_kick();
+	return pend;
 }
 
 void fastcall VirtualInterrupt(u32 id)
@@ -264,6 +276,7 @@ void SetInterruptPend(InterruptID intr)
 {
 	u32 piid= (u32)intr & (u32)InterruptPIIDMask;
 	interrupt_vpend|=InterruptBit[piid];
+	intc_gate_check();
 }
 void ResetInterruptPend(InterruptID intr)
 {
@@ -275,6 +288,7 @@ void SetInterruptMask(InterruptID intr)
 {
 	u32 piid= (u32)intr & (u32)InterruptPIIDMask;
 	interrupt_vmask|=InterruptBit[piid];
+	intc_gate_check();
 }
 void ResetInterruptMask(InterruptID intr)
 {

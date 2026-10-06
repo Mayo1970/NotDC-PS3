@@ -30,6 +30,8 @@
 #include "ps3/ps3_jit_carry.h"
 #include "ps3/ps3_jit_div32.h"
 #include "ps3/ps3_jit_exit.h"
+#include "ps3/ps3_jit_gate.h"
+#include "dc/sh4/sys_gate.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -215,6 +217,7 @@ void* ngen_LinkBlock_Dynamic_2nd_stub;
 void* ngen_LinkBlock_Dynamic_IC_stub;	// DYN_IC preset: inline-cache fill
 void* ngen_BlockCheckFail_stub;
 void* loop_do_update_write;
+void* loop_gate;	// plan 5.36 SYS GATE + RESUME: a block's cycle exit calls it; null at the other levels
 void (*loop_code)() ;
 void (*ngen_FailedToFindBlock)();
 
@@ -2019,6 +2022,10 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 
 void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
+void FASTCALL do_sqw_nommu_frame(u32 dst);
+
+// Plan 5.36 TA Peak Frame, latched when the main loop is emitted: PREF calls the flush without the per-record peak.
+static bool s_ta_peak_frame;
 
 // Native call targets for fsqrt/fsrra, same semantics as the canonical sqrtf / 1.0f/sqrtf.
 static f32 rec_fsqrt(f32 x)  { CCALL(CC_FSQRT); return sqrtf(x); }
@@ -4330,6 +4337,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne skip (not SQ -> no-op)
 				if (CCN_MMUCR.AT)
 					ppc_call_c(&do_sqw_mmu);			// do_sqw reloads rarg0=addr arg
+				else if (s_ta_peak_frame)
+					ppc_call_c(&do_sqw_nommu_frame);
 				else
 					ppc_call_c(&do_sqw_nommu);
 				if (get_jit_prefetch_preset() && s_fm_ok && !CCN_MMUCR.AT)
@@ -4422,7 +4431,14 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		s_cycle_exit->MarkLabel();
 		s_cycle_exit=0;
 		ppc_li(ppc_next_pc,block->start);
-		ppc_jump(loop_do_update_write);
+		if (loop_gate)
+		{
+			// SYS GATE + RESUME: with no event due, enter the block again here, as bm_GetCode would.
+			ppc_call(loop_gate);
+			ppc_jump((void*)rv);
+		}
+		else
+			ppc_jump(loop_do_update_write);
 	}
 
 	// Emit the out-of-line mem slow paths after the block tail.
@@ -4540,9 +4556,14 @@ extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
 extern "C" int get_jit_code_cache_preset();
 extern "C" int get_jit_exit_preset();
+extern "C" int get_sys_gate_preset();
+extern "C" int get_ta_peak_frame_preset();
 
 // P6 JIT EXIT, latched when the main loop is emitted: the loop can return to C on a stop request.
 static bool s_jit_exit;
+
+// Plan 5.36 SYS GATE, latched the same way: 0 off, 1 GATE, 2 + RESUME.
+static int s_sys_gate;
 
 // One line per session with every JIT toggle in force: an install wipes nullDC.cfg, so a log needs its own.
 static void ps3_jit_dump_toggles()
@@ -4557,7 +4578,7 @@ static void ps3_jit_dump_toggles()
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
 	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d"
-	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d ccache=%d frchg=%d pref=%d greuse=%d jexit=%d\n",
+	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d ccache=%d frchg=%d pref=%d greuse=%d jexit=%d sysgate=%d tapeak=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
@@ -4566,7 +4587,7 @@ static void ps3_jit_dump_toggles()
 	       get_jit_idle_skip_preset(), get_jit_tcopy_preset(), get_jit_sq_miss_preset(),
 	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset(), get_jit_code_cache_preset(),
 	       get_jit_frchg_preset(), get_jit_prefetch_preset(), get_jit_guard_reuse_preset(),
-	       get_jit_exit_preset());
+	       get_jit_exit_preset(), get_sys_gate_preset(), get_ta_peak_frame_preset());
 }
 
 void ngen_mainloop()
@@ -4579,6 +4600,10 @@ void ngen_mainloop()
 	{
 		ps3_jit_dump_toggles();
 		s_jit_exit=get_jit_exit_preset()!=0;
+		s_sys_gate=get_sys_gate_preset();
+		s_ta_peak_frame=get_ta_peak_frame_preset()!=0;
+		if (s_sys_gate)
+			sys_gate_install();
 
 		loop_code=(void(*)())emit_GetCCPtr();
 		{
@@ -4636,9 +4661,22 @@ void ngen_mainloop()
 			ppc_sh_store(ppc_next_pc,reg_nextpc);
 			ppc_addi(ppc_cycles,ppc_cycles,jit_timeslice);	//add cycles (preset-latched timeslice)
 
+			// SYS GATE: count the slice end; with no event due, look up the block and go on (r11, r12 are free).
+			const u32 gate_elapsed=(u32)offsetof(Sh4Context,sys_elapsed);
+			const u32 gate_due=(u32)offsetof(Sh4Context,sys_due);
+			if (s_sys_gate)
+			{
+				emit_gate_count(ppc_contex,ppc_r11,ppc_r12,gate_elapsed,gate_due);
+				ppc_bcx(BO_TRUE,BI_CR0_LT,(u32)ppc_jdiff(loop_no_update),0,0);	// blt loop_no_update
+			}
+			void* const loop_update=emit_GetCCPtr();
+
 			// UpdateSystem_no_event runs every timeslice without flushing pinned GPRs; only a pending interrupt
 			// flushes, runs the GPR-touching handler and reloads.
-			ppc_call_c(UpdateSystem_no_event);
+			if (s_sys_gate)
+				ppc_call_c(UpdateSystem_gate);
+			else
+				ppc_call_c(UpdateSystem_no_event);
 			ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);			// rv == 0 ?
 			ppc_label* no_intr=ppc_CreateLabel();
 			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq no_intr (skip handler)
@@ -4670,6 +4708,16 @@ void ngen_mainloop()
 				exit_lbl->MarkLabel();
 				reg_flush_all_fpu();
 				emit_exit_epilogue(GPR_SAVE_OFS,FPR_SAVE_OFS,CR_SAVE_OFS,stac_alloc_size);
+			}
+
+			// SYS GATE + RESUME: a block's cycle exit calls this with its pc in next_pc; nothing due returns to
+			// the block, else the update runs as from loop_do_update_write.
+			if (s_sys_gate>=2)
+			{
+				loop_gate=emit_GetCCPtr();
+				emit_gate_resume(ppc_contex,ppc_cycles,jit_timeslice,ppc_r11,ppc_r12,gate_elapsed,gate_due,
+				                 ppc_next_pc,Sh4cntx.offset(reg_nextpc));
+				ppc_jump(loop_update);
 			}
 
 

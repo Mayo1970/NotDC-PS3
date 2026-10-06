@@ -71,6 +71,8 @@ int g_jit_frchg_preset     = 0;   // 1 = an FPSCR sync that only flips FR swaps 
 int g_jit_prefetch_preset  = 0;   // 1 = a pref outside the store queue prefetches the RAM line with dcbt (5.30)
 int g_jit_guard_reuse_preset = 0; // 1 = a memory op whose base passed its check earlier in the block skips it (5.31)
 int g_jit_exit_preset      = 1;   // 1 = an XMB exit returns from the JIT loop and saves the flash (5.35 = P6, HW)
+int g_sys_gate_preset      = 2;   // 1 = the slice-end update runs only when due, 2 also without the block lookup (5.36, HW)
+int g_ta_peak_frame_preset = 0;   // 1 = the TA peak stat is noted per frame, not per TA record (5.36)
 int g_gd_async_preset      = 2;   // disc reads on a worker thread: 1 data, 2 also a CD-DA read-ahead (5.34 = P3, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
@@ -146,6 +148,8 @@ static const CfgItem s_items[] = {
 	{ "JitPrefetch",   &g_jit_prefetch_preset },
 	{ "JitGuardReuse", &g_jit_guard_reuse_preset },
 	{ "JitExit",       &g_jit_exit_preset },
+	{ "SysGate",       &g_sys_gate_preset },
+	{ "TaPeakFrame",   &g_ta_peak_frame_preset },
 	{ "GdAsync",       &g_gd_async_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
@@ -319,6 +323,8 @@ int get_jit_frchg_preset()     { return g_jit_frchg_preset; }
 int get_jit_prefetch_preset()  { return g_jit_prefetch_preset; }
 int get_jit_guard_reuse_preset() { return g_jit_guard_reuse_preset; }
 int get_jit_exit_preset()      { return g_jit_exit_preset; }
+int get_sys_gate_preset()      { return g_sys_gate_preset; }
+int get_ta_peak_frame_preset() { return g_ta_peak_frame_preset; }
 int get_gd_async_preset()      { return g_gd_async_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }

@@ -374,7 +374,7 @@ thread. P3 stays parked (Matt 2026-10-05).
 - Value: unverified. A gain only if the PPE stalls on denormals; check what NI
   does on the PPE before use. One line, behind an option.
 
-### P5 Small speed items  `[ ]` merged: plan 5.36
+### P5 Small speed items  `[~]` merged: plan 5.36; JIT SYS GATE HW SUCCESS 2026-10-06, default + RESUME; TA Peak Frame built, not run on HW
 
 - Deadline scheduler (Reicast `hw/sh4/SuperH4_impl.cpp:15-28`,
   `sh4_sched.cpp`): one decrement per timeslice. Ours runs the whole

@@ -49,3 +49,4 @@ INLINE void FASTCALL do_sqw(u32 Dest)
 // The JIT's PREF targets. do_sqw_nommu lives in ps3/ps3_rend.cpp (plan 5.17 TA SQ Direct).
 void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
+void FASTCALL do_sqw_nommu_frame(u32 dst);   // plan 5.36 TA Peak Frame

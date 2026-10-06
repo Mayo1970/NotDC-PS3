@@ -5,6 +5,7 @@
 #include "plugins/plugin_manager.h"
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered AICA G2-DMA end
+#include "dc/sh4/sys_gate.h"
 
 #include <time.h>
 #include <stdio.h>
@@ -213,6 +214,18 @@ void UpdateAicaDma(u32 cycles)
     }
 }
 
+// Plan 5.36: slice ends up to the one that completes the deferred G2-DMA, at most max.
+s32 aica_dma_slices_to_event(s32 ts, s32 max)
+{
+    if (aica_dma_delay_cycles > 0)
+    {
+        const s32 n = (aica_dma_delay_cycles + ts - 1) / ts;
+        if (n < max)
+            max = n;
+    }
+    return max;
+}
+
 // SCHED preset: deadline-scheduler callback for the deferred G2-DMA completion.
 static int aica_dma_end_cb(int tag, int sch_cycl, int jitter)
 {
@@ -281,7 +294,12 @@ void Write_SB_ADST(u32 data)
         if (get_sched_preset() && aica_dma_schid != -1)
             sh4_sched_request(aica_dma_schid, cycles);
         else
+        {
+            // SYS GATE: the countdown starts at the next slice end, as with the update every slice.
+            sys_sync();
             aica_dma_delay_cycles = cycles;
+            sys_kick();
+        }
     }
     else
     {

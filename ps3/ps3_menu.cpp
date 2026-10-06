@@ -302,6 +302,7 @@ static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
 static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
 static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
 static const char* k_div32[]     = { "OLD", "FIXED", NULL };
+static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -403,6 +404,8 @@ static Option s_video[] = {
 	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
 	{ "TA SQ Direct",    &g_ta_sq_direct_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A store-queue flush to the TA runs in one flat function, not 4 calls. Live." },
+	{ "TA Peak Frame",   &g_ta_peak_frame_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The [rend] peak= stat is noted per frame, not per TA record. Set before boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
 	  "What a render does when the render thread is busy. DROP loses the frame." },
 	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -469,6 +472,8 @@ static Option s_jit[] = {
 	  "flds, fsts, ftrc and float skip one trip through memory. Set before boot." },
 	{ "JIT DYN IC",      &g_jit_dyn_ic_preset,    OPT_CHOICE, k_dynic,     0, 0,0,0, NULL,
 	  "Dynamic exits test their first target inline, not the lookup. Set before boot." },
+	{ "JIT SYS GATE",    &g_sys_gate_preset,      OPT_CHOICE, k_sysgate,   0, 0,0,0, NULL,
+	  "Slice ends run the update only when due; RESUME skips the lookup. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

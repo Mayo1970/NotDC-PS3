@@ -36,6 +36,10 @@ struct Sh4Context
 	// Plan 5.25 JIT IDLE SKIP: nonzero once a block that may store runs; the idle check reads and clears it.
 	u32 jit_idle_work;
 
+	// Plan 5.36 SYS GATE: slice ends the update has not run yet, and the count at which it must run (0 = next end).
+	s32 sys_elapsed;
+	s32 sys_due;
+
 	u32 offset(u32 sh4_reg);
 	u32 offset(Sh4RegType sh4_reg) { return offset((u32)sh4_reg); }
 };

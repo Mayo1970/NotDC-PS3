@@ -12,6 +12,7 @@
 #include "ps3_stall.h"
 #include "dc/pvr/pvr_if.h"
 #include "dc/sh4/sh4_sqw.h"
+#include "dc/sh4/sys_gate.h"
 #include <algorithm>
 #include <math.h>
 #include <malloc.h>
@@ -162,6 +163,10 @@ static inline void raw_note_peak(const TaContext* c)
 		s_stat_raw_peak = c->raw_used;
 }
 
+// Plan 5.36 TA Peak Frame, latched in InitRenderer: no note per record; list init, STARTRENDER and the
+// stats line note the peak instead. The stream only grows between list inits, so the peak is the same.
+static bool s_peak_frame;
+
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
 static u32 s_sprite_col = 0xFFFFFFFF;
@@ -242,6 +247,7 @@ static void reset_raw(TaContext* c)
 	// The SPU must have pulled the old bytes before the SH4 writes over them.
 	if (g_spe_on)
 		ps3spe_wait_cmd(c->spe_cmd);
+	raw_note_peak(c);
 	c->raw_used = 0;
 	c->raw_decoded = 0;
 	c->n_cont = 0;
@@ -906,7 +912,8 @@ static inline void store_sq(u32* data)
 		u8* dst = c->raw + c->raw_used;
 		memcpy(dst, data, 32);
 		c->raw_used += 32;
-		raw_note_peak(c);
+		if (!s_peak_frame)
+			raw_note_peak(c);
 		rec = (Ta_Dma*)dst;
 		spe_note(c);
 	}
@@ -995,7 +1002,8 @@ static __attribute__((noinline)) void sqw_finish(u32 pcw, Ta_Dma* rec)
 
 // The JIT's PREF target without the MMU. TA SQ Direct ON: a TA polygon flush runs here in one flat body,
 // not through TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq (plan 5.17); everything else takes the old path.
-void FASTCALL do_sqw_nommu(u32 dest)
+template<bool peak>
+static inline __attribute__((always_inline)) void do_sqw_flat(u32 dest)
 {
 	if (++g_ta_split.calls == g_ta_split.next)
 		return sqw_sampled(dest);
@@ -1011,12 +1019,24 @@ void FASTCALL do_sqw_nommu(u32 dest)
 	u8* dst = c->raw + c->raw_used;
 	memcpy(dst, data, 32);
 	c->raw_used += 32;
-	raw_note_peak(c);
+	if (peak)
+		raw_note_peak(c);
 	const u32 e = ta_fsm_entry(s_fsm_state, pcw);
 	if ((e & TAS_SLOW) || (g_spe_on && c->raw_used - c->spe_pub >= SPE_BATCH))
 		return sqw_finish(pcw, (Ta_Dma*)dst);
 	s_fsm_state = (u8)e;
 	TaCalls++;
+}
+
+void FASTCALL do_sqw_nommu(u32 dest)
+{
+	do_sqw_flat<true>(dest);
+}
+
+// Plan 5.36 TA Peak Frame: the JIT calls this one; the peak is noted per frame, not per record.
+void FASTCALL do_sqw_nommu_frame(u32 dest)
+{
+	do_sqw_flat<false>(dest);
 }
 
 void ps3ta_store_dma(u32* data, u32 size)
@@ -1029,7 +1049,8 @@ void ps3ta_store_dma(u32* data, u32 size)
 		u8* dst = c->raw + c->raw_used;
 		memcpy(dst, data, bytes);
 		c->raw_used += bytes;
-		raw_note_peak(c);
+		if (!s_peak_frame)
+			raw_note_peak(c);
 		p = (Ta_Dma*)dst;
 		spe_note(c);
 	}
@@ -2206,6 +2227,7 @@ static void rth_print_stats()
 	double now = os_GetSeconds();
 	if (now - s_stat_t0 < STAT_WINDOW_S)
 		return;
+	raw_note_peak(s_ta);   // the stream still being stored
 	u32 r = s_stat_renders ? s_stat_renders : 1;
 	u32 decodes, live;
 	ps3tex_stats(&decodes, &live);
@@ -2692,6 +2714,7 @@ bool InitRenderer()
 	if (!TileAccel.Init() || !TaStore.Init())
 		return false;
 	s_ta_fast = get_ta_fast_preset() != 0;
+	s_peak_frame = g_ta_peak_frame_preset != 0;
 	ta_fsm_build();
 	ta_store_reset();
 	rth_start();
@@ -2780,6 +2803,7 @@ void StartRender()
 	// Render-done IRQ timing; games pace off these IRQs. This is the previous
 	// job's count (TR3 replays later), close enough for a clamped delay.
 	u32 vtx = rc->rend_nvtx;
+	sys_sync();   // plan 5.36: the countdowns start at the next slice end, as with the update every slice
 	if (get_render_delay_preset())
 	{
 		render_isp_pending_cycles = 800000;
@@ -2793,6 +2817,8 @@ void StartRender()
 		if (render_end_pending_cycles < 50000)
 			render_end_pending_cycles = 50000;
 	}
+	sys_kick();
+	raw_note_peak(rc);
 
 	// FB_W_SOF1 bit 24 = render to texture, not a displayed frame.
 	if (s_snap.fb_w_sof1 & 0x1000000)
