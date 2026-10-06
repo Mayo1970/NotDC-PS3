@@ -61,10 +61,10 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 |---|---|---|---|---|---|
 | P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | extends the parked Soul Calibur faults (section 0), 5.12 SPE list #4, TArender.MD TR5 item 3 |
 | P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | TArender.MD TR5 item 1: "the A/B was not run" |
-| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | extends RESEARCH.MD 3b |
+| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06; CD-DA miss stalls known, parked |
 | P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | extends RESEARCH.MD 3e |
 | P5 | Small speed items | speed | <= 1% each | small to medium | bind scan is 5.10 (not chosen) |
-| P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | explains section 0 "Other open items" (XMB exit) |
+| P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06; EMU_TERM still never runs |
 | P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | new |
 | P8 | Intensity colour clamp order | bug | brightness (Reicast: Red Dog) | small | new |
 | P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | TArender.MD TR4 covers the store stage only |
@@ -302,7 +302,19 @@ render" form:
   leaves `rth_busy()` false (`ps3/ps3_rend.cpp:845-853`), which would end
   the wait at once.
 
-### P3 Async GD-ROM reads + CD-DA read-ahead  `[ ]`
+### P3 Async GD-ROM reads + CD-DA read-ahead  `[x]` = plan 5.34, HW SUCCESS 2026-10-06
+
+- HW 2026-10-06 (plan 5.34): dense Crazy Taxi disc reads on the SH4
+  thread 50 -> 0 ms/s, 95% of dense windows at full speed (70-77%). Known,
+  parked (Matt): with + CD-DA, a ring miss at a song start or loop still
+  stalls the SH4 thread 24-85 ms (plan section 0).
+
+- Built 2026-10-06 (plan 5.34, Matt: "Go with P3"): EMULATION -> "GD-ROM
+  Async" OFF / DATA / + CD-DA. The 5.32 probe already passed the "measure
+  first" gate below (gd read ~5% of the SH4 thread in dense Crazy Taxi, max
+  330 ms); the `[gdr]` line measures per caller at every level. The disc
+  lock is an lv2 `sys_mutex` (as `ps3_main.cpp`), not an lwmutex. PIO reads
+  stay on the SH4 thread (measured; async only if they show).
 
 Ours: every disc read runs on the SH4 thread.
 - `FillReadBuffer()` (`dc/gdrom/gdromv3.cpp:208-220`) at SPI_CD_READ (:306)
@@ -642,7 +654,16 @@ Adventure intro FMV, `[stall] dma`.
 
 ## 2. Bugs
 
-### P6 The JIT loop never stops (XMB exit)  `[ ]`
+### P6 The JIT loop never stops (XMB exit)  `[x]` = plan 5.35, HW SUCCESS 2026-10-06
+
+- Correction (2026-10-06, plan 5.35): nothing calls `Term_DC()`, so
+  `EMU_TERM` does not run even when the loop returns. The loop fix alone
+  only removes the 3 s forced exit. The build saves the flash itself after
+  `sh4_cpu.Run()` returns (Matt: "Save the flash only"); the rest of
+  `EMU_TERM` stays unrun. Also needed: the PS3 no longer frees the DC
+  memory at exit (the SPUs write AICA RAM until the process ends), and the
+  loop frame keeps f14-f31 and cr2-cr4 (callee-saved; FPU PIN and JIT GUARD
+  REUSE write them).
 
 - Ours: `ngen_mainloop()` (`ps3/ps3_driver.cpp:4368-4387`) never reads the run
   flag, so `recSh4_Run` never returns. Every XMB exit takes the forced path

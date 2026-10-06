@@ -300,6 +300,7 @@ static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
 static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", NULL };
 static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
 static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
+static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -349,12 +350,16 @@ static Option s_emu[] = {
 	  "Cycle-accurate event scheduling for AICA, DMA and GD-ROM." },
 	{ "DMA Fix",         &g_dma_fix_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Delays DMA completion instead of finishing it instantly." },
+	{ "GD-ROM Async",    &g_gd_async_preset,      OPT_CHOICE, k_gdasync,   0, 0,0,0, NULL,
+	  "Disc reads on a worker thread; + CD-DA also reads music ahead. Set before boot." },
 	{ "Speed Limiter",   &g_speed_limiter_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Caps emulation at real hardware speed. No effect below 100%." },
 	{ "Render Delay",    &g_render_delay_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Hardware-like HOLLY interrupt delays, for games paced off them." },
 	{ "Exit Fix",        &g_exit_fix_preset,      OPT_CHOICE, k_exit_fix,  0, 0,0,0, NULL,
 	  "How the emulator shuts down when the XMB asks it to quit." },
+	{ "JIT Exit",        &g_jit_exit_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The JIT loop returns on an XMB exit and saves the flash. Set before boot." },
 };
 
 static Option s_audio[] = {
@@ -877,7 +882,7 @@ static int* const k_live_opts[] = {
 	&g_aica_kyonb_preset, &g_ta_sq_direct_preset,
 };
 
-#define MAX_INGAME_OPTS 64
+#define MAX_INGAME_OPTS 96
 static int s_run_val[MAX_INGAME_OPTS];    // the running emulator's values while the menu is open
 static int s_boot_val[MAX_INGAME_OPTS];   // boot-only options as saved for the next boot
 static bool s_boot_val_set;

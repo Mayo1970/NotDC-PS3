@@ -28,6 +28,7 @@
 #include "ps3/ps3_jit_pref.h"
 #include "ps3/ps3_jit_greuse.h"
 #include "ps3/ps3_jit_carry.h"
+#include "ps3/ps3_jit_exit.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -4520,6 +4521,10 @@ extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
 extern "C" int get_jit_code_cache_preset();
+extern "C" int get_jit_exit_preset();
+
+// P6 JIT EXIT, latched when the main loop is emitted: the loop can return to C on a stop request.
+static bool s_jit_exit;
 
 // One line per session with every JIT toggle in force: an install wipes nullDC.cfg, so a log needs its own.
 static void ps3_jit_dump_toggles()
@@ -4534,7 +4539,7 @@ static void ps3_jit_dump_toggles()
 	       get_jit_ifb_group(), get_jit_ifb_lomask());
 	printf("[jitcfg] bcache=%d dyn_ic=%d fpu_pin=%d jit_align=%d ifb_flush=%d"
 	       " hotblocks=%d fastmem=%d cr0=%d tfwd=%d JitFastmem=%d sqst=%d ftrv=%d cprop=%d dve=%d cyc=%d idle=%d"
-	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d ccache=%d frchg=%d pref=%d greuse=%d\n",
+	       " tcopy=%d sqmiss=%d mfocrf=%d fpul=%d ccache=%d frchg=%d pref=%d greuse=%d jexit=%d\n",
 	       get_bcache_preset(), get_dyn_ic_preset(), get_fpu_pin_preset(),
 	       get_jit_align_preset(), get_ifb_flush_preset(), get_hotblocks_preset(),
 	       get_fastmem_preset(), get_jit_cr0_preset(), get_jit_tfwd_preset(),
@@ -4542,7 +4547,8 @@ static void ps3_jit_dump_toggles()
 	       get_jit_constprop_preset(), get_jit_dve_preset(), get_jit_cycle_check_preset(),
 	       get_jit_idle_skip_preset(), get_jit_tcopy_preset(), get_jit_sq_miss_preset(),
 	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset(), get_jit_code_cache_preset(),
-	       get_jit_frchg_preset(), get_jit_prefetch_preset(), get_jit_guard_reuse_preset());
+	       get_jit_frchg_preset(), get_jit_prefetch_preset(), get_jit_guard_reuse_preset(),
+	       get_jit_exit_preset());
 }
 
 void ngen_mainloop()
@@ -4554,13 +4560,17 @@ void ngen_mainloop()
 	if (loop_code==0)
 	{
 		ps3_jit_dump_toggles();
+		s_jit_exit=get_jit_exit_preset()!=0;
 
 		loop_code=(void(*)())emit_GetCCPtr();
 		{
 			// PS3 ELFv1 frame (Dynarec.MD 3.2): 112-byte linkage area, LR at 16(sp), 16-byte alignment, back chain by
 			// stdu, and 8-byte register saves (stw would truncate r13..r31).
 			const u32 GPR_SAVE_OFS   = 112;
-			u32 stac_alloc_size      = GPR_SAVE_OFS + 19*8;   // 264
+			// JIT EXIT returns to C, so it also keeps the ABI's f14-f31 (FPU PIN) and cr2-cr4 (JIT GUARD REUSE).
+			const u32 FPR_SAVE_OFS   = GPR_SAVE_OFS + 19*8;   // 264
+			const u32 CR_SAVE_OFS    = FPR_SAVE_OFS + 18*8;   // 408
+			u32 stac_alloc_size      = s_jit_exit ? CR_SAVE_OFS + 8 : GPR_SAVE_OFS + 19*8;
 			stac_alloc_size          = (stac_alloc_size + 15) & ~15u;
 
 			ppc_mfspr(ppc_r0,ppc_spr_lr);
@@ -4572,6 +4582,8 @@ void ngen_mainloop()
 			{
 				ppc_std(ppc_r13+i,GPR_SAVE_OFS+i*8,ppc_sp);
 			}
+			if (s_jit_exit)
+				emit_exit_saves(FPR_SAVE_OFS,CR_SAVE_OFS);
 
 
 			//cntx base
@@ -4612,9 +4624,20 @@ void ngen_mainloop()
 			ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);			// rv == 0 ?
 			ppc_label* no_intr=ppc_CreateLabel();
 			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq no_intr (skip handler)
+			ppc_label* exit_lbl=0;
 			{
 				reg_flush_all();
 				ppc_call_c(UpdateSystem_handle_event);
+				if (s_jit_exit)
+				{
+					// JIT EXIT: _no_event() also takes this path on a stop request; a clear run flag leaves the loop.
+					static_assert(sizeof(sh4_int_bCpuRun)==1,"lbz reads the run flag");
+					ppc_lip(ppc_r3,(void*)&sh4_int_bCpuRun);
+					ppc_lbz(ppc_r3,ppc_r3,0);
+					ppc_cmpi(ppc_cr0,ppc_r3,0,0);
+					exit_lbl=ppc_CreateLabel();
+					ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);	// beq exit
+				}
 				reg_reload_all();
 			}
 			no_intr->MarkLabel();
@@ -4622,6 +4645,14 @@ void ngen_mainloop()
 			//
 			ppc_jump(loop_no_update);
 			//right
+
+			if (exit_lbl)
+			{
+				// GPRs and next_pc are in Sh4cntx already (cold path); the FPU PIN bank goes there too.
+				exit_lbl->MarkLabel();
+				reg_flush_all_fpu();
+				emit_exit_epilogue(GPR_SAVE_OFS,FPR_SAVE_OFS,CR_SAVE_OFS,stac_alloc_size);
+			}
 
 
 		} //that was mainloop
@@ -4689,7 +4720,13 @@ void ngen_mainloop()
     make_address_range_executable((u8*)loop_code, (u8*)emit_GetCCPtr()-(u8*)loop_code);
 	}
 
+	g_jit_exit_on=s_jit_exit;
 	ppc_enter_code((void*)loop_code);
+
+	// JIT EXIT: back in C after a stop request, with the guest's rounding mode still in the FPSCR.
+	g_jit_exit_on=false;
+	__asm__ volatile("mtfsfi 7,0" ::: "memory");
+	printf("[jit] main loop returned: the SH4 stopped (JIT EXIT)\n");
 }
 
 extern "C" int get_jit_safe_preset();

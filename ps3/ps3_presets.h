@@ -61,6 +61,8 @@ extern int g_jit_code_cache_preset;
 extern int g_jit_frchg_preset;
 extern int g_jit_prefetch_preset;
 extern int g_jit_guard_reuse_preset;
+extern int g_jit_exit_preset;
+extern int g_gd_async_preset;
 extern int g_arm7_jit_preset;
 extern int g_ifb_probe_preset;
 extern int g_hotblocks_preset;

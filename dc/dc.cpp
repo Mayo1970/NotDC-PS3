@@ -23,6 +23,7 @@ extern void FASTCALL armReset(bool Manual);
 // ELF boot hook – defined in nullDC.cpp, called after every CPU reset
 // so the ELF entry point overrides the BIOS reset vector.
 extern "C" void dc_elf_pre_run_hook();
+extern "C" int get_jit_exit_preset();
 
 static inline void arm_Term()             { armTerm(); }
 static inline void arm_Reset(bool manual) { armReset(manual); }
@@ -84,6 +85,9 @@ static emu_thread_rv_t ExecuteEmulatorCommand(emu_thread_state_t cmd)
 			dc_running = true;
 			sh4_cpu.Run();
 			snd_thread_stop();   // 5.14: resets and term run with the sound on this thread
+			// P6 JIT EXIT: Run returns only on a stop request (XMB exit), and EMU_TERM never runs on the PS3.
+			if (get_jit_exit_preset())
+				mem_SaveFlash();
 			dc_running = false;
 			break;
 

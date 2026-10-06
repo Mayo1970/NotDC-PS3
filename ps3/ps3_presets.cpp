@@ -69,6 +69,8 @@ int g_jit_code_cache_preset = 2;  // SH4 code cache in use: 0 = 6 MB, 1 = 12 MB,
 int g_jit_frchg_preset     = 0;   // 1 = an FPSCR sync that only flips FR swaps the pinned bank inline (5.29)
 int g_jit_prefetch_preset  = 0;   // 1 = a pref outside the store queue prefetches the RAM line with dcbt (5.30)
 int g_jit_guard_reuse_preset = 0; // 1 = a memory op whose base passed its check earlier in the block skips it (5.31)
+int g_jit_exit_preset      = 0;   // 1 = an XMB exit returns from the JIT loop and saves the flash (OPTIMIZATION_POTENTIAL P6)
+int g_gd_async_preset      = 0;   // disc reads on a worker thread: 1 data, 2 also a CD-DA read-ahead (P3)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
@@ -141,6 +143,8 @@ static const CfgItem s_items[] = {
 	{ "JitFrchg",      &g_jit_frchg_preset },
 	{ "JitPrefetch",   &g_jit_prefetch_preset },
 	{ "JitGuardReuse", &g_jit_guard_reuse_preset },
+	{ "JitExit",       &g_jit_exit_preset },
+	{ "GdAsync",       &g_gd_async_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -311,6 +315,8 @@ int get_jit_fpul_moves_preset() { return g_jit_fpul_moves_preset; }
 int get_jit_frchg_preset()     { return g_jit_frchg_preset; }
 int get_jit_prefetch_preset()  { return g_jit_prefetch_preset; }
 int get_jit_guard_reuse_preset() { return g_jit_guard_reuse_preset; }
+int get_jit_exit_preset()      { return g_jit_exit_preset; }
+int get_gd_async_preset()      { return g_gd_async_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }

@@ -13,9 +13,37 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-06)
 
+**Done: 5.34 GD-ROM Async (OPTIMIZATION_POTENTIAL P3) and 5.35 JIT EXIT
+(P6), HW SUCCESS (Matt 2026-10-06: "SUCCESS for both then").** Both stay
+default OFF (defaults are Matt's call). Known, parked (Matt: "place the
+loop bug in the known list ... we will catch up with it waaay later"):
+with + CD-DA, a ring miss (song start or loop) still stalls the SH4 thread
+24-85 ms; options: silence for the missed sector, or start the read-ahead
+at the play command. Matt 2026-10-06: "Can we test P6 with another item of
+my choice, then?", then "Go with P3". Built and PC tested, package of
+17:35 (`build/notdc_ps3.pkg`); steps in section 5 after 5.2. HW
+2026-10-06: Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, 95% of
+dense windows at full speed (70-77%); Matt: "very, very smooth"; Sonic
+"ran better"; three clean XMB exits with the flash saved. ChuChu's CD-DA
+ring missed after loops: one-line fix (Matt), package of 18:10. ChuChu
+re-test: 99.4% hits (was 87%), but each of the 11 misses still stalls the
+SH4 thread 24-85 ms (the known item above).
+EMULATION -> "GD-ROM Async" (`GdAsync`: OFF / DATA / + CD-DA) and "JIT
+Exit" (`JitExit`: OFF / ON), both default OFF, set before boot. 5.34: a
+GD-ROM DMA read goes to a worker thread and the DMA waits for it in
+emulated time, so the SH4 thread stops waiting on the disk (dense Crazy
+Taxi: ~50 ms/s and the 330 ms dip, 5.32/5.33); + CD-DA also reads CD-DA
+ahead. A `[gdr]` line gives the reads per caller at every level. 5.35: an
+XMB exit returns from the JIT loop (no 3 s forced exit) and saves
+`dc_flash_wb.bin` (Matt: "Save the flash only"). P6 was wrong on one point:
+nothing calls `Term_DC()`, so `EMU_TERM` stays unrun. PC: `gdasync_check`
+ALL PASS, 17 of 17 planted bugs fail (after the fix); `exit_check` PASS, 10
+of 10. UDP: this session's listener (PID 7484, `ps3log_534_run1.txt`)
+still runs; start a new one only when Matt says so.
+
 **Done: 5.2 JIT Carry (Matt 2026-10-06: "I'd say to work on 5.2 since It's
 a known issue."), default ON in the source since 2026-10-06 (Matt: "Sure"),
-not in a package yet.** The carry ops (addc, subc, negc, addv, subv, div1)
+in the packages since 17:35.** The carry ops (addc, subc, negc, addv, subv, div1)
 took CA and OV from 64 bits. The new forms in `ps3/ps3_jit_carry.h` use no
 XER: 64-bit arithmetic on extended operands, T from bit 32 or from the
 overflow test. EMULATION -> "JIT Carry" (`JitCarry`), set before boot. PC:
@@ -29,7 +57,9 @@ play equal. Matt: "Sonic felt choppier"; the log shows no cause in 5.2
 Found, not fixed: JitMac (5.3) has the same 64-bit carry defect.
 
 **Active: Crazy Taxi at full speed (Matt 2026-10-05: "I'd like to get Crazy
-Taxi in full speed").** Dense Crazy Taxi (`run528b.txt`): VPS 59.2, SPEED
+Taxi in full speed").** With 5.34 DATA (2026-10-06): dense SPEED 100.0%,
+95% of dense windows at full speed; Matt: "Crazy Taxi felt like full
+speed". Before it, dense Crazy Taxi (`run528b.txt`): VPS 59.2, SPEED
 98.7%, 68% of dense windows at full speed; 12K+ vertices 95.8%. The SH4
 thread is the limit. Done: 5.16 SPE Draw (same load +0.5%, render busy 56
 -> 32%; default ON since the package of 20:13, Matt) and SPE Wait Yield
@@ -493,9 +523,11 @@ Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
 JIT C-Calls (VIDEO / DEBUG) give `[IFB]`/`[CC]`/`[ARMJIT]`; the `[rend] busy=`
 `[rend] draw split %:` and `[rend] tex split %:` lines are always on.
 
-Other open items: the XMB exit always takes the "SH4 did not stop in 3 s"
-fallback (seen in every run, not new). JitCarry was broken on PS3; fixed in
-5.2 (HW 2026-10-06).
+Other open items: the XMB exit takes the "SH4 did not stop in 3 s"
+fallback unless EMULATION -> JIT Exit is ON (5.35, HW SUCCESS 2026-10-06).
+Known, parked (Matt 2026-10-06): 5.34's CD-DA ring misses at song starts
+and loops stall the SH4 thread 24-85 ms each (section 0, 5.34).
+JitCarry was broken on PS3; fixed in 5.2 (HW 2026-10-06).
 Why the ARM7 JIT time saving did not show as SPEED: likely SMT sharing with
 the render thread (5.6).
 
@@ -847,6 +879,8 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.31 | JIT GUARD REUSE: an access skips the RAM or SQ check its base register passed earlier in the block (a CR flag) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (greuse_check PASS, 25/25 mutants fail), VIDEO / DEBUG "JIT GUARD REUSE"; package of 21:50; HW 2026-10-05: clean, 20994 reuse sites, same load +0.1% against `run516` (noise) |
 | 5.32 | Stall probe: the SH4 thread's slowest frame each second, split by cause (rides on JIT C-Calls) | `[x]` HW 2026-10-05 (package of 22:22, `runstall_ct.txt`): the Crazy Taxi dip is one 330 ms disc read; dense play ~61 ms/s in disc reads |
 | 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
+| 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default OFF; CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each |
+| 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default OFF; built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
@@ -4172,6 +4206,136 @@ clock by VPS.
       own `nullDC.cfg` already has it ON.
 - `jit_fmov` does not apply: it needs the Wii DSI fastmem, which is off.
 - Dropped: `SmcCheckLevel` (the guard is 2 halfword loads), `regalloc`, SSA.
+- 5.34 GD-ROM Async (OPTIMIZATION_POTENTIAL P3; Matt 2026-10-06: "Go with
+  P3", to test with 5.35). Built and PC tested, package of 17:35, HW
+  pending.
+  - Why: dense Crazy Taxi spends ~50 ms/s (~5%) of the SH4 thread in disc
+    reads, and the deepest dip of every run is one 330 ms read, the first
+    after seconds of no reads (5.32, 5.33). The cost is per request, so
+    batching cannot fix it (5.33).
+  - `ps3/ps3_gdasync.cpp`: one worker thread (prio 999, above the SH4 1001
+    and render 1000 threads; it waits on the disk), a semaphore and
+    `__atomic` flags as in `ps3_sndthr.cpp`, and an lv2 mutex around every
+    drive call (`libGDR_ReadSectorLocked`, TOC, session info): the CDI
+    reader's FILE and buffers are shared.
+  - DATA: `FillReadBuffer` kicks the worker. `UpdateGDRom` returns while
+    the fill is in flight; a refill mid-DMA ends the transfer early (only
+    after a full 32-sector batch, so the length stays 32-aligned), and
+    `SB_GDLEND` counts only the bytes that moved. `SPI_CD_READ`, the ATA
+    soft reset and the GD-ROM reset wait for a fill in flight (an aborted
+    read). PIO reads stay on the SH4 thread.
+  - + CD-DA: a 64-sector ring keyed by FAD (slot = FAD & 63). The SH4
+    thread copies a sector when its tag matches and checks the tag again
+    after the copy; else it reads the sector itself. It asks for more below
+    32 sectors ahead or after a miss. The worker reads 16 sectors a batch,
+    data fills first; a seek or a loop starts a new run.
+  - `[gdr]` line each second with reads, per window: `sh4: dma, pio, cdda
+    n/sectors ms(max)`, `wait`, `worker: fill, ra`, `ra hit/miss`.
+  - `gda_stop()` runs before `main` returns (the 5.35 path), so no read is
+    in flight while `exit()` closes the image file.
+  - PC (WSL): `misc/gdasync_check/run.sh` builds the real `gdromv3.cpp` and
+    `ps3_gdasync.cpp` with pthreads for lv2 and a fake drive (random delays
+    up to 3 ms, an error if two threads are in it). Random DMA reads in
+    random DMA pieces, aborted reads (NOP or soft reset), CD-DA play, seek
+    and loops pulled during the DMAs; bytes, interrupts and BSY against a
+    plain model. ALL PASS at levels 0, 1 and 2 (ThreadSanitizer and -O2, 5
+    seeds each; steady play 2 misses in 3000 sectors, ~2 misses a seek).
+    `mutate.py`: 16 of 16 planted bugs fail (17 of 17 after the loop fix
+    below).
+  - Build: the 7 old warnings, `.got` 0xC068, 0 `r2off`; `.bss` +188 KB
+    (the ring).
+  - Expected: `[stall] gd read` in dense Crazy Taxi ~50 -> ~0 ms/s and the
+    330 ms stall off the SH4 thread (the game waits for that read in
+    emulated time instead). The SPEED gain is not known.
+- 5.35 JIT EXIT (OPTIMIZATION_POTENTIAL P6; Matt 2026-10-06: test it with
+  5.34; at exit "Save the flash only"). Built and PC tested, package of
+  17:35, HW pending.
+  - P6 was wrong on one point: nothing calls `Term_DC()`, so `EMU_TERM` and
+    `mem_Term()`'s flash save do not run even when the loop returns.
+  - `UpdateSystem_no_event()` also returns nonzero on a stop request (a
+    flag set for the JIT run). The main loop's cold path then reads
+    `sh4_int_bCpuRun`; when it is clear, it jumps to an epilogue
+    (`ps3/ps3_jit_exit.h`): the FPU PIN bank to `Sh4cntx`, then f14-f31,
+    cr2-cr4 and r13-r31 from the frame, then `blr`. Only with JIT Exit ON
+    does the prologue save f14-f31 and the CR (frame 272 -> 416 bytes); OFF
+    emits the old loop.
+  - Back in C: the FPSCR to round-to-nearest and `[jit] main loop
+    returned`. `dc.cpp` then saves `dc_flash_wb.bin` (`mem_SaveFlash()`,
+    `mem_Term()`'s code), and `EmuMain` returns to `main`. The PS3 no longer
+    frees the DC memory there: the SPUs write AICA RAM until the process
+    ends. The 3 s fallback stays.
+  - Also: `ps3_menu.cpp` `MAX_INGAME_OPTS` 64 -> 96. The pages had 67 rows,
+    so the in-game menu's next-boot handling missed the last JIT SPEED
+    rows; now 69 rows.
+  - PC (WSL): `misc/exit_check/run.sh` checks the words against ppu-as (63),
+    then runs the prologue, a clobber and the epilogue on a PPC64 model:
+    PASS, 210064 checks. `mutate.py`: 10 of 10 planted bugs fail. Found on
+    the way: `ppc_bclrx(BO_ALWAYS,BI_CR0_EQ,0)` writes 0x4E820020 (BI is
+    unused); the epilogue emits ppu-as's `blr`, 0x4E800020.
+  - HW test steps for 5.34 + 5.35 (package of 17:35):
+    1. Install. The install keeps nullDC.cfg, so check: SH4 Clock 200,
+       Dynarec ON, JIT Carry ON; EMULATION -> GD-ROM Async DATA, JIT Exit
+       ON; VIDEO / DEBUG -> JIT C-Calls ON (the `[stall]` line).
+    2. UDP listener on port 18194, only when Matt says so.
+    3. Boot 1: Crazy Taxi at 60 Hz, ~150 s through the dip, then PS button
+       -> Quit Game. Log: `[gdr] GD-ROM Async DATA`, `[jitcfg] ... jexit=1`;
+       in play `[gdr]` with worker fills and `[stall]` gd read near 0; no
+       fault. At the exit: `[jit] main loop returned`,
+       `SaveSh4FlashromToFile: saved flash`, `[gdr] worker stopped`, `[ps3]
+       EmuMain returned 0`, and no `SH4 did not stop in 3 s`.
+    4. Boot 2: ChuChu Rocket (CD-DA music) with GD-ROM Async + CD-DA, menu
+       and one stage, ~60 s: the music plays right; `[gdr] ... ra hit N
+       miss M` with few misses. The boot log shows `Loaded dc_flash_wb.bin
+       (writeback)` from boot 1. Exit by the XMB again.
+    5. Optional, boot 3: Sonic Adventure (DATA), a level load and some
+       play: the loads and the graphics are right.
+    6. On a fault: the same boot with GD-ROM Async OFF; for an exit fault,
+       JIT Exit OFF.
+  - HW 2026-10-06 (package of 17:35, our listener at Matt's request; log
+    `ps3log_534_run1.txt`, cut into `run534_ct.txt`, `run534_chuchu.txt`
+    and `run534_sonic.txt` in the scratchpad of session 3744e9dd). Matt's
+    cfg: Carry=1, dyn_ic=2, dve=1, sqmiss=2, greuse=1, frchg=0, pref=0,
+    jexit=1, JIT C-Calls ON.
+    - Boot 1, Crazy Taxi (DATA), 195 s. Matt: "Crazy Taxi felt like full
+      speed, very, very smooth!" Dense windows (6K+ vertices, 55): `[stall]`
+      gd read 52.4 ms/s (5.2 run) and 49.9 (5.33 run) -> 0.0; SPEED 99.5%
+      -> 100.0%; windows at full speed 77% / 70% -> 95%. Worst frame 67.7
+      ms in game code (was a 328-700 ms disc read); lowest VPS 55.3 (20.4
+      / 43.3). The worker: 729 fills, 16876 sectors, 7.1 s, the longest
+      350, 337 and 321 ms; no read and no wait on the SH4 thread. `sys`
+      rose 65 -> 75 ms/s (not explained, no speed cost).
+    - The XMB exit after each boot: `[jit] main loop returned`, the flash
+      saved, `[gdr] worker stopped`, `EmuMain returned 0`, `[aud] shut
+      down`; no "did not stop in 3 s". The next boots loaded
+      `dc_flash_wb.bin (writeback)`.
+    - Boot 2, ChuChu Rocket (+ CD-DA): the echo is unchanged (section 6).
+      Data: 177 fills, the longest 49 ms, no waits. CD-DA ring: 5195 hits,
+      759 misses (87%), in runs (8 s at 75 misses/s). Cause: a loop or a
+      replay back inside the worker's run kept the run, but the 64-slot
+      ring no longer held those sectors, so the worker read nothing until
+      play passed its end. Each miss is a read on the SH4 thread: ~0.2 ms,
+      some 28-51 ms (it waited for a worker read).
+    - Boot 3, Sonic Adventure (DATA): 964 fills (6.1 s, the longest 329
+      ms), 4 PIO reads on the SH4 thread, no waits. Matt: "It ran better."
+  - Fix (Matt: "implement the one line fix"): `ra_batch()` also starts a
+    new run when play is more than RA_SLOTS behind the run's end. PC: a new
+    loop phase (a replay, a long loop, a short loop): 1985 misses in 3100
+    sectors before the fix, 27-33 after; `run.sh` ALL PASS. Package of
+    18:10. Next: ChuChu Rocket again with + CD-DA (`ra hit/miss`).
+  - HW 2026-10-06, package of 18:10 (`run534_chuchu2.txt`, 53 s): ChuChu
+    Rocket (+ CD-DA), Matt: "Still same." The ring: 1684 hits, 11 misses
+    (99.4%; was 87%), no run of misses. Each miss still costs the SH4
+    thread 24-85 ms: the read waits for the worker's read in flight (a
+    data fill of 13-53 ms or a read-ahead batch) and seeks. The misses are
+    1-2 in each of 8 seconds (likely song starts and loops; the log does
+    not show the play commands). Clean XMB exit, the flash saved.
+  - `mutate.py` after the fix: 17 of 17 planted bugs fail (one new: the
+    run kept after a loop back inside it, the HW bug).
+  - Matt 2026-10-06: "SUCCESS for both then." Both stay default OFF. The
+    CD-DA miss stalls go to the known list, parked: "we will catch up with
+    it waaay later". Options when it comes back: silence for the missed
+    sector (no stall, a 13 ms gap), or start the read-ahead at the play
+    command (fewer misses, a miss can still stall).
 
 ---
 

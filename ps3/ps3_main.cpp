@@ -7,6 +7,7 @@
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_phase.h"
+#include "ps3_gdasync.h"
 #include "config/config.h"
 #include "plugins/plugin_manager.h"
 #include "dc/sh4/sh4_registers.h"
@@ -305,6 +306,8 @@ int main(int argc, char* argv[])
 		rv = EmuMain(1, av);
 	}
 	printf("[ps3] EmuMain returned %d, exiting to XMB\n", rv);
+	// P3: no disc read may run while exit() closes the image file.
+	gda_stop();
 
 shutdown:
 

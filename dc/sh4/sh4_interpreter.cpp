@@ -321,6 +321,9 @@ int FASTCALL UpdateSystem()
 	return UpdateINTC();
 }
 
+// P6 JIT EXIT, set by the JIT for its run: a stop request then also takes the main loop's cold path, which returns.
+bool g_jit_exit_on;
+
 // Split UpdateSystem() for the JIT: _no_event() does all of it except the interrupt dispatch (touches no
 // GPRs, returns nonzero if one is pending); _handle_event() does only the dispatch.
 int FASTCALL UpdateSystem_no_event()
@@ -340,7 +343,7 @@ int FASTCALL UpdateSystem_no_event()
 	if (get_sched_preset())
 		sh4_sched_tick(s_timeslice);
 
-	return UpdateINTC_pending();
+	return UpdateINTC_pending() | (int)(g_jit_exit_on && !sh4_int_bCpuRun);
 }
 
 int FASTCALL UpdateSystem_handle_event()

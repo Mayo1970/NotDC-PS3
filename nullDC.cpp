@@ -210,7 +210,8 @@ int EmuMain(int argc, char* argv[])
 	int rv=main___(argc,argv);
 	printf("[nullDC] EmuMain: main___() returned rv=%d\n", rv);
 
-#ifndef _ANDROID
+// The PS3 keeps DC memory: SPUs and the render thread use it until the process ends (P6 JIT EXIT returns here).
+#if !defined(_ANDROID) && HOST_OS != OS_PS3
 	_vmem_release();
 #endif
 

@@ -10,6 +10,8 @@
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered GD-DMA completion
 #include "ps3/ps3_stall.h"
+#include "ps3/ps3_gdasync.h"
+#include "ps3_timebase.h"
 
 // SCHED preset: the GD-DMA end IRQ goes through the deadline scheduler,
 // so it fires in order with the other DMA/render completions.
@@ -174,12 +176,22 @@ void nilprintf(...){}
 #define printf_spi nilprintf
 #define printf_spicmd printf
 
+// P3: a disc read on the SH4 thread, timed per caller for the [gdr] line.
+static void gd_read(int who,u8* buff,u32 fad,u32 count,u32 secsz)
+{
+	const u64 t0=gettime();
+	libGDR_ReadSector(buff,fad,count,secsz);
+	gda_count(who,count,gettime()-t0);
+}
+
 void FASTCALL gdrom_get_cdda(s16* sector)
 {
 	//silence ! :p
 	if (cdda.playing)
 	{
-		libGDR_ReadSector((u8*)sector,cdda.CurrAddr.FAD,1,2352);
+		// P3 + CD-DA: the worker's read-ahead has the sector most of the time.
+		if (!gda_cdda((u8*)sector,cdda.CurrAddr.FAD))
+			gd_read(GDR_CDDA,(u8*)sector,cdda.CurrAddr.FAD,1,2352);
 		cdda.CurrAddr.FAD++;
 		if (cdda.CurrAddr.FAD==cdda.EndAddr.FAD)
 		{
@@ -197,6 +209,7 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 				cdda.CurrAddr.FAD=cdda.StartAddr.FAD;
 			}
 		}
+		gda_cdda_next(cdda.playing,cdda.CurrAddr.FAD);
 	}
 	else
 	{
@@ -215,7 +228,11 @@ void FillReadBuffer()
 
 	read_buff.cache_size=count*read_params.sector_type;
 
-	libGDR_ReadSector(read_buff.cache,read_params.start_sector,count,read_params.sector_type);
+	// P3: with GD-ROM Async the worker reads it, and UpdateGDRom holds the DMA until it lands.
+	if (gda_async())
+		gda_fill(read_buff.cache,read_params.start_sector,count,read_params.sector_type);
+	else
+		gd_read(GDR_DMA,read_buff.cache,read_params.start_sector,count,read_params.sector_type);
 	read_params.start_sector+=count;
 	read_params.remaining_sectors-=count;
 }
@@ -294,7 +311,7 @@ void gd_set_state(gd_states state)
 					sector_count=27;
 					next_state=gds_readsector_pio;
 				}
-				libGDR_ReadSector((u8*)&pio_buff.data[0],read_params.start_sector,sector_count,
+				gd_read(GDR_PIO,(u8*)&pio_buff.data[0],read_params.start_sector,sector_count,
 											read_params.sector_type);
 				read_params.start_sector+=sector_count;
 				read_params.remaining_sectors-=sector_count;
@@ -382,6 +399,7 @@ void gd_setdisc()
 }
 void gd_reset()
 {
+	gda_wait();   // P3: a fill in flight lands before the drive resets
 	//Reset the drive
 	gd_setdisc();
 	gd_set_state(gds_waitcmd);
@@ -579,6 +597,7 @@ void gd_process_spi_cmd()
 
 			u32 sector_count = (readcmd.b[8]<<16) | (readcmd.b[9]<<8) | (readcmd.b[10]);
 
+			gda_wait();   // P3: a fill still in flight (an aborted read) lands before read_buff is armed again
 			read_params.start_sector=start_sector;
 			read_params.remaining_sectors=sector_count;
 			read_params.sector_type = sector_type;//yeah i know , not realy many types supported ...
@@ -1093,6 +1112,9 @@ void UpdateGDRom()
 	StallScope st_(ST_GDDMA);
 	if(!(SB_GDST&1) || !(SB_GDEN &1))
 		return;
+	// P3: read_buff is the worker's until its fill lands; the DMA goes on at a later update.
+	if (gda_busy())
+		return;
 
 	//SB_GDST=0;
 
@@ -1128,6 +1150,9 @@ void UpdateGDRom()
 				verify(read_params.remaining_sectors>0);
 				//buffer is empty , fill it :)
 				FillReadBuffer();
+				// P3: the rest waits for the fill. Only full 32-sector batches end early, so len stays 32-aligned.
+				if (gda_busy())
+					break;
 			}
 
 			//transfer up to len bytes
@@ -1151,13 +1176,18 @@ void UpdateGDRom()
 		}
 	}
 	else
+	{
 		msgboxf("GDROM: SB_GDDIR %X (TO AICA WAVE MEM?)",MBX_ICONERROR, SB_GDDIR);
+		len=0;   // counted as moved, as before
+	}
 
 	//SB_GDLEN = 0x00000000; //13/5/2k7 -> acording to docs these regs are not updated by hardware
 	//SB_GDSTAR = (src + len_backup);
 
-	SB_GDLEND+= len_backup;
-	SB_GDSTARD+= len_backup;//(src + len_backup)&0x1FFFFFFF;
+	// P3: only the bytes that moved; a fill in flight ends the transfer early.
+	const u32 moved=len_backup-len;
+	SB_GDLEND+= moved;
+	SB_GDSTARD+= moved;//(src + len_backup)&0x1FFFFFFF;
 
 	if (SB_GDLEND==SB_GDLEN)
 	{
@@ -1231,6 +1261,7 @@ void gdrom_reg_Term()
 
 void gdrom_reg_Reset(bool Manual)
 {
+	gda_wait();   // P3: as gd_reset
 	gd_spinup_cycles = (s64)SH4_CLOCK_EFF * GD_SPINUP_SECONDS;
 	if (gd_disk_type == NoDisk)
 		SecNumber.Status = GD_BUSY;

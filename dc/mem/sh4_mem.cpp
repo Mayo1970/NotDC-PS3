@@ -165,18 +165,23 @@ void mem_Reset(bool Manual)
 
 void dc_flash_restore_region(); // flash_fix.cpp
 
+// Persist flash (NVRAM) back to disk, with the console's own region.
+void mem_SaveFlash()
+{
+	dc_flash_restore_region();
+	char* temp_path = GetEmuPath("data/");
+	strcat(temp_path, "dc_flash_wb.bin");
+	SaveSh4FlashromToFile(temp_path);
+	free(temp_path);
+}
+
 void mem_Term()
 {
 	MMU_Term();
 	sh4_internal_reg_Term();
 	sh4_area0_Term();
 
-	// Persist flash (NVRAM) back to disk, with the console's own region.
-	dc_flash_restore_region();
-	char* temp_path = GetEmuPath("data/");
-	strcat(temp_path, "dc_flash_wb.bin");
-	SaveSh4FlashromToFile(temp_path);
-	free(temp_path);
+	mem_SaveFlash();
 
 	flash_b.Free();
 	bios_b.Free();

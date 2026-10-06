@@ -34,6 +34,8 @@ void arm_jit_census_dump(double seconds);
 void aica_arm7s_dump(double wall_s);
 // [ta-split] TA store path split (plugs/drkPvr/ta.cpp, plan 5.17), always on.
 void ta_split_dump(double seconds);
+// [gdr] disc reads per caller (ps3/ps3_gdasync.cpp, OPTIMIZATION_POTENTIAL P3), on when there were reads.
+void gda_stats(double secs);
 
 // Host-side exit-combo poll (EXIT FIX = 3): driven by the scanline counter, which runs whatever the
 // guest does, so a game that stops polling Maple (or never fires vblank) can still be exited.
@@ -365,6 +367,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
                 ta_split_dump(tdiff);
+                gda_stats(tdiff);
                 snd_thread_stats();
                 arm_spe_stats(tdiff);
 #endif
