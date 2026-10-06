@@ -1,19 +1,22 @@
 // OPTIMIZATION_PLAN 5.12: one SPU thread runs a command ring the SH4 thread fills at the TA batch points.
 // It decodes each raw range into shadow lists and answers every FENCE; the render thread compares (S2) or draws (S3) them.
 #include "ps3_spe.h"
+#include "ps3_stall.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 #include <malloc.h>
 #include <sys/spu.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 
 extern "C" const u8 spe_bell_elf[];
 extern "C" int get_spe_bell_preset();
 extern "C" int get_spe_draw_preset();
+extern "C" int get_spe_wait_yield_preset();
 
 bool g_spe_on;
 bool g_spe_draw;
+static bool s_wait_yield;  // plan 5.16: the fence wait hands its dispatch cycles to the SH4 thread
 
 static SpeBell s_bell;
 static SpeEcho s_echo;
@@ -92,6 +95,7 @@ static SpeCmd* ring_slot()
 {
 	if (s_head - s_tail_seen >= SPE_RING)
 	{
+		StallScope st_(ST_SPE);
 		s_full_waits++;
 		const u64 t0 = gettime();
 		while (s_head - (s_tail_seen = echo()->tail) >= SPE_RING)
@@ -133,6 +137,7 @@ void ps3spe_wait_cmd(u32 cmd)
 {
 	if (!g_spe_on || (s32)(echo()->tail - cmd) >= 0)
 		return;
+	StallScope st_(ST_SPE);
 	const u64 t0 = gettime();
 	while ((s32)(echo()->tail - cmd) < 0)
 	{
@@ -165,8 +170,17 @@ const SpeFence* ps3spe_wait_fence(u32 id)
 	// S3: after a RESET that waited for a draw, the SPU still has to decode the frame.
 	const u64 budget = g_spe_draw ? ps3_timebase_hz / 50 : ps3_timebase_hz / 200;
 	const u64 t0 = gettime();
+	u32 spins = 0;
 	while ((s32)(echo()->fence - id) < 0)
 	{
+		if (s_wait_yield)
+		{
+			// db16cyc x4 (PPE nop forms): the SH4 thread on the same core takes these dispatch cycles.
+			// The timebase is read only every 16th turn.
+			__asm__ volatile("or 31,31,31\n\tor 31,31,31\n\tor 31,31,31\n\tor 31,31,31");
+			if (++spins & 15)
+				continue;
+		}
 		if (gettime() - t0 > budget)
 		{
 			dump_ls_echo("late fence");
@@ -257,6 +271,7 @@ bool ps3spe_init()
 	if ((!get_spe_bell_preset() && !get_spe_draw_preset()) || s_up)
 		return s_up;
 	g_spe_draw = get_spe_draw_preset() != 0;
+	s_wait_yield = get_spe_wait_yield_preset() != 0;
 
 	ps3spe_sys_init();
 	if (!s_out)
@@ -324,7 +339,8 @@ bool ps3spe_init()
 		ps3spe_term();
 		return false;
 	}
-	printf("[spe] SPU thread up, %s\n", g_spe_draw ? "draw from SPU lists (S3)" : "compare with the PPU replay (S2)");
+	printf("[spe] SPU thread up, %s, fence wait %s\n", g_spe_draw ? "draw from SPU lists (S3)" : "compare with the PPU replay (S2)",
+	       s_wait_yield ? "yields (db16cyc)" : "spins");
 	ring_selftest();
 	g_spe_on = true;
 	return true;

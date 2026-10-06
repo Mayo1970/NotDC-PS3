@@ -1,29 +1,14 @@
 #!/usr/bin/env python3
-# Generator for the ARM7DI cached (threaded) interpreter.
-#
-# Emits arm7_cached_gen.inc, which arm7_cached.cpp #includes TWICE, once with
-# GEN_DECODE defined (decoder: opcode -> dispatch label + operand fields) and
-# once with GEN_LABELS defined (the computed-goto label bodies). Keeping both in
-# one generated file guarantees the decode side and the label side never drift.
-#
-# Why a generator: the data-processing and LDR/STR spaces are a cross product of
-# (operation x shifter-form) and (L,B,P,U,W,offset-form). Hand-writing ~150
-# threaded labels is error-prone; this expands them mechanically from the same
-# tables the hand-written .cpp uses (DO_*, FORM_* macros).
-#
-# Run:  python3 gen_arm7_cached.py > arm7_cached_gen.inc
-#
-# Operand field convention (struct ARM7CACHEOP in arm7_cached.cpp):
-#   r0 = Rd (dest)   r1 = Rn (base/src1)   r2 = Rm (operand reg)
-#   cond = opcode[31:28]
-#   imm  = shift amount | Rs index | rotated immediate | raw opcode (mem ops)
+# Builds arm7_cached_gen.inc (python3 gen_arm7_cached.py > arm7_cached_gen.inc): the ~150 ARM7DI threaded labels
+# (error-prone by hand) from arm7_cached.cpp's DO_*/FORM_* macros, plus their decoders in one file so they never drift.
 
 import sys
 
-# ── Data-processing operations ──────────────────────────────────────────────
-# (name, DO_macro, opcode4, sets_flags, writes_rd)
-# opcode4 is bits[24:21]; the S bit is bit 20. Compare ops (TST/TEQ/CMP/CMN)
-# only exist in the S=1 encoding.
+# ARM7CACHEOP fields (arm7_cached.cpp): r0 = Rd, r1 = Rn (base/src1), r2 = Rm (operand reg), cond = opcode[31:28],
+# imm = shift amount | Rs index | rotated immediate | raw opcode (mem ops).
+
+# ---- Data-processing operations: (name, DO_macro, opcode4, sets_flags, writes_rd) ----
+# opcode4 is bits[24:21], the S bit is bit 20; compare ops (TST/TEQ/CMP/CMN) only exist in the S=1 encoding.
 DP = [
     ("and",  "DO_AND",  0x0, False, True),
     ("ands", "DO_ANDS", 0x0, True,  True),
@@ -60,16 +45,14 @@ DP = [
 LOGICAL = {"and","ands","eor","eors","tst","teq","orr","orrs",
            "mov","movs","bic","bics","mvn","mvns"}
 
-# Register shifter forms (operand2 = Rm shifted). Split shift/rotate into its own
-# uop (lbl_sh_<form> value-only, lbl_shc_<form> value + carry into reg[R_COUT]).
-# `byreg` forms take the amount from Rs (reg[op->imm]); imm forms from op->imm.
+# Register shifter forms (operand2 = Rm shifted), each its own uop: lbl_sh_<form> value only, lbl_shc_<form> value +
+# carry into reg[R_COUT]. `byreg` (*r) forms take the amount from Rs (reg[op->imm]), *i forms from op->imm.
 SHIFT_FORMS = ["lsli", "lsri", "asri", "rori", "lslr", "lsrr", "asrr", "rorr"]
 
 
 def shift_body(out, form, indent, writes_carry):
-    """Emit the shifter computation for `form` into reg[R_SHIFT] (+reg[R_COUT]
-    when writes_carry). Reads Rm = reg[op->r2]; amount from op->imm (imm forms)
-    or reg[op->imm] (reg forms). Mirrors the original FORM_* macros exactly."""
+    """Shifter for `form` into reg[R_SHIFT] (+reg[R_COUT] when writes_carry): Rm = reg[op->r2], amount op->imm
+    (imm forms) or reg[op->imm] (reg forms). Mirrors the original FORM_* macros exactly."""
     p = indent
     out.append(p + "u32 v = reg[op->r2].I;")
     byreg = form.endswith("r") and not form.endswith("i")  # *r vs *i
@@ -130,9 +113,8 @@ def shift_body(out, form, indent, writes_carry):
 
 
 def emit_shift_labels(out):
-    """Shift uops: compute operand2 into reg[R_SHIFT] (+ carry into reg[R_COUT]
-    for the _shc variant), then fall through (pc_op++) to the op uop. Two carry
-    flavors x two pcr flavors per form."""
+    """Shift uops: operand2 into reg[R_SHIFT] (+ carry into reg[R_COUT] for _shc), then fall through (pc_op++)
+    to the op uop. Two carry flavors x two pcr flavors per form."""
     for form in SHIFT_FORMS:
         for carry in (False, True):
             for pcr in (False, True):
@@ -141,14 +123,8 @@ def emit_shift_labels(out):
                 out.append("  {")
                 out.append("    ARM7CACHEOP* op = pc_op;")
                 if pcr:
-                    # ARM7TDMI hardware quirk (verified against the
-                    # arm7di-tests-dreamcast MOV_1 conformance test): when
-                    # Rm==r15 is read as the shift operand, the PC value seen
-                    # is current-instruction+8 for an IMMEDIATE shift amount,
-                    # but current-instruction+12 for a REGISTER-specified
-                    # shift amount (form ends in 'r') — the extra pipeline
-                    # cycle needed to fetch the shift-amount register pushes
-                    # PC one instruction further ahead.
+                    # HW quirk (arm7di-tests-dreamcast MOV_1): Rm==r15 as shift operand reads insn+8 for an immediate
+                    # amount but insn+12 for a register amount (*r): the extra cycle fetching Rs advances PC one insn.
                     pc_offset = 12 if form.endswith("r") else 8
                     out.append(f"    reg[15].I = dispatch_pc + {pc_offset};   /* Rm == r15 */")
                 shift_body(out, form, "    ", carry)
@@ -159,12 +135,8 @@ def emit_shift_labels(out):
 
 def emit_op_body(out, name, do, sets_flags, writes_rd, *,
                  op2, cout, pcr, pcwrite):
-    """Emit one data-processing op-uop body.
-      op2     : C expression for operand2 ('reg[op->r2].I' or 'op->imm')
-      cout    : C expression for shifter carry, or None (arith / non-flag ops)
-      pcr     : materialize reg[15]=dispatch_pc+8 (Rn==r15) before the op
-      pcwrite : this is the Rd==15 variant -> set dispatch_pc + re-dispatch
-    """
+    """One data-processing op-uop body. op2/cout: C expressions for operand2 and the shifter carry (None: arith or
+    non-flag ops); pcr: reg[15] = dispatch_pc+8 first (Rn==r15); pcwrite: Rd==15, sets dispatch_pc and re-dispatches."""
     uses_base = name not in ("mov", "movs", "mvn", "mvns")
     # PC-write variants always materialize reg[15]: an operand may be Rm/Rn==15
     # (e.g. MOV pc,pc-relative) and these are rare, so unconditional is fine.
@@ -196,18 +168,8 @@ def emit_op_body(out, name, do, sets_flags, writes_rd, *,
 
 
 def emit_dp_labels(out):
-    """Data-processing op uops. operand2 is read from reg[op->r2] (the decoder
-    sets r2 = Rm, or R_SHIFT(46) when a shift uop precedes) or from op->imm.
-
-    Variants per op:
-      _reg            register operand2 (reg[op->r2])
-      _imm0 / _immn   immediate operand2 (rot==0 / rot!=0)
-      LOGICAL *S ops also split the register form into:
-         _reg_creg    C_OUT from reg[R_COUT]  (a shift uop ran)
-         _reg_cflag   C_OUT from C_FLAG       (plain Rm, no shift)
-      each optionally suffixed _pcr (Rn==r15) and, for writes_rd ops, a
-      separate _pc / _pcs (Rd==r15) PC-write variant.
-    """
+    """Data-processing op uops; operand2 = reg[op->r2] (Rm, or R_SHIFT(46) after a shift uop) or op->imm. Variants:
+    _reg, _imm0/_immn (rot 0/not 0), logical *S _reg_creg/_reg_cflag (C_OUT: R_COUT/C_FLAG), _pcr (Rn=15), _pc/_pcs (Rd=15)."""
     for (name, do, _op4, sets_flags, writes_rd) in DP:
         is_logical_flags = sets_flags and name in LOGICAL
         for pcr in (False, True):
@@ -243,11 +205,8 @@ def emit_dp_labels(out):
                 out.append(f"lbl_dp_{name}_immn{sfx}:")
                 emit_op_body(out, name, do, sets_flags, writes_rd,
                              op2="op->imm", cout=None, pcr=pcr, pcwrite=False)
-        # ---- PC-write variants (Rd==r15): one plain, one S (mode restore) ----
-        # Only logical-flag ops' DO_*S macro reads C_OUT; everything else derives
-        # C from the ALU (or doesn't set flags), so leave cout=None to avoid an
-        # unused-variable. (For S-with-PC the flags are reloaded from SPSR by
-        # CPUSwitchMode anyway, so the value is moot -- this just silences the warning.)
+        # ---- PC-write variants (Rd==r15): one plain, one S (mode restore, flags reloaded from SPSR) ----
+        # Only logical-flag DO_*S read C_OUT (moot here); the rest get cout=None to avoid an unused variable.
         pc_cout = "C_FLAG" if is_logical_flags else None
         if writes_rd:
             out.append(f"lbl_dp_{name}_pc:")
@@ -263,17 +222,8 @@ def emit_dp_labels(out):
 
 
 def emit_dp_decode(out):
-    """Decoder: map a data-processing opcode to its uop chain.
-
-    Immediate operand2 -> a single op uop (_imm0/_immn, or _pc_imm for Rd==15).
-    Register operand2:
-      * plain Rm (LSL #0, no register shift) -> a single op uop reading reg[Rm].
-      * any real shift/rotate -> a SHIFT uop (which the entrypoint/cond-guard
-        falls through to) that writes reg[R_SHIFT], then an op uop reading
-        reg[R_SHIFT]. The shift uop occupies `cop`; the op uop is the next slot
-        and ARM7_CACHE_LAST_OP is bumped by one extra.
-    Rd==15 routes to the _pc / _pc_imm PC-write op variants.
-    """
+    """Data-processing opcode -> uop chain. Immediate or plain Rm operand2: one op uop (_pc/_pc_imm when Rd==15). A real
+    shift: a SHIFT uop in `cop` writes reg[R_SHIFT], the op uop is the next slot (ARM7_CACHE_LAST_OP one extra)."""
     regforms = ["lsli", "lsri", "asri", "rori", "lslr", "lsrr", "asrr", "rorr"]
     out.append("  /* data processing: cond 00 I opcode4 S Rn Rd operand2 */")
     out.append("  {")
@@ -366,17 +316,8 @@ def emit_dp_decode(out):
     out.append("  }")
 
 
-# ── Single data transfer (LDR/STR/LDRB/STRB) ────────────────────────────────
-# Per the project decision these get full per-variant labels. The addressing
-# mode (P/U/W) and offset form (immediate vs register-shifted) are fixed per
-# opcode, so we predecode them. Operand fields:
-#   r0 = Rd, r1 = Rn, imm = computed offset is NOT possible (register offsets
-#   depend on live regs), so we keep the raw opcode in imm and compute the
-#   offset in-label from the predecoded variant (no runtime decode of P/U/W/B/L
-#   since the label already encodes them).
-#
-# Variant key bits: L(20) B(22) P(24) U(23) W(21) I(25). For I=1 the offset is a
-# register shifted by an immediate (shtype in bits[6:5], amount in [11:7]).
+# ---- Single data transfer (LDR/STR/LDRB/STRB): full per-variant labels (project decision) ----
+# P/U/W/B/L and offset form are predecoded into the label; imm keeps the raw opcode, as register offsets need live regs.
 
 def ldr_variants():
     """Yield (labelname, L, B, P, U, W, ireg, shtype_or_None)."""
@@ -468,9 +409,8 @@ def emit_mem_labels(out):
 
 
 def emit_mem_decode(out):
-    # Build a lookup keyed by the full 6-bit (L,B,P,U,W,I); for I=1 we further
-    # key on the 2-bit shift type. Collect into dicts so the emitted switch is
-    # unambiguous and exhaustive.
+    # Lookup keyed by (L,B,P,U,W,I) = opcode bits 20,22,24,23,21,25; I=1 (Rm shifted by imm: type [6:5], amount [11:7])
+    # also keys on the shift type. Dicts keep the emitted switch unambiguous and exhaustive.
     imm_map = {}            # key6 -> label   (I=0)
     reg_map = {}            # key6 -> {shtype: label}  (I=1)
     for (nm, L, B, P, U, W, ireg, shtype) in ldr_variants():
@@ -485,8 +425,8 @@ def emit_mem_decode(out):
     out.append("    cop->r0 = (opcode >> 12) & 0xF;   /* Rd */")
     out.append("    cop->r1 = (opcode >> 16) & 0xF;   /* Rn */")
     out.append("    cop->imm = opcode;                /* raw: offset + Rm/shift */")
-    # NOTE: avoid names _L/_B/_U/_P/_W/_I -- those collide with <ctype.h> macros
-    # on devkitPPC/libogc (and break as 'expected unqualified-id').
+    # NOTE: avoid names _L/_B/_U/_P/_W/_I -- newlib's <ctype.h> defines them as
+    # macros (they break as 'expected unqualified-id').
     out.append("    u32 mL = (opcode >> 20) & 1;")
     out.append("    u32 mW = (opcode >> 21) & 1;")
     out.append("    u32 mB = (opcode >> 22) & 1;")

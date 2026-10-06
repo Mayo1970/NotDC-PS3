@@ -1,10 +1,5 @@
-// ARM7TDMI interpreter - adapted from VisualBoyAdvance for Dreamcast AICA
-// Original: Copyright (C) 1999-2003 Forgotten / VBA development team (GPL v2+)
-// Dreamcast AICA port: nullDC4Wii project
-//
-// The ARM7TDMI core is shared between GBA and Dreamcast AICA (sound CPU).
-// Stripped: BKPT/GDB support, GP coprocessor stubs, x86/MSVC asm paths.
-// Active path: C_CORE + __GNUC__ + __POWERPC__ (devkitPPC / Wii).
+// ARM7TDMI interpreter adapted from VisualBoyAdvance for the Dreamcast AICA. Original: Copyright (C) 1999-2003
+// Forgotten / VBA development team (GPL v2+). No BKPT/GDB, GP coprocessor or x86/MSVC asm; active path C_CORE + __GNUC__.
 
 #define CONSOLE_OUTPUT(a,b)
 
@@ -1552,16 +1547,6 @@
     break;
 
   u32 opcode = CPUReadMemoryQuick(armNextPC);
-  
-  /*
-  // SKMP Stuff I guess !
-  if (opcode != 0 && armNextPC == 0x0000C84) totalops=1;
-
-  if (opcode != 0 && totalops != 0) {
-      printf("Decoding %08X for pc %08X\n", opcode, armNextPC);
-    if (totalops++> 64) { for(;;);}
-  }
-  */
 
   clockTicks += 6;
 
@@ -2552,26 +2537,6 @@ if(cond_res) {
       CPUUpdateFlags();
     }
     break;
-	/*
-  case 0x121:
-    {
-      // BX Rm
-      // TODO: check if right instruction...
-      clockTicks += 3;
-      int base = opcode & 0x0F;
-      armState = reg[base].I & 1 ? false : true;
-      if(armState) {
-        reg[15].I = reg[base].I & 0xFFFFFFFC;
-        armNextPC = reg[15].I;
-        reg[15].I += 4;
-      } else {
-        reg[15].I = reg[base].I & 0xFFFFFFFE;
-        armNextPC = reg[15].I;
-        reg[15].I += 2;
-      }
-    }
-    break;
-	*/
     ARITHMETIC_DATA_OPCODE(OP_CMP, OP_CMP, 0x150);
   case 0x140:
     // MRS Rd, SPSR
@@ -2581,8 +2546,7 @@ if(cond_res) {
   case 0x149:
     {
       // SWPB Rd, Rm, [Rn]
-      // Use (Rm & 0xFF) for the stored byte rather than .B.B0: on big-endian
-      // hosts .B.B0 is the MSB of the register, not the ARM low byte.
+      // Store (Rm & 0xFF), not .B.B0: on big-endian hosts .B.B0 is the register's MSB, not the ARM low byte.
       u32 address = reg[(opcode >> 16) & 15].I;
       u32 temp = CPUReadByte(address);
       CPUWriteByte(address, reg[opcode&15].I & 0xFF);

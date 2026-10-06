@@ -7,38 +7,18 @@
 #define sh4op(str) void FASTCALL str(u32 op)
 typedef void (FASTCALL OpCallFP)(u32 op);
 
-// -------------------------------------------------------------------------
-// Runtime accuracy preset (defined in main.cpp)
-//   0 = Fast     — largest timeslice, loosest peripheral timing
-//   1 = Balanced — moderate timeslice, good compatibility
-//   2 = Accurate — original timeslice, tightest peripheral timing
-// -------------------------------------------------------------------------
+// ---- Runtime accuracy preset (defined in ps3_presets.cpp) ----
+// 0 = Fast (largest timeslice, loosest timing), 1 = Balanced (moderate, compatible), 2 = Accurate (original, tightest).
 extern "C" int get_accuracy_preset();
 
 #define FAST()     (get_accuracy_preset() == 0)
 #define BALANCED() (get_accuracy_preset() == 1)
 #define ACCURATE() (get_accuracy_preset() == 2)
 
-// -------------------------------------------------------------------------
-// Per-preset SH4 execution constants
-//
-//  TIMESLICE     — SH4 cycles dispatched between UpdateSystem() calls
-//  CPU_RATIO     — opcode cost in host cycles (drains the timeslice counter)
-//
-//  Cascade thresholds (in UpdateSystem() call counts):
-//  MEDIUM_PERIOD — AICA / DMA
-//  SLOW_PERIOD   — GDRom        (2× medium)
-//  VSLOW_PERIOD  — Maple / RTC  (4× medium)
-//
-//  Fast stretches the timeslice so peripherals are polled less often,
-//  saving CPU at the cost of timing accuracy.
-// -------------------------------------------------------------------------
+// ---- Per-preset SH4 execution constants ----
 
-//                             TIMESLICE   CPU_RATIO  MEDIUM  SLOW   VSLOW
-// Fast     (1792 cycles)         ×4          8          4      8      16
-// Balanced  (896 cycles)         ×2          8          8     16      32
-// Accurate  (448 cycles)    original         8          8     16      32
-
+// TIMESLICE: SH4 cycles per UpdateSystem(), drained by CPU_RATIO (opcode cost); MEDIUM (AICA/DMA), SLOW (GDRom, 2x),
+// VSLOW (Maple/RTC, 4x) count UpdateSystem() calls. Fast's longer slice polls peripherals less: cheaper, less accurate.
 static const s32 SH4_TIMESLICE_FAST      = 1792;
 static const s32 SH4_CPU_RATIO_FAST      = 8;
 static const u32 SH4_MEDIUM_FAST         = 4;    // every  7 168 cycles
@@ -57,9 +37,7 @@ static const u32 SH4_MEDIUM_ACCURATE     = 8;    // every  3 584 cycles // very 
 static const u32 SH4_SLOW_ACCURATE       = 16;   // every  7 168 cycles // very accurate 2
 static const u32 SH4_VSLOW_ACCURATE      = 32;   // every 14 336 cycles // very accurate 4
 
-// -------------------------------------------------------------------------
-// Opcode classification flags
-// -------------------------------------------------------------------------
+// ---- Opcode classification flags ----
 enum OpcodeType
 {
 	Normal       = 0,    // No special handling required
@@ -79,9 +57,7 @@ enum OpcodeType
 	Branch_rel_d      = Delayslot | Branch_rel,
 };
 
-// -------------------------------------------------------------------------
-// Interpreter interface
-// -------------------------------------------------------------------------
+// ---- Interpreter interface ----
 void Sh4_int_Run();
 void Sh4_int_Stop();
 void Sh4_int_Step();
@@ -105,27 +81,19 @@ void ExecuteDelayslot();
 void ExecuteDelayslot_RTE();
 
 int FASTCALL UpdateSystem();
-// Split form for the recompiler: _no_event() runs the GPR-free peripheral
-// cascade + interrupt-pending check (returns nonzero if an interrupt must be
-// dispatched); _handle_event() runs the GPR-touching dispatch. See
-// sh4_interpreter.cpp for the equivalence invariant.
+// Recompiler split form: _no_event() runs the GPR-free peripheral cascade + pending check (nonzero: an interrupt must
+// be dispatched); _handle_event() runs the GPR-touching dispatch. Equivalence invariant: see sh4_interpreter.cpp.
 int FASTCALL UpdateSystem_no_event();
 int FASTCALL UpdateSystem_handle_event();
 
-// Accuracy-preset plumbing for the recompiler. Sh4_ApplyAccuracyPreset()
-// latches the timing parameters from the current preset (same routine the
-// interpreter runs at the top of Sh4_int_Run); sh4_GetTimeslice() returns the
-// latched timeslice so the JIT mainloop can be emitted with a matching cycle
-// budget instead of a hardcoded SH4_TIMESLICE.
+// For the recompiler: Sh4_ApplyAccuracyPreset() latches the preset's timing (as Sh4_int_Run does on entry), and
+// sh4_GetTimeslice() returns it so the emitted JIT mainloop has a matching cycle budget, not a hardcoded SH4_TIMESLICE.
 void Sh4_ApplyAccuracyPreset();
 s32  sh4_GetTimeslice();
 s32  sh4_GetCpuRatio();
 
-// -------------------------------------------------------------------------
-// Cached (pre-decoded / threaded) interpreter — dc/sh4/sh4_cached.cpp.
-// Same execution semantics as Sh4_int_Run(), with the per-instruction fetch,
-// OpPtr lookup and handler call removed. Selected by the sh4_cached preset.
-// -------------------------------------------------------------------------
+// ---- Cached (pre-decoded / threaded) interpreter, dc/sh4/sh4_cached.cpp ----
+// Sh4_int_Run() semantics without the per-op fetch, OpPtr lookup and handler call; selected by the sh4_cached preset.
 extern volatile bool sh4_int_bCpuRun;
 
 void Sh4_int_Run_Cached();

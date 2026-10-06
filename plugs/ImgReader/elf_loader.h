@@ -1,12 +1,6 @@
 #pragma once
-// elf_loader.h – SH4 ELF loader for nullDC4Wii
-//
-// Drop elf_loader.cpp + elf_loader.h alongside Elf.cpp/Elf.h in plugs/ImgReader/
-//
-// elf_load()        – reads the ELF, copies all SHT_PROGBITS/PT_LOAD sections
-//                     into mem_b (emulated DC RAM), returns entry point.
-// elf_apply_entry() – writes the entry point into Sh4cntx (next_pc / PC)
-//                     and sets up SP (R15) and SR. Call AFTER sh4_cpu.Reset().
+// SH4 ELF loader. elf_load() copies the SHT_PROGBITS/PT_LOAD sections into mem_b and returns the entry point;
+// elf_apply_entry() sets PC, SP (R15) and SR in Sh4cntx: call it AFTER sh4_cpu.Reset().
 
 #include "types.h"
 

@@ -7,7 +7,7 @@
 #include <sys/thread.h>
 #include <sys/sem.h>
 #include <sys/systime.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 
 extern "C" int get_sound_thread_preset();
 extern "C" int get_cdda_preset();

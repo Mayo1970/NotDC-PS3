@@ -1,4 +1,4 @@
-# nullDC PS3 (PSL1GHT). Build inside the ps3dev Docker image: ./build.sh [pkg|self|clean]
+# NotDC (PSL1GHT). Build inside the ps3dev Docker image: ./build.sh [pkg|self|clean]
 # Set LOG_IP to the dev PC that listens for the UDP log (nc -ul 18194).
 ifeq ($(strip $(PS3DEV)),)
 $(error "PS3DEV is not set")
@@ -6,8 +6,8 @@ endif
 PSL1GHT ?= $(PS3DEV)
 
 TARGET     := nulldc_ps3
-TITLE      := nullDC PS3
-TITLE_ID   := NULLDC000
+TITLE      := NotDC
+TITLE_ID   := NOTDC0000
 CONTENT_ID := UP0001-$(TITLE_ID)_00-0000000000000000
 BUILD      ?= build
 # XMB icon, 320x176 PNG. Falls back to the PSL1GHT default if icon/ is missing.
@@ -26,7 +26,7 @@ MAKE_SELF_NPDRM := $(PS3DEV)/bin/make_self_npdrm
 SFO      := $(PS3DEV)/bin/sfo
 PKG      := $(PS3DEV)/bin/pkg
 
-# rec_v2 builds its HOST_NO_REC paths; ps3/ replaces the Wii-only parts (GX renderer, Wii pads).
+# ps3/: the PS3 platform layer (renderer, pads, audio, SH4 JIT backend).
 # ps3/ps3gl: GL 1.1 on RSX from xashPS3; shaders are prebuilt in ps3gl_shader_data.h.
 SRC_DIRS := . cl config plugins \
             dc dc/aica dc/asic dc/gdrom dc/maple dc/mem dc/pvr dc/sh4 dc/sh4/rec_v2 \
@@ -35,8 +35,7 @@ SRC_DIRS := . cl config plugins \
 SRCS := $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cpp) $(wildcard $(d)/*.c))
 SRCS := $(patsubst ./%,%,$(SRCS))
 
-EXCLUDE := plugs/nullAICA/mem.cpp \
-           plugs/drkPvr/gxRend.cpp
+EXCLUDE := plugs/nullAICA/mem.cpp
 SRCS := $(filter-out $(EXCLUDE),$(SRCS))
 
 ASMS := $(wildcard ps3/*.S)
@@ -59,7 +58,8 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
           -mcpu=cell -mhard-float -mno-altivec \
           -fno-strict-aliasing -fsingle-precision-constant \
           -D_PS3 -D__PS3__ -DRELEASE -DCAIQUE_RAM_HOOKS $(DEBUG_FLAG) -DPS3_LOG_IP=\"$(LOG_IP)\" \
-          -I. -Ips3 -Ips3/include -Ips3/ps3gl -Ips3/ps3gl/include -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/portlibs/ppu/include
+          -I. -Ips3 -Ips3/include -Ips3/ps3gl -Ips3/ps3gl/include -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/portlibs/ppu/include \
+          -I$(PS3DEV)/portlibs/ppu/include/freetype2
 
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
 
@@ -68,8 +68,9 @@ CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
 LDFLAGS := -Wl,--no-multi-toc -L$(PSL1GHT)/ppu/lib -L$(PS3DEV)/portlibs/ppu/lib \
            -Wl,--wrap,printf -Wl,--wrap,vprintf -Wl,--wrap,puts -Wl,--wrap,putchar
 
+# freetype + png + z: the menu's Rodin text and bg/0.png (ps3/ps3_ui.cpp).
 LIBS := -lrsx -lgcm_sys -lio -laudio -lsysutil -lsysmodule \
-        -lnet -lnetctl -lrt -llv2 -lm
+        -lnet -lnetctl -lrt -llv2 -lfreetype -lpng -lz -lm
 
 .PHONY: all self pkg clean
 
@@ -94,6 +95,12 @@ $(BUILD)/ps3/ps3_fsca_table.o: ps3/ps3_fsca_table.S misc/fsca-table.bin
 	@mkdir -p $(dir $@)
 	@echo "AS $<"
 	@$(CC) $(CFLAGS) -Ips3 -c $< -o $@
+
+# The menu background, linked in the same way.
+$(BUILD)/ps3/ps3_ui_assets.o: ps3/ps3_ui_assets.S bg/0.png
+	@mkdir -p $(dir $@)
+	@echo "AS $<"
+	@$(CC) $(CFLAGS) -c $< -o $@
 
 SPU_SRCS_spe_bell := ps3/spu/spe_bell.c ps3/spu/spe_dec.c
 

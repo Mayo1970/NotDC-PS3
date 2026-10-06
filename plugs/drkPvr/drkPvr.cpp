@@ -1,24 +1,4 @@
-// drkPvr.cpp : Defines the entry point for the DLL application.
-//
-
-/*
-
-Future Enhancement Opportunities
-If you want to go further (these WOULD break compatibility with types.h, ta_structs.h):
-Moderate Breaking Changes:
-
-Replace globals with a context struct
-Use smart pointers (if C++11 available)
-Add debug/release separate config paths
-
-Aggressive Optimizations:
-
-SIMD vectorization for vertex processing
-Memory pool allocator for TA structures
-Cache-aligned structures for Wii Broadway CPU
-Multithreading for tile rendering
-
-*/
+// drkPvr.cpp: the PVR plugin's global state, settings and entry points.
 
 #include "drkPvr.h"
 #include "ta.h"
@@ -41,26 +21,12 @@ u32 enable_FS_mid = 0;
 u32 AA_mid_menu = 0;
 u32 AA_mid_0 = 0;
 
-/**
- * VRAM lock callback - called when VRAM is locked for write
- * @param block The VRAM block being locked
- * @param addr  The address being written to
- * 
- * Currently disabled but can be enabled for texture cache invalidation
- */
+// Callback for a write (at addr) to a locked VRAM block. Disabled; texture-cache invalidation would hook in here.
 void FASTCALL libPvr_vramLockCB(vram_block* block, u32 addr)
 {
-    // Currently disabled - can be enabled for texture invalidation
-    // rend_if_vram_locked_write(block, addr);
-    // renderer->VramLockedWrite(block);
-    // rend_text_invl(block);
 }
 
-/**
- * Plugin load - called when plugin is first loaded by emulator
- * Performs one-time initialization
- * @return rv_ok on success, rv_error on failure
- */
+// One-time init when the emulator first loads the plugin.
 s32 FASTCALL libPvr_Load()
 {
     LoadSettings();
@@ -68,19 +34,13 @@ s32 FASTCALL libPvr_Load()
     return rv_ok;
 }
 
-/**
- * Plugin unload - cleanup when plugin is unloaded
- * Only called if libPvr_Init was successfully called
- */
+// Only called if libPvr_Init succeeded.
 void FASTCALL libPvr_Unload()
 {
     // Nothing to cleanup currently
 }
 
-/**
- * Reset PVR state (preserves VRAM which is reset by emulator)
- * @param Manual True if manually triggered reset, false if automatic
- */
+// Leaves VRAM alone (the emulator resets it). Manual = user-triggered reset, false = automatic.
 void FASTCALL libPvr_Reset(bool Manual)
 {
     Regs_Reset(Manual);
@@ -88,12 +48,7 @@ void FASTCALL libPvr_Reset(bool Manual)
     rend_reset(Manual);
 }
 
-/**
- * Initialize PVR subsystem - called when entering SH4 thread
- * Called from the new thread context for thread-specific initialization
- * @param param Initialization parameters including VRAM pointer
- * @return rv_ok on success, rv_error on failure
- */
+// Runs on the new SH4 thread as it starts (thread-specific init); param carries the VRAM pointer.
 s32 FASTCALL libPvr_Init(pvr_init_params* param)
 {
     // Store initialization parameters
@@ -134,10 +89,7 @@ s32 FASTCALL libPvr_Init(pvr_init_params* param)
     return rv_ok;
 }
 
-/**
- * Terminate PVR subsystem - called when exiting SH4 thread
- * Called from the thread context for thread-specific cleanup
- */
+// Runs on the SH4 thread as it exits (thread-specific cleanup).
 void FASTCALL libPvr_Term()
 {
     // Cleanup in reverse order of initialization
@@ -150,31 +102,17 @@ void FASTCALL libPvr_Term()
 // Forward declaration for utility function
 char* GetNullDCSoruceFileName(char* full);
 
-/**
- * Get integer configuration value
- * @param key Configuration key name
- * @param def Default value if key not found
- * @return Configuration value or default
- */
 int cfgGetInt(const char* key, int def)
 {
     return cfgLoadInt("drkpvr", key, def);
 }
 
-/**
- * Set integer configuration value
- * @param key Configuration key name
- * @param val Value to store
- */
 void cfgSetInt(const char* key, int val)
 {
     cfgSaveInt("drkpvr", key, val);
 }
 
-/**
- * Load all settings from configuration system
- * Applies reasonable defaults if settings don't exist
- */
+// Keys missing from the config take the defaults below.
 void LoadSettings()
 {
     // Emulation settings - affect accuracy and compatibility
@@ -199,10 +137,7 @@ void LoadSettings()
     settings.Enhancements.AspectRatioMode    = cfgGetInt("Enhancements.AspectRatioMode", 1);
 }
 
-/**
- * Save all settings to configuration system
- * Called when user changes settings or on clean shutdown
- */
+// Called when the user changes settings or on clean shutdown.
 void SaveSettings()
 {
     // Emulation settings

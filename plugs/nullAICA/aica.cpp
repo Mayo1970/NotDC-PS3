@@ -1,20 +1,20 @@
 #include "aica.h"
 #include "sgc_if.h"
 #include "aica_mem.h"
-#include "wii/wii_audio.h"
+#include "ps3/ps3_audio.h"
 #include "ps3/ps3_aica_spe.h"
 #include "ps3/ps3_sndthr.h"
 #include "ps3/ps3_arm_spe.h"
 #include <math.h>
 
-// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc's machine/endian.h defines them, so undef first (as wii_audio.cpp).
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; system endian headers define them, so undef first.
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
 #ifdef LITTLE_ENDIAN
 #  undef LITTLE_ENDIAN
 #endif
-#include <ogc/lwp_watchdog.h>   // gettime(), ticks_to_millisecs()
+#include "ps3_timebase.h"   // gettime(), ticks_to_millisecs()
 
 #define SH4_IRQ_BIT (1<<(u8)holly_SPU_IRQ)
 #define AICA_RATE_DIAG 0   // 1 = count real libAICA_TimeStep() calls/sec (see there)
@@ -49,7 +49,7 @@ u32 GetL(u32 witch)
 // reaches KeyOn. C++ linkage on purpose: an extern "C" declaration breaks the link.
 void FASTCALL ArmInterruptChange(u32 bits, u32 L);
 
-extern int g_aica_fast_preset;   // wii/main.cpp
+extern int g_aica_fast_preset;   // ps3/ps3_presets.cpp
 
 void update_arm_interrupts()
 {
@@ -116,7 +116,7 @@ struct AicaTimerData
     {
         struct
         {
-#ifdef WII
+#ifdef AICA_PS3
             u32 pad:16;
             u32 nil:5;
             u32 md:3;
@@ -405,8 +405,8 @@ void AICA_Init()
         timers[i].Init(aica_reg, i);
     //printf("[AICA] AICA_Init: timers done\n");
 
-    //printf("[AICA] AICA_Init: wii_audio_aica_ready()...\n");
-    wii_audio_aica_ready();
+    //printf("[AICA] AICA_Init: ps3_audio_aica_ready()...\n");
+    ps3_audio_aica_ready();
     //printf("[AICA] AICA_Init: done\n");
 }
 

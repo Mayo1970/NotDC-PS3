@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/spu.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 #include "spu/spe_aica.h"
 #include "spu/spe_arm7.h"
 

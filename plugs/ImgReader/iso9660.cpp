@@ -1,7 +1,7 @@
 #include "iso9660.h"
 #include <unistd.h> // For usleep
 
-// This is defined in main.cpp
+// Defined in ps3_presets.cpp
 extern "C" int get_debug_loop();
 
 bool inbios=true;
@@ -77,7 +77,7 @@ void rss(u8* buff,u32 ss,FILE* file)
 void iso_DriveReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 {
 
-  // DOLPHIN ERROR LOOP
+  // Debug loop preset: log every ISO read
   if(get_debug_loop() == 1){
 	  printf("GDR(ISO)->Read : Sector %d , size %d , mode %d \n",StartSector,SectorCount,secsz);
   }
@@ -91,17 +91,6 @@ void iso_DriveReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 	}
 	return;
 }
-/*
-void iso_GetSessionsInfo(SessionInfo* sessions)
-{
-	printf("iso_GetSessionsInfo\n");
-}
-void iso_DriveGetTocInfo(TocInfo* toc,DiskArea area)
-{
-	printf("GDROM toc\n");
-	memset(toc,0,sizeof(TocInfo));
-}
-*/
 void iso_DriveGetTocInfo(TocInfo* toc,DiskArea area)
 {
 	memcpy(toc,&gdi_toc,sizeof(TocInfo));

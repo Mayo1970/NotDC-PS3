@@ -2,7 +2,7 @@
 // Plan 5.17 probe: about 1 SQ flush in 64 gets mftb stamps along the TA store path, and [ta-split]
 // prints the split once a second (plugs/drkPvr/ta.cpp). The other flushes pay one counter step.
 #include "types.h"
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 
 struct TaSplit
 {

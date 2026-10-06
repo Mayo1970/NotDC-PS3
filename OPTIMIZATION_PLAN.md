@@ -13,6 +13,37 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-05)
 
+**Active: Crazy Taxi at full speed (Matt 2026-10-05: "I'd like to get Crazy
+Taxi in full speed").** Dense Crazy Taxi (`run528b.txt`): VPS 59.2, SPEED
+98.7%, 68% of dense windows at full speed; 12K+ vertices 95.8%. The SH4
+thread is the limit. Done: 5.16 SPE Draw (same load +0.5%, render busy 56
+-> 32%; default ON since the package of 20:13, Matt) and SPE Wait Yield
+(no gain, default OFF). 5.29 JIT FRCHG and 5.30 JIT PREFETCH (VIDEO /
+DEBUG, default OFF, package of 20:40): HW in one boot, correct (full
+sync_fpscr calls 187K/s -> 2.4K/s), same load -0.6% (noise), no gain;
+see section 5 after 5.30. 5.31 JIT GUARD REUSE (VIDEO / DEBUG, default
+OFF, package of 21:50): HW correct, same load +0.1% (noise), no gain.
+Dense Crazy Taxi now: SPEED 99.2-99.4%, 77-80% of dense windows at full
+speed. 5.32 stall probe HW (package of 22:22): the deepest dip of each
+run (VPS 40-44, one moment) is one disc read of 330 ms on the SH4 thread,
+and dense play spends ~61 ms/s in disc reads (one read of 70-96 ms in 11
+of 56 dense seconds). Cause: the CDI reader did one seek and one read per
+sector. 5.33 CDI batched reads (Matt: "Just build the fix right away"),
+package of 22:38: one seek and one read per run of up to 32 sectors. HW
+2026-10-05: correct (Crazy Taxi, Sonic Adventure), small gain: read time
+per request -7%; the 330 ms read stays (the first read after seconds with
+no reads). Matt: "We can park them for now. It's okay.": 5.33 stays in;
+the unbuffered read test and P3 (async reads) are parked. See section 5
+after 5.31.
+Left from the list: the TA per-record counters and the deadline
+scheduler (P5). Not useful now: a lower SH4 Clock (JIT IDLE SKIP makes the wait time
+almost free) and frame skip (the SH4 never waits for the render thread).
+UDP: the 5.33 listener of session 8112eaf0 (`ps3log_533_run1.txt`) was
+stopped at Matt's request at 22:57; port 18194 is free.
+Defaults (Matt 2026-10-05): Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ
+STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are ON by
+default since the package of 23:22 (no warning, `.got` 0xA790, 0 `r2off`).
+
 **Done: 5.28, a larger SH4 code cache (Matt 2026-10-05: "We gotta move
 to the next goal", then picked "Larger SH4 code cache"), default 24 MB
 since the package of 19:08 (Matt: "Let's keep it 24 as default then").**
@@ -782,7 +813,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
-| 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[ ]` |
+| 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[x]` HW 2026-10-05: same load +0.5% (10K+ bins +2.4% to +5.0%), render busy 56 -> 32%, 80% of dense windows at full speed; SPE Draw default ON since the package of 20:13 (Matt); SPE Wait Yield (db16cyc in the fence spin) HW: no gain, default OFF |
 | 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF |
 | 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]` |
@@ -795,8 +826,15 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[~]` option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before); default ON since the package of 10:13 (Matt) |
 | 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
 | 5.28 | Larger SH4 code cache (6 MB was a Wii size; Sonic Adventure refills it every 44-55 s) | `[x]` HW, default 24 MB since the package of 19:08 (Matt); built 2026-10-05 (Matt picked it): EMULATION "JIT Code Cache" 6 MB / 12 MB / 24 MB, array 24 MB, `bl` reach 27549 KB of 32768; package of 17:08; HW 2026-10-05 at 24 MB: Sonic Adventure no full clear in 157 s of play (6 MB: 3), cache 7.8 MB, dense SPEED 99.7% (99.6%); Crazy Taxi same-load VPS -0.2% (noise) |
+| 5.29 | JIT FRCHG: an FPSCR sync that only flips FR swaps the pinned bank inline (~140K full syncs/s in dense Crazy Taxi) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (frpref_check PASS, 23/23 mutants fail), VIDEO / DEBUG "JIT FRCHG"; package of 20:40; HW 2026-10-05 (one boot with 5.30): clean, sync_fpscr 187K/s -> 2.4K/s, same load -0.6% against `run516` (noise) |
+| 5.30 | JIT PREFETCH: a `pref` outside the store queue prefetches its RAM line with `dcbt` | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (same check), VIDEO / DEBUG "JIT PREFETCH"; package of 20:40; HW with 5.29 (one boot): clean, 174 sites, no gain; whether it costs a little is open |
+| 5.31 | JIT GUARD REUSE: an access skips the RAM or SQ check its base register passed earlier in the block (a CR flag) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (greuse_check PASS, 25/25 mutants fail), VIDEO / DEBUG "JIT GUARD REUSE"; package of 21:50; HW 2026-10-05: clean, 20994 reuse sites, same load +0.1% against `run516` (noise) |
+| 5.32 | Stall probe: the SH4 thread's slowest frame each second, split by cause (rides on JIT C-Calls) | `[x]` HW 2026-10-05 (package of 22:22, `runstall_ct.txt`): the Crazy Taxi dip is one 330 ms disc read; dense play ~61 ms/s in disc reads |
+| 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
+Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
+default ON since the package of 23:22 on 2026-10-05 (Matt).
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -3777,6 +3815,248 @@ clock by VPS.
     Sonic would reach the 11 MB flush mark after ~6-7 min in one area
     without a level load. Matt: "Let's keep it 24 as default then":
     `JitCodeCache` defaults to 2 (24 MB) since the package of 19:08.
+- 5.16 SPE Draw check (Matt 2026-10-05: "I'd like to get Crazy Taxi in full
+  speed", then "Trying 1 and 2"). HW 2026-10-05, Crazy Taxi, settings as
+  `run528b.txt` plus VIDEO / DEBUG -> SPE Draw ON. Log `run516.txt` in the
+  scratchpad of session 8112eaf0 (the listener started mid-boot, so no
+  `[jitcfg]` line; `[ta-split]`, `[dynic]` and `[jcache]` match `run528b`).
+  - 59 dense windows: VPS 59.5, SPEED 99.2%, 80% at full speed (`run528b`:
+    59.2, 98.7%, 68%). Same load +0.5% (bins 10K+ +2.4% to +5.0%, few
+    windows). Render thread busy 56 -> 32% (decode ~30 -> 3-5%). Silent
+    audio blocks/s 2.4 -> 1.4. Fences all ok, log clean.
+  - Matt: "The geometry looked right. I want it ON by default": `SpeDraw`
+    defaults to 1 since the package of 20:13.
+  - Found: `ps3spe_wait_fence` spins with no pause on the render thread,
+    0.3-0.7 ms per fence (~3% of wall), on the SH4 thread's PPE core.
+    VIDEO / DEBUG -> "SPE Wait Yield" (`SpeWaitYield`, default OFF, set
+    before boot): 4 x `or 31,31,31` (db16cyc) per turn, the timebase read
+    every 16th turn. HW 2026-10-05 (`run516y.txt`, same settings plus the
+    option): clean, same load -0.0% against `run516` (12K+ 100.4% against
+    96.9%, 5 windows each; 6-12K bins -0.1% to -0.9%); fence wait 453 us
+    (495). No measurable gain; default OFF.
+- 5.29 JIT FRCHG (Matt 2026-10-05: "Do them if you want", items 3 and 4 of
+  the full-speed list). Built and PC tested, package of 20:40, HW pending.
+  - Facts: dense Crazy Taxi runs ~140K full `sync_fpscr` calls/s (`[CC]`),
+    all from `frchg` in the hot code (the 5.18 dumps). Each one stores the
+    16 pinned FRs, calls `UpdateFPSCR()` (bank swap in memory, `mtfsfi`)
+    and loads the 16 FRs back.
+  - VIDEO / DEBUG -> "JIT FRCHG" (`JitFrchg`), default OFF, set before
+    boot (the JIT SPEED page is full at 720p); `[jitcfg]` prints `frchg=`,
+    the `[ppe]` line counts its sites.
+  - `ps3/ps3_jit_frchg.h`: when `fpscr ^ old_fpscr == FR` (only FR
+    changed), `old_fpscr = fpscr` and the pinned f14-f29 trade places with
+    xf[0..15], 8 at a time through f0-f7: no C call, no `mtfsfi` (RM did
+    not change). Any other change takes the old C path. Needs FPU PIN.
+    Each value takes the same lfs or stfs as the old path, so the result
+    is bit-exact; the fr[] slots stay stale, as always while pinned.
+  - Expected: est. ~1% (not measured). The `[CC]` sync_fpscr count must
+    fall to about 0.
+- 5.30 JIT PREFETCH (same request). Built and PC tested, package of 20:40,
+  HW pending.
+  - Facts: Crazy Taxi's hottest vertex loop (0C081BC4) runs `pref @R4` on
+    its source data; the JIT drops every `pref` outside the store queue.
+  - VIDEO / DEBUG -> "JIT PREFETCH" (`JitPrefetch`), default OFF, set
+    before boot; `[jitcfg]` prints `pref=`, the `[ppe]` line counts its
+    sites. `ps3/ps3_jit_pref.h`: the non-SQ path of `shop_pref` emits
+    `rlwinm` (16 MB mask), `addis` (RAM base) and `dcbt` on the host line
+    of that RAM address. A hint: an address outside RAM costs one useless
+    prefetch. Not with the MMU.
+  - Expected: 0-1% (not measured).
+- PC (WSL) for 5.29 and 5.30: `misc/frpref_check/run.sh` checks both
+  headers against the build image's ppu-as (66 words, `gen.py`) and on a
+  PPC64 model: the frchg fast path against the old flush, swap and reload
+  (f14-f29, xf, old_fpscr; nothing else but r3, r4, f0-f7 and CR0
+  changes), every other FPSCR change straight to the C path, and the dcbt
+  address for any address with a junk high word. PASS, 600067 checks.
+  `mutate.py`: 23 of 23 planted bugs fail, all 23 also on the model alone.
+- Build (package of 20:40): the 7 old warnings, `.got` 0xA658, 0 `r2off`.
+- HW test steps (package of 20:40):
+  1. Install. Settings as `run516.txt` (an install resets them): EMULATION
+     -> Dynarec ON, JIT Fastmem ON, SH4 Clock 200; AUDIO -> ARM7 Idle Skip
+     SAFE, SPE AICA Sound ON, SPE ARM7 ON; VIDEO / DEBUG -> TA SQ Direct ON,
+     IFB Probe ON, JIT C-Calls ON (SPE Draw ON is the default); JIT SPEED ->
+     JIT SQ STORES, JIT FTRV, JIT CONSTPROP, JIT DEAD VALUES ON, JIT SQ MISS
+     + LOOK-AHEAD, JIT DYN IC + RTS. Set them on the main menu.
+  2. Boot 1: VIDEO / DEBUG -> JIT FRCHG ON. Crazy Taxi, dense traffic,
+     ~150 s, exit to the XMB. Log: `[jitcfg] ... frchg=1 pref=0`, `[ppe]
+     ... frchg=` above 0, `[CC]` sync_fpscr near 0. Same-load VPS against
+     `run516.txt`.
+  3. Boot 2: JIT FRCHG ON and JIT PREFETCH ON, the same run. Log: `pref=1`,
+     `[ppe] ... pref=` above 0. Same-load VPS against boot 1.
+  4. On a fault: the same boot with the new option OFF.
+- HW 2026-10-05, one boot with both ON (Matt: "Doing one boot"; a first
+  try ran at 50 Hz and was redone at 60 Hz). Log `run529.txt` in the
+  scratchpad of session 8112eaf0. `[jitcfg]` as `run516` plus `frchg=1
+  pref=1`, SPE Wait Yield OFF; `[ppe]` frchg=193 pref=174 sites. Log clean
+  (the old XMB 3 s fallback).
+  - The fast path works: dense `[CC]` sync_fpscr 187.1K/s -> 2.4K/s.
+  - 60 dense windows: VPS 59.3, SPEED 99.0%, 70% at full speed (`run516`:
+    59.5, 99.2%, 80%). Same load -0.6% against `run516` (bins -3.2% to
+    +0.8%, the heavy bins with few windows), -0.3% against `run516y`,
+    +0.2% against `run528b`. Silent audio blocks/s 1.9 (1.4).
+  - No measurable gain: removing ~185K full syncs/s did not show, so that
+    path was cheap. Whether JIT PREFETCH costs a little is open (a boot
+    with JIT FRCHG only would tell). Both stay default OFF.
+- 5.31 JIT GUARD REUSE (Matt 2026-10-05: "Ok then, do them", the guard
+  reuse proposal). Built and PC tested, package of 21:50, HW pending.
+  - Facts: each fastmem access runs the RAM guard (`rlwinm`, `xoris`,
+    `cmplwi`, `bge`; a dependent chain), each JIT SQ STORES store the SQ
+    test (`rlwinm`, `cmplwi`, `bne`). Crazy Taxi's hottest vertex loop
+    (0C081BC4) has 9 such accesses through 3 registers: 5 SQ stores through
+    R6, 2 pair loads through R1, 2 loads through R4.
+  - VIDEO / DEBUG -> "JIT GUARD REUSE" (`JitGuardReuse`), default OFF, set
+    before boot; `[jitcfg]` prints `greuse=`, the `[ppe]` line `greuse=V/R`
+    (checks that set a flag / accesses that reuse one, compiled since boot).
+  - `ps3/ps3_jit_greuse.h`: a plan per block. An access through Rn (offset
+    an immediate or none) whose check (RAM or SQ, the same kind) an earlier
+    access through Rn ran, with Rn changed since only by add or sub of an
+    immediate (@Rm+, @-Rn) and the address within 64 bytes of the checked
+    one, reuses it. ifb and sync_sr end every group, any other write of Rn
+    ends Rn's. The checking access sets a CR flag on its fast path (`crset`,
+    cr2-cr4: C calls keep them, the JIT writes only cr0); its cold path
+    clears it at the cold entry. A reusing access emits `bf flag,cold`, the
+    same cold fragment as before, in place of the check: so a failed first
+    check sends the later ones cold too. Up to 12 groups per block.
+  - Exact unless the checked address lies within 64 bytes of the end of
+    RAM's area or of the store queue's and a later access crosses it: no
+    game walks a pointer across those inside one block.
+  - `ps3_jit_sq.h`: `emit_sq_store` is now `emit_sq_check` +
+    `emit_sq_body`, same words (`misc/sqstore_check` PASS, 12/12 mutants).
+  - Expected: 2-3 instructions less per reusing access (in the hottest loop
+    6 of 9 accesses, ~14 of ~164 instructions per vertex). Est. 0.5-1.5%,
+    not measured.
+- PC (WSL) for 5.31: `misc/greuse_check/run.sh` runs the header on
+  constprop_check's SHIL interpreter. Directed: the 0C081BC4 shape (every
+  second access of a base reuses), each cut (mov, add/sub of a register or
+  from another register, shift, a load into the base, ifb, sync_sr, rd2,
+  the reach, another kind), offsets and sizes at the reach's edge, twelve
+  flags and a thirteenth group. Fuzzer: memory-heavy blocks plus
+  constprop_check's decoder shapes, kinds as the driver or shuffled, 4
+  states each with base registers in RAM, the store queue and near area
+  ends. Structure (each REUSE names an earlier VALIDATE of its base and
+  kind through only immediate steps, in reach; one flag per VALIDATE, in
+  cr2-cr4) and run time (flags set and cleared as the driver does, cr0-cr1
+  clobbered per op; a REUSE that runs unchecked must pass its check unless
+  the checked address was near an area's end). PASS, seeds 1 and 7, 200000
+  blocks each (~448K REUSE ops, ~1K edge cases each). Emitters against
+  ppu-as (6 words). `mutate.py`: 25 of 25 planted bugs fail, 22 on the
+  fuzzer alone (the other 3 are encodings, caught by the words).
+- Build (package of 21:50): the 7 old warnings, `.got` 0xA690, 0 `r2off`.
+- HW test steps (package of 21:50):
+  1. Install. Settings as `run516.txt` (an install resets them; SPE Draw
+     ON is the default), then VIDEO / DEBUG -> JIT GUARD REUSE ON. JIT
+     FRCHG and JIT PREFETCH OFF. Set them on the main menu.
+  2. Crazy Taxi at 60 Hz, dense traffic, ~150 s, exit to the XMB. Log:
+     `[jitcfg] ... greuse=1`, `[ppe] ... greuse=` above 0/0, no fault.
+  3. Analysis: same-load VPS against `run516.txt`.
+  4. On a fault: the same boot with JIT GUARD REUSE OFF.
+- HW 2026-10-05 (package of 21:50, our listener after Matt stopped the
+  Halo-PS3 one; log `run531.txt` in the scratchpad of session 8112eaf0).
+  `[jitcfg]` as `run516` plus `greuse=1` (frchg=0 pref=0, fence wait
+  spins). 256 s, two rounds at 60 Hz. Log clean (the old XMB 3 s
+  fallback). `[ppe]` greuse=6615/20994 at the end.
+  - 119 dense windows: VPS 59.6, SPEED 99.4%, 77% at full speed (`run516`:
+    59.5, 99.2%, 80%); 12K+ 99.6% in 10 windows (96.9% in 5). Same load
+    +0.1% against `run516` (bins -1.9% to +5.2%), +0.7% against `run528b`.
+    Silent audio blocks/s 1.1 (1.4).
+  - No measurable gain; default OFF.
+- The deepest dip of every Crazy Taxi run (VPS 40-44 at ~8.3K vertices,
+  the same moment each time, also in `run528b`, `run516`, `run529`) is not
+  SH4 speed: in that second the pacer slept at all 42 vblanks (`[pace]
+  slept=42`), so one stall of ~300 ms ate the rest; the heartbeat pc was
+  8C0028C6 (BIOS area) while CD audio streamed (`cdda/s=71.6`), and the
+  audio starved (31 silent blocks). Likely a disc read on the SH4 thread:
+  `OPTIMIZATION_POTENTIAL.md` P3 (async GD-ROM reads). One boot with
+  Debug GD-ROM ON would confirm it.
+- Debug GD-ROM boots 2026-10-05 (`rungd_ct.txt`, `rungd_sonic.txt` in the
+  scratchpad of session 8112eaf0): the disc read is NOT the Crazy Taxi
+  dip's cause (WRONG: these logs count reads, not their time; see the
+  5.32 HW below). The dip second (VPS 44.7) had 2 reads, 57 sectors (29K
+  words copied into RAM by the GD-ROM DMA in C), as many normal seconds of
+  play (Crazy Taxi streams 3-10 reads/s all along); loading screens read
+  up to 1774 sectors/s at full speed. Debug GD-ROM is not saved in
+  nullDC.cfg, so the Sonic boot ran without it; its dips are at loads and
+  scene changes (disc data into RAM up to ~1.4M words/s and JIT compile
+  bursts of 1-3 MB/s), the intro at 40-44 VPS (CPU-bound, the SH4 never
+  sleeps), and two short dips in play.
+- 5.32 stall probe (Matt 2026-10-05: "It is worth a build to me"). Built,
+  package of 22:22, HW pending. No speed change: it finds the dips' cause.
+  - Rides on VIDEO / DEBUG -> JIT C-Calls (no new row: that page is full
+    at 720p): with it ON, a `[stall]` line each second gives the SH4
+    thread's slowest frame (vblank to vblank) split into exclusive times:
+    jit (block compile, cache clear), gd read (host disc read), gd dma
+    (copy into RAM), maple, dma (ch2), rend (VBlank, StartRender), spe
+    (SPE TA ring waits), sys (UpdateSystem), log (the stats block), sleep
+    (the pacer), and other (guest code and anything not listed); then the
+    second's totals, counts and longest single section of each.
+  - `ps3/ps3_stall.h` / `.cpp`: a section stack; a nested section pauses
+    the outer one; the enable is latched at each vblank. Sections in
+    `rdv_CompileBlock`, `recSh4_ClearCache`, `libGDR_ReadSector`,
+    `UpdateGDRom`, `maple_DoDma`, `DMAC_Ch2St`, `VBlank`, `StartRender`,
+    the SPE ring waits, `UpdateSystem_no_event` / `_handle_event`, the SPG
+    stats block and the pacer's sleep; `stall_frame` first in
+    `spg_PaceFrame`. Cost with JIT C-Calls ON: est. ~0.4% (two sections
+    per timeslice).
+  - Comment rule: maple_if.cpp (2 blocks) and dmac.cpp (1) trimmed;
+    ImgReader.cpp's 92-line commented-out file reader removed.
+  - Build: no new warning, `.got` 0xA790, 0 `r2off`.
+  - HW steps: install; the usual settings with JIT C-Calls ON; Crazy Taxi
+    at 60 Hz, one round through the dip; then Sonic Adventure through a
+    level load and some play. Read the `[stall]` line of each dip second.
+  - HW 2026-10-05 (package of 22:22, our listener; log `runstall_ct.txt`
+    in the scratchpad of session 8112eaf0): Crazy Taxi at 60 Hz, 133 s.
+    The dip second: worst frame 344.9 ms, of it gd read 330.0 ms (one
+    read; 2 reads in that second, 335 ms). In the 56 windows at 6K+
+    vertices: gd read 60.9 ms/s at 3.7 reads/s, and 11 windows had one
+    read of 70-96 ms (or the 330 ms one); sys 64 ms/s (with the probe's
+    cost), maple 7.7 ms/s, jit 2.4 ms/s. Cause: the CDI reader did one
+    `fseek` + `fread` per sector (~2.5 ms each in play). Matt: the same
+    reader slows Sonic Adventure. The Sonic boot was not done (Matt: "Just
+    build the fix right away"). Fix: 5.33.
+- 5.33 CDI batched reads (Matt 2026-10-05: "Just build the fix right
+  away"). Built, package of 22:38, HW pending.
+  - `cdi_DriveReadSector` (`plugs/ImgReader/cdi.cpp`) reads each run of
+    sectors of one track with one `fseek` and one `fread` (up to 32
+    sectors, a GD-ROM request, into a 78 KB buffer). Then it does the same
+    per-sector work as before: the FAD 150 IP.BIN patch and
+    `ConvertSector`. Sectors past the file end read as zeros (before: the
+    buffer's old bytes). The old 2352-byte buffer overran on 2448-byte
+    tracks; the new one holds 2448 bytes per sector.
+  - PC: `misc/cdi_check/run.sh` (WSL) compares it byte for byte with the
+    old one-sector reader on random track tables and requests (runs across
+    tracks and gaps, past the file end, the FAD 150 patch): PASS, 20000
+    requests. `mutate.py`: 14 of 14 planted bugs fail.
+  - Build: no warning, `.got` 0xA790, 0 `r2off`.
+  - Expected: much less disc read time in play (not measured).
+  - HW steps (package of 22:38):
+    1. Install. Settings as `runstall_ct.txt` (an install resets them),
+       with VIDEO / DEBUG -> JIT C-Calls ON.
+    2. Crazy Taxi at 60 Hz, one round through the dip, exit to the XMB.
+       Compare the `[stall]` gd read times with `runstall_ct.txt`.
+    3. Sonic Adventure through a level load and some play. Check that the
+       loads and the graphics are right.
+  - HW 2026-10-05 (package of 22:38, our listener at Matt's request; log
+    `ps3log_533_run1.txt`, cut into `run533_ct.txt` and `run533_sonic.txt`
+    in the scratchpad of session 8112eaf0). Settings as `runstall_ct`.
+    - Crazy Taxi, 60 Hz, 132 s: clean. Read time per request: loading 6.29
+      -> 5.87 ms, play 15.8 -> 14.6 ms (-7%); in windows without a long
+      read 10.9 -> 10.8 ms. Dense (6K+ vertices, 56 windows): gd read 60.9
+      -> 49.9 ms/s at 3.7 reads/s; windows with a read over 50 ms 11 -> 7.
+      The long read stays: 333 ms (330). In both runs it is the first read
+      after seconds with no reads (3 s in `runstall_ct`, 8 s now). Same
+      load +0.7% against `runstall_ct` (noise); dense SPEED 99.5% (98.7%).
+    - Sonic Adventure, 60 Hz, 195 s: clean. Loading 5.74 ms per request,
+      play 4.49 ms (1.5 reads/s in dense play); longest read 169 ms; loads
+      read up to 571 ms/s (VPS 37-47 there). Dense SPEED 99.8%, 94% of
+      dense windows at full speed. No Sonic run with the probe before 5.33.
+    - So the per-sector `fseek` + `fread` was not the main cost; each
+      request costs ~6-15 ms, and a request after seconds of no reads can
+      cost ~330 ms (likely the disk or lv2 waking). Open: newlib's stdio
+      may still split each `fread` into small system calls (buffer size
+      not checked); an unbuffered read would test that. The rest needs
+      reads off the SH4 thread (`OPTIMIZATION_POTENTIAL.md` P3).
+    - Matt 2026-10-05: "We can park them for now. It's okay." 5.33 stays
+      in the code; the unbuffered read test and P3 are parked.
 - 5.8 HW 2026-09-23, boot B (ON): BIOS swirl invisible, then the console
   crashed. The log stops rendering at `rend=draw seq=8` (RPS 0) while the SH4
   runs on: the render thread died at its first vertex-array draw. Cause: GCC

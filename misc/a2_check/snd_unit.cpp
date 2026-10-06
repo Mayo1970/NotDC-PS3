@@ -41,7 +41,7 @@ static void dma(const volatile void* ls, uint64_t ea, uint32_t n, bool put)
 #define SND_WAIT() ((void)0)
 #include "spe_aica_snd.h"
 
-// ps3_audio.cpp wii_audio_push_sample, frames appended to out
+// ps3_audio.cpp ps3_audio_push_sample, frames appended to out
 struct Ref
 {
 	int16_t prev_l = 0, prev_r = 0;

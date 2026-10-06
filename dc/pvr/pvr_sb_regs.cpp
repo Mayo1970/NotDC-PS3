@@ -219,7 +219,7 @@ static void pvr_do_sort_dma()
 	while (link_addr != loop_term)
 	{
 		if (SB_SDLAS == 1)
-			link_addr <<= 5;      // Multiply by 32 (faster than * 32 on Wii)
+			link_addr <<= 5;
 		else if (dma_fix)
 			link_addr &= ~31u;   // 32-byte align (PSP: link_addr &= ~31)
 

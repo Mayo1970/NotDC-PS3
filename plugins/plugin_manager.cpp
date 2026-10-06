@@ -1,8 +1,4 @@
-/*
-			--nullDC plugin managment code--
-	Does plugin enumeration and handles dynamic lib loading.
-	Also has code for plugin init/reset/term calls :).
-*/
+// nullDC plugin management: plugin enumeration, dynamic lib loading and the init/reset/term calls.
 #include "types.h"
 #include "plugin_manager.h"
 #include "dc/pvr/pvr_if.h"
@@ -16,18 +12,11 @@
 #include <string.h>
 #include "dc/mem/sb.h"
 
-// vbaARM plugin — direct linkage (no DLL on Wii).
-// Include arm_aica.h BEFORE vbaARM.h so arm_sh4_bias is visible.
-// We must NOT include vbaARM.h here because it re-defines ReadMemArrRet /
-// WriteMemArrRet which are already defined in sh4_mem.h (pulled in via sb.h).
-// Instead we forward-declare only what we need from vbaARM.cpp.
+// vbaARM plugin, linked directly (no DLL). vbaARM.h is not included: its ReadMemArrRet / WriteMemArrRet clash
+// with sh4_mem.h (via sb.h), so only arm_aica.h and the entry point below are used.
 #include "plugs/vbaARM/arm_aica.h"   // armUpdateARM, arm_sh4_bias
 
-// Use the real vbaARM ARM7DI core. We can't include vbaARM.h here (it re-defines
-// ReadMemArrRet / WriteMemArrRet, which collide with sh4_mem.h), so forward-
-// declare its plugin entry point. EmptyARM (a no-op stub whose Update did
-// nothing — which is why the ARM7 never ran and there was no sound) has been
-// removed.
+// The real vbaARM ARM7DI core's entry point. The no-op EmptyARM stub, which left the ARM7 and the sound dead, is gone.
 extern "C" void armGetInterface(plugin_interface* info);
 
 
@@ -41,14 +30,11 @@ extern "C" void armGetInterface(plugin_interface* info);
 
 sh4_if						sh4_cpu;
 
-// ---------------------------------------------------------------------------
-// ARM plugin vtable — populated by armGetInterface() at load time.
-// All libARM_* calls below go through this struct.
-// ---------------------------------------------------------------------------
+// ---- ARM plugin vtable, filled by armGetInterface() at load time; every libARM_* call goes through it ----
 static plugin_interface arm_plugin;
 static bool             arm_plugin_loaded = false;
 
-// Minimal emu_info for the ARM plugin's Load() callback on Wii.
+// Minimal emu_info for the ARM plugin's Load() callback.
 // AddMenuItem is a no-op; ConfigLoad/SaveInt delegate to cfgLoad/SaveInt.
 static void   arm_nop_AddMenuItem(void*, int, const char*, MenuCallback, u32) {}
 static int    arm_cfg_load(const char* sec, const char* key, int def)
@@ -57,7 +43,7 @@ static void   arm_cfg_save(const char* sec, const char* key, int val)
               { cfgSaveInt(sec, key, val); }
 
 static emu_info arm_emu_info = {
-	nullptr,          // RootMenu  (no GUI on Wii)
+	nullptr,          // RootMenu  (no GUI)
 	arm_nop_AddMenuItem,
 	arm_cfg_load,
 	arm_cfg_save,

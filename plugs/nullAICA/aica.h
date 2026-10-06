@@ -1,6 +1,6 @@
 #pragma once
 #include "nullAICA.h"
-#include "wii_audiostream.h"
+#include "audiostream.h"
 #include "assert.h"
 
 #define SCIEB_addr  0x289C
@@ -22,7 +22,7 @@
 #pragma pack(1)
 struct CommonData_struct
 {
-#ifdef WII
+#ifdef AICA_PS3
     //+0
     u32 :16;
     entry(Mono,1);
@@ -312,7 +312,7 @@ union InterruptInfo
 {
     struct
     {
-#ifdef WII
+#ifdef AICA_PS3
         u32 padding:21;
         entry(SAMPLE_DONE,1);
         entry(MIDI_OUT,1);
@@ -358,7 +358,7 @@ void FASTCALL UpdateAICA(u32 Cycles);
 
 void AICA_Init();
 void AICA_Term();
-void libAICA_TimeStep();  // called by wii_audio.cpp once per sample
+void libAICA_TimeStep();  // called by armUpdateARM (vbaARM/arm_aica.cpp) once per sample
 
 void WriteAicaReg8(u32 reg, u32 data);
 extern bool e68k_out;

@@ -12,7 +12,7 @@
 #include <new>
 #include <unistd.h>
 #include <sys/spu.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 #include "spu/spe_aica.h"
 #include "spu/spe_dsp_jit.h"
 

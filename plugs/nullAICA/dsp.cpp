@@ -1,9 +1,5 @@
-// dsp.cpp - DSP stub for Wii port
-//
-// The PC/Xenon versions used an x86 dynarec (dsp_recompile) which obviously
-// cannot run on PowerPC. DSP emulation is disabled by default on Wii
-// (aica_settings.DSPEnabled = 0). This stub satisfies the linker and keeps
-// the door open for a future interpreted DSP implementation.
+// DSP stub: the PC/Xenon x86 DSP recompiler (dsp_recompile) cannot run on PowerPC, and
+// aica_settings.DSPEnabled is 0. It satisfies the linker until a DSP interpreter exists.
 
 #include "dsp.h"
 #include "aica_mem.h"
@@ -26,9 +22,8 @@ void dsp_term()
     // nothing to free
 }
 
-// Called once per sample when DSPEnabled == 1.
-// Stub: zeroes EFREG so downstream VOLPAN reads produce silence
-// rather than garbage. Replace with an interpreter if DSP is needed.
+// Called once per sample when DSPEnabled == 1. Stub: zeroes EFREG so the VOLPAN reads
+// give silence, not garbage.
 void dsp_step()
 {
     memset(DSPData->EFREG, 0, sizeof(DSPData->EFREG));
@@ -38,9 +33,8 @@ void dsp_step()
         dsp.regs.MDEC_CT = dsp.RBL;
 }
 
-// Called by aica_mem whenever MPRO (DSP program) is written.
-// Mark dirty so dsp_step knows the program changed (useful if you
-// later add an interpreter).
+// Called by aica_mem when MPRO (the DSP program) is written; the dirty flag is for a
+// future interpreter.
 void dsp_writenmem(u32 addr)
 {
     addr -= 0x3000;

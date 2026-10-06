@@ -10,8 +10,8 @@
 extern u64 ArmTicks;
 extern u64 AicaTicks;
 
-#if HOST_OS == OS_WII || HOST_OS == OS_PS3
-// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them. Same dance
+#if HOST_OS == OS_PS3
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; system endian headers define them. Same dance
 // as arm7.cpp.
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
@@ -19,7 +19,7 @@ extern u64 AicaTicks;
 #ifdef LITTLE_ENDIAN
 #  undef LITTLE_ENDIAN
 #endif
-#include <ogc/lwp_watchdog.h>   // gettime() - inline mftb read, no call
+#include "ps3_timebase.h"   // gettime() - inline mftb read, no call
 #define ARM_PERF_TICKS() gettime()
 #else
 #define ARM_PERF_TICKS() ((u64)0)
@@ -29,7 +29,7 @@ extern u64 AicaTicks;
 // sample per call, pushed to the audio sink.
 extern void libAICA_TimeStep();
 
-// Per-game ARM7 speed (game_presets arm7_speed): bias = arm_sh4_bias << stage (0 ~10 MHz, 1 ~5, 2 ~2.5);
+// ARM7 speed preset (ps3_presets.cpp): bias = arm_sh4_bias << stage (0 ~10 MHz, 1 ~5, 2 ~2.5);
 // the AICA driver over-polls, so this saves host CPU, but stage 2 broke audio timing on hardware.
 extern "C" int get_arm7_speed_preset();
 

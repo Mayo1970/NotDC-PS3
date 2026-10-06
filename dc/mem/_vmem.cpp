@@ -10,9 +10,7 @@
 #include <malloc.h>
 #endif
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// ---- Constants ----
 #define HANDLER_MAX   0x1F
 #define HANDLER_COUNT (HANDLER_MAX + 1)
 
@@ -20,9 +18,7 @@
 // garbage writes to 0xDEADE5F3+ (a freeze).
 #define MEM_ERROR_RETURN_VALUE 0u
 
-// ---------------------------------------------------------------------------
-// Global tables
-// ---------------------------------------------------------------------------
+// ---- Global tables ----
 static _vmem_handler     _vmem_lrp;   // next free handler slot
 
 static _vmem_ReadMem8FP*  _vmem_RF8  [HANDLER_COUNT];
@@ -37,9 +33,7 @@ static _vmem_WriteMem32FP* _vmem_WF32[HANDLER_COUNT];
 // Top-level dispatch table: 256 entries, one per 16 MB page.
 ALIGN(65536) void* _vmem_MemInfo_ptr[0x100];
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
+// ---- Internal helpers ----
 
 // Low address bits to mask away for a block: 16 MB (0x00FFFFFF) gives 0,
 // smaller blocks (e.g. 2 MB VRAM) give the mirror shift.
@@ -146,10 +140,8 @@ static INLINE void fastcall _vmem_writet(u32 addr, T data)
     }
 }
 
-// ---------------------------------------------------------------------------
 // Resolves [Address, Address+size) to one host pointer for a single memmove, or 0
 // if MMIO, sub-word, mirror-wrapping or page-crossing (those need the per-word path).
-// ---------------------------------------------------------------------------
 u8* fastcall _vmem_GetBlockPtr(u32 Address, u32 size)
 {
     if (size == 0 || (size & 3) != 0 || (Address & 3) != 0)
@@ -174,9 +166,7 @@ u8* fastcall _vmem_GetBlockPtr(u32 Address, u32 size)
     return &((u8*)ptr)[base];
 }
 
-// ---------------------------------------------------------------------------
-// Public read/write accessors
-// ---------------------------------------------------------------------------
+// ---- Public read/write accessors ----
 u8  fastcall _vmem_ReadMem8  (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u8> (addr); }
 u16 fastcall _vmem_ReadMem16 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u16>(addr); }
 u32 fastcall _vmem_ReadMem32 (u32 addr) { CCALL_MEM(CC_READMEM, 0, addr); return _vmem_readt<u32>(addr); }
@@ -187,9 +177,7 @@ void fastcall _vmem_WriteMem16 (u32 addr, u16 data) { CCALL_MEM(CC_WRITEMEM, 1, 
 void fastcall _vmem_WriteMem32 (u32 addr, u32 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u32>(addr, data); }
 void fastcall _vmem_WriteMem64 (u32 addr, u64 data) { CCALL_MEM(CC_WRITEMEM, 1, addr); _vmem_writet<u64>(addr, data); }
 
-// ---------------------------------------------------------------------------
-// Default "not mapped" handlers: rate-limited log, then the safe sentinel.
-// ---------------------------------------------------------------------------
+// ---- Default "not mapped" handlers: rate-limited log, then the safe sentinel ----
 
 // Simple rate-limiter: skip logging if we've already seen this page recently.
 static u32 s_last_unmapped_page = 0xFFFFFFFFu;
@@ -247,9 +235,7 @@ void fastcall _vmem_WriteMem32_not_mapped(u32 addr, u32 data)
         printf("[vmem] Write32 to unmapped 0x%08X = 0x%08X\n", addr, data);
 }
 
-// ---------------------------------------------------------------------------
-// Handler registration
-// ---------------------------------------------------------------------------
+// ---- Handler registration ----
 _vmem_handler _vmem_register_handler(
     _vmem_ReadMem8FP*   read8,
     _vmem_ReadMem16FP*  read16,
@@ -272,9 +258,7 @@ _vmem_handler _vmem_register_handler(
     return rv;
 }
 
-// ---------------------------------------------------------------------------
-// Mapping
-// ---------------------------------------------------------------------------
+// ---- Mapping ----
 void _vmem_map_handler(_vmem_handler Handler, u32 start, u32 end)
 {
     verify(start < 0x100);
@@ -314,9 +298,7 @@ void _vmem_mirror_mapping(u32 new_region, u32 start, u32 size)
         _vmem_MemInfo_ptr[(new_region + i) & 0xFF] = _vmem_MemInfo_ptr[(start + i) & 0xFF];
 }
 
-// ---------------------------------------------------------------------------
-// Dynarec helpers
-// ---------------------------------------------------------------------------
+// ---- Dynarec helpers ----
 void _vmem_get_ptrs(u32 sz, bool write, void*** vmap, void*** func)
 {
     *vmap = _vmem_MemInfo_ptr;
@@ -359,9 +341,7 @@ void* _vmem_read_const(u32 addr, bool& ismem, u32 sz)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostic helper
-// ---------------------------------------------------------------------------
+// ---- Diagnostic helper ----
 bool _vmem_is_mapped(u32 addr)
 {
     const u32  page = addr >> 24;
@@ -369,9 +349,7 @@ bool _vmem_is_mapped(u32 addr)
     return (void*)(iirf & ~(unat)HANDLER_MAX) != nullptr;
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 void _vmem_init()
 {
     _vmem_reset();
@@ -403,125 +381,8 @@ void _vmem_term()
     // Nothing to do for the software-only mapping tables.
 }
 
-// ---------------------------------------------------------------------------
-// Memory reservation
-// ---------------------------------------------------------------------------
-#if HOST_OS == OS_WII
-// Final values by EmuMain() time; lets the VERY_FAST_PLUS arena be skipped when unused.
-extern "C" int get_texture_cache_preset();
-extern "C" int get_autosort_preset();
-// gxRend.cpp: CACHE_VERY_FAST_PLUS() is preset 6. Keep the two in step.
-#define TEXCACHE_VERY_FAST_PLUS 6
-// Screen + /ndclog.txt; plain printf would vanish when a failed boot exits to HBC.
-extern "C" void wii_boot_log(const char* fmt, ...);
-extern "C" int WiiFastmem_ReserveHtab();
-
-bool _vmem_reserve()
-{
-    // HTAB first, before anything bump-allocates MEM1/MEM2; failing here beats silent -20% FPS.
-    if (!WiiFastmem_ReserveHtab())
-        return false;
-
-    u32 level = IRQ_Disable();
-
-    // MEM2 arena size depends on IOS; overrunning Arena2Hi corrupts IOS buffers, so check first.
-    {
-        u8* const a_lo = (u8*)SYS_GetArena2Lo();
-        u8* const a_hi = (u8*)SYS_GetArena2Hi();
-        // Signed: an overrun arena must read negative, not wrap to ~4 GB.
-        const s32 a_free = (s32)(a_hi - a_lo);
-        // Worst case both alignments below are paid in full.
-        const u32 need = 65536u + (ARAM_SIZE + VRAM_SIZE + RAM_SIZE)
-                       + 64u    + (VRAM_SIZE * 2u);
-
-        if (a_free < (s32)need)
-        {
-            IRQ_Restore(level);
-            wii_boot_log("\n\n"
-                   "  *** NOT ENOUGH MEMORY ***\n\n"
-                   "  The Dreamcast RAM+VRAM needs %u KB, but only %d KB is\n"
-                   "  free (arena %p - %p) - short by %d KB.\n\n"
-                   "  A mounted USB device costs memory even when the game is\n"
-                   "  on the SD card. Try another USB device, or unplug it.\n"
-                   "  You can also set FASTMEM to OFF on options page 4 (CORE)\n"
-                   "  to free some memory - that costs about 20%% FPS.\n\n"
-                   "  Please report this screen and /ndclog.txt.\n\n",
-                   need / 1024u, a_free / 1024, a_lo, a_hi,
-                   ((s32)need - a_free) / 1024);
-            return false;
-        }
-    }
-
-    u8* ram_alloc = (u8*)SYS_GetArena2Lo();
-    // Align to 65536 bytes (required by _vmem_map_block).
-    ram_alloc = (u8*)(((unat)ram_alloc + 65535) & ~(unat)65535);
-    SYS_SetArena2Lo(ram_alloc + ARAM_SIZE + VRAM_SIZE + RAM_SIZE);
-
-    extern u8* vram_buffer;
-    vram_buffer = (u8*)SYS_GetArena2Lo();
-    vram_buffer = (u8*)(((unat)vram_buffer + 63) & ~(unat)63); // 64-byte align
-    SYS_SetArena2Lo(vram_buffer + VRAM_SIZE * 2);
-
-    // VERY_FAST_PLUS overflow arena for textures that expand >2x on decode (gxRend.cpp).
-    // 4 MB is a hard ceiling (6 MB froze BIOS load on HW); carved off the TOP of MEM2.
-    extern u8* plus_tex_arena;
-    extern u32 plus_tex_arena_size;
-
-    // -1 = the game never asked, otherwise the KB free when the carve was refused.
-    s32 plus_arena_short_kb = -1;
-    if (get_texture_cache_preset() == TEXCACHE_VERY_FAST_PLUS)
-    {
-        // All or nothing: a partial arena wraps mid-frame and corrupts bound textures (JSR).
-        const s32 want = 4 * 1024 * 1024;
-
-        // MEM2 that must survive: libogc heap spill (~4989 KB, HW-measured) + AUTOSORT if on.
-        const s32 keep = (5 * 1024 * 1024)
-                       + (get_autosort_preset() ? 640 * 1024 : 0);
-        // Signed, so an exhausted arena cannot wrap to ~4 GB and pass the guard.
-        const s32 free_m2 = (s32)((u8*)SYS_GetArena2Hi() - (u8*)SYS_GetArena2Lo());
-
-        // Never take more than half of what is free, whatever the numbers say.
-        if (free_m2 > want + keep && want <= free_m2 / 2)
-        {
-            u8* a = (u8*)SYS_GetArena2Hi() - want;
-            a = (u8*)((unat)a & ~(unat)63); // 64-byte align, downwards
-            SYS_SetArena2Hi(a);
-            plus_tex_arena      = a;
-            plus_tex_arena_size = (u32)want;
-        }
-        else
-        {
-            plus_arena_short_kb = free_m2 / 1024;
-        }
-    }
-
-    IRQ_Restore(level);
-
-    // Signed so an overrun arena prints negative instead of a wrapped ~4096 MB.
-    wii_boot_log("[vmem] Wii RAM: %p  VRAM buffer: %p  GDDR3 free: %.2f MB\n",
-           ram_alloc, vram_buffer,
-           (s32)((u8*)SYS_GetArena2Hi() - (u8*)SYS_GetArena2Lo()) / (1024.f * 1024.f));
-    wii_boot_log("[vmem] PLUS tex arena: %p (%u KB)\n",
-           plus_tex_arena, plus_tex_arena_size / 1024u);
-    if (plus_arena_short_kb >= 0)
-        wii_boot_log("[vmem] PLUS tex arena skipped: only %d KB MEM2 free\n",
-               plus_arena_short_kb);
-
-    aica_ram.size = ARAM_SIZE;
-    aica_ram.data = ram_alloc;
-    ram_alloc += ARAM_SIZE;
-
-    vram.size = VRAM_SIZE;
-    vram.data = ram_alloc;
-    ram_alloc += VRAM_SIZE;
-
-    mem_b.size = RAM_SIZE;
-    mem_b.data = ram_alloc;
-    ram_alloc += RAM_SIZE;
-
-    return true;
-}
-#elif HOST_OS == OS_PS3
+// ---- Memory reservation ----
+#if HOST_OS == OS_PS3
 static u8* ps3_dc_mem;
 
 bool _vmem_reserve()
@@ -559,5 +420,4 @@ void _vmem_release()
     free(ps3_dc_mem);
     ps3_dc_mem = 0;
 #endif
-    // Wii: memory belongs to the MEM2 arena allocator, nothing to free.
 }

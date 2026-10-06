@@ -1,21 +1,26 @@
 # nullDC PS3 port - goal list
 
 Base: copy of `nullDC4Wii` (upstream folder stays untouched).
-Toolchain: PSL1GHT, Docker image `ps3dev/ps3dev:latest` (ppu-gcc 7.2).
+Toolchain: PSL1GHT, Docker image `ps3dev-latest:latest` (ppu-gcc 7.2), run by `./build.sh`.
 TITLE_ID: `NULLDC000`. Data root: `/dev_hdd0/data/NullDC/` (BIOS in `data/`). VMU saves: `/dev_hdd0/savedata/vmu/`. Debug: UDP log only.
 References: `ioQuake3-PS3` (RSX, audio, pad, PKG rules), `xashPS3` (vid/snd/in/sys under `engine/platform/ps3`).
 Video reuse: RSX init/flip from `xashPS3/engine/platform/ps3/vid_ps3.c` and `ioQuake3-PS3/code/sys/ps3_glimp.c`;
 GL 1.1 to RSX layer `ps3gl` (`xashPS3/3rdparty/ps3gl`, `ioQuake3-PS3/code/gl`) as the base for the renderer.
-Rule: no JIT on PS3. Use interpreters only.
+JIT: generated code runs only from a code array in `.text`; RW memory never executes. The first rule here, "no JIT
+on PS3", was wrong: the SH4 dynarec and the ARM7 JIT run that way.
 Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
+
+Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state) and
+`OPTIMIZATION_POTENTIAL.md` (P1-P15).
 
 ## G1 - `_PS3` build links and packages  `[x]` (HW 2026-09-18: boots, UDP log OK, clean XMB exit, ~194 MB free heap)
 1. Add a PSL1GHT `Makefile` in the project root. Build in Docker with `./build.sh [pkg|self|clean]`.
 2. Set up `_PS3` in `config.h` (CPU_PPC_CELL, big endian, `HOST_OS OS_PS3`).
 3. Exclude from the build: SH4 dynarec (`dc/sh4/rec_v2`, `wii/dc/sh4/rec_v2`), `arm7_jit.cpp`, `wii_fastmem.cpp`, `libwiidrc`, `libwupc`, `libsicksaxis`.
 4. Force the SH4 interpreter and the ARM7 cached interpreter.
+   Steps 3-4 held for G1-G7 only: the SH4 dynarec (G8) and the ARM7 JIT (plan 5.4) were ported later.
 5. Replace libogc calls with PS3 code or stubs (`ps3/`, `ps3/include/ogc/` timebase shim).
 6. Add `ps3/` platform layer: `SYS_PROCESS_PARAM`, UDP log.
 7. HW test: PKG installs, boots, prints a log line, returns to XMB cleanly.
@@ -43,7 +48,10 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 2. Dedicated feeder thread, event-queue paced, resample in the mixer.
 3. HW test: BIOS boot sound plays with no clicks.
 
-## G6 - RSX renderer (port of `plugs/drkPvr/gxRend.cpp` onto `ps3gl`)  `[~]` (started before G4/G5 at Matt's request)
+Later: the sound runs on SPEs (SPE AICA Sound and SPE ARM7, default ON since 2026-10-05; see G9). Open sound
+faults: `OPTIMIZATION_PLAN.md` section 6 (parked).
+
+## G6 - RSX renderer (port of `plugs/drkPvr/gxRend.cpp` onto `ps3gl`)  `[x]` (started before G4/G5 at Matt's request; steps 1-4 HW validated)
 1. Untextured TA polygons (opaque list). HW test. `[x]` (HW 2026-09-18: BIOS background plane in 4:3, no hang)
 2. Textures: decode, twiddle, VQ, palette, hash cache. Also draws the PT list (alpha test) and the TR list (PVR blend, unsorted) so the BIOS swirl can be checked (Matt, 2026-09-18). HW test. `[x]` (HW 2026-09-18: Date/Time + BIOS menu correct, clock from PS3 time via flash syscfg fix. Boot swirl `[x]` HW 2026-09-19: fixed by the GD-ROM no-disc spin-up BUSY status and one TA context per `TA_ISP_BASE` as in nullDC-v1; swirl debug code removed)
 3. Blend modes, punch-through, translucent sorting. HW test. `[x]` (HW 2026-09-20: BIOS menu models correct, ~45% speed.
@@ -63,6 +71,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
    - Not exercised on HW yet: the BIOS sends no modifier volumes and no bit-24 pass (`mv_tris=0`, `rtt=0/0`). Both get their
      first real test when a game boots in G7. Pack/read modes 24-bit and mode 4/5 log once and skip.
 Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mode.
+Open: no game has used render to texture yet (`rtt=0/0`). Fog and offset colour need a PVR shader
+(`OPTIMIZATION_PLAN.md` 3a, 3b, shelved).
 
 ## G7 - Game boot and front end  `[x]` (HW 2026-09-20: Crazy Taxi and ChuChu Rocket boot and play correctly, ~45% speed / ~12 RPS)
 1. Replace the Wii menu (`wii/main.cpp`) with an RSX disc browser. `[x]`
@@ -153,8 +163,13 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
    strips that share polygon state would, and `GPstate_cache` already knows when state is
    unchanged).
 
-## G8 - SH4 speed: cached interpreter  `[~]`
-1. Build an SH4 cached interpreter (same method as `arm7_cached.cpp`).  `[~]` awaiting HW test
+## G8 - SH4 speed  `[x]` (reached with the SH4 dynarec, not the cached interpreter)
+Status 2026-10-05: the SH4 dynarec (`dc/sh4/rec_v2` + `ps3/ps3_driver.cpp`) runs dense Crazy Taxi at 99.5% SPEED
+and Sonic Adventure at 99.8% (SH4 Clock 200). The TA decode and the RSX draw run on a render thread. Dynarec and
+JIT Fastmem are ON by default since 2026-10-05. Details: `Dynarec.MD`, `TArender.MD`, `OPTIMIZATION_PLAN.md`
+section 5. The steps below are the cached interpreter (OFF by default), kept as history.
+
+1. Build an SH4 cached interpreter (same method as `arm7_cached.cpp`).  `[x]` (HW in step 2)
    - `dc/sh4/sh4_cached.cpp`: uop pool (256 K x 8 B) + direct-mapped tagged entrypoint table
      (256 K x 8 B, indexed by `(pc>>1)`, so every RAM mirror shares a slot). A block is decoded
      once into `{ &&label, opcode }` slots; the hot loop is `goto *pc_op->dispatch` with a
@@ -186,6 +201,7 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
    SH4 throughput is up ~1.5x. Dense driving did not move: the RSX still needs 78.5 ms/frame
    for ~1306 draw calls of ~8 vertices, exactly the renderer limit G6/G7 predicted.
 3. HW test: speed gain against the plain interpreter, same output.  `[!]` SHELVED 2026-09-20 at Matt's request.
+   Superseded by the dynarec before this freeze was attributed.
    The speed goal is met, but the run FROZE at t=120 s in dense traffic: `pc=0C159AEA` and
    `vbl=4190` stopped advancing, `[aud] in=0/s`, monitor thread still alive. That is the
    "SH4 thread blocked in host code" signature, the same shape as the mirrored-wrap RSX stall.
@@ -199,7 +215,7 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
      so the rate was already climbing. Probably unrelated, but not ruled out. Invalidated blocks
      are never reclaimed until a pool reset, so the 256 K uop pool churns. Raising it is a
      tuning option, not a fix.
-   NEXT SESSION, in order:
+   Planned next at the time:
    a. Run the phase-marker build (already built and packaged). `[hb]` now prints
       `phase=<name> seq=<n>` from `ps3/ps3_phase.h`; the phase names the stuck host call
       (guest / decode / render / beginframe / draw / endframe / rtt / readback / tex / vblank).
@@ -208,10 +224,18 @@ Map GX calls to `ps3gl`. Add `cgcomp` shaders only where `ps3gl` lacks a PVR mod
    c. Only then decide the fix. Do NOT patch before (a) and (b) answer.
    The phase markers are diagnostic scaffolding; remove them once the freeze is closed.
 
-## G9 - SPE offload (optional)  `[ ]`
+## G9 - SPE offload (optional)  `[~]`
 1. Candidates: AICA/DSP mixing, texture decode.
 2. HW test per offloaded unit.
 
+Done on HW: SPE Draw (the TA decode on an SPU, plan 5.12 S3; default ON), SPE AICA Sound (the AICA sound on an SPU,
+plan 5.13 A2) and SPE ARM7 (the ARM7 and the AICA registers on an SPU, plan 5.15); the last two default ON since
+2026-10-05. Open: SPE AICA DSP (plan 5.13 A3, HW tested, Matt's verdict pending); texture decode and the rest of
+the plan 5.12 list (shelved).
+
 ## G10 - Release hardening  `[ ]`
-1. Memory ceiling probe, allocation checks, pad hot-plug, VMU saves on HDD.
+1. Memory ceiling probe, allocation checks, pad hot-plug. VMU saves on HDD `[x]` (HW 2026-10-04,
+   `/dev_hdd0/savedata/vmu/`).
 2. Long soak test (command buffer wrap, memory creep).
+3. Open from G7: the DS3 `user_controls.cfg` remap (deferred by Matt).
+4. Every exit to the XMB takes the 3 s fallback (`OPTIMIZATION_POTENTIAL.md` P6).

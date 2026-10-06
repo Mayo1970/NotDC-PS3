@@ -41,7 +41,7 @@ struct Sh4Context
 };
 
 // JIT context offsets go here, above the macros below: they rewrite bare field names, so offsetof(Sh4Context,fr)
-// would not compile after them. SH4CTX_OFS_FR: the Wii fastmem DSI handler cannot call offset().
+// would not compile after them. SH4CTX_OFS_FR: for the FASTMEM code (ps3_driver.cpp), which cannot call offset().
 enum { SH4CTX_OFS_FR = offsetof(Sh4Context, fr) };
 
 // JIT_FSCHG: fschg only toggles FPSCR.SZ, so the backend keeps old_fpscr in step with one stw, not a C call.

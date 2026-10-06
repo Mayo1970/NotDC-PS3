@@ -8,12 +8,12 @@ void sgc_Init();
 void sgc_Term();
 void sgc_KyonbSync();
 
-// Fixed-point types — bitfield order reversed on big-endian (WII)
+// Fixed-point types — bitfield order reversed on big-endian (AICA_PS3)
 union fp_22_10
 {
     struct
     {
-#ifdef WII
+#ifdef AICA_PS3
         u32 ip:22;
         u32 fp:10;
 #else
@@ -28,7 +28,7 @@ union fp_s_22_10
 {
     struct
     {
-#ifdef WII
+#ifdef AICA_PS3
         s32 ip:22;
         u32 fp:10;
 #else
@@ -43,7 +43,7 @@ union fp_20_12
 {
     struct
     {
-#ifdef WII
+#ifdef AICA_PS3
         u32 ip:20;
         u32 fp:12;
 #else

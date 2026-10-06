@@ -72,7 +72,7 @@ static void snd_flush(void)
 	snd.pub = end;
 }
 
-// One 44.1 kHz sample: the 48 kHz frames that fall before it (ps3_audio.cpp wii_audio_push_sample)
+// One 44.1 kHz sample: the 48 kHz frames that fall before it (ps3_audio.cpp ps3_audio_push_sample)
 static inline void snd_sample(int32_t l, int32_t r)
 {
 	const float scale = 1.0f / (32768.0f * SND_OUT_RATE);

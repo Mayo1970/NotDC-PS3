@@ -20,25 +20,19 @@ int g_frame_counter = 0;
 
 __settings settings;
 
-// Defined in wii/main.cpp — per-game preset (wii/game_presets.cpp) and
-// options-menu override for settings.emulator.AudioBuffers.
+// Defined in ps3_presets.cpp — menu override for settings.emulator.AudioBuffers (-1 = keep the cfg value).
 extern "C" int get_audio_buffers_preset();
 
-// Defined in wii/main.cpp — options-menu preset selecting the SH4 core
+// Defined in ps3_presets.cpp — menu preset selecting the SH4 core
 // back-end (0=Interpreter, 1=Dynarec, default).
 extern "C" int get_dynarec_preset();
 
-// ---------------------------------------------------------------------------
-// ELF boot state
-// Set by main___() if the selected file is a .elf.
-// Consumed by RunDC() after Reset() so the entry point wins over the BIOS vector.
-// ---------------------------------------------------------------------------
+// ---- ELF boot state ----
+// Set by main___() for a .elf; consumed by RunDC() after Reset() so the entry point wins over the BIOS vector.
 static bool  g_elf_pending = false;
 static u32   g_elf_entry   = 0;
 
-// ---------------------------------------------------------------------------
-// Helper: case-insensitive check for a file extension
-// ---------------------------------------------------------------------------
+// ---- Helper: case-insensitive check for a file extension ----
 static bool HasExtension(const char* path, const char* ext)
 {
     if (!path || !ext) return false;
@@ -71,24 +65,11 @@ int RunDC()
 		printf("[nullDC.cpp] Using Interpreter\n");
 	}
 
-	// -----------------------------------------------------------------------
-	// ELF boot: patch SH4 context AFTER the CPU back-end is chosen but
-	// BEFORE Start_DC() begins executing instructions.
-	//
-	// Start_DC() calls sh4_cpu.Reset() internally which sets nextpc to the
-	// BIOS reset vector (0xA0000000).  We need to override that after Reset
-	// but before the first instruction fetch.
-	//
-	// The hook we use: elf_apply_entry() is called from inside dc_run_hook()
-	// which is a weak/callback called by dc.cpp right after Reset() and
-	// before the main execution loop starts.  If your dc.cpp does not have
-	// that hook yet, see the comment block below for the alternative.
-	// -----------------------------------------------------------------------
+	// ELF boot: Start_DC() runs sh4_cpu.Reset(), which points nextpc at the BIOS vector (0xA0000000); the ELF entry must
+	// override it after that Reset and before the first instruction fetch.
 	if (g_elf_pending)
 	{
-		// dc.cpp must call dc_elf_pre_run_hook() between Reset() and Run().
-		// We register our intent here; the actual register write happens in
-		// the hook (see dc_elf_pre_run_hook() below).
+		// Only logged here: dc.cpp calls dc_elf_pre_run_hook() (below) between Reset() and Run() to write the PC.
 		printf("[nullDC.cpp] [ELF] Boot mode active – entry will be applied after CPU reset\n");
 	}
 
@@ -97,18 +78,7 @@ int RunDC()
 	return 0;
 }
 
-// ---------------------------------------------------------------------------
-// dc_elf_pre_run_hook  – called by dc.cpp after sh4_cpu.Reset() and before
-//                        the execution loop starts.
-//
-// ADD ONE LINE to your dc.cpp Start_DC() function, right after sh4_cpu.Reset()
-// is called:
-//
-//   extern void dc_elf_pre_run_hook();
-//   dc_elf_pre_run_hook();
-//
-// That's the only change needed in dc.cpp.
-// ---------------------------------------------------------------------------
+// Called by dc.cpp right after sh4_cpu.Reset(), before the execution loop starts.
 extern "C" void dc_elf_pre_run_hook()
 {
 	if (g_elf_pending)
@@ -116,12 +86,8 @@ extern "C" void dc_elf_pre_run_hook()
 		elf_apply_entry(g_elf_entry);
 		g_elf_pending = false;
 
-		// Flush the dynarec block cache AND the PPC code cache.
-		// ngen_ResetBlocks() is empty in wii_driver.cpp, so bm_Reset() alone
-		// only clears the hash table — the compiled PPC code stays in memory
-		// and can still be jumped to via direct pointers held by BIOS blocks.
-		// sh4_cpu.ResetCache() flushes the actual PPC emit buffer, making
-		// those stale addresses unreachable.
+		// Flush the block table AND the code cache: bm_Reset() only clears the hash table, and BIOS blocks still
+		// hold direct pointers into the compiled code; sh4_cpu.ResetCache() empties the emit buffer.
 		extern void bm_Reset();
 		bm_Reset();
 		sh4_cpu.ResetCache();
@@ -188,12 +154,8 @@ int main___(int argc,char* argv[])
 	}
 	printf("[nullDC] plugins_Load OK\n");
 
-	// -----------------------------------------------------------------------
-	// ELF detection: if the selected file is a .elf, load its segments into
-	// emulated RAM now (memory is reserved, plugins are loaded).
-	// The actual PC override happens later in dc_elf_pre_run_hook(), after
-	// the CPU back-end has been reset.
-	// -----------------------------------------------------------------------
+	// ELF detection: a selected .elf gets its segments loaded into emulated RAM now (memory reserved, plugins loaded);
+	// the PC override happens later, in dc_elf_pre_run_hook() after the CPU back-end reset.
 	{
 		// Read the selected path directly – we cannot use os_GetFile() here because
 		// we already patched it to return false for .elf files (to block the disc plugin).
@@ -260,7 +222,7 @@ void LoadSettings()
 {
 	printf("[nullDC.cpp] Loading settings\n");
 
-	// SH4 core back-end: options-menu preset (wii/main.cpp), default Dynarec.
+	// SH4 core back-end: menu preset (ps3_presets.cpp), default Dynarec.
 	// 0 = Interpreter, 1 = Dynarec.
 	settings.dynarec.Enable = (get_dynarec_preset() != 0);
 	settings.dynarec.CPpass=cfgLoadInt("nullDC","Dynarec.DoConstantPropagation",1)!=0;
@@ -278,9 +240,7 @@ void LoadSettings()
 	if (settings.emulator.AudioBuffers>3)
 		settings.emulator.AudioBuffers=3;
 
-	// Per-game preset override (see wii/game_presets.cpp "audio_buffers=N")
-	// and/or the options menu (wii/main.cpp), applied after the cfg value
-	// so a matched preset or manual menu choice always wins.
+	// The menu preset (ps3_presets.cpp) is applied after the cfg value, so a menu choice always wins.
 	int audio_buffers_preset = get_audio_buffers_preset();
 	if (audio_buffers_preset >= 0 && audio_buffers_preset <= 3)
 		settings.emulator.AudioBuffers = audio_buffers_preset;

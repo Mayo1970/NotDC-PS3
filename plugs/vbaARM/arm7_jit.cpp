@@ -8,21 +8,20 @@
 
 #if HOST_OS == OS_PS3
 
-// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them (as arm_aica.cpp).
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; system endian headers define them (as arm_aica.cpp).
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
 #ifdef LITTLE_ENDIAN
 #  undef LITTLE_ENDIAN
 #endif
-#include <ogc/lwp_watchdog.h>   // gettime(): census timers only
+#include "ps3_timebase.h"   // gettime(): census timers only
 
 extern "C" int get_arm7_jit_preset();   // ps3/ps3_presets.cpp
 extern "C" int get_arm7_idle_skip_preset();
 
-// ── Emitter (C++ linkage) ───────────────────────────────────────────────────
-// 5.14: this JIT can compile on the sound thread while the SH4 JIT compiles, so it never touches the driver's
-// emit_ptr: the header's encoders write through this file's own pointer (arm7_emit).
+// ── Emitter (C++ linkage). 5.14: this JIT can compile on the sound thread while the SH4 JIT compiles, so it never
+// touches the driver's emit_ptr: the header's encoders write through this file's own pointer (arm7_emit).
 #define ppc_emit      arm7_emit
 #define emit_GetCCPtr arm7_emit_cc
 void* emit_GetCCPtr();
@@ -114,7 +113,7 @@ static const u32 MAX_BLOCK_INSNS = 128;     // == MAX_BLOCK_UOPS in arm7_cached.
 static const u32 ENTRY_FRAME = 176;         // 112 linkage + 8 saved GPRs, 16-aligned
 
 // .text is the only segment lv2 lets execute, so the code cannot share the cached
-// interpreter's buffer as on the Wii; only its block table is borrowed.
+// interpreter's buffer; only its block table is borrowed.
 static const u32 ARM_CODE_BYTES = 2 * 1024 * 1024;
 static u8 s_arm_code[ARM_CODE_BYTES] __attribute__((aligned(128), section(".text"), used));
 

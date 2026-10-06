@@ -11,25 +11,18 @@
 #include "plugins/plugin_manager.h"
 #include "dc/asic/asic.h"
 #include "dc/maple/maple_helper.h"
+#include "ps3/ps3_stall.h"
 
 maple_device* MapleDevices[4][6];
 s32 maple_dma_pending=0;
 
-/*
-	Maple host controller
-	Direct processing, async interrupt handling
-	Device code is on maple_devs.cpp/h, config&managment is on maple_cfg.cpp/h
-
-	This code is missing many of the hardware details, like proper trigger handling,
-	dma continuation on suspect, etc ...
-*/
+// Maple host controller: direct processing, async interrupt handling (devices: maple_devs, setup: maple_cfg).
+// Missing hardware details such as proper trigger handling and DMA continuation on suspend.
 
 void maple_DoDma();
 
-//realy hackish
-//misses delay , and stop/start implementation
-//ddt/etc are just hacked for wince to work
-//now with proper maple delayed dma maby its time to look into it ?
+// Hackish: no delay or stop/start; DDT is only hacked far enough for WinCE. Delayed maple DMA could
+// replace it.
 bool maple_ddt_pending_reset=false;
 void maple_vblank()
 {
@@ -91,6 +84,7 @@ bool IsOnSh4Ram(u32 addr)
 u32 dmacount=0;
 void maple_DoDma()
 {
+	StallScope st_(ST_MAPLE);
 	verify(SB_MDEN &1)
 	verify(SB_MDST &1)
 

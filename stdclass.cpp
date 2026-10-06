@@ -84,12 +84,8 @@ void GetFileNameFromPath(char* path,char* outp)
 wchar AppPath[1024];
 void GetApplicationPath(char* path,u32 size)
 {
-	//Nothing called SetApplicationPath() yet: fall back to the working
-	//directory. The early-out matters - without it the strcpy() below
-	//immediately overwrote "./" with the still-empty AppPath, so every
-	//GetEmuPath() result was a bare relative path (see the Wii port, where
-	//that made data/dc_boot.bin resolve against whatever cwd libfat had
-	//guessed instead of the folder the app was actually installed in).
+	//Nothing called SetApplicationPath() yet: fall back to the working directory. The early-out matters: the
+	//strcpy() below used to overwrite "./" with the empty AppPath, so every GetEmuPath() was a bare relative path.
 	if (AppPath[0]==0)
 	{
 		strncpy(path,"./",size);

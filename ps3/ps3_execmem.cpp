@@ -1,9 +1,5 @@
-// Executable-memory probe for the PS3 dynarec question (Dynarec.MD 3.1).
-// Each test writes "li r3,42; blr" into a buffer, syncs the caches, and calls it.
-//
-// A failing test takes the whole process down (GameOS gives no recoverable DSI),
-// so progress is journalled to PROBE_LOG before every attempt. Relaunch the app
-// to resume at the next test; the log from earlier runs is replayed to UDP first.
+// Dynarec.MD 3.1 exec-memory probe: each test writes "li r3,42; blr" to a buffer, syncs caches, calls it. A failure
+// kills the app (no recoverable DSI), so PROBE_LOG journals each attempt; a relaunch replays it to UDP and resumes.
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -17,7 +13,7 @@
 #include "ps3_execmem.h"
 #include "config/config.h"
 
-#define PROBE_LOG   "/dev_hdd0/data/NullDC/execprobe.log"
+#define PROBE_LOG   "/dev_hdd0/data/NotDC/execprobe.log"
 #define PROBE_MAGIC 42
 #define PROBE_SIZE  (1024 * 1024)
 
@@ -38,7 +34,7 @@ static u64 ps3_get_toc()
 
 static void ps3_icache_sync(void* p, u32 len)
 {
-	const u32 line = 128;   // Cell PPE cache line, not the Wii's 32
+	const u32 line = 128;   // Cell PPE cache line
 	u8* a = (u8*)((uintptr_t)p & ~(uintptr_t)(line - 1));
 	u8* e = (u8*)p + len;
 
@@ -111,7 +107,7 @@ static const char* probe_name(int i)
 {
 	switch (i)
 	{
-	case 0: return ".bss static array (the Wii way)";
+	case 0: return ".bss static array";
 	case 1: return "malloc";
 	case 2: return "sysMemoryAllocate PAGE_SIZE_1M";
 	case 3: return "sysMMapper allocate + search_and_map";

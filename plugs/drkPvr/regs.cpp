@@ -3,14 +3,10 @@
 #include "ta.h"
 #include "spg.h"
 
-/*
-	Basic PVR register emulation for the Dreamcast's PowerVR CLX2 ("Holly") GPU.
-	Registers are memory-mapped into a flat 32KB byte array, accessed via PvrReg().
+// Basic PVR register emulation for the PowerVR CLX2 ("Holly"): a flat 32KB byte array, accessed via PvrReg().
+// TODO: full TA emulation is still needed for accurate rendering.
 
-	TODO: Full TA emulation is still needed for accurate rendering.
-*/
-
-// PVR X-scaler preset (see wii/game_presets.h, wii/main.cpp).
+// PVR X-scaler preset (ps3/ps3_presets.cpp).
 extern "C" int get_x_scaler_preset();
 
 u8 regs[RegSize];
@@ -57,9 +53,7 @@ void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 			break;
 
 		// ---- SOFTRESET: bits 0-2 control individual reset lines ----
-		//   bit 0 = TA soft reset
-		//   bit 1 = Core (ISP/TSP) soft reset
-		//   bit 2 = SDR interface reset (ignored in emulation)
+		// bit 0 = TA soft reset, bit 1 = core (ISP/TSP) soft reset, bit 2 = SDR interface reset (ignored in emulation)
 		case SOFTRESET_addr:
 			if (data != 0)
 			{
@@ -84,27 +78,17 @@ void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 			CalculateSync();
 			return;
 
-		// ---- SPG_VBLANK: store + diagnostic ----
-		// The internal vblank event (FPS stats line, speed limiter,
-		// rend_vblank) fires when the scanline counter — wrapping at
-		// SPG_LOAD.vcount+1 — equals vbstart. Log every write so a game
-		// programming vbstart past the wrap point is visible in ndclog.txt.
+		// ---- SPG_VBLANK: vblank fires when the scanline counter (wraps at SPG_LOAD.vcount+1) equals vbstart ----
+		// That event drives the FPS stats line, speed limiter and rend_vblank, so a vbstart past the wrap never fires.
 		case SPG_VBLANK_addr:
 			PvrReg(addr, u32) = data;
 			{
-				// extern u32 spg_ScanlineCount;
-				// printf("[SPG] SPG_VBLANK write: vbstart=%d vbend=%d (lines=%d)%s\n",
-				// 	(int)SPG_VBLANK.vbstart, (int)SPG_VBLANK.vbend, (int)spg_ScanlineCount,
-				// 	(SPG_VBLANK.vbstart >= spg_ScanlineCount) ? "  <-- vbstart OUT OF RANGE, vblank event will NEVER fire!" : "");
-				// fflush(stdout);
+				// Diagnostic hook: log writes here to catch a game setting vbstart past the wrap point.
 			}
 			return;
 
-		// ---- SCALER_CTL: hscale bit feeds the renderer's canvas width ----
-		// Only recalculate with the x_scaler preset on: legacy behavior never
-		// resynced on this write, and preset-off must stay bit-identical.
-		// (Omicron The Nomad Soul / Wacky Races set hscale for 1280-wide
-		// 2:1-SSAA rendering — see CalculateSync() in SPG.cpp.)
+		// ---- SCALER_CTL: hscale feeds the canvas width (Omicron / Wacky Races: 1280-wide 2:1 SSAA, SPG.cpp) ----
+		// Only with the x_scaler preset on: legacy never resynced on this write; preset-off must stay bit-identical.
 		case SCALER_CTL_addr:
 			PvrReg(addr, u32) = data;
 			if (get_x_scaler_preset())
@@ -118,11 +102,7 @@ void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 			{
 				if (PvrReg(addr, u32) != data)
 				{
-					// TODO: implement palette dirty tracking
-					// u32 pal_index = (addr - PALETTE_RAM_START_addr) >> 2;
-					// pal_needs_update = true;
-					// pal_rev_256[pal_index >> 8]++;
-					// pal_rev_16[pal_index >> 4]++;
+					// TODO: palette dirty tracking (bump the revisions of this entry's 16- and 256-entry banks).
 				}
 			}
 			break;

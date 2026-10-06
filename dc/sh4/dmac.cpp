@@ -12,6 +12,7 @@
 #include "dc/asic/asic.h"
 #include "plugins/plugin_manager.h"
 #include "sh4_sched.h"   // SCHED preset: deadline-ordered ch2-DMA completion
+#include "ps3/ps3_stall.h"
 
 extern "C" int get_dma_fix_preset();
 
@@ -43,16 +44,13 @@ static inline bool isDstTA(u32 dst)         { return dst >= 0x10000000u && dst <
 static inline bool isDstVRAM_LM0(u32 dst)  { return dst >= 0x11000000u && dst <= 0x11FFFFE0u; }
 static inline bool isDstVRAM_LM1(u32 dst)  { return dst >= 0x13000000u && dst <= 0x13FFFFE0u; }
 
-// Disproven Rez experiment: a deferred ch2 IRQ (even 65536 cycles) changed nothing, so the IRQ is
-// synchronous again as in the PSP port; kept commented out in case a timing hang shows up.
-// #define CH2_IRQ_DELAY_CYCLES 65536
-// s32 ch2_irq_delay_cycles = 0;
-// u32 dbg_ch2_desc_at_fire   = 0;
-// u32 dbg_ch2_handle_at_fire = 0;
+// Disproven Rez experiment: a deferred ch2 IRQ (CH2_IRQ_DELAY_CYCLES, even 65536) changed nothing, so the
+// IRQ is synchronous again as in the PSP port; bring the delay back only if a timing hang shows up.
 
 // Channel 2 DMA to the TA / VRAM; started by a write to SB_C2DST.
 void DMAC_Ch2St()
 {
+	StallScope st_(ST_DMA);
 	const u32 dmaor  = DMAC_DMAOR.full;
 	const u32 dst    = SB_C2DSTAT;
 	u32       src    = DMAC_SAR[2];

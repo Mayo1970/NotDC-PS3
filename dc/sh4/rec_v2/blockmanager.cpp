@@ -1,15 +1,5 @@
-/*
-	Improved block manager for Dreamcast emulator on Wii - ClaudeAI improved
-
-  blockmanager.cpp is a dynamic recompilation (dynarec) cache
-	
-	Optimizations:
-	- Better cache locality with pre-allocated block storage
-	- Reduced memory fragmentation using reserved capacity
-	- Improved lookup performance with LRU caching
-	- Memory-efficient design for Wii's limited RAM
-	- Compatible with original structure for assembly code access
-*/
+// Dynarec block cache (SH4 PC -> compiled code): per-bucket vectors with reserved capacity plus a last-hit
+// cache[] entry per bucket; the layout stays compatible with the original for assembly access.
 
 #include "blockmanager.h"
 #include "ccall_census.h"
@@ -39,11 +29,8 @@ static bm_List blocks[BM_BLOCKLIST_COUNT];
 DynarecBlock* cache[BM_BLOCKLIST_COUNT];
 static DynarecBlock empty_block = {0, 0xFFFFFFFF, 0};
 
-// Flat {addr, code} mirror of cache[] for the JIT dynamic-branch fast path
-// (see blockmanager.h). The Wii recompiler reads it from emitted code when
-// the BCACHE preset is on. 32-byte aligned so the 8-byte entries never
-// straddle an L1 cache line. Mirroring empty_block writes the sentinel
-// {0xFFFFFFFF, 0}, so one helper covers set and clear alike.
+// BCACHE mirror of cache[] (see blockmanager.h), read by the JIT's emitted code. 32-byte aligned so no entry
+// straddles a cache line; mirroring empty_block writes the {0xFFFFFFFF, 0} sentinel, so one helper does both.
 ALIGN(32) BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 
 static inline void bcache_mirror(u32 idx, DynarecBlock* b)
@@ -157,9 +144,8 @@ void bm_AddCode(u32 addr, DynarecCodeEntry* code)
 			// Update existing block
 			block_list[i].code = code;
 			block_list[i].lookups = 0;
-			// The flat mirror stores code BY VALUE (the legacy cache[] sees
-			// the new pointer through indirection automatically) — refresh it
-			// if this block is the cached one for the bucket.
+			// bm_bcache holds code BY VALUE (cache[] sees the new pointer through indirection): refresh it
+			// if this block is the bucket's cached one.
 			if (cache[idx] == &block_list[i])
 				bcache_mirror(idx, &block_list[i]);
 			return;

@@ -11,30 +11,23 @@
 
 extern "C" int get_dma_fix_preset();
 
-// SCHED preset (wii/main.cpp): route the AICA G2-DMA end IRQ through the unified
-// deadline scheduler (in true order relative to the ch2/PVR/GD-ROM completions)
-// instead of the standalone aica_dma_delay_cycles countdown in UpdateAicaDma().
+// SCHED preset (ps3_presets.cpp): the AICA G2-DMA end IRQ goes through the deadline scheduler, in true order
+// with the ch2/PVR/GD-ROM completions, not the aica_dma_delay_cycles countdown in UpdateAicaDma().
 extern "C" int get_sched_preset();
 
 static int aica_dma_schid = -1;
 
-// ---------------------------------------------------------------------------
-// Globals
-// ---------------------------------------------------------------------------
+// ---- Globals ----
 VArray2 aica_ram;
 u32 VREG    = 0;
 u32 rtc_EN  = 0;
 
-// ---------------------------------------------------------------------------
-// Logging helper — redirect to your Wii logger by redefining AICA_LOG
-// ---------------------------------------------------------------------------
+// ---- Logging helper: redefine AICA_LOG to redirect it ----
 #ifndef AICA_LOG
 #  define AICA_LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
 #endif
 
-// ---------------------------------------------------------------------------
-// RTC
-// ---------------------------------------------------------------------------
+// ---- RTC ----
 
 // Known Dreamcast epoch: 1998-11-27 00:00:00 local time
 // DC RTC base value at that moment: 0x5BFC8900
@@ -118,10 +111,8 @@ void WriteMem_aica_rtc(u32 addr, u32 data, u32 sz)
     }
 }
 
-// ---------------------------------------------------------------------------
-// AICA register access
-// VREG lives at AICA offset 0x2C00 (32-bit) / 0x2C01 (8-bit, high byte)
-// ---------------------------------------------------------------------------
+// ---- AICA register access ----
+// VREG lives at AICA offset 0x2C00 (32-bit) / 0x2C01 (8-bit, high byte).
 
 static const u32 VREG_OFFSET_32 = 0x2C00;
 static const u32 VREG_OFFSET_8  = 0x2C01;
@@ -172,9 +163,7 @@ void FASTCALL WriteMem_aica_reg(u32 addr, u32 data, u32 sz)
     libAICA_WriteMem_aica_reg(addr, data, sz);
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 
 void aica_Init()  {}
 void aica_Term()  {}
@@ -185,9 +174,7 @@ void aica_Reset(bool Manual)
         aica_ram.Zero();
 }
 
-// ---------------------------------------------------------------------------
-// DMA helpers
-// ---------------------------------------------------------------------------
+// ---- DMA helpers ----
 
 // Clamp transfer length to a sane maximum to guard against corrupted regs.
 // 8 MB is larger than any real AICA RAM window.
@@ -198,17 +185,10 @@ static inline u32 clamp_dma_len(u32 len)
     return (len < DMA_MAX_LEN) ? len : DMA_MAX_LEN;
 }
 
-// ---------------------------------------------------------------------------
-// SB_ADST — AICA G2-DMA (system RAM → AICA sound RAM)
-// ---------------------------------------------------------------------------
+// ---- SB_ADST — AICA G2-DMA (system RAM → AICA sound RAM) ----
 
-// DMA_FIX: deferred completion. Real G2-DMA takes time proportional to
-// length (PSP schedules it at SH4_CLOCK/2/25MHz per byte — a 16-bit bus at
-// 25MHz). The legacy code did the data copy AND the completion (SB_ADST=0 +
-// IRQ) in the same instant, the same "zero-latency DMA" bug already found
-// and fixed on ch2-DMA and PVR-DMA this investigation. A driver that games
-// its own completion polling around a real transfer duration can get
-// confused by an instant one.
+// DMA_FIX: deferred completion; real G2-DMA lasts len*SH4_CLOCK/2/25MHz cycles (PSP; 16-bit bus at 25 MHz). Legacy code
+// copied and completed (SB_ADST=0 + IRQ) at once, the ch2/PVR-DMA zero-latency bug; confuses drivers timed to real DMA.
 s32 aica_dma_delay_cycles = 0;
 
 static void aica_dma_complete()
@@ -240,21 +220,8 @@ static int aica_dma_end_cb(int tag, int sch_cycl, int jitter)
     return 0;   // single-shot
 }
 
-// PSP's Read_SB_ADST, ported verbatim (comment is PSP's own):
-//
-//   Le Mans and Looney Tunes sometimes send the same dma transfer twice after
-//   checking SB_ADST == 0. To avoid this, we pretend SB_ADST is still set
-//   when there is a pending aica-dma interrupt. This is only done once.
-//
-// HONEST CAVEAT: in PSP's own aica_sb_Init(), SB_ADST is registered with
-// REG_READ_DATA set alongside this readFunction. The dispatch order in
-// sb.cpp (both ports, identical) checks REG_READ_DATA FIRST and returns the
-// raw register directly when it's set — readFunction is only consulted when
-// it is NOT set. So this function is DEAD CODE in PSP itself; the "fix" its
-// comment describes never actually runs on real hardware there either. Kept
-// here, with matching flags, to faithfully replicate PSP's real (not
-// aspirational) behavior rather than silently diverge into untested
-// territory. Not a source of the stall either way — it's inert in both.
+// Verbatim PSP port: Le Mans/Looney Tunes resend a DMA after SB_ADST==0, so it reads as set once while the IRQ pends.
+// Dead in PSP too (REG_READ_DATA, same flags, makes sb.cpp return the raw reg first); kept to match, not the stall.
 u32 Read_SB_ADST()
 {
     if ((SB_ISTNRM & (1u << (u8)holly_SPU_DMA)) && !(SB_ADST & 2))
@@ -304,18 +271,13 @@ void Write_SB_ADST(u32 data)
 
     if (get_dma_fix_preset())
     {
-        // DMA_FIX: completion is deferred — see UpdateAicaDma() above.
-        // PSP: cycles = len * (SH4_CLOCK/2/25MHz) — a 16-bit bus at 25MHz.
-        // Below ~4096 cycles PSP completes inline immediately; we always
-        // defer by at least a handful of cycles instead, since instant
-        // completion is the exact bug class this whole investigation has
-        // been chasing.
+        // DMA_FIX: deferred completion (see UpdateAicaDma). PSP completes inline below ~4096 cycles; we always defer
+        // a few cycles at least, since instant completion is the exact bug class this investigation chases.
         int cycles = (int)(len * (SH4_CLOCK_EFF / 2 / 25000000));
         if (cycles < 64) cycles = 64;
 
-        // SCHED preset: run the completion through the deadline queue (ordered
-        // vs the other DMA/disc completions) instead of the standalone
-        // aica_dma_delay_cycles countdown. Same latency, unified ordering.
+        // SCHED preset: complete via the deadline queue (ordered vs the other DMA/disc completions), not the
+        // standalone aica_dma_delay_cycles countdown. Same latency, unified ordering.
         if (get_sched_preset() && aica_dma_schid != -1)
             sh4_sched_request(aica_dma_schid, cycles);
         else
@@ -329,9 +291,7 @@ void Write_SB_ADST(u32 data)
     }
 }
 
-// ---------------------------------------------------------------------------
-// SB_E1ST — G2-EXT1 DMA (BBA / expansion port)
-// ---------------------------------------------------------------------------
+// ---- SB_E1ST — G2-EXT1 DMA (BBA / expansion port) ----
 void Write_SB_E1ST(u32 data)
 {
     if (!(data & 1))
@@ -373,13 +333,8 @@ void Write_SB_E1ST(u32 data)
     asic_RaiseInterrupt(holly_EXT_DMA1);
 }
 
-// ---------------------------------------------------------------------------
-// SB_E2ST — G2-EXT2 DMA. PSP implements this; the legacy code had no handler
-// at all, so writes to SB_E2ST were pure register storage with no side
-// effects — any game/driver using the second expansion DMA channel would
-// silently hang waiting for a completion that could never come. Gated by
-// DMA_FIX so OFF reproduces that legacy no-op-write behavior exactly.
-// ---------------------------------------------------------------------------
+// ---- SB_E2ST — G2-EXT2 DMA (from PSP) ----
+// Legacy only stored the register, so 2nd expansion DMA users hung awaiting completion; DMA_FIX OFF keeps that no-op.
 void Write_SB_E2ST(u32 data)
 {
     if (!get_dma_fix_preset())
@@ -427,9 +382,7 @@ void Write_SB_E2ST(u32 data)
     asic_RaiseInterrupt(holly_EXT_DMA2);
 }
 
-// ---------------------------------------------------------------------------
-// SB register setup
-// ---------------------------------------------------------------------------
+// ---- SB register setup ----
 void aica_sb_Init()
 {
     sb_regs[((SB_ADST_addr - SB_BASE) >> 2)].flags         = REG_32BIT_READWRITE | REG_READ_DATA;

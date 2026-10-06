@@ -1,19 +1,10 @@
 #pragma once
 #include "types.h"
 
-// ---------------------------------------------------------------------------
-// _vmem – virtual memory subsystem for Dreamcast-on-Wii emulation
-// ---------------------------------------------------------------------------
-// Design: a 256-entry top-level table (_vmem_MemInfo_ptr) is indexed by the
-// upper 8 bits of a 32-bit SH-4 address.  Each entry either:
-//   • points directly into a host memory block (fast RAM/VRAM path), or
-//   • encodes a handler-table index for MMIO regions.
-// ---------------------------------------------------------------------------
+// _vmem: SH-4 virtual memory, dispatched on address bits 31:24.
 
-// Top-level dispatch table (256 entries, indexed by addr[31:24]). Exposed so
-// the recompiler can inline the fast direct-RAM read/write path. Each entry:
-//   • host pointer with low 5 bits = address-wrap shift (direct RAM/VRAM), or
-//   • a small integer handler-table index (ptr&~0x1F == 0 → MMIO path).
+// Exposed so the recompiler can inline the direct-RAM path. Entry: host pointer with low 5 bits = address-wrap
+// shift (RAM/VRAM), or a small handler-table index (ptr & ~0x1F == 0 -> MMIO path).
 extern void* _vmem_MemInfo_ptr[0x100];
 
 // ---- Function-pointer typedefs --------------------------------------------
@@ -39,8 +30,7 @@ bool _vmem_reserve ();
 void _vmem_release ();
 
 // ---- Handler registration -------------------------------------------------
-// Pass NULL for any function pointer to get a "not-mapped" default that logs
-// and returns 0 (reads) / is a no-op (writes).
+// A NULL function pointer gets the "not-mapped" default: it logs, then returns 0 (reads) / is a no-op (writes).
 _vmem_handler _vmem_register_handler(
     _vmem_ReadMem8FP*   read8,
     _vmem_ReadMem16FP*  read16,
@@ -100,13 +90,11 @@ void fastcall _vmem_WriteMem64 (u32 Address, u64 data);
 u8*  fastcall _vmem_GetBlockPtr(u32 Address, u32 size);
 
 // ---- Dynarec helpers ------------------------------------------------------
-// Returns the base vmap table and the appropriate function-pointer table for
-// the given access size and direction.
+// Returns the base vmap table and the function-pointer table for the given access size and direction.
 void  _vmem_get_ptrs(u32 sz, bool write, void*** vmap, void*** func);
 
-// Returns a host pointer for a compile-time-constant SH-4 address.
-// Sets ismem=true and returns a pointer into RAM/VRAM, or
-// sets ismem=false and returns the handler function pointer.
+// For a compile-time-constant SH-4 address: ismem=true and a host pointer into RAM/VRAM,
+// or ismem=false and the handler function pointer.
 void* _vmem_read_const(u32 addr, bool& ismem, u32 sz);
 
 // ---- Diagnostic -----------------------------------------------------------

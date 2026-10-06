@@ -1,13 +1,4 @@
-/**
- * @file sh4_if.h
- * @brief SH4 CPU Interface for Dreamcast Emulator (Wii Port)
- * @author Original code with Wii optimizations
- * @date 2025
- * 
- * This header defines the interface for the SH4 CPU emulation, including
- * register definitions, control structures, and function pointers for
- * both interpreter and dynarec implementations.
- */
+// sh4_if.h: the SH4 CPU interface: register definitions, control structures and the backend function pointers.
 
 #pragma once
 
@@ -17,16 +8,7 @@
 // Breakpoint opcode definition
 #define BPT_OPCODE 0x8A00
 
-/**
- * @enum Sh4RegType
- * @brief Enumeration of all SH4 registers (physical and virtual)
- * 
- * This enum defines all register types used by the SH4 CPU, including:
- * - General Purpose Registers (GPRs)
- * - Floating Point Unit registers (FPU)
- * - System/Control registers
- * - Virtual registers for dynarec optimization
- */
+// All SH4 registers: physical ones (GPRs, FPU, system/control) up to sh4_reg_count, then virtual ones for the dynarec.
 enum Sh4RegType
 {
 	// General Purpose Registers (r0-r15)
@@ -150,13 +132,7 @@ enum Sh4RegType
 	NoReg = -1      // Invalid/No register
 };
 
-/**
- * @struct sr_type
- * @brief Status Register structure
- * 
- * The SR register contains various CPU status flags and control bits.
- * Bitfield layout varies by host endianness for optimal access.
- */
+// SH4 Status Register (status flags and control bits); the bitfield order follows HOST_ENDIAN.
 struct sr_type
 {
 	union
@@ -197,19 +173,12 @@ struct sr_type
 	};
 	u32 T;  // T bit stored separately for fast access
 
-	/**
-	 * @brief Get complete SR value (status + T bit)
-	 * @return Full 32-bit SR value
-	 */
+	// Full 32-bit SR: the status bits plus the separately stored T bit.
 	INLINE u32 GetFull() const
 	{
 		return (status & 0x700083F2) | T;
 	}
 
-	/**
-	 * @brief Set complete SR value
-	 * @param value New SR value to set
-	 */
 	INLINE void SetFull(u32 value)
 	{
 		status = value & 0x700083F2;
@@ -217,13 +186,7 @@ struct sr_type
 	}
 };
 
-/**
- * @struct fpscr_type
- * @brief Floating Point Status/Control Register structure
- * 
- * Controls FPU operation modes and flags exception conditions.
- * PR and SZ bits control precision and data size modes.
- */
+// FPU Status/Control Register: operation modes and exception flags; PR and SZ select precision and data size.
 struct fpscr_type
 {
 	union
@@ -305,20 +268,10 @@ typedef void InitFP();
 typedef void TermFP();
 typedef bool IsCpuRunningFP();
 
-/**
- * @brief Raise SH4 exception
- * @param ExceptionCode Exception code to raise
- * @param VectorAddress Vector table address for exception handler
- */
+// Raises an SH4 exception; VectorAddress is the vector table address of its handler.
 typedef void FASTCALL sh4_int_RaiseExceptionFP(u32 ExceptionCode, u32 VectorAddress);
 
-/**
- * @struct sh4_if
- * @brief SH4 CPU interface structure
- * 
- * Provides function pointers for controlling the SH4 CPU emulation.
- * Can be initialized with either interpreter or dynarec backend.
- */
+// SH4 CPU control function pointers, filled by either the interpreter or the dynarec backend.
 struct sh4_if
 {
 	RunFP* Run;                  // Execute CPU until stopped
@@ -334,30 +287,13 @@ struct sh4_if
 
 // Interface acquisition functions
 
-/**
- * @brief Get SH4 interpreter interface
- * @param cpu Pointer to sh4_if structure to populate
- * 
- * Initializes the CPU interface with interpreter backend.
- * Slower but more compatible and easier to debug.
- */
+// Fills cpu with the interpreter backend: slower, more compatible, easier to debug.
 void Get_Sh4Interpreter(sh4_if* cpu);
 
-/**
- * @brief Get SH4 recompiler (dynarec) interface
- * @param cpu Pointer to sh4_if structure to populate
- * 
- * Initializes the CPU interface with dynamic recompiler backend.
- * Faster but more complex. Optimized for Wii PPC architecture.
- */
+// Fills cpu with the dynarec backend: faster, more complex.
 void Get_Sh4Recompiler(sh4_if* cpu);
 
-/**
- * @brief Release SH4 interface resources
- * @param cpu Pointer to sh4_if structure to clean up
- * 
- * Frees any resources associated with the CPU interface.
- */
+// Clears the interface's function pointers.
 void Release_Sh4If(sh4_if* cpu);
 
 // #endif // SH4_IF_H

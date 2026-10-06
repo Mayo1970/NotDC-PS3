@@ -39,8 +39,7 @@ extern s32 render_vd_pending_cycles;
 // SPG state shared with the renderer (SPG.cpp)
 extern u32 spg_FrameSh4Cycles;   // SH4 cycles per emulated video frame (video-mode derived)
 extern u32 spg_VblankCountTotal; // vblanks since boot; monotonic, never reset
-// Frame pacer output (spg_PaceFrame(), one sample per emulated vblank) — the
-// speed signal frameskip AUTO runs on (gxRend.cpp ShouldSkipFrame)
+// Frame pacer output (spg_PaceFrame(), one sample per emulated vblank)
 extern double spg_PaceErrorSec;  // cumulative deviation from the real-time schedule
                                  // (+ = behind real time, - = ahead)
 extern double spg_PaceFrameSec;  // real-time duration of one emulated video frame,
@@ -58,18 +57,13 @@ void SaveSettings();
     #define REND_NAME "OpenGL ES 2.0 HAL"
 #elif REND_API == REND_SOFT
     #define REND_NAME "Software"
-#elif REND_API == REND_WII
-    #define REND_NAME "WIIgx DHA"
 #elif REND_API == REND_PS2
     #define REND_NAME "PS2gs DHA"
 #else
-    #error "Invalid REND_API configuration. Must be one of: REND_PSP/REND_GLES2/REND_SOFT/REND_WII/REND_PS2"
+    #error "Invalid REND_API configuration. Must be one of: REND_PSP/REND_GLES2/REND_SOFT/REND_PS2"
 #endif
 
-/**
- * Settings structure for the PVR renderer
- * All settings are persisted via the config system
- */
+// PVR renderer settings; all are persisted via the config system.
 struct _settings_type
 {
     // Fullscreen configuration

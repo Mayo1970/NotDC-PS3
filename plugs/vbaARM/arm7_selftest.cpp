@@ -1,25 +1,11 @@
-// ARM7DI conformance self-test runner.
-//
-// Executes the vendored arm7di-tests-dreamcast binaries against this project's
-// vbaARM core to verify the ARM7DI interpreter before the emulator boots.
-// Ported from the Rust harness (crates/arm7di-core/tests/arm7di_bin_tests.rs)
-// in the nullDC rust edition.
-//
-// Test protocol (per vendor/arm7di-tests-dreamcast/test.py):
-//   * Each binary is linked at 0x0; execution starts at offset 0.
-//   * The test ends when the next instruction word equals 0xDEADBEEF.
-//   * Success: the low 30 bits of r1 are zero. Non-zero bits are error flags.
-//
-// The binaries are little-endian ARM. This core reads AICA RAM with a
-// byte-swap (host is big-endian Wii), so we load each test byte through
-// arm_WriteMem8() and read back through arm_ReadMem32(), which keeps the
-// swap symmetric and reproduces the Rust harness's flat-LE behavior.
+// ARM7DI conformance self-test: the vendored arm7di-tests-dreamcast binaries on vbaARM (port of the nullDC rust
+// edition harness). Each starts at 0, ends at the word 0xDEADBEEF and passes when r1's low 30 bits are 0.
 
 #include "arm7.h"
 #include "arm_mem.h"
 #include "arm7_selftest_data.h"
 
-#include <ogc/system.h>
+#include "ps3_timebase.h"
 #define printf(...) printf(__VA_ARGS__)
 
 // Core internals we drive directly.
@@ -33,11 +19,8 @@ extern u8* arm_aica_ram;
 static const u32 END_MARKER = 0xDEADBEEFu;
 static const u32 MAX_INSNS  = 100000;   // safety limit, matches Rust MAX_CYCLES
 
-// Scratch ARAM = the core's real sound RAM (ARAM_SIZE, so ARAM_MASK behaves as
-// in real operation). A private 2 MB static array used to live here: that is
-// 2 MB of MEM1 the moment anything links this file, and the arm7_jit preset
-// does. So the tests must run before any game code (the ARM7 JIT runs them from
-// arm_Init()), and the RAM is zeroed again when they finish.
+// Scratch ARAM is the core's real sound RAM (ARAM_MASK behaves as in real operation), not a 2 MB static array:
+// so the tests run before any game code (from arm_Init() under the ARM7 JIT) and the RAM is zeroed after them.
 static u8* s_test_aram = 0;
 
 // Decode r1 error flags into a short human-readable string (matches Rust).
@@ -65,7 +48,8 @@ static bool run_one(const Arm7SelfTest& t)
     arm_aica_ram = s_test_aram;
     memset(s_test_aram, 0, ARAM_SIZE);
 
-    // Load the binary one byte at a time so the BE byte-swap is applied.
+    // The binaries are little-endian: byte loads apply the core's BE byte-swap, so arm_ReadMem32() reads
+    // them back symmetrically, as the Rust harness's flat-LE memory does.
     for (u32 i = 0; i < t.size; i++)
         arm_WriteMem8(i, t.data[i]);
 
@@ -74,14 +58,8 @@ static bool run_one(const Arm7SelfTest& t)
     arm_SetEnabled(false);
     arm_SetEnabled(true);
 
-    // Pipeline seeding (this core's convention, mirroring arm_Reset()):
-    //   before each fetch  reg[15] == armNextPC + 4
-    //   the fetch loop does armNextPC = reg[15]; reg[15] += 4
-    // so the instruction at address A executes with reg[15] == A + 8.
-    // To start at address 0 we therefore seed armNextPC=0, reg[15]=4 — NOT
-    // reg[15]=8 (that would make the first instruction see reg[15]=12, off by
-    // one pipeline stage; that bug made nearly every test's PC-relative LDR /
-    // literal-pool load read the wrong word).
+    // As arm_Reset(): the fetch does armNextPC = reg[15]; reg[15] += 4, so code at A sees reg[15] == A + 8.
+    // Start at 0 with reg[15] = 4, not 8: 8 put every PC-relative LDR one word off.
     arm_SetNextPC(0);
     arm_SetReg(RN_R15, 4);
 
@@ -122,9 +100,8 @@ int arm_RunSelfTests()
     printf("\n==================== ARM7DI SELF-TEST ====================\n");
     printf("[ARM7TEST] Running %d ARM7DI conformance tests...\n", arm7_selftest_count);
 
-    // Fully initialize the core. arm_Init() builds the cpuBitsSet[] population
-    // table that LDM/STM use to compute base writeback offsets; without it the
-    // writeback address is wrong (showed up as BAD_Rn in the LDM/STM tests).
+    // arm_Init() builds the cpuBitsSet[] table that LDM/STM use for the base writeback; without it the
+    // LDM/STM tests fail with BAD_Rn.
     arm_Init();
 
     // The sound RAM doubles as the test scratch (see s_test_aram), so it has to

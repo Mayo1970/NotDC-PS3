@@ -653,12 +653,11 @@ void UpdateMaracasState(u32 port);
 void UpdateKeyboardState(u32 port);
 void UpdateFishingRodState(u32 port);
 
-// Exposed from drkMapleLightGun.cpp for coordinate reporting
+// Light gun coordinates; ps3/ps3_input.cpp stubs them.
 extern "C" u16 GetLightGunX(int port);
 extern "C" u16 GetLightGunY(int port);
 
-// USB HID boot-protocol layout, redeclared from drkMapleKeyboard.cpp so
-// maple_keyboard::dma() can read it without that header.
+// USB HID boot-protocol report layout, read by maple_keyboard::dma().
 struct DC_KeyboardReport
 {
 	u8 modifiers;
@@ -666,7 +665,7 @@ struct DC_KeyboardReport
 	u8 keys[6];
 };
 
-// Exposed from drkMapleKeyboard.cpp for key-code reporting
+// Keyboard key codes; ps3/ps3_input.cpp stubs it (null).
 extern "C" const DC_KeyboardReport* GetKeyboardReport(int port);
 
 // Light Gun: function MFID_7_LightGun only (adding MFID_0_Input confuses the BIOS).

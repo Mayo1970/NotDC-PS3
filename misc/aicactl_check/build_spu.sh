@@ -6,15 +6,13 @@ cd "$(dirname "$0")"
 R=../..
 O=out/ref
 rm -rf $O
-mkdir -p $O/plugs/nullAICA $O/plugs/vbaARM $O/ps3 $O/wii $O/ogc
-for f in aica.cpp aica_mem.cpp sgc_if.cpp dsp.cpp aica.h aica_mem.h sgc_if.h dsp.h nullAICA.h wii_audiostream.h; do
+mkdir -p $O/plugs/nullAICA $O/plugs/vbaARM $O/ps3
+for f in aica.cpp aica_mem.cpp sgc_if.cpp dsp.cpp aica.h aica_mem.h sgc_if.h dsp.h nullAICA.h audiostream.h; do
 	cp $R/plugs/nullAICA/$f $O/plugs/nullAICA/
 done
 for f in arm_mem.cpp arm_mem.h arm_aica.h arm7.h vbaARM.h; do cp $R/plugs/vbaARM/$f $O/plugs/vbaARM/; done
-cp $R/ps3/ps3_aica_spe.h $R/ps3/ps3_sndthr.h $R/ps3/ps3_arm_spe.h $O/ps3/
-cp $R/wii/wii_audio.h $O/wii/
-cp stub/types.h stub/assert.h $O/
-cp stub/ogc/lwp_watchdog.h $O/ogc/
+cp $R/ps3/ps3_aica_spe.h $R/ps3/ps3_sndthr.h $R/ps3/ps3_arm_spe.h $R/ps3/ps3_audio.h $O/ps3/
+cp stub/types.h stub/assert.h stub/ps3_timebase.h $O/
 # Test entry points appended to the copies: AICA_Init and sgc_Init without the float tables the simulator cannot run
 # (they only feed nullAICA's own mixer, which is off in SPE sound mode).
 cat >> $O/plugs/nullAICA/sgc_if.cpp <<'EOT'

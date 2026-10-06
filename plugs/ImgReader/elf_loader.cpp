@@ -1,17 +1,5 @@
-// elf_loader.cpp – SH4 ELF loader for nullDC4Wii
-//
-// Based on the original Elf.cpp from the nullDC 360 port (ZeZu, 2004/2005),
-// adapted for the Wii big-endian environment.
-//
-// Key difference from the x86/360 version: on the Wii, the _vmem layer
-// serves memory as big-endian. SH4 code and data are little-endian.
-// The correct approach (matching how GDI/CDI loading works) is to write
-// data using WriteMem32_nommu which applies HOST_TO_LE32 internally.
-// For the ELF loader we write byte-by-byte into mem_b[] directly, exactly
-// like the original Elf.cpp does — this is correct because:
-//   - mem_b is a raw byte array
-//   - The _vmem read functions apply endian correction on the way OUT
-//   - So bytes stored in file order will be read correctly by the SH4 CPU
+// SH4 ELF loader, based on the nullDC 360 port's Elf.cpp (ZeZu, 2004/2005), for a big-endian host:
+// the little-endian SH4 sections go straight into mem_b with the word swap below.
 
 #include "plugs/ImgReader/elf_loader.h"
 #include "dc/sh4/sh4_registers.h"   // Sh4cntx, next_pc, r[], sr macros
@@ -21,28 +9,13 @@
 #include <string.h>
 #include <stdlib.h>
 
-// bswap32 helper for ELF loading.
-//
-// The Wii _vmem_readt<u16> applies addr ^= 2 on big-endian, meaning
-// a u16 at DC address A is fetched from physical offset (A^2).
-// For file bytes [a,b,c,d] (two LE opcodes: op0=b<<8|a, op1=d<<8|c):
-//   op0 at DC addr+0 reads from mem_b[2..3] -> need mem_b[2]=b, mem_b[3]=a (BE u16)
-//   op1 at DC addr+2 reads from mem_b[0..1] -> need mem_b[0]=d, mem_b[1]=c (BE u16)
-//   So mem_b must contain [d,c,b,a] = full bswap32 of file bytes read as BE u32.
-//
-// On Wii PPC (big-endian host): *(u32*)[a,b,c,d] = 0xABCD_xxxx (natural BE read)
-// __builtin_bswap32(0xABCDxxxx) = [d,c,b,a] stored -> CORRECT.
-//
-// Verified against actual ELF bytes and mem_b dump from hardware log.
+// _vmem_readt<u16> on a big-endian host reads DC address A from offset A^2, so file bytes [a,b,c,d] must sit in
+// mem_b as [d,c,b,a]: a bswap32 of the BE word (checked against a hardware mem_b dump).
 static inline u32 elf_wordswap32(u32 v) { return __builtin_bswap32(v); }
 
 
-// ---------------------------------------------------------------------------
-// elf_copy_to_ram: copy 'size' bytes from 'src' (file buffer) into mem_b at
-// physical DC RAM offset 'dst_phys', applying bswap32 per 32-bit word.
-// This matches the byte layout expected by _vmem_readt<u16> (addr ^= 2).
-// No _vmem calls — direct write to avoid side effects during load time.
-// ---------------------------------------------------------------------------
+// File bytes -> mem_b at DC RAM offset dst_phys, bswap32 per word for _vmem_readt<u16> (addr ^= 2). Direct
+// writes, no _vmem calls, to avoid side effects at load time.
 static void elf_copy_to_ram(u32 dst_phys, const u8* src, u32 size)
 {
     u32* dst32 = (u32*)(mem_b.data + dst_phys);
@@ -60,9 +33,7 @@ static void elf_copy_to_ram(u32 dst_phys, const u8* src, u32 size)
         dst32[words] = elf_wordswap32(last);
     }
 }
-// ---------------------------------------------------------------------------
-// elf_load  – parse ELF, copy PT_LOAD / SHT_PROGBITS sections into mem_b
-// ---------------------------------------------------------------------------
+// ---- elf_load: parse the ELF, copy the PT_LOAD / SHT_PROGBITS sections into mem_b ----
 bool elf_load(const char* path, u32* out_entry)
 {
     printf("[ELF] Loading %s\n", path);
@@ -109,7 +80,7 @@ bool elf_load(const char* path, u32* out_entry)
         printf("[ELF] Not little-endian ELF\n"); free(buf); return false;
     }
 
-    // ELF fields are little-endian; swap for big-endian Wii host
+    // ELF fields are little-endian; swap them for the big-endian host
     #define LE16(x) (u16)(((u16)(x) >> 8) | ((u16)(x) << 8))
     #define LE32(x) (u32)(((u32)(x) >> 24) | (((u32)(x) >> 8) & 0xFF00u) | \
                           (((u32)(x) << 8) & 0xFF0000u) | ((u32)(x) << 24))
@@ -148,11 +119,8 @@ bool elf_load(const char* path, u32* out_entry)
 
     int loaded = 0;
 
-    // -----------------------------------------------------------------------
-    // Pass 1: load via section headers (SHT_PROGBITS + SHF_ALLOC)
-    // This is what the original Elf.cpp does and gives the most precise
-    // control — each allocatable section is placed at its exact sh_addr.
-    // -----------------------------------------------------------------------
+    // Pass 1: section headers (SHT_PROGBITS + SHF_ALLOC), as the original Elf.cpp: each allocatable section
+    // lands at its exact sh_addr.
     if (e_shnum > 0 && e_shoff > 0)
     {
         for (u16 i = 0; i < e_shnum; i++)
@@ -198,10 +166,7 @@ bool elf_load(const char* path, u32* out_entry)
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Pass 2: fallback to program headers (PT_LOAD) if no sections were found
-    // (stripped ELFs may have no section table)
-    // -----------------------------------------------------------------------
+    // Pass 2: program headers (PT_LOAD) when no section was loaded (stripped ELFs may have no section table)
     if (loaded == 0 && e_phnum > 0)
     {
         printf("[ELF] No sections loaded, trying program headers\n");
@@ -270,9 +235,7 @@ bool elf_load(const char* path, u32* out_entry)
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// elf_apply_entry – poke entry point into SH4 context after CPU reset
-// ---------------------------------------------------------------------------
+// ---- elf_apply_entry: poke the entry point into the SH4 context after the CPU reset ----
 void elf_apply_entry(u32 entry)
 {
     next_pc = entry;

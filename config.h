@@ -1,6 +1,4 @@
-/*
-	Config header file to properly generate all the #defines from simple _SYSTEM defines on makefiles :)
-*/
+// Turns the simple _SYSTEM define from the Makefile into the HOST_* config defines.
 
 #pragma once
 
@@ -10,7 +8,6 @@
 #define OS_PSP      1
 #define OS_WINDOWS  3
 #define OS_LINUX    4
-#define OS_WII      5
 #define OS_XBOX     6
 #define OS_PS2      7
 #define OS_PS3      8
@@ -27,7 +24,6 @@
 #define CPU_MIPS_ALLEGREX 2	//psp
 #define CPU_ARM_CORTEX_A8 3	//Beagleboard/Pandora/Omap3*
 #define CPU_MIPS_5900 4		//ps2
-#define CPU_PPC_BROADWAY 5	//wii
 #define CPU_PPC_CELL 6		//ps3
 #define CPU_ARMV5	7	//For android testing, for now
 
@@ -36,7 +32,6 @@
 #define SYS_PSP			2
 #define SYS_PANDORA		3
 #define SYS_BEAGLE		4
-#define SYS_WII			5
 #define SYS_PS3			6
 #define SYS_PS2			7
 
@@ -56,7 +51,6 @@
 #define REND_PSP    1
 #define REND_GLES2  2
 #define REND_SOFT   3   // Or .. something [ null atm ]
-#define REND_WII	4
 #define REND_PS2	5
 
 
@@ -111,14 +105,6 @@
 	#define HOST_SYS SYS_PC
 	#define REND_API REND_GLES2
 	#define VER_TARGET "linux86"
-#endif
-
-#ifdef _WII
-	#define _PPC
-	#define HOST_CPU CPU_PPC_BROADWAY
-	#define HOST_SYS SYS_WII
-	#define REND_API REND_WII
-	#define VER_TARGET "wii"
 #endif
 
 #ifdef _PSP
@@ -196,10 +182,6 @@
 #define HOST_OS OS_PSP
 #endif
 
-#ifdef _WII
-#define HOST_OS OS_WII
-#endif
-
 #ifdef _XBOX
 #define HOST_OS OS_XBOX
 #endif
@@ -226,14 +208,10 @@
 #endif
 
 // ---- Sanity check: does HOST_ENDIAN actually match the real compiler/CPU? ----
-// See wii/config.h for the full explanation. Mirrored here because this is a
-// SEPARATE file from wii/config.h (same name, different folder) — anything
-// outside wii/ that does #include "config.h" falls through to this copy via
-// -I../, so it needs its own copy of the check, not just the wii one.
 #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && defined(__ORDER_LITTLE_ENDIAN__)
 	#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 		#if HOST_ENDIAN != ENDIAN_BIG
-			#error "Compiler reports BIG-ENDIAN target, but HOST_ENDIAN resolved to ENDIAN_LITTLE. Check that _WII (or your platform's macro) is actually defined in the Makefile/build flags."
+			#error "Compiler reports BIG-ENDIAN target, but HOST_ENDIAN resolved to ENDIAN_LITTLE. Check that _PS3 (or your platform's macro) is actually defined in the Makefile/build flags."
 		#endif
 	#elif __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 		#if HOST_ENDIAN != ENDIAN_LITTLE
@@ -242,7 +220,7 @@
 	#endif
 #elif defined(__BIG_ENDIAN__)
 	#if HOST_ENDIAN != ENDIAN_BIG
-		#error "Compiler defines __BIG_ENDIAN__, but HOST_ENDIAN resolved to ENDIAN_LITTLE. Check that _WII (or your platform's macro) is actually defined in the Makefile/build flags."
+		#error "Compiler defines __BIG_ENDIAN__, but HOST_ENDIAN resolved to ENDIAN_LITTLE. Check that _PS3 (or your platform's macro) is actually defined in the Makefile/build flags."
 	#endif
 #elif defined(__LITTLE_ENDIAN__)
 	#if HOST_ENDIAN != ENDIAN_LITTLE
@@ -254,7 +232,7 @@
 
 // Cell has a JIT backend now (ps3/ps3_driver.cpp); exec memory comes from
 // a .text code cache, see Dynarec.MD 3.1.
-#if HOST_ARCH==ARCH_PPC && HOST_CPU!=CPU_PPC_BROADWAY && HOST_CPU!=CPU_PPC_CELL
+#if HOST_ARCH==ARCH_PPC && HOST_CPU!=CPU_PPC_CELL
 #define USE_INTERP
 #endif
 

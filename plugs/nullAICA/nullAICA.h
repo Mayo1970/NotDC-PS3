@@ -1,8 +1,7 @@
 #pragma once
 
-// Pull in all C++ stdlib headers BEFORE defining min/max macros,
-// otherwise the macros corrupt std::numeric_limits<T>::min()/max()
-// member function declarations in <limits>.
+// Include the C++ headers BEFORE the min/max macros below, which would corrupt the
+// std::numeric_limits<T>::min()/max() declarations in <limits>.
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -10,8 +9,8 @@
 
 #include "../../types.h"
 
-// Wii is big-endian PowerPC
-#define WII 1
+// The PS3 is big-endian PowerPC: selects the big-endian AICA paths (bitfield order, byte swaps).
+#define AICA_PS3 1
 
 // Big-endian byte-swap macros for AICA register access
 #define ReadMemArrRet(arr,addr,sz)               \
@@ -43,19 +42,18 @@
 #define DWORD  u32
 #define UINT32 u32
 
-// Undefine any min/max the platform may have defined as macros, then
-// redefine as inline templates. This avoids corrupting zero-argument
-// member calls like std::numeric_limits<T>::min() in <limits>.
+// Replace any platform min/max macros with inline templates, so zero-argument calls
+// like std::numeric_limits<T>::min() in <limits> are not corrupted.
 #ifdef min
 #  undef min
 #endif
 #ifdef max
 #  undef max
 #endif
-template<typename T> inline T wii_max(T a, T b) { return a > b ? a : b; }
-template<typename T> inline T wii_min(T a, T b) { return a < b ? a : b; }
-#define max(a,b) wii_max((a),(b))
-#define min(a,b) wii_min((a),(b))
+template<typename T> inline T aica_max(T a, T b) { return a > b ? a : b; }
+template<typename T> inline T aica_min(T a, T b) { return a < b ? a : b; }
+#define max(a,b) aica_max((a),(b))
+#define min(a,b) aica_min((a),(b))
 
 struct aica_setts
 {

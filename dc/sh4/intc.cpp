@@ -11,54 +11,9 @@
 #include "dc/asic/asic.h"
 #include "dc/maple/maple_if.h"
 
-/*
-	Now .. here is some text to keep you busy :D
+// Level-triggered: a request is re-accepted until its handler lowers it. Holly mixes 21 normal, 4 external and 32 error
+// irqs into 3 IRL lines; the INTC adds internal sources (only timers emulated, no exceptions); highest priority wins.
 
-	On sh4
-	an Interrupt request is created , by setting the Interrupt request input to hi
-	while it is hi , when this Interrupt can be processed , it is
-	the Interrupt code , must set the input to low or after exiting the Interrupt handler the
-	Interrupt may be re accepted
-	on dc (extra )
-	Dc has 2 Interrupt controlers, one on the Holly block (asic) that handles all Interrupts releated to external h/w
-	and one on the sh4 that handles all Interrupts that hapen iside the sh4 (from the modules) and , has 3 line input
-	from the asic.
-	the asic has many Interrupts , 21 normal , 4 external (eg , modem) and 32 error Interrupts.Asic works like a mixer
-	and it outputs 3 Interrupt signals from all that.if many Interrupts(asic) occur at once, they can share the same Interrupt(intc)
-
-	intc sorts the Interrupts based on pririty and trys to accept the one w/ the hiest priority first
-
-	how all that crap is implemented :
-	The new code is much more accurate, emulating Interrupt request lines (InterruptSourceList).
-	This means thast the RaiseInterrupt can't be the olny thing needed for Interrupts but we
-	also need callbacks to get the Interrupt reguest line status.
-
-	On Asic , things are simple , RaiseInterrupt sets the asic Interrupt bits
-	and according to the settings on asic , it may signal pedning Interrupts
-	withc are checked within CheckInterrupts.For implementing new asic insterupts
-	adding em on the Interrupts list is all that is needed
-
-	For internal sh4 Interrupts , exept form adding em on the Interrupts list ,
-	you must write seperate Priority and Pending callbacks
-
-	//PERFORMANCE NOTICE/
-	This intc is much more accurate when compared to the old one and much slower.
-	Thanks to the detection of any pending Interrupts tho (Flags set at RaiseInterrupt)
-	it is much faster when interrupts are not hapening (eg , 99% o the cpu operation).
-	Also , the structure of this intc allows us to know much earlier if Interrupts will
-	not be accepted (eg , bl bit ect) so , it is much faster that the previus one when
-	Interrupts are disabled using sr.bl or sr.imask
-
-	//conlusion/
-	We have an almost 100% acurate intc while it is faster that the previus one :)
-	i'd say that this is a success meh
-
-	missing things :
-	More internal Interrupts [olny timers are emulated]...
-	Exeptions [both here and on cpu code ...]
-
-	now , let's get to the code
-*/
 //#define COUNT_INTERRUPT_UPDATES
 
 //these are fixed
@@ -80,6 +35,7 @@ struct InterptSourceList_Entry
 	u32 GetPrLvl() const { return ((*PrioReg)>>Shift)&0xF; }
 };
 
+// A new asic irq only needs adding to the asic list; an internal SH4 one also needs an entry here and pending logic.
 const InterptSourceList_Entry InterruptSourceList[]=
 {
 	//IRL
@@ -173,9 +129,7 @@ u32 decoded_srimask;	//-1 kills all interrupts,including rebuild ones.
 //bit 0 ~ 27 : interrupt source 27:0. 0 = lowest level, 27 = highest level.
 //bit 28~31  : virtual interrupt sources.These have to do with the emu
 
-//28:31 = 0 -> nothing (disabled)
-//28:31 = 1 -> rebuild interrupt list		, retest interrupts
-//28:31 = * -> undefined
+//bits 28:31: 0 = nothing (disabled), 1 = rebuild interrupt list and retest interrupts, else undefined
 
 //Rebuild sorted interrupt id table (priorities where updated)
 void RequestSIIDRebuild()
@@ -267,8 +221,7 @@ u32 INLINE BSR(u32 v)
 
 #elif (HOST_ARCH==ARCH_PPC)
 
-	// cntlzw (count-leading-zeros word) is a single-cycle PPC750 instruction;
-	// __builtin_clz compiles straight to it under devkitPPC/GCC.
+	// __builtin_clz compiles straight to cntlzw (count leading zeros word), one PowerPC instruction.
 	return 31 - __builtin_clz(v);
 
 #else
@@ -283,15 +236,15 @@ u32 INLINE BSR(u32 v)
 
 	return 0;
 }
-// Cheap, side-effect-free predicate: does an interrupt currently need handling?
-// Touches NO SH4 GPRs (does not run Do_Interrupt). Used by the JIT to decide
-// whether it must flush its pinned GPRs before dispatching the event handler.
+// Cheap, side-effect-free "does an interrupt need handling?": touches no SH4 GPRs (no Do_Interrupt), so the JIT uses
+// it to decide whether it must flush its pinned GPRs before dispatching the event handler.
 int UpdateINTC_pending()
 {
 	u32 intped=interrupt_vpend&interrupt_vmask;
 	return intped>decoded_srimask;
 }
 
+// Cheap when idle: pending bits are set at raise time, sorted by priority, and SR.BL/IMASK pre-folded (SRdecode).
 int UpdateINTC()
 {
 	CCALL(CC_INTERRUPT);

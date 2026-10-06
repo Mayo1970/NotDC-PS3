@@ -25,7 +25,7 @@ static uint32_t ac_twin_mon(uint32_t reg, int keep_lp);                         
 static void ac_twin_step(void);                                                           // ps3aica_step
 static void ac_cdda_refill(void);   // cdda_refill + ps3aica_cdda
 
-// The 16-bit register at A (A % 4 == 0) is the big-endian halfword at [A + 2], as WII's bitfields lay it out.
+// The 16-bit register at A (A % 4 == 0) is the big-endian halfword at [A + 2], as the AICA_PS3 bitfields lay it out.
 static inline uint32_t ac_rd16(uint32_t h) { return ((uint32_t)ac.reg[h] << 8) | ac.reg[h + 1]; }
 static inline void ac_wr16(uint32_t h, uint32_t v)
 {

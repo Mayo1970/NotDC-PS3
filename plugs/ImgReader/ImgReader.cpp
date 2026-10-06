@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "common.h"
+#include "ps3/ps3_stall.h"
 
 extern "C" int get_debug_loop();
 extern "C" int get_debug_gdrom();
@@ -12,100 +13,10 @@ extern "C" int get_debug_gdrom();
 void FASTCALL libGDR_ReadSubChannel(u8 * buff, u32 format, u32 len)
 {
 	//printf("libGDR_ReadSubChannel\n");
-}/*
-FILE* fiso;
-u32 fiso_fad;
-u32 fiso_ssz;
-u32 fiso_offs;
-
-bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to)
-{
-	//if no convertion
-	if (to==from)
-	{
-		memcpy(out_buff,in_buff,to);
-		return true;
-	}
-	switch (to)
-	{
-	case 2048:
-		{
-			//verify(from>=2048);
-			//verify((from==2448) || (from==2352) || (from==2336));
-			if ((from == 2352) || (from == 2448))
-			{
-				if (in_buff[15]==1)
-				{
-					memcpy(out_buff,&in_buff[0x10],2048); //0x10 -> mode1
-				}
-				else
-					memcpy(out_buff,&in_buff[0x18],2048); //0x18 -> mode2 (all forms ?)
-			}
-			else
-				memcpy(out_buff,&in_buff[0x8],2048);	//hmm only possible on mode2.Skip the mode2 header
-		}
-		break;
-	case 2352:
-		//if (from >= 2352)
-		{
-			memcpy(out_buff,&in_buff[0],2352);
-		}
-		break;
-	default :
-		printf("Sector convertion from %d to %d not supported \n", from , to);
-		break;
-	}
-
-	return true;
 }
-
 void FASTCALL libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 {
-	printf("libGDR_ReadSector\n");
-
-	if (!fiso)
-	{
-		FILE* p=fopen("gdrom/disc.txt","rb");
-		fscanf(p,"%d %d %d",&fiso_fad,&fiso_ssz,&fiso_offs);
-		fclose(p);
-		fiso=fopen("gdrom/disc.gdrom","rb");
-	}
-	while(SectorCount)
-	{
-		u8 temp[5200];
-		fseek(fiso,fiso_offs+(StartSector-fiso_fad)*fiso_ssz,SEEK_SET);
-		fread(temp,1,fiso_ssz,fiso);
-		ConvertSector(temp,buff,fiso_ssz,secsz);
-		buff+=secsz;
-		StartSector++;
-		SectorCount--;
-	}
-}
-
-void FASTCALL libGDR_GetToc(u32* toc,u32 area)
-{
-	printf("libGDR_GetToc\n");
-	FILE* f=fopen("gdrom/toc.bin","rb");
-	fread(toc,1,102,f);
-	fclose(f);
-}
-//TODO : fix up
-u32 FASTCALL libGDR_GetDiscType()
-{
-	return CdRom_XA;
-}
-void FASTCALL libGDR_GetSessionInfo(u8* out,u8 ses)
-{
-	printf("libGDR_GetSessionInfo\n");
-	FILE* f=fopen(ses==0?"gdrom/ses0.bin":"gdrom/ses2.bin","rb");
-	fread(out,1,6,f);
-	fclose(f);
-}
-
-
-*/
-void FASTCALL libGDR_ReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
-{
+	StallScope st_(ST_GDREAD);
   if (get_debug_gdrom() && get_debug_loop()) {
 	  printf("[GDR] libGDR_ReadSector FAD=%u count=%u secsz=%u\n", StartSector, SectorCount, secsz);
   }

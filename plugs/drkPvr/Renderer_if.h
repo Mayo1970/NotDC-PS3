@@ -23,10 +23,10 @@ extern u64 AicaVoxTicks;     // AICA_Sample()'s channel loop only
 extern u32 AicaVoiceSum;     // voices stepped, summed over samples (aica_fast loop only)
 extern u32 AicaSampleCount;  // samples generated, to average AicaVoiceSum
 
-// PS3 reads the mftb timebase through its ogc/lwp_watchdog.h stand-in (ps3/include); without it every
-// stats-line percentage reads 0.0%.
-#if HOST_OS == OS_WII || HOST_OS == OS_PS3
-#include <ogc/lwp_watchdog.h>
+// PS3 reads the mftb timebase through ps3/include/ps3_timebase.h; without it every stats-line
+// percentage reads 0.0%.
+#if HOST_OS == OS_PS3
+#include "ps3_timebase.h"
 #define PERF_TICKS() gettime()
 #define PERF_TICKS_US(t) ((double)ticks_to_microsecs(t))
 #else
@@ -34,5 +34,5 @@ extern u32 AicaSampleCount;  // samples generated, to average AicaVoiceSum
 #define PERF_TICKS_US(t) (0.0)
 #endif
 
-#include "gxRend.h" // Wii
+#include "rend.h"
 

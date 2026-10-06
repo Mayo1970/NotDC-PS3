@@ -2,7 +2,7 @@
 #include "sgc_if.h"
 #include "aica.h"
 #include "aica_mem.h"
-#include "wii_audiostream.h"
+#include "audiostream.h"
 #include "ps3/ps3_aica_spe.h"
 #include "ps3/ps3_sndthr.h"
 #include "ps3/ps3_arm_spe.h"
@@ -35,9 +35,9 @@ s32 FASTCALL InitAica(aica_init_params* initp)
     AICA_Init();
     printf("[NullAICA] InitAica: AICA_Init() done\n");
 
-    printf("[NullAICA] InitAica: wii_InitAudio()...\n");
-    wii_InitAudio();
-    printf("[NullAICA] InitAica: wii_InitAudio() done\n");
+    printf("[NullAICA] InitAica: aica_InitAudio()...\n");
+    aica_InitAudio();
+    printf("[NullAICA] InitAica: aica_InitAudio() done\n");
 
     printf("[NullAICA] InitAica: complete OK\n");
     return rv_ok;
@@ -49,7 +49,7 @@ void FASTCALL TermAica()
     snd_thread_stop();
     arm_spe_term();   // before the sound SPU: it writes that SPU's log
     ps3aica_term();
-    wii_TermAudio();
+    aica_TermAudio();
     AICA_Term();
     term_mem();
 }
@@ -79,5 +79,5 @@ void LoadSettingsAica()
 
 void SaveSettingsAica()
 {
-    // No config system available on Wii at this level — settings are hardcoded above.
+    // Nothing to save: the settings are fixed in LoadSettingsAica().
 }

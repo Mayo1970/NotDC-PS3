@@ -37,8 +37,8 @@ extern "C" int get_cdda_preset() { return 0; }
 void FASTCALL gdrom_get_cdda(s16*) {}
 u64 AicaVoxTicks;
 u32 AicaVoiceSum, AicaSampleCount;
-void wii_WriteSample(s16, s16) {}
-extern "C" void wii_audio_aica_ready() {}
+void aica_WriteSample(s16, s16) {}
+extern "C" void ps3_audio_aica_ready() {}
 bool g_arm7_in_run;
 u32 g_arm7s_runs, g_arm7s_fiqs;
 u64 g_arm7s_ticks;

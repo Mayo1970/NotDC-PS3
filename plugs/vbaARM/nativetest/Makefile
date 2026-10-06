@@ -1,19 +1,5 @@
-# Native ARM7DI self-test for the cached interpreter.
-#
-# Builds the REAL ../arm7.cpp and ../arm7_cached.cpp (no copies) against the
-# minimal leaf header stubs in this directory, plus a flat little-endian memory
-# backend in nt_main.cpp, and runs the embedded ARM7DI conformance tests on the
-# host. This validates the cached path's logic without a Wii toolchain.
-#
-# Usage:
-#   make            # build + nothing else
-#   make run        # build and run the self-test
-#   make ref        # build the REFERENCE (non-cached) interpreter for comparison
-#   make run-ref    # build and run the reference interpreter
-#   make clean
-#
-# Requires the msys2 / Cygwin g++ (gcc 15). The recipes put its bin on PATH so
-# cc1plus can find its DLLs.
+# Host ARM7DI self-test: the REAL ../arm7.cpp and ../arm7_cached.cpp with the leaf stubs here and a flat LE memory
+# (nt_main.cpp). Targets: run, ref (non-cached reference), run-ref, clean. msys2 g++; its bin goes on PATH for cc1plus.
 
 CXX     := C:/msys64/usr/bin/g++.exe
 DLLPATH := /c/msys64/usr/bin

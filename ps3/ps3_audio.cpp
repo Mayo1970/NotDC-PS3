@@ -1,7 +1,7 @@
-// AICA audio sink (wii/wii_audio.h API) on a PSL1GHT 48 kHz float32 audio port.
+// AICA audio sink (ps3_audio.h API) on a PSL1GHT 48 kHz float32 audio port.
 // Port setup and feeder thread follow ioQuake3-PS3 ps3_snd.c and xashPS3 s_ps3.c.
 #include "types.h"
-#include "wii/wii_audio.h"
+#include "ps3/ps3_audio.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +10,7 @@
 #include <sys/thread.h>
 #include <sys/event_queue.h>
 #include <sysmodule/sysmodule.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 
 #define OUT_RATE    48000
 #define IN_RATE     44100
@@ -105,7 +105,7 @@ static void feeder_thread(void* arg)
 	sysThreadExit(0);
 }
 
-void wii_audio_init()
+void ps3_audio_init()
 {
 	if (running)
 		return;
@@ -195,12 +195,7 @@ void wii_audio_init()
 	       (unsigned)port_cfg.numBlocks, (unsigned)settings.emulator.AudioBuffers);
 }
 
-void wii_audio_shutdown()
-{
-	aica_ready = 0;
-}
-
-void wii_audio_term()
+void ps3_audio_term()
 {
 	aica_ready = 0;
 	if (!running)
@@ -218,13 +213,13 @@ void wii_audio_term()
 	printf("[aud] shut down\n");
 }
 
-void wii_audio_aica_ready()
+void ps3_audio_aica_ready()
 {
 	printf("[aud] AICA ready, sink enabled\n");
 	aica_ready = 1;
 }
 
-// Returns false when the ring stays full (AudioBuffers 0: at once; else after 100 ms, as Wii).
+// Returns false when the ring stays full (AudioBuffers 0: at once; else after 100 ms).
 static bool ring_wait_space()
 {
 	if (ring_wr - ring_rd < RING_FRAMES)
@@ -240,7 +235,7 @@ static bool ring_wait_space()
 }
 
 // One 44.1 kHz sample from AICA_Sample(); emits the 48 kHz frames that fall before it.
-void wii_audio_push_sample(s16 l, s16 r)
+void ps3_audio_push_sample(s16 l, s16 r)
 {
 	if (!aica_ready || !running)
 		return;
@@ -267,8 +262,6 @@ void wii_audio_push_sample(s16 l, s16 r)
 	prev_l = l;
 	prev_r = r;
 }
-
-void wii_audio_frame() {}
 
 // OPTIMIZATION_PLAN 5.13 A2: the SPU writes the frames and ring_wr itself (spu/spe_aica_snd.h); no push runs.
 void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now)

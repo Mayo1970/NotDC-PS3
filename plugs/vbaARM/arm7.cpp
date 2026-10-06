@@ -5,15 +5,15 @@
 
 #define ARM7_FIQ_DIAG 0   // 1 = count real FIQs serviced per second (see CPUFiq)
 
-// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN to catch accidental use; libogc's machine/endian.h defines them, so undef
-// them before it (as plugs/nullAICA/aica.cpp).
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN to catch accidental use; system endian headers define them, so undef
+// them first (as plugs/nullAICA/aica.cpp).
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
 #ifdef LITTLE_ENDIAN
 #  undef LITTLE_ENDIAN
 #endif
-#include <ogc/lwp_watchdog.h>   // gettime(), ticks_to_millisecs()
+#include "ps3_timebase.h"   // gettime(), ticks_to_millisecs()
 
 #define C_CORE
 #define DEV_VERSION

@@ -1,14 +1,9 @@
 #pragma once
-// dmac.h - SH4 DMAC register types and public interface
-// Supports both little-endian (x86) and big-endian (Wii/PPC) hosts via
-// HOST_ENDIAN conditional bit-field ordering.
+// dmac.h - SH4 DMAC register types and public interface; the bitfield order follows HOST_ENDIAN.
 
 #include "types.h"
 
-// ---------------------------------------------------------------------------
-// DMAC_CHCR_type - Channel Control Register (one per channel, 4 channels)
-// Reset value: 0x00000000
-// ---------------------------------------------------------------------------
+// ---- DMAC_CHCR_type: Channel Control Register (one per channel, 4 channels), reset value 0x00000000 ----
 union DMAC_CHCR_type
 {
 	struct
@@ -39,7 +34,7 @@ union DMAC_CHCR_type
 
 		u32 STC  : 1;   // [28]    Source Address Transfer Counter enable
 		u32 SSA  : 3;   // [31:29] Source Space Attribute
-#else   // big-endian (Wii / PowerPC)
+#else   // big-endian (PowerPC)
 		u32 SSA  : 3;
 		u32 STC  : 1;
 
@@ -70,10 +65,7 @@ union DMAC_CHCR_type
 	u32 full;
 };
 
-// ---------------------------------------------------------------------------
-// DMAC_DMAOR_type - DMA Operation Register (global, shared by all channels)
-// Reset value: 0x00000000
-// ---------------------------------------------------------------------------
+// ---- DMAC_DMAOR_type: DMA Operation Register (global, shared by all channels), reset value 0x00000000 ----
 union DMAC_DMAOR_type
 {
 	struct
@@ -117,25 +109,18 @@ union DMAC_DMAOR_type
 	u32 full;
 };
 
-// ---------------------------------------------------------------------------
-// DMAC register arrays (defined in dmac.cpp)
-// ---------------------------------------------------------------------------
+// ---- DMAC register arrays (defined in dmac.cpp) ----
 extern u32             DMAC_SAR[4];
 extern u32             DMAC_DAR[4];
 extern u32             DMAC_DMATCR[4];   // lower 24 bits valid per SH4 manual
 extern DMAC_CHCR_type  DMAC_CHCR[4];
 extern DMAC_DMAOR_type DMAC_DMAOR;
 
-// ---------------------------------------------------------------------------
-// DMAC_DMAOR valid-bits mask
-// Bits that matter when checking DMAOR for a valid Ch2-DMA trigger:
-//   bit 15 (DDT=1), bit 3 (DME=1), and no error flags
-// ---------------------------------------------------------------------------
+// DMAOR check for a DMA trigger: (DMAOR & mask) must be 0x8201, i.e. DDT (bit 15), PR1 (bit 9) and DME (bit 0) set
+// and bits 31:16 clear. The NMIF/AE error flags (bits 1-2) are not in the mask, so they are not checked.
 #define DMAOR_MASK  0xFFFF8201u
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
+// ---- Public API ----
 
 // On-demand / direct transfer (DDT mode) — stubs, not yet implemented
 void dmac_ddt_ch0_ddt(u32 src, u32 dst, u32 count);
@@ -152,9 +137,5 @@ void dmac_Term();               // teardown (currently a no-op)
 // Cycle-accurate DMA tick (called from the main emulation loop, not yet implemented)
 void UpdateDMA();
 
-// Claude Test for Rez Fix - disproven: deferred Ch2-DMA completion IRQ was
-// tested (even at a 65536-cycle delay) to see whether IRQ timing was why a
-// guest driver never observed a transfer as complete. It made no observable
-// difference, so DMAC_Ch2St() raises the completion IRQ synchronously again
-// (matching the verified-working PSP port) and this hook is unused.
-// void UpdateCh2DmaIrq(u32 cycles);
+// Claude Test for Rez Fix, disproven: deferring the Ch2-DMA completion IRQ (even 65536 cycles) never let the guest
+// driver see the transfer done; DMAC_Ch2St() raises it synchronously like the working PSP port; UpdateCh2DmaIrq unused.

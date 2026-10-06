@@ -22,7 +22,6 @@ typedef double   f64;
 #define naked
 #define INLINE inline   // not forced: the reference must fit the LS
 #define SINLINE inline
-#define OS_WII 5
 #define OS_PS3 8
 #define HOST_OS OS_PS3
 

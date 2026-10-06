@@ -11,15 +11,15 @@ extern u64 AicaVoxTicks;
 extern u32 AicaVoiceSum;
 extern u32 AicaSampleCount;
 
-#if HOST_OS == OS_WII || HOST_OS == OS_PS3
-// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; libogc defines them.
+#if HOST_OS == OS_PS3
+// config.h poisons BIG_ENDIAN/LITTLE_ENDIAN; system endian headers define them.
 #ifdef BIG_ENDIAN
 #  undef BIG_ENDIAN
 #endif
 #ifdef LITTLE_ENDIAN
 #  undef LITTLE_ENDIAN
 #endif
-#include <ogc/lwp_watchdog.h>   // gettime() - inline mftb read, no call
+#include "ps3_timebase.h"   // gettime() - inline mftb read, no call
 #define SGC_PERF_TICKS() gettime()
 #else
 #define SGC_PERF_TICKS() ((u64)0)
@@ -114,7 +114,7 @@ s16 pl=0, pr=0;
 
 struct DSP_OUT_VOL_REG
 {
-#ifdef WII
+#ifdef AICA_PS3
     u32 pad:16;
     u32 res_2:4;
     u32 EFSDL:4;
@@ -133,7 +133,7 @@ DSP_OUT_VOL_REG* dsp_out_vol;
 #pragma pack(1)
 struct ChannelCommonData
 {
-#ifdef WII
+#ifdef AICA_PS3
     //+00
     u32 pad_2:16;
     u32 KYONEX:1;
@@ -1116,7 +1116,7 @@ void FASTCALL FegStep(ChannelEx* ch) { /* stub */ }
 
 // aica_fast: same samples as ChannelEx::Step(); visits only active_lo/hi channels,
 // skips the stub FEG, sends to the DSP only when it runs, and calls AegStep directly.
-extern int g_aica_fast_preset;   // wii/main.cpp; read directly, 44,100x/s
+extern int g_aica_fast_preset;   // ps3/ps3_presets.cpp; read directly, 44,100x/s
 
 static INLINE void ChannelStepFast(ChannelEx* ch, bool dsp_on, SampleType& ml, SampleType& mr)
 {
@@ -1395,7 +1395,7 @@ static void cdda_refill()
             snd_cdda_pop(cdda_sector);
         else
             gdrom_get_cdda(cdda_sector);
-#ifdef WII
+#ifdef AICA_PS3
         // Disc bytes are little-endian; swap each sample for the
         // big-endian CPU.
         u8* b = (u8*)cdda_sector;
@@ -1552,7 +1552,7 @@ void AICA_Sample()
         {
             // EFREG[i] is a u32 with the value in its low 16 bits; on big-endian
             // those are bytes 2-3, so a plain s16* cast would read the high half.
-#ifdef WII
+#ifdef AICA_PS3
             VOLPAN((*(s16*)((u8*)&DSPData->EFREG[i] + 2)), dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
 #else
             VOLPAN((*(s16*)&DSPData->EFREG[i]), dsp_out_vol[i].EFSDL, dsp_out_vol[i].EFPAN, mixl, mixr);
@@ -1604,5 +1604,5 @@ void AICA_Sample()
     pl = mixl;
     pr = mixr;
 
-    wii_WriteSample((s16)mixr, (s16)mixl);
+    aica_WriteSample((s16)mixr, (s16)mixl);
 }

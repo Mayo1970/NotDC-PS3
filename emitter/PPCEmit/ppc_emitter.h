@@ -1,19 +1,16 @@
-// ppc_emitter.h - Helper file for the PPC JIT emitter
-// Includes register definitions, opcode shortcuts, and pseudo-instructions
-// for nullDCe (Dreamcast emulator for Wii / Broadway PPC 750CL)
+// ppc_emitter.h - PPC JIT emitter helpers: register definitions, opcode shortcuts and pseudo-instructions
+// (used by the SH4 and ARM7 JITs on the Cell PPU).
 
 #pragma once
 
 #include "ppc_emit.h"
 
-// ============================================================
-//  Integer Register Numbers
-// ============================================================
+// ---- Integer Register Numbers ----
 enum ppc_ireg
 {
 	ppc_r0   = 0,                              // volatile, used in linkage / special cases
 	ppc_r1   = 1,  ppc_sp  = ppc_r1,          // stack pointer
-	ppc_r2   = 2,                              // reserved (TOC on ELF, thread ptr on Wii)
+	ppc_r2   = 2,                              // reserved (TOC)
 	ppc_r3   = 3,  ppc_rrv0  = ppc_r3,  ppc_rarg0 = ppc_r3,
 	ppc_r4   = 4,  ppc_rrv1  = ppc_r4,  ppc_rarg1 = ppc_r4,
 	ppc_r5   = 5,  ppc_rarg2 = ppc_r5,
@@ -50,9 +47,7 @@ enum ppc_ireg
 	ppc_spr_ctr  = 288,  // CTR  (spr field = 9 << 5)
 };
 
-// ============================================================
-//  Condition Register Fields
-// ============================================================
+// ---- Condition Register Fields ----
 enum ppc_cr_reg
 {
 	ppc_cr0 = 0,
@@ -65,9 +60,7 @@ enum ppc_cr_reg
 	ppc_cr7 = 7,
 };
 
-// ============================================================
-//  Floating-Point Register Numbers
-// ============================================================
+// ---- Floating-Point Register Numbers ----
 enum ppc_freg
 {
 	ppc_f0   = 0,
@@ -104,9 +97,7 @@ enum ppc_freg
 	ppc_f31  = 31,
 };
 
-// ============================================================
-//  Branch BO field values (Branch Options)
-// ============================================================
+// ---- Branch BO field values (Branch Options) ----
 #define BO_DEC_NZ_FALSE  0x00  // Decrement CTR, branch if CTR!=0 and CR bit false
 #define BO_DEC_Z_FALSE   0x02  // Decrement CTR, branch if CTR==0 and CR bit false
 #define BO_FALSE         0x04  // Branch if CR bit false
@@ -119,9 +110,7 @@ enum ppc_freg
 
 #define BO_HINT_TAKEN    0x01  // Branch prediction hint: likely taken
 
-// ============================================================
-//  Branch BI field values (CR bit selectors)
-// ============================================================
+// ---- Branch BI field values (CR bit selectors) ----
 // CR0
 #define BI_CR0_LT   0
 #define BI_CR0_GT   1
@@ -181,9 +170,7 @@ enum ppc_freg
 // Helper: compute BI from CR field + bit index (0=LT,1=GT,2=EQ,3=SO)
 #define BI_CR(crN, bit)  (((crN) * 4) + (bit))
 
-// ============================================================
-//  SPR Pseudo-instructions
-// ============================================================
+// ---- SPR Pseudo-instructions ----
 
 // Move to Link Register
 #define ppc_mtlr(S)       ppc_mtspr(ppc_spr_lr,  (S))
@@ -203,9 +190,7 @@ enum ppc_freg
 // Move from XER
 #define ppc_mfxer(D)      ppc_mfspr((D), ppc_spr_xer)
 
-// ============================================================
-//  Common Branch Pseudo-instructions
-// ============================================================
+// ---- Common Branch Pseudo-instructions ----
 
 // Branch to Link Register (return)
 #define ppc_blr()         ppc_bclrx(BO_ALWAYS, BI_CR0_EQ, 0)
@@ -225,9 +210,7 @@ enum ppc_freg
 #define ppc_bltlr()       ppc_bclrx(BO_TRUE,  BI_CR0_LT, 0)
 #define ppc_bgtlr()       ppc_bclrx(BO_TRUE,  BI_CR0_GT, 0)
 
-// ============================================================
-//  Data Movement Pseudo-instructions
-// ============================================================
+// ---- Data Movement Pseudo-instructions ----
 
 // Move register to register:  rD = rS   (ori rD, rS, 0)
 #define ppc_mr(D, S)      ppc_ori((D), (S), 0)
@@ -244,9 +227,7 @@ enum ppc_freg
 // Load immediate shifted (upper 16 bits, lower 16 = 0)
 #define ppc_lis(D, IMM)   ppc_addis((D), ppc_r0, (IMM))
 
-// Load immediate 32-bit value into register (two instructions)
-// Note: IMM must be a compile-time constant (or expression).
-// Uses r0-safe addis+ori pair.
+// Load a 32-bit immediate in two instructions (r0-safe addis+ori pair); IMM is a compile-time constant or expression.
 #define ppc_li32(D, IMM) \
 	do { \
 		u32 _imm32 = (u32)(IMM); \
@@ -260,9 +241,7 @@ enum ppc_freg
 // Not:     rA = ~rS    (norx rA, rS, rS, 0)
 #define ppc_not(A, S)     ppc_norx((A), (S), (S), 0)
 
-// ============================================================
-//  Comparison Pseudo-instructions (common shortcuts)
-// ============================================================
+// ---- Comparison Pseudo-instructions (common shortcuts) ----
 
 // Compare word signed vs immediate, result in CR0
 #define ppc_cmpwi(A, IMM)     ppc_cmpi(ppc_cr0, (A), (IMM), 0)
@@ -276,9 +255,7 @@ enum ppc_freg
 // Compare word unsigned rA vs rB, result in CR0
 #define ppc_cmplw(A, B)       ppc_cmpl(ppc_cr0, (A), (B), 0)
 
-// ============================================================
-//  Arithmetic Shortcuts (Rc=0, OE=0 common cases)
-// ============================================================
+// ---- Arithmetic Shortcuts (Rc=0, OE=0 common cases) ----
 
 #define ppc_add(D, A, B)      ppc_addx((D), (A), (B), 0, 0)
 #define ppc_add_(D, A, B)     ppc_addx((D), (A), (B), 0, 1)  // sets CR0
@@ -290,9 +267,7 @@ enum ppc_freg
 #define ppc_divw(D, A, B)     ppc_divwx((D), (A), (B), 0, 0)
 #define ppc_divwu(D, A, B)    ppc_divwux((D), (A), (B), 0, 0)
 
-// ============================================================
-//  Logical Shortcuts (Rc=0 common cases)
-// ============================================================
+// ---- Logical Shortcuts (Rc=0 common cases) ----
 
 #define ppc_and(A, S, B)      ppc_andx((A), (S), (B), 0)
 #define ppc_and_(A, S, B)     ppc_andx((A), (S), (B), 1)
@@ -306,9 +281,7 @@ enum ppc_freg
 #define ppc_nand(A, S, B)     ppc_nandx((A), (S), (B), 0)
 #define ppc_eqv(A, S, B)      ppc_eqvx((A), (S), (B), 0)
 
-// ============================================================
-//  Shift Shortcuts (Rc=0 common cases)
-// ============================================================
+// ---- Shift Shortcuts (Rc=0 common cases) ----
 
 #define ppc_slw(A, S, B)      ppc_slwx((A), (S), (B), 0)
 #define ppc_srw(A, S, B)      ppc_srwx((A), (S), (B), 0)
@@ -318,9 +291,7 @@ enum ppc_freg
 #define ppc_extsb(A, S)       ppc_extsbx((A), (S), 0)
 #define ppc_extsh(A, S)       ppc_extshx((A), (S), 0)
 
-// ============================================================
-//  Rotate/Mask Shortcuts
-// ============================================================
+// ---- Rotate/Mask Shortcuts ----
 
 #define ppc_rlwinm(A, S, SH, MB, ME)  ppc_rlwinmx((A), (S), (SH), (MB), (ME), 0)
 #define ppc_rlwimi(A, S, SH, MB, ME)  ppc_rlwimix((A), (S), (SH), (MB), (ME), 0)
@@ -334,9 +305,7 @@ enum ppc_freg
 #define ppc_srwi(A, S, n)     ppc_rlwinm((A), (S), 32-(n), (n), 31)
 #define ppc_rotlwi(A, S, n)   ppc_rlwinm((A), (S), (n), 0, 31)
 
-// ============================================================
-//  Floating-Point Shortcuts (Rc=0 common cases)
-// ============================================================
+// ---- Floating-Point Shortcuts (Rc=0 common cases) ----
 
 #define ppc_fadd(D, A, B)     ppc_faddx((D), (A), (B), 0)
 #define ppc_fsub(D, A, B)     ppc_fsubx((D), (A), (B), 0)
@@ -360,9 +329,7 @@ enum ppc_freg
 #define ppc_fmuls(D, A, C)    ppc_fmulsx((D), (A), (C), 0)
 #define ppc_fdivs(D, A, B)    ppc_fdivsx((D), (A), (B), 0)
 
-// ============================================================
-//  Unconditional Branches (common forms)
-// ============================================================
+// ---- Unconditional Branches (common forms) ----
 
 // Branch relative (offset in bytes, will be shifted >>2 internally)
 // ppc_b(offset): offset is in instruction words from current PC
@@ -385,9 +352,7 @@ enum ppc_freg
 #define ppc_bdnz(BD)          ppc_bcx(BO_DEC_NZ, BI_CR0_EQ, (BD), 0, 0)
 #define ppc_bdz(BD)           ppc_bcx(BO_DEC_Z,  BI_CR0_EQ, (BD), 0, 0)
 
-// ============================================================
-//  Cache / Memory Barrier Pseudo-instructions
-// ============================================================
+// ---- Cache / Memory Barrier Pseudo-instructions ----
 
 // Data cache block zero (useful for zeroing stack frames fast)
 #define ppc_dcbz(A, B)        ppc_emit(0x7C0007EC | ((0x1f & (u32)(A))<<16) | ((0x1f & (u32)(B))<<11))
@@ -395,20 +360,10 @@ enum ppc_freg
 // Instruction sync (flush pipeline, needed after JIT code writes)
 #define ppc_isync()           ppc_emit(0x4C00012C)
 
-// ============================================================
-//  Label / Patch Infrastructure
-// ============================================================
+// ---- Label / Patch Infrastructure ----
 
-// ppc_label is placed at the emit pointer BEFORE the branch instruction.
-// After emitting the target code, call MarkLabel() to patch the 16-bit
-// displacement back into the branch word.
-//
-// Usage:
-//   ppc_label* lbl = ppc_CreateLabel();
-//   ppc_bcx(BO_TRUE, BI_CR0_EQ, 0, 0, 0);  // placeholder displacement
-//   ... emit target code ...
-//   lbl->MarkLabel();
-//
+// ppc_label = emit pointer taken BEFORE the branch; after the target code, MarkLabel() patches the 16-bit displacement.
+// Usage: lbl = ppc_CreateLabel(); ppc_bcx(BO_TRUE, BI_CR0_EQ, 0, 0, 0); emit target code; lbl->MarkLabel();
 struct ppc_label
 {
 	// Patch the 16-bit branch displacement in the instruction word

@@ -27,7 +27,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <ogc/lwp_watchdog.h>
+#include "ps3_timebase.h"
 
 // 1 MB main thread stack: the SH4 interpreter and plugin init nest deep.
 SYS_PROCESS_PARAM(1001, 0x100000);
@@ -41,7 +41,7 @@ SYS_PROCESS_PARAM(1001, 0x100000);
 extern "C" volatile u32 g_jit_blocks_entered;
 
 // Data root; BIOS lives in data/, nullDC.cfg at the top.
-#define PS3_DATA_ROOT "/dev_hdd0/data/NullDC/"
+#define PS3_DATA_ROOT "/dev_hdd0/data/NotDC/"
 
 uint64_t ps3_timebase_hz = 79800000u;
 
@@ -53,14 +53,14 @@ static volatile int ps3_exit_requested;
 static volatile int ps3_monitor_quit;
 static sys_ppu_thread_t ps3_monitor_tid;
 
-// Wii main.cpp owned this; os_GetFile() and nullDC.cpp read it.
+// The disc image picked in the menu; os_GetFile() and nullDC.cpp read it.
 char selectedFilePath[512];
 
 extern int EmuMain(int argc, char* argv[]);
 extern void ps3_input_init();
 extern void ps3_input_term();
-extern "C" void wii_audio_init();
-extern "C" void wii_audio_term();
+extern "C" void ps3_audio_init();
+extern "C" void ps3_audio_term();
 extern void ps3_audio_stats();
 
 // No block manager without a JIT. nullDC.cpp calls this with C linkage, which
@@ -268,7 +268,7 @@ int main(int argc, char* argv[])
 
 	ps3_timebase_hz = sysGetTimebaseFrequency();
 
-	printf("[ps3] nullDC PS3 " __DATE__ " " __TIME__ "\n");
+	printf("[ps3] NotDC " __DATE__ " " __TIME__ "\n");
 	printf("[ps3] netInitialize=%d timebase=%llu Hz sizeof(void*)=%u\n",
 	       net_ret, (unsigned long long)ps3_timebase_hz, (unsigned)sizeof(void*));
 	printf("[ps3] largest free block at boot: %u KB\n", (unsigned)(ps3_largest_block() / 1024));
@@ -284,7 +284,7 @@ int main(int argc, char* argv[])
 		printf("[ps3] monitor thread create failed: 0x%08X\n", (unsigned)trc);
 
 	ps3_input_init();
-	wii_audio_init();
+	ps3_audio_init();
 
 	// The front end needs the settings before EmuMain opens the cfg itself.
 	int rv = 0;
@@ -308,8 +308,8 @@ int main(int argc, char* argv[])
 
 shutdown:
 
-	// Plugin term may not run on XMB exit; wii_audio_term() is safe to call twice.
-	wii_audio_term();
+	// Plugin term may not run on XMB exit; ps3_audio_term() is safe to call twice.
+	ps3_audio_term();
 	ps3_input_term();
 
 	if (trc == 0)

@@ -1,5 +1,4 @@
 // PVR renderer on RSX via ps3gl: OP, PT, TR lists with textures and the background color.
-// Decoder follows plugs/drkPvr/gxRend.cpp; the Wii presets and workarounds are not carried over.
 #include "plugs/drkPvr/Renderer_if.h"
 #include "ps3_phase.h"
 #include "plugs/drkPvr/regs.h"
@@ -10,6 +9,7 @@
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_tasplit.h"
+#include "ps3_stall.h"
 #include "dc/pvr/pvr_if.h"
 #include "dc/sh4/sh4_sqw.h"
 #include <algorithm>
@@ -364,7 +364,7 @@ static inline void track_w(float inv_w)
 	track_inv_w(inv_w);
 }
 
-// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor, as in gxRend).
+// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor).
 static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
 {
 	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
@@ -1061,7 +1061,7 @@ void SetFbScale(float x, float y)
 	s_fb_scale_y = y;
 }
 
-// VRAM is stored as two interleaved 32-bit banks; see gxRend.cpp fast_ConvOffset32toOffset64.
+// VRAM is stored as two interleaved 32-bit banks.
 static u32 vri_off(u32 addr)
 {
 	addr &= VRAM_MASK;
@@ -1960,7 +1960,7 @@ static void draw_frame()
 	draw_scene(0.0f, 0.0f, 640.0f * g_rr.fb_scale_x, 480.0f * g_rr.fb_scale_y);
 }
 
-// -- Render to texture (FB_W_SOF1 bit 24). As gxRend.cpp: draw the clip window at its own size, read it
+// -- Render to texture (FB_W_SOF1 bit 24): draw the clip window at its own size, read it
 // back and pack it into VRAM, where the texture cache sees the new hash and re-decodes.
 static u32 s_stat_rtt_copies;
 
@@ -2049,7 +2049,7 @@ static void rtt_render()
 	s_stat_rtt_copies++;
 }
 
-// -- Framebuffer writes. 2D titles draw straight into VRAM with no render; as gxRend.cpp, a mark is
+// -- Framebuffer writes. 2D titles draw straight into VRAM with no render; a mark is
 // stamped after each render, and if it is gone at vblank another writer refreshed it, so show it.
 #define FB_PRESENT_MAGIC 0xDC4F0FB0u
 #define FB2D_W 768
@@ -2733,6 +2733,7 @@ void ThreadEnd() {}
 // Called at the start of every emulated vblank from SPG.cpp.
 void VBlank()
 {
+	StallScope st_(ST_REND);
 	// In-game menu (SELECT): the guest stops here; the menu draws with ps3gl on this thread.
 	if (ps3_menu_pending())
 	{
@@ -2763,6 +2764,7 @@ void VBlank()
 
 void StartRender()
 {
+	StallScope st_(ST_REND);
 	SH4_PHASE(PH_RENDER);
 	spe_flush(s_ta);
 	snapshot_render_regs();
@@ -2775,7 +2777,7 @@ void StartRender()
 		rc = s_ta;
 	}
 
-	// gxRend.cpp StartRender() render-done timing; games pace off these IRQs. This is the previous
+	// Render-done IRQ timing; games pace off these IRQs. This is the previous
 	// job's count (TR3 replays later), close enough for a clamped delay.
 	u32 vtx = rc->rend_nvtx;
 	if (get_render_delay_preset())

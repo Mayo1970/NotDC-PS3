@@ -15,7 +15,7 @@
 #include <map>
 #include <vector>
 #include <algorithm>
-double os_GetSeconds();   // platform wall-clock (wii/main.cpp); seconds as double
+double os_GetSeconds();   // platform wall-clock (ps3/ps3_main.cpp); seconds as double
 static std::map<u32, unsigned long long> s_blockHits;
 static double s_profLast = 0.0;
 
@@ -36,8 +36,8 @@ static void prof_tick()
 	             const std::pair<u32, unsigned long long>& b) { return a.second > b.second; });
 	int shown = (int)(v.size() < 10 ? v.size() : 10);
 	printf("[ARM7 hot blocks] top %d of %d:\n", shown, (int)v.size());
-	// NOTE: devkitPPC/newlib printf does not support %zu/%llu -> use %d/%u with
-	// explicit casts (mismatched specifiers desync varargs and print garbage).
+	// NOTE: no %zu/%llu (newlib printf may lack them): %d/%u with explicit casts, since a
+	// mismatched specifier desyncs the varargs and prints garbage.
 	for (int i = 0; i < shown; i++) {
 		u32 pc = v[i].first;
 		printf("  #%d  pc=%08X  hits=%u\n", i + 1, (unsigned)pc, (unsigned)v[i].second);

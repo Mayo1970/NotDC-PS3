@@ -1,11 +1,8 @@
 #include "types.h"
 
 
-// ATA IDENTIFY PACKET DEVICE (0xA1) response — the drive identification block.
-// Stored as BYTES, little-endian order, matching the convention of the other
-// tables here: the PSP port declares this as u16[] literals, which only produce
-// the right byte stream on a little-endian host. Written out as bytes it is
-// endian-neutral and reads as "SE", "CD-ROM DRIVE", "6.43" on the Wii too.
+// ATA IDENTIFY PACKET DEVICE (0xA1) reply, stored as little-endian BYTES like the other tables: the PSP port's
+// u16[] literals give this byte stream only on a little-endian host. It reads "SE", "CD-ROM DRIVE", "6.43".
 u8 reply_a1[] =
 {
 	0x20,0x20, 0x20,0x00, 0x00,0x00, 0x00,0x00,

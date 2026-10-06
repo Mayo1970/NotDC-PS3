@@ -1,27 +1,5 @@
-// SH4 cached (pre-decoded / threaded) interpreter — same method as the ARM7
-// engine in plugs/vbaARM/arm7_cached.cpp, applied to the SH4 core.
-//
-// The plain interpreter (Sh4_int_Run) pays three costs on every instruction:
-// an out-of-line _vmem_ReadMem16 fetch, a load from the 256 KB OpPtr table,
-// and a full-ABI indirect call into the handler. This engine decodes a basic
-// block ONCE into Sh4Uop slots (computed-goto label + raw opcode) and then
-// runs `goto *pc_op->dispatch` chains, so a straight-line instruction costs a
-// cycle decrement, a pointer bump and one indirect branch.
-//
-// The opcode semantics are NOT duplicated: the same body headers that
-// sh4_cpu.cpp / sh4_fpu.cpp compile into functions are re-included here with
-// sh4op() defined as a label, so there is one source of truth per opcode.
-//
-// PC model (identical to the plain interpreter): while an instruction at
-// address A runs, next_pc == A+2. ADVANCE() charges the cycle, checks the
-// timeslice budget, then bumps next_pc and steps to the next contiguous uop.
-// Branch handlers overwrite next_pc themselves and run their own delay slot
-// through ExecuteDelayslot(), exactly as before.
-//
-// Invalidation: a block is dropped only when its entrypoint tag is cleared —
-// on sh4_cpu.ResetCache() (CCR write / ELF load) and on bulk DMA writes into
-// memory. The uop pool itself is only reset inside the decoder, so a flush
-// raised from inside a running block can never pull that block's slots away.
+// SH4 cached (threaded) interpreter, as in plugs/vbaARM/arm7_cached.cpp: a block is decoded once into Sh4Uop slots,
+// so an op is a cycle decrement, a pointer bump and a computed goto, not a _vmem fetch, OpPtr load and full-ABI call.
 
 #include "types.h"
 #include "dc/pvr/pvr_if.h"
@@ -43,10 +21,8 @@
 #  error "sh4_cached.cpp requires GCC computed-goto (&&label / goto *)."
 #endif
 
-// The FPU prelude declares the real iNimp(const char*) and defines the FPU
-// helpers; it must come first, because the CPU prelude then shadows iNimp with
-// the two-argument cpu_iNimp. GetN/GetM/GetImm* are spelled differently in the
-// two preludes, so drop them before switching sets.
+// FPU prelude first: it declares the real iNimp(const char*), which the CPU prelude then shadows with the two-argument
+// cpu_iNimp. GetN/GetM/GetImm* are spelled differently in the two preludes, so drop them before switching sets.
 #include "sh4_fpu_prelude.h"
 #undef GetN
 #undef GetM
@@ -56,9 +32,7 @@
 #include "sh4_cpu_prelude.h"
 #include "dc/mem/mmu.h"
 
-// ---------------------------------------------------------------------------
-// Cache tables
-// ---------------------------------------------------------------------------
+// ---- Cache tables ----
 
 struct Sh4Uop
 {
@@ -66,11 +40,8 @@ struct Sh4Uop
 	u32   op;         // raw 16-bit opcode, kept in a word for a cheap load
 };
 
-// Direct-mapped entrypoint table with a full-PC tag. One uop per SH4
-// instruction address would need 32 MB for 16 MB of RAM, so the table is a
-// cache: a tag miss simply re-decodes. The index drops the region bits, so all
-// mirrors of the same RAM offset share a slot and one range invalidate covers
-// every mirror.
+// Direct-mapped entrypoint cache with a full-PC tag (a uop per address would need 32 MB for 16 MB of RAM); a miss
+// re-decodes. The index drops the region bits: all mirrors of a RAM offset share a slot, one invalidate covers them.
 struct Sh4Ep
 {
 	u32     tag;      // instruction address, or EP_EMPTY_TAG
@@ -102,9 +73,8 @@ static void ep_clear_all()
 		s_ep[i].tag = EP_EMPTY_TAG;
 }
 
-// Drop every cached block. Safe to call from inside a running block: the pool
-// keeps its contents, so the block in flight runs to its end on stale uops
-// (the same window the Wii dynarec had) and only then re-homes into a decode.
+// Drop every cached block (sh4_cpu.ResetCache: CCR write, ELF load). Safe inside a running block: the pool keeps its
+// contents, so the block in flight runs to its end on stale uops and only then re-homes into a decode.
 void sh4_cached_flush()
 {
 	if (!s_tables_init)
@@ -112,14 +82,12 @@ void sh4_cached_flush()
 	ep_clear_all();
 }
 
-// Drop the blocks covering [addr, addr+size). Over-invalidation is harmless:
-// the index ignores the region bits, so clearing a window of slots also drops
-// unrelated addresses that alias into it.
+// Drop the blocks covering [addr, addr+size) (bulk DMA writes). Over-invalidation is harmless: the index ignores
+// the region bits, so clearing a window of slots also drops unrelated addresses that alias into it.
 void sh4_cached_invalidate_range(u32 addr, u32 size)
 {
-	// Only system RAM (0x0C000000 and its mirrors) can hold SH4 code. Skipping
-	// everything else keeps the per-store-queue-flush cost at one compare, since
-	// the store queue mostly targets the TA FIFO and VRAM.
+	// Only system RAM (0x0C000000 and mirrors) can hold SH4 code; skipping the rest keeps the per-SQ-flush cost at one
+	// compare, since the store queue mostly targets the TA FIFO and VRAM.
 	if (!s_tables_init || (addr & 0x1C000000) != 0x0C000000)
 		return;
 
@@ -138,9 +106,7 @@ void sh4_cached_invalidate_range(u32 addr, u32 size)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// The engine
-// ---------------------------------------------------------------------------
+// ---- The engine ----
 
 void Sh4_int_Run_Cached()
 {
@@ -204,9 +170,8 @@ void Sh4_int_Run_Cached()
 
 	sh4_int_bCpuRun = true;
 
-	// Charge the finished instruction, honour the budget, then step to the next
-	// contiguous uop. A block always ends with a lbl_rehome terminator, so this
-	// pc_op++ never walks past the block.
+	// PC model of Sh4_int_Run: next_pc == A+2 while the op at A runs; branch ops set it and run their own delay slot.
+	// ADVANCE() charges the op, checks the budget, steps next_pc/pc_op (never past a block: each ends in lbl_rehome).
 	#define ADVANCE() do {                        \
 			l -= ratio;                           \
 			if (l <= 0) goto lbl_slice_end;       \
@@ -218,10 +183,8 @@ void Sh4_int_Run_Cached()
 
 	goto lbl_home;
 
-	// Opcode bodies, re-included as labels. Each expansion emits the ADVANCE()
-	// that ends the PREVIOUS body (control falls out of the body's braces into
-	// it) and then the label for its own. The first ADVANCE() is unreachable;
-	// the last body is closed by the explicit ADVANCE() after the includes.
+	// Opcode bodies shared with sh4_cpu.cpp / sh4_fpu.cpp, re-included as labels. Each sh4op() emits the ADVANCE() that
+	// the previous body falls into, then its own label; the first ADVANCE() is unreachable, the last body closes below.
 	#undef sh4op
 	#define sh4op(name) ADVANCE(); lbl_##name:
 
@@ -305,9 +268,8 @@ lbl_decode:
 			a += 2;
 			n++;
 
-			// End the block on anything that can move the PC behind our back:
-			// branches and delay-slot ops (WritesPC), and the two ldc-to-SR ops,
-			// which can dispatch an interrupt through UpdateINTC().
+			// End the block on anything that can move the PC behind our back: branches and delay-slot ops (WritesPC),
+			// and the two ldc-to-SR ops, which can dispatch an interrupt through UpdateINTC().
 			const sh4_opcodelistentry* d = OpDesc[o];
 			if (d->SetPC() || d->SetSR() || n >= SH4_MAX_BLOCK)
 				break;

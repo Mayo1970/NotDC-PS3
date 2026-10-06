@@ -5,12 +5,8 @@ struct shil_opcode;
 typedef void shil_chfp(shil_opcode* op);
 extern shil_chfp* shil_chf[];
 
-// shil_opcode::flags bit for shop_sync_fpscr. Set by the `fschg` decoder,
-// which toggles FPSCR.SZ (bit 20) and NOTHING else: FPSCR.FR cannot change,
-// so no FP bank swap is possible, and RM/DN are untouched so the host float
-// status register needs no update either. That lets a backend skip the whole
-// UpdateFPSCR() call. `frchg` (toggles FR) and `ldc Rn,FPSCR` / `ldc.l
-// @Rn+,FPSCR` (arbitrary value) must NOT set it -- they keep the full path.
+// shil_opcode::flags bit for shop_sync_fpscr, set by `fschg`: it flips FPSCR.SZ (bit 20) only, so there is no FR bank
+// swap or RM/DN host-FPSCR update and a backend may skip UpdateFPSCR(). frchg and ldc/ldc.l to FPSCR must NOT set it.
 #define SYNC_FPSCR_SZ_ONLY 1
 
 enum shil_param_type
@@ -30,10 +26,7 @@ enum shil_param_type
     FMT_MASK        = 0xFFFF,
 };
 
-/*
-	formats : 16u 16s 32u 32s, 32f, 64f
-	param types: r32, r64
-*/
+// formats: 16u 16s 32u 32s, 32f, 64f; param types: r32, r64
 
 
 #define SHIL_MODE 0
@@ -43,16 +36,8 @@ enum shil_param_type
 //this should be really removed ...
 u32* GetRegPtr(u32 reg);
 
-// ---------------------------------------------------------------------------
-// mac.l / mac.w reference implementation (JIT_MAC preset). Follows the SH-4
-// manual pseudocode, saturation included, and writes MACH/MACL itself.
-//
-// The OLD accumulator is passed in rather than read from the context, so a
-// backend may emit the common S==0 case inline, store it, and still call this
-// afterwards to redo the rare S==1 case from the original values — which is
-// exactly what wii_driver.cpp does, and it saves an unconditional branch on
-// the hot path.
-// ---------------------------------------------------------------------------
+// mac.l / mac.w reference (JIT_MAC preset): SH-4 manual pseudocode, saturation included; writes MACH/MACL. The OLD
+// accumulator is passed in, so a backend can emit S==0 inline and call this only to redo S==1 (ps3_driver.cpp does).
 extern "C" void sh4_mac_l(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs);
 extern "C" void sh4_mac_w(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs);
 
@@ -62,21 +47,16 @@ struct shil_param
         : _imm(0xFFFFFFFF), type(FMT_NULL)
     {}
 
-    // Construct from a raw type + immediate/register index.
-    // BUG FIX: original code called placement-new then immediately
-    // overwrote _imm, losing the register-type setup from the delegated
-    // constructor.  We now delegate properly and only fall back to
-    // storing a raw immediate when the type is truly FMT_IMM.
+    // Raw type + immediate/register index. Register types (>= FMT_REG_BASE) delegate to the Sh4RegType constructor
+    // (the original placement-new then overwrote _imm, losing that setup); FMT_NULL/FMT_IMM store the raw value.
     shil_param(u32 paramType, u32 imm)
     {
         if (paramType >= FMT_REG_BASE)
         {
             // Treat imm as a Sh4RegType
             *this = shil_param(static_cast<Sh4RegType>(imm));
-            // Allow callers to override the inferred type (e.g. force FMT_I32)
-            // only when they pass something more specific than FMT_NULL.
-            // In practice the Sh4RegType constructor already sets the right
-            // type, so we just honour that.
+            // The type inferred from the register wins over paramType (no caller override such as forcing
+            // FMT_I32): the Sh4RegType constructor already picks the right one.
         }
         else
         {
@@ -129,9 +109,7 @@ struct shil_param
     };
     u32 type;
 
-    // -------------------------------------------------------------------------
-    // Type predicates
-    // -------------------------------------------------------------------------
+    // ---- Type predicates ----
     bool is_null()  const { return type == FMT_NULL; }
     bool is_imm()   const { return type == FMT_IMM;  }
     bool is_reg()   const { return type >= FMT_REG_BASE; }
@@ -148,17 +126,13 @@ struct shil_param
 
     bool is_vector() const { return type >= FMT_VECTOR_BASE; }
 
-    // -------------------------------------------------------------------------
-    // Immediate range helpers
-    // -------------------------------------------------------------------------
+    // ---- Immediate range helpers ----
     bool is_imm_s8()  const { return is_imm() && is_s8(_imm);  }
     bool is_imm_u8()  const { return is_imm() && is_u8(_imm);  }
     bool is_imm_s16() const { return is_imm() && is_s16(_imm); }
     bool is_imm_u16() const { return is_imm() && is_u16(_imm); }
 
-    // -------------------------------------------------------------------------
-    // Register pointer / offset
-    // -------------------------------------------------------------------------
+    // ---- Register pointer / offset ----
     u32* reg_ptr() const { verify(is_reg()); return GetRegPtr(_reg); }
     u32  reg_ofs() const
     {
@@ -169,13 +143,7 @@ struct shil_param
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Count of underlying 32-bit hardware registers consumed by this param.
-    // FMT_NULL / FMT_IMM / FMT_I32 / FMT_F32 → 1
-    // FMT_F64  → 2
-    // FMT_V4   → 4
-    // FMT_V16  → 16
-    // -------------------------------------------------------------------------
+    // ---- Number of 32-bit SH4 registers this param spans ----
     int count() const
     {
         switch (type)

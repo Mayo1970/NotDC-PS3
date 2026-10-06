@@ -9,6 +9,7 @@
 #include "dc/sh4/sh4_registers.h"
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered GD-DMA completion
+#include "ps3/ps3_stall.h"
 
 // SCHED preset: the GD-DMA end IRQ goes through the deadline scheduler,
 // so it fires in order with the other DMA/render completions.
@@ -1089,6 +1090,7 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 //is this needed ?
 void UpdateGDRom()
 {
+	StallScope st_(ST_GDDMA);
 	if(!(SB_GDST&1) || !(SB_GDEN &1))
 		return;
 

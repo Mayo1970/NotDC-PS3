@@ -1,22 +1,11 @@
 #pragma once
 // SH4 FPU prelude: macros and helpers shared by sh4_fpu.cpp and sh4_cached.cpp.
 
-/*
-Third step of optimisation
+// Possible later: AltiVec for FIPR/FTRV, a cache-friendlier data layout.
 
-Future Optimization Opportunities:
-  Paired Singles: Wii's PowerPC has paired-single instructions that could accelerate vector ops
-  SIMD: Could use AltiVec for FIPR/FTRV operations
-  Cache Optimization: Consider data layout for better cache usage
+// ---- Runtime accuracy selection ----
 
-*/
-
-// ============================================================================
-// RUNTIME - ACCURACY SELECTION
-// ============================================================================
-
-// External function to get the user's selected accuracy mode
-// This is defined in main.cpp
+// The user's accuracy mode, defined in ps3_presets.cpp.
 extern "C" int get_accuracy_preset();
 
 // Helper macros to check current accuracy mode
@@ -32,9 +21,7 @@ extern "C" int get_accuracy_preset();
 #include "sh4_registers.h"
 #include "dc/mem/sh4_mem.h"
 
-// ============================================================================
-// MACROS AND HELPER FUNCTIONS
-// ============================================================================
+// ---- Macros and helper functions ----
 
 #define sh4op(str) void FASTCALL str(u32 op)
 #define GetN(str) ((str >> 8) & 0xf)
@@ -72,9 +59,7 @@ void iNimp(const char *str);
 #define WriteMemBOU16(addr, offset, data) WriteMemU16(addr + offset, data)
 #define WriteMemBOU8(addr, offset, data) WriteMemU8(addr + offset, data)
 
-// ============================================================================
-// NaN FIXING - improvement for better accuracy
-// ============================================================================
+// ---- NaN fixing, for better accuracy ----
 
 // Fix NaN values according to SH4 spec
 INLINE float fixNaN(float value)
@@ -99,9 +84,7 @@ INLINE double fixNaN64(double value)
   return value;
 }
 
-// ============================================================================
-// DENORMAL HANDLING
-// ============================================================================
+// ---- Denormal handling ----
 
 INLINE void Denorm32(float &value)
 {
@@ -125,9 +108,7 @@ INLINE void Denorm32(float &value)
 #define STARTMODE64()
 #define ENDMODE64()
 
-// ============================================================================
-// HELPER FUNCTIONS FOR DOUBLE PRECISION (style)
-// ============================================================================
+// ---- Helper functions for double precision ----
 
 static INLINE double getDRn(u32 op)
 {

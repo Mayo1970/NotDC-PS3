@@ -1,5 +1,4 @@
 // PS3 front end: disc browser, options and controls pages drawn on RSX.
-// Replaces the libogc console menu in wii/main.cpp.
 #include "types.h"
 #include "ps3_menu.h"
 #include "ps3_ui.h"
@@ -13,12 +12,13 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
+#include <math.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <io/pad.h>
 
-#define DATA_ROOT  "/dev_hdd0/data/NullDC/"
+#define DATA_ROOT  "/dev_hdd0/data/NotDC/"
 #define DISCS_ROOT DATA_ROOT "discs/"
 
 // nullDC.cpp and os_GetFile() read this; empty means boot the BIOS with no disc.
@@ -410,13 +410,21 @@ static Option s_video[] = {
 	{ "IFB Probe",       &g_ifb_probe_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
 	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Logs [CC] C call-outs per second from the JIT. Live." },
+	  "Logs [CC] C call-outs and the [stall] slowest frame each second. Live." },
 	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Counts JIT block entries: [HOTC] census, code dumps. Slower. Set before boot." },
 	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SPE wake test at boot, [spe] counts in play. Set before boot." },
 	{ "SPE Draw",        &g_spe_draw_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "TA decode on an SPE; the render thread draws its lists. Set before boot." },
+	{ "SPE Wait Yield",  &g_spe_wait_yield_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "The render thread's SPE wait leaves the core to the SH4. Set before boot." },
+	{ "JIT FRCHG",       &g_jit_frchg_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "frchg swaps the FR banks inline, not through a C call. Set before boot." },
+	{ "JIT PREFETCH",    &g_jit_prefetch_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A pref to RAM also prefetches the host line (dcbt). Set before boot." },
+	{ "JIT GUARD REUSE", &g_jit_guard_reuse_preset, OPT_CHOICE, k_onoff,   0, 0,0,0, NULL,
+	  "A memory op reuses the block's earlier RAM/SQ check. Set before boot." },
 };
 
 // OPTIMIZATION_PLAN 5.1: JIT speed paths, one A/B toggle each.
@@ -461,7 +469,7 @@ static Option s_controls[] = {
 	{ "Players",         &g_player_count,         OPT_RANGE,  NULL,        0, 1,4,1, "%d",
 	  "Maple ports the emulator creates. Pad N drives Dreamcast port N." },
 	{ "Controller",      &g_controller_type,      OPT_CHOICE, k_pad_type,  0, 0,0,0, NULL,
-	  "Light gun, maracas and keyboard are Wii-only and not ported." },
+	  "Light gun, maracas and keyboard are not supported." },
 };
 
 struct Page
@@ -528,14 +536,14 @@ static void option_step(Option* o, int dir)
 
 // -- Drawing -----------------------------------------------------------------
 
+// COL_BG shows only if bg/0.png fails to decode. White text with a shadow reads on the light background.
 #define COL_BG       0xFF101018u
-#define COL_TITLE    0xFF80C0FFu
-#define COL_TEXT     0xFFC8C8C8u
-#define COL_DIR      0xFFFFD080u
-#define COL_SEL_BG   0xFF2A4A7Au
+#define COL_TEXT     0xFFFFFFFFu
+#define COL_DIR      0xFFFFE7A0u
+#define COL_SEL_BG   0x9A1C3C84u
 #define COL_SEL_TEXT 0xFFFFFFFFu
-#define COL_DIM      0xFF7A7A8Au
-#define COL_RULE     0xFF303048u
+#define COL_DIM      0xD8FFFFFFu
+#define COL_RULE     0x90FFFFFFu
 
 #define ROWS_PER_PAGE 12
 
@@ -543,64 +551,103 @@ static float s_sw, s_sh;
 static float s_mx;     // left and right margin
 static float s_row_h;
 static float s_list_y;
-static float s_scale;
+static float s_head_y; // rule under the title
+static float s_foot_y; // rule over the help line
+static float s_cap;    // body capital height
+static int   s_opt_top; // first option row drawn when a page is taller than the list
 
 static void layout()
 {
 	ps3ui_screen(&s_sw, &s_sh);
-	// Half scale below 720p, so a 480i TV still gets readable glyphs.
-	s_scale = (s_sh >= 700) ? 2.0f : 1.5f;
 	s_mx = s_sw * 0.06f;
-	s_row_h = 8.0f * s_scale + 10.0f;
+	s_row_h = floorf(26.0f * s_sh / 720.0f + 0.5f);
 	s_list_y = s_sh * 0.20f;
+	s_head_y = s_sh * 0.14f;
+	s_foot_y = s_sh * 0.84f;
+	s_cap = ps3ui_cap_h(PS3UI_FONT_BODY);
+}
+
+// Baseline that centres a capital in a row box starting at top.
+static float row_base(float top)
+{
+	return top + (s_row_h + s_cap) * 0.5f;
+}
+
+static int visible_rows()
+{
+	return (int)((s_foot_y - 6 - s_list_y) / s_row_h);
+}
+
+// Scrolls only as far as needed to keep the selected row on screen.
+static int scroll_top(int sel, int count)
+{
+	int vis = visible_rows();
+	if (count <= vis)
+		s_opt_top = 0;
+	else if (sel < s_opt_top)
+		s_opt_top = sel;
+	else if (sel >= s_opt_top + vis)
+		s_opt_top = sel - vis + 1;
+	return s_opt_top;
 }
 
 static void draw_header(const char* title, const char* right)
 {
-	ps3ui_text(s_mx, s_sh * 0.055f, s_scale * 1.5f, COL_TITLE, title);
+	float base = s_sh * 0.105f;
+	ps3ui_text(s_mx, base, PS3UI_FONT_TITLE, COL_TEXT, title);
 	if (right)
-		ps3ui_text(s_sw - s_mx - ps3ui_text_w(s_scale, right), s_sh * 0.075f,
-		           s_scale, COL_DIM, right);
-	ps3ui_rect(s_mx, s_sh * 0.16f, s_sw - 2 * s_mx, 2, COL_RULE);
+		ps3ui_text(s_sw - s_mx - ps3ui_text_w(PS3UI_FONT_BODY, right), base,
+		           PS3UI_FONT_BODY, COL_DIM, right);
+	ps3ui_rect(s_mx, s_head_y, s_sw - 2 * s_mx, 2, COL_RULE);
 }
 
 static void draw_footer(const char* help, const char* keys)
 {
-	float y = s_sh * 0.84f;
-	ps3ui_rect(s_mx, y, s_sw - 2 * s_mx, 2, COL_RULE);
+	ps3ui_rect(s_mx, s_foot_y, s_sw - 2 * s_mx, 2, COL_RULE);
 	if (help)
-		ps3ui_text(s_mx, y + 14, s_scale, COL_DIM, help);
+		ps3ui_text(s_mx, row_base(s_foot_y + 8), PS3UI_FONT_BODY, COL_DIM, help);
 	if (keys)
-		ps3ui_text(s_mx, y + 14 + s_row_h, s_scale, COL_TEXT, keys);
+		ps3ui_text(s_mx, row_base(s_foot_y + 8 + s_row_h), PS3UI_FONT_BODY, COL_TEXT, keys);
 }
 
 static void draw_row(int slot, bool selected, u32 color, const char* left,
                      const char* right)
 {
-	float y = s_list_y + slot * s_row_h;
+	float top = s_list_y + slot * s_row_h;
 	if (selected)
 	{
-		ps3ui_rect(s_mx - 10, y - 4, s_sw - 2 * s_mx + 20, s_row_h, COL_SEL_BG);
+		ps3ui_rect(s_mx - 12, top, s_sw - 2 * s_mx + 24, s_row_h, COL_SEL_BG);
 		color = COL_SEL_TEXT;
 	}
-	ps3ui_text(s_mx, y, s_scale, color, left);
+	ps3ui_text(s_mx, row_base(top), PS3UI_FONT_BODY, color, left);
 	if (right)
-		ps3ui_text(s_sw - s_mx - ps3ui_text_w(s_scale, right), y, s_scale, color, right);
+		ps3ui_text(s_sw - s_mx - ps3ui_text_w(PS3UI_FONT_BODY, right), row_base(top),
+		           PS3UI_FONT_BODY, color, right);
 }
 
 // Trims from the left, so the tail that identifies a long path stays visible.
-static const char* fit(const char* s, int max_chars, char* buf, size_t len)
+static const char* fit(const char* s, float max_w, char* buf, size_t len)
 {
-	int n = (int)strlen(s);
-	if (max_chars < 8 || n <= max_chars)
+	if (ps3ui_text_w(PS3UI_FONT_BODY, s) <= max_w)
 		return s;
-	snprintf(buf, len, "...%s", s + (n - max_chars + 3));
+	// Fewest leading characters cut so "..." plus the rest fits.
+	int n = (int)strlen(s), lo = 1, hi = n;
+	while (lo < hi)
+	{
+		int mid = (lo + hi) / 2;
+		snprintf(buf, len, "...%s", s + mid);
+		if (ps3ui_text_w(PS3UI_FONT_BODY, buf) <= max_w)
+			hi = mid;
+		else
+			lo = mid + 1;
+	}
+	snprintf(buf, len, "...%s", s + lo);
 	return buf;
 }
 
-static int list_max_chars()
+static float list_max_w()
 {
-	return (int)((s_sw - 2 * s_mx) / (8.0f * s_scale));
+	return s_sw - 2 * s_mx;
 }
 
 // -- Screens -----------------------------------------------------------------
@@ -688,11 +735,11 @@ static void browser_draw()
 	char buf[256], cut[256], right[64];
 
 	snprintf(right, sizeof(right), "DEVICE: %s", s_dev[s_dev_cur].label);
-	draw_header("nullDC PS3", right);
+	draw_header("NotDC", right);
 
-	int max_chars = list_max_chars();
-	ps3ui_text(s_mx, s_sh * 0.175f - 8.0f * s_scale, s_scale, COL_DIM,
-	           fit(s_cur_path, max_chars, buf, sizeof(buf)));
+	float max_w = list_max_w();
+	ps3ui_text(s_mx, s_head_y + 10 + s_cap, PS3UI_FONT_BODY, COL_DIM,
+	           fit(s_cur_path, max_w, buf, sizeof(buf)));
 
 	if (s_file_count == 0)
 	{
@@ -704,9 +751,9 @@ static void browser_draw()
 		for (int i = 0; i < ROWS_PER_PAGE && top + i < s_file_count; i++)
 		{
 			FileEntry* f = &s_files[top + i];
-			snprintf(buf, sizeof(buf), "%s%s", f->is_dir ? "[DIR]  " : "       ", f->name);
+			snprintf(buf, sizeof(buf), "%s%s", f->is_dir ? "[DIR]  " : "", f->name);
 			draw_row(i, top + i == s_sel, f->is_dir ? COL_DIR : COL_TEXT,
-			         fit(buf, max_chars, cut, sizeof(cut)), NULL);
+			         fit(buf, max_w, cut, sizeof(cut)), NULL);
 		}
 	}
 
@@ -758,10 +805,11 @@ static void options_draw()
 	         s_opt_page + 1, OPT_PAGE_COUNT);
 	draw_header(head, NULL);
 
-	for (int i = 0; i < p->count; i++)
+	int top = scroll_top(s_opt_row, p->count);
+	for (int i = top; i < p->count && i - top < visible_rows(); i++)
 	{
 		option_text(&p->rows[i], val, sizeof(val));
-		draw_row(i, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
+		draw_row(i - top, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
 	}
 
 	draw_footer(p->rows[s_opt_row].help,
@@ -811,7 +859,7 @@ static void controls_draw()
 		snprintf(buf, sizeof(buf), "Disc: none, booting to the BIOS");
 	}
 	draw_row(CONTROLS_ROWS + 2, false, COL_DIM,
-	         fit(buf, list_max_chars(), cut, sizeof(cut)), NULL);
+	         fit(buf, list_max_w(), cut, sizeof(cut)), NULL);
 
 	draw_footer(s_controls[s_ctl_row].help,
 	            "LEFT/RIGHT Change   X Start   O Back");
@@ -890,12 +938,13 @@ static void ingame_draw()
 	snprintf(head, sizeof(head), "PAUSED - %s  (%d/%d)", p->title, s_opt_page + 1, OPT_PAGE_COUNT);
 	draw_header(head, NULL);
 
-	for (int i = 0; i < p->count; i++)
+	int top = scroll_top(s_opt_row, p->count);
+	for (int i = top; i < p->count && i - top < visible_rows(); i++)
 	{
 		option_text(&p->rows[i], val, sizeof(val));
 		if (!option_live(&p->rows[i]))
 			strncat(val, " *", sizeof(val) - strlen(val) - 1);
-		draw_row(i, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
+		draw_row(i - top, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
 	}
 
 	draw_footer(p->rows[s_opt_row].help,

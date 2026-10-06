@@ -1,6 +1,5 @@
-// Native ARM7DI self-test harness. Mirrors arm7_selftest.cpp but with no Wii
-// (ogc) dependency, so the cached interpreter can be validated on the host.
-// Uses the REAL ../arm7.h chain (via -I..) plus the leaf stubs in this dir.
+// Host ARM7DI self-test harness: arm7_selftest.cpp without the console headers, using the REAL ../arm7.h chain
+// (via -I..) plus the leaf stubs in this dir.
 #include "arm7.h"
 #include "arm_mem.h"
 #include "arm7_selftest_data.h"
@@ -11,21 +10,8 @@ static u8 s_aram[ARAM_SIZE];
 u8*  arm_aica_ram = s_aram;
 bool e68k_out = false;
 
-// The real arm_mem.h only DECLARES these templates (defined in arm_mem.cpp,
-// which we do not build). We must reproduce arm_mem.cpp's behavior EXACTLY, not
-// a flat model: the core applies a big-endian byte/halfword swap (addr^3 / ^2)
-// and an unaligned-LDR word rotate.
-//
-// IMPORTANT endianness note: arm_mem.cpp's byte/halfword XOR swap (addr^3 /
-// addr^2) only round-trips correctly on a BIG-ENDIAN host (the Wii). The data
-// is loaded byte-by-byte via WriteMem8 and fetched as words via ReadMem32; the
-// ^3 swap + a native word read reconstructs the original word ONLY because the
-// Wii is big-endian. This native harness runs on a LITTLE-ENDIAN x86 host, so
-// we must NOT apply the swap (it would byte-reverse every word and corrupt the
-// instruction stream). We keep a flat layout — which round-trips on LE — and
-// reproduce only the host-endian-independent behavior that the tests actually
-// exercise: the unaligned-LDR "aligned read + rotate-right" (arm_mem.cpp lines
-// 92-101), which a naive byte-gather would get wrong.
+// arm_mem.cpp's addr^3/^2 swap round-trips only on a big-endian host, so this LE harness keeps a flat layout and
+// reproduces only the unaligned-LDR aligned read + rotate right (arm_mem.cpp) that the tests exercise.
 template<int sz, typename T>
 T fastcall ReadMemArm(u32 addr)
 {

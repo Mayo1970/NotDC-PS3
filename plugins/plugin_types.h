@@ -4,9 +4,7 @@
 #error beef
 #endif
 
-//******************************************************
-//******************* Plugin system ********************
-//******************************************************
+// ---- Plugin system ----
 
 enum PluginType
 {
@@ -97,15 +95,8 @@ struct plugin_interface
 
 #define SH4_CLOCK (200*1000*1000) // 200 Mhz (nominal Dreamcast SH4 clock)
 
-// SH4 underclock preset (wii/main.cpp get_sh4_clock_preset / game_presets
-// `sh4_clock`): effective SH4 clock in MHz, 150..200. Emulation timing/pacing
-// (SPG video, arm_aica sample step, RTC, DMA) divides by SH4_CLOCK_EFF instead
-// of the nominal SH4_CLOCK so that underclocking scales the audio/video/RTC
-// anchors together — fewer emulated SH4 cycles are budgeted per frame, giving
-// the Wii host more headroom, at the cost of the emulated machine behaving like
-// a slower Dreamcast (CPU-heavy games drop internal frames). Defaults to 200,
-// so with the preset off SH4_CLOCK_EFF == SH4_CLOCK exactly. Kept as a call
-// (not a stored constant) so a live menu change takes effect immediately.
+// SH4 Clock preset (ps3_presets.cpp), 150..200 MHz (200 = SH4_CLOCK): timing (SPG, arm_aica, RTC, DMA) divides by
+// SH4_CLOCK_EFF, so an underclock gives the host headroom and the DC runs slower; a call, so menu changes apply now.
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -125,9 +116,7 @@ enum ndc_error_codes
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-//******************************************************
-//*********************** PowerVR **********************
-//******************************************************
+// ---- PowerVR ----
 
 struct pvr_init_params
 {
@@ -137,9 +126,7 @@ struct pvr_init_params
 	u8*					vram; 
 };
 
-//******************************************************
-//************************ GDRom ***********************
-//******************************************************
+// ---- GDRom ----
 enum DiscType
 {
 	CdDA=0x00,
@@ -171,9 +158,7 @@ struct gdr_init_params
 };
 void NotifyEvent_gdrom(u32 info,void* param);
 
-//******************************************************
-//************************ AICA ************************
-//******************************************************
+// ---- AICA ----
 
 //passed on AICA init call
 struct aica_init_params
@@ -185,15 +170,11 @@ struct aica_init_params
 	HollyCancelInterruptFP* CancelInterrupt;
 };
 
-//******************************************************
-//****************** Maple devices ******************
-//******************************************************
+// ---- Maple devices ----
 
 //wait, what ?//
 
-//******************************************************
-//********************* Ext.Device *********************
-//******************************************************
+// ---- Ext.Device ----
 
 
 //passed on Ext.Device init call

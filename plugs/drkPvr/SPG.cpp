@@ -4,23 +4,24 @@
 #include "Renderer_if.h"
 #include "regs.h"
 #include "ps3/ps3_sndthr.h"
+#include "ps3/ps3_stall.h"
 #include "ps3/ps3_arm_spe.h"
-#include <ogc/system.h>
+#include "ps3_timebase.h"
 #include <unistd.h>
 
-// Game-preset controlled toggle (see wii/game_presets.h, wii/main.cpp).
+// Game-preset controlled toggle (ps3/ps3_presets.cpp).
 extern "C" int get_speed_limiter_preset();
 #define SPEED_LIMITER() (get_speed_limiter_preset() != 0)
 
-// PVR X-scaler preset (see wii/game_presets.h, wii/main.cpp).
+// PVR X-scaler preset (ps3/ps3_presets.cpp).
 extern "C" int get_x_scaler_preset();
 #define X_SCALER() (get_x_scaler_preset() != 0)
 
-// Hardware-like HOLLY IRQ delays (see wii/game_presets.h, wii/main.cpp).
+// Hardware-like HOLLY IRQ delays (ps3/ps3_presets.cpp).
 extern "C" int get_render_delay_preset();
 #define RENDER_DELAY() (get_render_delay_preset() != 0)
 
-// IFB_PROBE breakdown (wii_driver.cpp); silent when the preset is off, shares the 1 s stats block.
+// IFB_PROBE breakdown (ps3_driver.cpp); silent when the preset is off, shares the 1 s stats block.
 extern "C" void ifb_probe_dump(double seconds);
 // JIT HOTBLOCKS (ps3_driver.cpp, plan 5.18); vt_k is the stats line's vt, which marks dense windows.
 extern "C" void hotblocks_dump(double seconds, double vt_k);
@@ -55,7 +56,7 @@ u32 spg_FrameSh4Cycles = 0;
 double spg_last_vps = 0;
 
 // ── Frame pacer state (see spg_PaceFrame() below) ───────────────────────────
-// Shared with gxRend.cpp's frameskip AUTO; declared in drkPvr.h.
+// Declared in drkPvr.h.
 double spg_PaceErrorSec = 0.0;  // cumulative wall-clock deviation from the real-time
                                 // schedule at the last vblank (+ = late, - = early)
 double spg_PaceFrameSec = 0.0;  // real-time duration of one emulated video frame,
@@ -119,7 +120,7 @@ static const HollyInterruptID s_ListEndIrqID[5] =
 static s32 s_list_irq_cycles[5] = { 0, 0, 0, 0, 0 };
 static u32 s_list_irq_active = 0;   // bitmask of lists with a pending IRQ
 
-// Staggered render-done counters, armed by StartRender() (gxRend.cpp) when the
+// Staggered render-done counters, armed by StartRender() (ps3_rend.cpp) when the
 // preset is on; render_end_pending_cycles stays 0 in that mode.
 s32 render_isp_pending_cycles = 0;
 s32 render_tsp_pending_cycles = 0;
@@ -153,6 +154,7 @@ u32 g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept;
 
 static void spg_PaceFrame()
 {
+    stall_frame();
     g_pace_calls++;
     if (spg_FrameSh4Cycles == 0)
     {
@@ -182,7 +184,9 @@ static void spg_PaceFrame()
     if (err < 0.0 && SPEED_LIMITER())
     {
         g_pace_slept++;
+        stall_push(ST_SLEEP);
         usleep((useconds_t)(-err * 1000000.0));
+        stall_pop();
         now = os_GetSeconds();
         err = now - s_pace_deadline;
     }
@@ -262,6 +266,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
 
             if (tdiff > 1.0)
             {
+                stall_push(ST_LOG);
                 spg_last_vps = now;
                 // 5.14: the sound counters and dumps below belong to the sound thread while it runs.
                 snd_lock(SND_LOCK_STATS);
@@ -351,11 +356,12 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 printf("[pace] calls=%u zero=%u reset=%u slept=%u\n",
                        g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept);
                 g_pace_calls = g_pace_zero = g_pace_reset = g_pace_slept = 0;
-                fflush(stdout); // once per 1s: keep the log tail intact if the Wii is powered off
+                fflush(stdout); // once per 1s: keep the log tail intact if the console is powered off
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
                 hotblocks_dump(tdiff, spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0);   // no-op unless JIT HOTBLOCKS is on
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
+                stall_dump(tdiff);                 // plan 5.32, the same switch
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
                 ta_split_dump(tdiff);
@@ -363,10 +369,10 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 arm_spe_stats(tdiff);
 #endif
                 snd_unlock();
-                // PSP profiler logging removed for Wii build — not applicable
+                stall_pop();
             }
 
-            // Frame pacing: speed limiter plus the lateness signal for frameskip AUTO (spg_PaceFrame).
+            // Frame pacing: speed limiter plus the lateness signal (spg_PaceFrame).
             spg_PaceFrame();
         }
     }

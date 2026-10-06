@@ -1,17 +1,12 @@
 #pragma once
 
-// Bus State Controller (BSC) register definitions
-// SH4 CPU memory bus interface for Dreamcast emulation
-//
-// Supports both little-endian (x86) and big-endian (Wii/PowerPC) hosts
-// via HOST_ENDIAN bitfield ordering.
+// Bus State Controller (BSC) registers of the SH4 memory bus interface. The bitfield order follows HOST_ENDIAN
+// (little-endian x86 or big-endian PowerPC hosts).
 
 #include "types.h"
 
-// Cable type constants used by read_BSC_PDTRA() for BIOS detection
-// The Dreamcast BIOS probes PCTRA/PDTRA pin directions to identify the
-// connected video cable.  These values are shifted into bits [9:8] of
-// the returned PDTRA value.
+// Cable types for read_BSC_PDTRA(): the BIOS probes PCTRA/PDTRA pin directions to identify the video cable,
+// and the value is shifted into bits [9:8] of the returned PDTRA.
 #define DC_CABLE_VGA       0  // VGA / RGB (480p)
 #define DC_CABLE_RGB       2  // RGB SCART
 #define DC_CABLE_COMPOSITE 3  // Composite / S-Video
@@ -21,12 +16,8 @@ void bsc_Init();
 void bsc_Reset(bool Manual);
 void bsc_Term();
 
-// ============================================================
-// BCR1 – Bus Control Register 1 (32-bit)
-// All bits except A0MPX, MASTER, ENDIAN are writable and reset to 0.
-// ENDIAN is always 1 on Dreamcast (big-endian bus).
-// MASTER reflects whether the SH4 is the bus master.
-// ============================================================
+// ---- BCR1 – Bus Control Register 1 (32-bit) ----
+// Writable, reset 0, except A0MPX, MASTER (SH4 is bus master) and ENDIAN (always 1 on Dreamcast: big-endian bus).
 union BCR1_type
 {
     struct
@@ -111,11 +102,8 @@ union BCR1_type
 
 extern BCR1_type BSC_BCR1;
 
-// ============================================================
-// BCR2 – Bus Control Register 2 (16-bit)
-// A0SZ0_inp / A0SZ1_inp are read-only hardware pins.
-// NOTE: bitfield members use u16 to match the 16-bit register.
-// ============================================================
+// ---- BCR2 – Bus Control Register 2 (16-bit) ----
+// A0SZ0_inp / A0SZ1_inp are read-only hardware pins; the bitfields use u16 to match the 16-bit register.
 union BCR2_type
 {
     struct
@@ -164,10 +152,7 @@ union BCR2_type
 
 extern BCR2_type BSC_BCR2;
 
-// ============================================================
-// WCR1 – Wait Control Register 1 (32-bit)
-// Inter-memory-cycle wait states for areas 0-6 and DMA.
-// ============================================================
+// ---- WCR1 – Wait Control Register 1 (32-bit): inter-memory-cycle wait states for areas 0-6 and DMA ----
 union WCR1_type
 {
     struct
@@ -252,10 +237,7 @@ union WCR1_type
 
 extern WCR1_type BSC_WCR1;
 
-// ============================================================
-// WCR2 – Wait Control Register 2 (32-bit)
-// Burst/wait cycles for areas 0-6.
-// ============================================================
+// ---- WCR2 – Wait Control Register 2 (32-bit): burst/wait cycles for areas 0-6 ----
 union WCR2_type
 {
     struct
@@ -340,10 +322,7 @@ union WCR2_type
 
 extern WCR2_type BSC_WCR2;
 
-// ============================================================
-// WCR3 – Wait Control Register 3 (32-bit)
-// Data hold / setup cycles for areas 0-6.
-// ============================================================
+// ---- WCR3 – Wait Control Register 3 (32-bit): data hold / setup cycles for areas 0-6 ----
 union WCR3_type
 {
     struct
@@ -428,10 +407,7 @@ union WCR3_type
 
 extern WCR3_type BSC_WCR3;
 
-// ============================================================
-// MCR – Memory Control Register (32-bit)
-// SDRAM / DRAM timing and configuration.
-// ============================================================
+// ---- MCR – Memory Control Register (32-bit): SDRAM / DRAM timing and configuration ----
 union MCR_type
 {
     struct
@@ -516,9 +492,7 @@ union MCR_type
 
 extern MCR_type BSC_MCR;
 
-// ============================================================
-// PCR – PCMCIA Control Register (16-bit)
-// ============================================================
+// ---- PCR – PCMCIA Control Register (16-bit) ----
 union PCR_type
 {
     struct
@@ -567,10 +541,7 @@ union PCR_type
 
 extern PCR_type BSC_PCR;
 
-// ============================================================
-// RTCSR – Refresh Timer Control/Status Register (16-bit)
-// (Manual erroneously calls it RTSCR in some revisions.)
-// ============================================================
+// ---- RTCSR – Refresh Timer Control/Status Register (16-bit; some manual revisions miscall it RTSCR) ----
 union RTCSR_type
 {
     struct
@@ -619,9 +590,7 @@ union RTCSR_type
 
 extern RTCSR_type BSC_RTCSR;
 
-// ============================================================
-// RTCNT – Refresh Timer Counter (16-bit, 8-bit value field)
-// ============================================================
+// ---- RTCNT – Refresh Timer Counter (16-bit, 8-bit value field) ----
 union RTCNT_type
 {
     struct
@@ -654,9 +623,7 @@ union RTCNT_type
 
 extern RTCNT_type BSC_RTCNT;
 
-// ============================================================
-// RTCOR – Refresh Timer Constant Register (16-bit, 8-bit value)
-// ============================================================
+// ---- RTCOR – Refresh Timer Constant Register (16-bit, 8-bit value) ----
 union RTCOR_type
 {
     struct
@@ -689,9 +656,7 @@ union RTCOR_type
 
 extern RTCOR_type BSC_RTCOR;
 
-// ============================================================
-// RFCR – Refresh Count Register (16-bit, 10-bit value)
-// ============================================================
+// ---- RFCR – Refresh Count Register (16-bit, 10-bit value) ----
 union RFCR_type
 {
     struct
@@ -720,12 +685,8 @@ union RFCR_type
 
 extern RFCR_type BSC_RFCR;
 
-// ============================================================
-// PCTRA – Port Control Register A (32-bit)
-// Each GPIO pin PB0–PB15 has a 2-bit control field:
-//   bit [2i]   = IO  (1 = output, 0 = input)
-//   bit [2i+1] = PUP (0 = pull-up enabled when input)
-// ============================================================
+// ---- PCTRA – Port Control Register A (32-bit) ----
+// 2 bits per GPIO pin PB0–PB15: bit [2i] = IO (1 = output, 0 = input), bit [2i+1] = PUP (0 = input pull-up enabled).
 union PCTRA_type
 {
     struct
@@ -772,10 +733,7 @@ union PCTRA_type
 
 extern PCTRA_type BSC_PCTRA;
 
-// ============================================================
-// PDTRA – Port Data Register A (16-bit)
-// One bit per GPIO pin PB0–PB15.
-// ============================================================
+// ---- PDTRA – Port Data Register A (16-bit): one bit per GPIO pin PB0–PB15 ----
 union PDTRA_type
 {
     struct
@@ -824,10 +782,7 @@ union PDTRA_type
 
 extern PDTRA_type BSC_PDTRA;
 
-// ============================================================
-// PCTRB – Port Control Register B (32-bit)
-// Controls GPIO pins PB16–PB19 (bits 0-7); bits 8-31 reserved.
-// ============================================================
+// ---- PCTRB – Port Control Register B (32-bit): GPIO pins PB16–PB19 in bits 0-7, bits 8-31 reserved ----
 union PCTRB_type
 {
     struct
@@ -898,10 +853,7 @@ union PCTRB_type
 
 extern PCTRB_type BSC_PCTRB;
 
-// ============================================================
-// PDTRB – Port Data Register B (16-bit)
-// Data bits for GPIO pins PB16–PB19; bits 4-15 reserved.
-// ============================================================
+// ---- PDTRB – Port Data Register B (16-bit): data bits for GPIO pins PB16–PB19, bits 4-15 reserved ----
 union PDTRB_type
 {
     struct
@@ -948,10 +900,7 @@ union PDTRB_type
 
 extern PDTRB_type BSC_PDTRB;
 
-// ============================================================
-// GPIOIC – GPIO Interrupt Control Register (16-bit)
-// One enable bit per pin PB0–PB15.
-// ============================================================
+// ---- GPIOIC – GPIO Interrupt Control Register (16-bit): one enable bit per pin PB0–PB15 ----
 union GPIOIC_type
 {
     struct

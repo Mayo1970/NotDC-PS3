@@ -8,9 +8,6 @@
 #elif HOST_OS == OS_LINUX
 #include <unistd.h>
 #include <sys/mman.h>
-#elif HOST_OS == OS_WII
-#include <gccore.h>
-#include <malloc.h>
 #elif HOST_OS == OS_PS3
 #include "ps3/ps3_jitmem.h"
 #endif
@@ -27,6 +24,7 @@
 #include "dc/pvr/pvr_if.h"
 #include "dc/aica/aica_if.h"
 #include "dc/gdrom/gdrom_if.h"
+#include "ps3/ps3_stall.h"
 
 #include <time.h>
 #include <float.h>
@@ -39,18 +37,18 @@
 #ifndef HOST_NO_REC
 
 // Hosts where we own cache pressure and I-cache coherency by hand.
-#if HOST_OS == OS_WII || HOST_OS == OS_PS3
+#if HOST_OS == OS_PS3
 #define JIT_MANAGED_CACHE 1
 #else
 #define JIT_MANAGED_CACHE 0
 #endif
 
-// Defined in main.cpp — returns 1 when debug loop / boot-trace is active
+// Defined in ps3_presets.cpp — returns 1 when debug loop / boot-trace is active
 extern "C" int get_debug_loop();
-// Defined in main.cpp (JIT_SBP preset) — 0=off (zero protection, legacy),
+// Defined in ps3_presets.cpp (JIT_SBP preset) — 0=off (zero protection, legacy),
 // 1=known self-modifying addresses (default), 2=all RAM blocks
 extern "C" int get_jit_sbp_preset();
-// JIT_HOTBLOCKS probe (wii_driver.cpp) — drop the tracked-block table when the
+// JIT_HOTBLOCKS probe (ps3_driver.cpp) — drop the tracked-block table when the
 // code cache it describes is thrown away. No-op unless the preset is on.
 extern "C" void hotblocks_reset();
 #if HOST_OS == OS_PS3
@@ -70,13 +68,10 @@ static u32 perf_block_check_fails  = 0;
 void recSh4_ClearCache();
 
 // CODE_SIZE comes from ngen.h: a smaller local copy once cleared the cache early (rdv_FailedToFindBlock spam).
-// Wii: 32-byte aligned so DCFlushRange/ICInvalidateRange work on whole lines.
 
 extern volatile bool sh4_int_bCpuRun;
 
-#if HOST_OS == OS_WII
-u8 CodeCache[CODE_SIZE] __attribute__((aligned(32)));
-#elif HOST_OS == OS_PS3
+#if HOST_OS == OS_PS3
 // .text: the only segment lv2 grants execute to. 128-byte Cell cache line.
 u8 CodeCache[CODE_SIZE] __attribute__((aligned(128), section(".text"), used));
 #elif HOST_OS == OS_LINUX
@@ -113,20 +108,12 @@ static u32 cache_high_water_mark = 0;
 #endif
 
 // New code must reach the instruction fetch: write the D-cache lines back, then drop the stale I-cache
-// lines (Wii: 32-byte lines via libogc; PS3: 128-byte lines in ps3_jit_icache_sync).
+// lines (128-byte lines in ps3_jit_icache_sync).
 #if JIT_MANAGED_CACHE
-static inline u32 align_up_32(u32 v) { return (v + 31u) & ~31u; }
-
 static inline void jit_sync_icache(const void* start, u32 size)
 {
 	if (!size) return;
-#if HOST_OS == OS_WII
-	// libogc functions are safe with unaligned inputs but work best aligned.
-	DCFlushRange((void*)start, align_up_32(size));
-	ICInvalidateRange((void*)start, align_up_32(size));
-#else
 	ps3_jit_icache_sync(start, size);
-#endif
 }
 #endif
 
@@ -201,6 +188,7 @@ void emit_WriteCodeCache()
 // Drops every compiled block; the write pointer goes back to the end of the main loop (LastAddr_min).
 void recSh4_ClearCache()
 {
+	StallScope st_(ST_JIT);
 #ifdef ENABLE_PERF_MONITORING
 	perf_cache_clears++;
 	printf("recSh4: cache clear #%u at pc=%08X (used %u / %u bytes)\n",
@@ -222,11 +210,7 @@ void recSh4_ClearCache()
 #if JIT_MANAGED_CACHE
 	// Blocks and patches are synced when written. This second pass covers what was written since the last
 	// clear, so its cost follows the code made, not the array size (plan 5.28).
-#if HOST_OS == OS_WII
-	ICInvalidateRange(CodeCache, CODE_SIZE);
-#else
 	ps3_jit_icache_sync(CodeCache + LastAddr_min, written - LastAddr_min);
-#endif
 	cache_high_water_mark = LastAddr;
 #endif
 }
@@ -271,6 +255,7 @@ static bool DoCheck(u32 pc, u32 len)
 // threshold the cache is cleared first; the warning zone only logs.
 DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 {
+	StallScope st_(ST_JIT);
 #if JIT_MANAGED_CACHE
 	// Update high-water mark
 	if (LastAddr > cache_high_water_mark)
@@ -304,7 +289,7 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 		recSh4_ClearCache();
 	}
 #else
-	// Non-Wii: simple floor check (64 KB)
+	// Other hosts: simple floor check (64 KB)
 	if (emit_FreeSpace() < 65536)
 	{
 		printf("recSh4: WARNING - low cache space (%u bytes), clearing\n",
@@ -531,20 +516,6 @@ void recSh4_Init()
 	// No protection call exists or is needed: lv2 already maps .text RWX.
 	memset(CodeCache, 0x00, s_code_size);
 	ps3_jit_icache_sync(CodeCache, s_code_size);
-
-#elif HOST_OS == OS_WII
-	printf("recSh4: code cache at %p (%u KB, Wii)\n",
-	       CodeCache, CODE_SIZE / 1024);
-
-	memset(CodeCache, 0x00, CODE_SIZE);
-
-	// Ensure the zeroed data is visible to the instruction fetch unit
-	// before any code is written or executed.
-	DCFlushRange(CodeCache, CODE_SIZE);
-	ICInvalidateRange(CodeCache, CODE_SIZE);
-
-	cache_high_water_mark = 0;
-	printf("recSh4: Wii code cache flushed\n");
 #endif
 
 	LastAddr     = 0;
@@ -586,10 +557,6 @@ void recSh4_Term()
 #endif // ENABLE_PERF_MONITORING
 
 	Sh4_int_Term();
-
-#if HOST_OS == OS_WII
-	printf("recSh4: Wii cleanup complete\n");
-#endif
 }
 
 bool recSh4_IsCpuRunning()

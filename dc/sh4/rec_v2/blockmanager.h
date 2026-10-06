@@ -1,22 +1,19 @@
-/*
-	Improved block manager header for Dreamcast emulator on Wii - By ClaudeAI
-	
-	The extern "C" stuff is for assembly code on beagleboard/pandora/wii
-*/
+// Block manager: SH4 PC -> compiled block lookup for the dynarec.
+// The extern "C" block is for assembly code on Linux hosts (Beagleboard/Pandora).
 #include "types.h"
 #pragma once
 
-#if HOST_OS==OS_LINUX || HOST_OS==OS_WII
+#if HOST_OS==OS_LINUX
 extern "C" {
 #endif
 
 // Block manager configuration
-// Kept at 16K buckets like original, but can be tuned for Wii memory constraints
+// Kept at 16K buckets like the original
 #define BM_BLOCKLIST_COUNT (16384)
 #define BM_BLOCKLIST_MASK (BM_BLOCKLIST_COUNT-1)
 #define BM_BLOCKLIST_SHIFT 2
 
-// Configuration for Wii platform - adjust based on available memory
+// Bucket capacity: adjust to the available memory
 #ifndef BM_INITIAL_CAPACITY
 #define BM_INITIAL_CAPACITY 16      // Initial blocks per hash bucket
 #endif
@@ -47,16 +44,8 @@ struct DynarecBlock
 // Cache array exposed for potential assembly access (like original)
 extern DynarecBlock* cache[BM_BLOCKLIST_COUNT];
 
-// Flat inline cache for the JIT dynamic-branch fast path (BCACHE preset).
-// One {addr, code} pair per bucket, value-mirrored from cache[] at every
-// cache[] mutation site in blockmanager.cpp, so the emitted dispatch for a
-// dynamic jump touches ONE data cache line (the 8-byte entry) instead of two
-// (the cache[] pointer + the DynarecBlock it points at, which lives in an
-// unrelated heap vector).
-// Invariants the emitted code relies on (wii_driver.cpp BET_Dynamic*):
-//   * addr == 0xFFFFFFFF <=> empty (odd, so it can never match an SH4 PC)
-//   * addr != 0xFFFFFFFF  => code is a valid block entry point (never 0)
-//   * sizeof(entry) == 8 on the Wii (the emitted index math hardcodes idx*8)
+// BCACHE: {addr, code} mirror of cache[], one entry per bucket, for the JIT's dynamic branches (ps3_driver.cpp
+// BET_Dynamic*, which checks the entry size). addr 0xFFFFFFFF (odd, never an SH4 PC) = empty, else code is valid.
 struct BlockCacheFlatEntry
 {
 	u32 addr;
@@ -64,7 +53,7 @@ struct BlockCacheFlatEntry
 };
 extern BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 
-// New functions (not in original, but useful for Wii port)
+// Not in the original API
 void bm_Init();
 bool bm_RemoveCode(u32 addr);
 void bm_InvalidateRange(u32 start_addr, u32 end_addr);
@@ -75,6 +64,6 @@ void bm_GetStats(u32* hits, u32* misses, u32* cache_hits, u32* total_blocks);
 void bm_ResetStats();
 #endif
 
-#if HOST_OS==OS_LINUX || HOST_OS==OS_WII
+#if HOST_OS==OS_LINUX
 }
 #endif

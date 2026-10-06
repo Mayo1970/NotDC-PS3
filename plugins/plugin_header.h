@@ -21,22 +21,6 @@
 	#include <tamtypes.h>
 #elif HOST_OS==OS_LINUX
 	#include "linux/typedefs.h"
-#elif HOST_OS==OS_WII
-	#include <gccore.h>
-	#include <stdint.h>
-	#include <cstddef>
-	typedef int8_t   s8;
-	typedef int16_t  s16;
-	typedef int32_t  s32;
-	typedef int64_t  s64;
-	typedef uint8_t  u8;
-	typedef uint16_t u16;
-	typedef uint32_t u32;
-	typedef uint64_t u64;
-	#define FASTCALL
-	#define fastcall
-	inline void __debugbreak() {}
-	#define ALIGN(x) __attribute__((aligned(x)))
 #elif HOST_OS==OS_PS3
 	#include <ppu-types.h>
 	#include <stdint.h>
@@ -154,36 +138,10 @@ enum HollyInterruptID
 		holly_EXP_8BIT = holly_ext | 0x02,	//bit 2 = Modem interrupt
 		holly_EXP_PCI = holly_ext | 0x03,	//bit 3 = External Device interrupt
 
-		// asic9b/sh4 external holly err only error [error]
-		//missing quite a few ehh ?
-		//bit 0 = RENDER : ISP out of Cache(Buffer over flow)
-		//bit 1 = RENDER : Hazard Processing of Strip Buffer
+		// asic9b/sh4 external holly err only error [error]. Unlisted bits: 0-1 RENDER (ISP cache overflow, strip hazard),
+		// 4-5 TA (illegal param, FIFO overflow), 6-7 PVRIF, 8-11 MAPLE, 12-14 G1, 15-27 G2 (DMA address/overrun/timeouts).
 		holly_PRIM_NOMEM = holly_err | 0x02,	//bit 2 = TA : ISP/TSP Parameter Overflow
 		holly_MATR_NOMEM = holly_err | 0x03,	//bit 3 = TA : Object List Pointer Overflow
-		//bit 4 = TA : Illegal Parameter
-		//bit 5 = TA : FIFO Overflow
-		//bit 6 = PVRIF : Illegal Address set
-		//bit 7 = PVRIF : DMA over run
-		//bit 8 = MAPLE : Illegal Address set
-		//bit 9 = MAPLE : DMA over run
-		//bit 10 = MAPLE : Write FIFO over flow
-		//bit 11 = MAPLE : Illegal command
-		//bit 12 = G1 : Illegal Address set
-		//bit 13 = G1 : GD-DMA over run
-		//bit 14 = G1 : ROM/FLASH access at GD-DMA
-		//bit 15 = G2 : AICA-DMA Illegal Address set
-		//bit 16 = G2 : Ext-DMA1 Illegal Address set
-		//bit 17 = G2 : Ext-DMA2 Illegal Address set
-		//bit 18 = G2 : Dev-DMA Illegal Address set
-		//bit 19 = G2 : AICA-DMA over run
-		//bit 20 = G2 : Ext-DMA1 over run
-		//bit 21 = G2 : Ext-DMA2 over run
-		//bit 22 = G2 : Dev-DMA over run
-		//bit 23 = G2 : AICA-DMA Time out
-		//bit 24 = G2 : Ext-DMA1 Time out
-		//bit 25 = G2 : Ext-DMA2 Time out
-		//bit 26 = G2 : Dev-DMA Time out
-		//bit 27 = G2 : Time out in CPU accessing
 };
 
 

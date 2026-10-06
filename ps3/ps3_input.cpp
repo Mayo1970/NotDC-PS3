@@ -1,7 +1,7 @@
-// Maple input from DS3 pads via ioPad (Wii: plugs/drkMapleDevices, Sixaxis path).
+// Maple input from DS3 pads via ioPad.
 #include "types.h"
 #include "dc/maple/maple_devs.h"
-#include "plugs/drkMapleDevices/dc_pad_bits.h"
+#include "dc_pad_bits.h"
 #include "ps3_menu.h"
 
 #include <stdio.h>
@@ -131,7 +131,7 @@ void UpdateInputState(u32 port)
 		ps3_menu_request();
 	ps3_select_down[pad] = d->BTN_SELECT;
 
-	// Face buttons by position, as the Wii Sixaxis path: Cross=A, Circle=B, Square=X, Triangle=Y.
+	// Face buttons by position: Cross=A, Circle=B, Square=X, Triangle=Y.
 	if (d->BTN_CROSS)    kcode[port] &= ~key_CONT_A;
 	if (d->BTN_CIRCLE)   kcode[port] &= ~key_CONT_B;
 	if (d->BTN_SQUARE)   kcode[port] &= ~key_CONT_X;
@@ -142,13 +142,13 @@ void UpdateInputState(u32 port)
 	if (d->BTN_LEFT)     kcode[port] &= ~key_CONT_DPAD_LEFT;
 	if (d->BTN_RIGHT)    kcode[port] &= ~key_CONT_DPAD_RIGHT;
 
-	// L2/R2 analog by pressure; digital bit or L1/R1 give full travel (Wii maps L1||L2 to L).
+	// L2/R2 analog by pressure; digital bit or L1/R1 give full travel.
 	u8 l = d->PRE_L2, r = d->PRE_R2;
 	if (d->BTN_L1 || (d->BTN_L2 && l == 0)) l = 255;
 	if (d->BTN_R1 || (d->BTN_R2 && r == 0)) r = 255;
 	lt[port] = l;
 	rt[port] = r;
-	// maple_cfg masks C/D; set them anyway to match the Wii kcode.
+	// maple_cfg masks C/D; set them anyway so kcode holds every pressed bit.
 	if (l) kcode[port] &= ~key_CONT_D;
 	if (r) kcode[port] &= ~key_CONT_C;
 

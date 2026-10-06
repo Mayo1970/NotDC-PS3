@@ -27,7 +27,7 @@ int g_controller_type      = 0;   // only the standard pad exists on PS3
 int g_player_count         = 4;
 int g_debug_loop           = 0;
 int g_debug_gdrom          = 0;
-int g_dynarec_preset       = 0;   // 0 SH4 interpreter, 1 SH4 dynarec
+int g_dynarec_preset       = 1;   // 0 SH4 interpreter, 1 SH4 dynarec
 int g_jit_safe_preset      = 0;   // 1 = bring-up mode, see ngen_GetFeatures
 // Extra native opcode groups. Off until each one is cleared on hardware.
 int g_jit_newops_preset    = 1;
@@ -35,7 +35,7 @@ int g_jit_carry_preset     = 0;
 int g_jit_mac_preset       = 0;
 int g_jit_pcrel_preset     = 0;   // 1 = mova / PC-relative loads via interpreter
 int g_jit_dynends_preset   = 0;   // 1 = no static block linking
-int g_jit_fastmem_preset   = 0;   // 1 = inline main-RAM window in the JIT
+int g_jit_fastmem_preset   = 1;   // 1 = inline main-RAM window in the JIT
 // Bisect knob: bit N forces every SH4 opcode whose top nibble is N through the
 // interpreter, leaving the rest of the JIT exactly at baseline.
 int g_jit_ifb_mask         = 0;
@@ -45,7 +45,7 @@ int g_jit_ifb_group        = -1;
 int g_jit_ifb_lomask       = 0;
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
-int g_ta_sq_direct_preset  = 0;   // 1 = a PREF to TA polygon data runs one flat store function (5.17)
+int g_ta_sq_direct_preset  = 1;   // 1 = a PREF to TA polygon data runs one flat store function (5.17, HW)
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
 int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vring block
@@ -54,9 +54,9 @@ int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
 int g_jit_tfwd_preset      = 1;   // 1 = T passed from compare to branch in a register
 int g_jit_cr0_preset       = 1;   // 1 = block-ending compare branches on CR0 directly
-int g_jit_sq_store_preset  = 0;   // 1 = stores before a PREF write the store queue inline (5.17 Step 3)
-int g_jit_ftrv_preset      = 0;   // 1 = ftrv/fipr without FPR copies, ftrv sums interleaved, fldi from a table (5.20)
-int g_jit_constprop_preset = 0;   // 1 = constants in r0-r15 fold into immediates and drop ops (5.21)
+int g_jit_sq_store_preset  = 1;   // 1 = stores before a PREF write the store queue inline (5.17 Step 3, HW)
+int g_jit_ftrv_preset      = 1;   // 1 = ftrv/fipr without FPR copies, ftrv sums interleaved, fldi from a table (5.20, HW)
+int g_jit_constprop_preset = 1;   // 1 = constants in r0-r15 fold into immediates and drop ops (5.21, HW)
 int g_jit_dve_preset       = 0;   // 1 = ops whose results are never read are dropped (5.21)
 int g_jit_cycle_check_preset = 2; // 0 old, 1 exit out of line, 2 also no poll on forward-only ends (5.22, HW)
 int g_jit_idle_skip_preset = 1;   // 1 = an idle loop turn with no store or register change ends the timeslice (5.25, HW)
@@ -66,17 +66,21 @@ int g_jit_mfocrf_preset    = 1;   // 1 = compares read CR0 with mfocrf, not the 
 int g_jit_fpul_moves_preset = 1;  // 1 = flds, fsts, ftrc, float with one trip through memory less (5.24, HW)
 int g_jit_dyn_ic_preset    = 1;   // 1 = jsr/jmp exits test their first target inline (DYN_IC), 2 also rts (5.3, HW)
 int g_jit_code_cache_preset = 2;  // SH4 code cache in use: 0 = 6 MB, 1 = 12 MB, 2 = 24 MB (5.28, HW)
+int g_jit_frchg_preset     = 0;   // 1 = an FPSCR sync that only flips FR swaps the pinned bank inline (5.29)
+int g_jit_prefetch_preset  = 0;   // 1 = a pref outside the store queue prefetches the RAM line with dcbt (5.30)
+int g_jit_guard_reuse_preset = 0; // 1 = a memory op whose base passed its check earlier in the block skips it (5.31)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
-int g_spe_draw_preset      = 0;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3)
+int g_spe_draw_preset      = 1;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3, 5.16 HW)
+int g_spe_wait_yield_preset = 0;  // 1 = the render thread's SPU fence wait leaves the PPE core to the SH4 thread (5.16)
 int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against a PPU control pass (5.13 A1)
 int g_spe_dsp_jit_preset   = 2;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b)
-int g_spe_aica_snd_preset  = 0;   // 1 = that SPU model makes the sound; nullAICA's mixer off (5.13 A2)
+int g_spe_aica_snd_preset  = 1;   // 1 = that SPU model makes the sound; nullAICA's mixer off (5.13 A2, HW)
 int g_spe_aica_dsp_preset  = 0;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3)
 int g_sound_thread_preset  = 0;   // 1 = ARM7 and AICA on their own PPU thread (5.14)
-int g_spe_arm7_preset      = 0;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15)
+int g_spe_arm7_preset      = 1;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15, HW)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -134,12 +138,16 @@ static const CfgItem s_items[] = {
 	{ "JitFpulMoves",  &g_jit_fpul_moves_preset },
 	{ "JitDynIc",      &g_jit_dyn_ic_preset },
 	{ "JitCodeCache",  &g_jit_code_cache_preset },
+	{ "JitFrchg",      &g_jit_frchg_preset },
+	{ "JitPrefetch",   &g_jit_prefetch_preset },
+	{ "JitGuardReuse", &g_jit_guard_reuse_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
 	{ "JitHotblocks",  &g_hotblocks_preset },
 	{ "SpeDoorbell",   &g_spe_bell_preset },
 	{ "SpeDraw",       &g_spe_draw_preset },
+	{ "SpeWaitYield",  &g_spe_wait_yield_preset },
 	{ "SpeAicaCheck",  &g_spe_aica_preset },
 	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
 	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
@@ -246,7 +254,7 @@ int get_jit_ifb_group()        { return g_jit_ifb_group; }
 int get_jit_ifb_lomask()       { return g_jit_ifb_lomask; }
 
 // FASTMEM, PS3 flavour: inline main-RAM accesses in the JIT (Dynarec.MD 3.4).
-// Unrelated to get_fastmem_preset() below, which is the Wii MMU design.
+// Unrelated to get_fastmem_preset() below, which is the PPC-MMU design.
 int get_jit_fastmem_preset()   { return g_jit_fastmem_preset; }
 
 // TArender TR3: off runs the TA decode and the RSX draw on the SH4 thread,
@@ -265,9 +273,10 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
 int get_vertex_array_preset()  { return g_vertex_array_preset; }
 
-// OPTIMIZATION_PLAN 5.12 S0 and S3, read once in InitRenderer.
+// OPTIMIZATION_PLAN 5.12 S0, S3 and 5.16, read once in InitRenderer.
 int get_spe_bell_preset()      { return g_spe_bell_preset; }
 int get_spe_draw_preset()      { return g_spe_draw_preset; }
+int get_spe_wait_yield_preset() { return g_spe_wait_yield_preset; }
 // OPTIMIZATION_PLAN 5.13 A1, A1b, A2 and A3, read once in InitAica.
 int get_spe_aica_preset()      { return g_spe_aica_preset; }
 int get_spe_dsp_jit_preset()   { return g_spe_dsp_jit_preset; }
@@ -278,7 +287,7 @@ int get_sound_thread_preset()  { return g_sound_thread_preset; }
 // OPTIMIZATION_PLAN 5.15, read once in InitAica.
 int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
 
-// JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. Wii FASTMEM stays off: it
+// JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
 int get_fastmem_preset()       { return 0; }
 int get_bcache_preset()        { return 0; }
@@ -299,6 +308,9 @@ int get_jit_tcopy_preset()     { return g_jit_tcopy_preset; }
 int get_jit_sq_miss_preset()   { return g_jit_sq_miss_preset; }
 int get_jit_mfocrf_preset()    { return g_jit_mfocrf_preset; }
 int get_jit_fpul_moves_preset() { return g_jit_fpul_moves_preset; }
+int get_jit_frchg_preset()     { return g_jit_frchg_preset; }
+int get_jit_prefetch_preset()  { return g_jit_prefetch_preset; }
+int get_jit_guard_reuse_preset() { return g_jit_guard_reuse_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }

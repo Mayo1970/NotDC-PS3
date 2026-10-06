@@ -1,22 +1,23 @@
 {
     "configurations": [
         {
-            "name": "Wii",
+            "name": "PS3",
             "includePath": [
                 "${workspaceFolder}/**",
-                "${env:DEVKITPRO}/libogc/include",
-                "${env:DEVKITPPC}/powerpc-eabi/include"
+                "${env:PS3DEV}/ppu/include",
+                "${env:PS3DEV}/portlibs/ppu/include",
+                "${env:PS3DEV}/portlibs/ppu/include/freetype2"
             ],
             "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
+                "_PS3",
+                "__PS3__",
+                "RELEASE",
+                "CAIQUE_RAM_HOOKS"
             ],
-            "windowsSdkVersion": "10.0.26100.0",
-            "compilerPath": "${env:DEVKITPPC}/bin/powerpc-eabi-gcc.exe",
-            "cStandard": "c17",
-            "cppStandard": "c++17",
-            "intelliSenseMode": "gcc-x64" // windows-msvc-x64
+            "compilerPath": "${env:PS3DEV}/ppu/bin/ppu-gcc.exe",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++14",
+            "intelliSenseMode": "gcc-x64"
         }
     ],
     "version": 4

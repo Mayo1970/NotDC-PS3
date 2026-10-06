@@ -1,8 +1,7 @@
 #include "cdi.h"
 
-// Debug logging is compiled out. It must still expand to an *expression*, not to
-// nothing: `if (cond) printf(...);` would otherwise be an if with an empty body
-// (-Wempty-body). Swap in `printf(__VA_ARGS__)` to turn the log back on.
+// Debug logging compiled out, as an expression so `if (cond) printf(...);` keeps a body (-Wempty-body). Swap in
+// `printf(__VA_ARGS__)` to turn it back on.
 #define printf(...) ((void)0)
 
 extern "C" int get_debug_loop();
@@ -27,95 +26,90 @@ static u32         cdi_track_count;
 static SessionInfo cdi_ses;
 static TocInfo     cdi_toc;
 static DiscType    cdi_disc_type;
-static u8          cdi_sec_buf[2352];
 static FILE*       cdi_fp;
 static u32         cdi_leadout_fad;
 
 // ─── sector reading ──────────────────────────────────────────────────────────
 
-// GD-ROM high-density area starts at FAD 45150.
-// Selfboot CDI discs store game data starting at FAD 150 (single density).
-// When the BIOS thinks it's reading a GD-ROM HD area (FAD >= 45150),
-// remap those reads to FAD 150+ so IP.BIN and the filesystem are served correctly.
+// GD-ROM high-density area start and the old remap of its reads to FAD 150+; no remap now (CdRom disc type: the
+// BIOS reads FAD 150 itself).
 #define CDI_GD_HD_START  45150u
 #define CDI_GD_LD_START    150u
 #define CDI_GD_REMAP_OFF (CDI_GD_HD_START - CDI_GD_LD_START)  // 45000
 
-static void cdi_ReadOneSector(u8* out, u32 sector, u32 out_size)
+// Plan 5.33: one read per run of sectors of one track, up to a GD-ROM request (32). Per sector, the PS3 disk
+// cost ~2.5 ms in play (a 32-sector read ~80 ms, the stall probe's 5.32).
+#define CDI_RUN 32
+static u8 cdi_run_buf[CDI_RUN * 2448];
+
+// The track that holds sector: the last one that starts at or before it; -1 for none.
+static s32 cdi_track_of(u32 sector)
 {
-    // FAD remapping removed: CdRom disc type means BIOS reads FAD 150 directly.
-
     for (s32 i = (s32)cdi_track_count - 1; i >= 0; i--)
-    {
         if (cdi_tracks[i].FAD <= sector)
-        {
-            u32 byte_off = cdi_tracks[i].file_offset
-                         + (sector - cdi_tracks[i].FAD) * cdi_tracks[i].sector_size;
-            fseek(cdi_fp, byte_off, SEEK_SET);
-            fread(cdi_sec_buf, cdi_tracks[i].sector_size, 1, cdi_fp);
+            return i;
+    return -1;
+}
 
-            // ── IP.BIN header injection ───────────────────────────────────────
-            // Selfboot CDIs built with BootDreams store the IP.TMPL bootstrap
-            // but leave the first 0x300 bytes (disc header metadata) as zeros.
-            // The Dreamcast BIOS reads FAD 150 (sector 0 of the data track) and
-            // checks for "SEGA SEGAKATANA" at offset 0.  If it finds zeros, it
-            // falls back to the BIOS menu.  We patch a valid header here so the
-            // bootstrap can proceed.  The header fields below match ChuChu Rocket US.
-            if (sector == 150 && cdi_sec_buf[0] == 0 && cdi_sec_buf[1] == 0
-                && cdi_tracks[i].ctrl == 0x04)
-            {
-                // Check whether the whole first 16 bytes are zero (blank template)
-                bool blank = true;
-                for (int z = 0; z < 16; z++) if (cdi_sec_buf[z]) { blank = false; break; }
-                if (blank)
-                {
-                    printf("[CDI] Injecting IP.BIN header into blank FAD 150 sector\n");
-                    // Hardware ID  (0x000)
-                    memcpy(cdi_sec_buf + 0x000, "SEGA SEGAKATANA ", 16);
-                    // Maker ID     (0x010)
-                    memcpy(cdi_sec_buf + 0x010, "SEGA ENTERPRISES", 16);
-                    // Device info  (0x020) — selfboot CDIs are standard CDs
-                    memcpy(cdi_sec_buf + 0x020, "CD-ROM1/1       ", 16);
-                    // Area symbols (0x030)
-                    memcpy(cdi_sec_buf + 0x030, "JUE             ", 16);
-                    // Peripherals  (0x040)
-                    memcpy(cdi_sec_buf + 0x040, "E000F10         ", 16);
-                    // Product No   (0x050)
-                    memcpy(cdi_sec_buf + 0x050, "T-8101N   ", 10);
-                    // Version      (0x05A)
-                    memcpy(cdi_sec_buf + 0x05A, "V1.002", 6);
-                    // Release date (0x060)
-                    memcpy(cdi_sec_buf + 0x060, "20000208  ", 10);
-                    // Boot file    (0x070)
-                    memcpy(cdi_sec_buf + 0x070, "1ST_READ.BIN    ", 16);
-                    // Publisher    (0x080)
-                    memcpy(cdi_sec_buf + 0x080, "SEGA ENTERPRISES", 16);
-                    // Title        (0x090)
-                    memcpy(cdi_sec_buf + 0x090, "ChuChu Rocket!                          ", 40);
-                }
-            }
-
-            printf("[CDI] cdi_ReadOneSector FAD=%u track%d off=0x%08X sz=%u data: %02X%02X%02X%02X%02X%02X%02X%02X\n",
-                   sector, i, byte_off, cdi_tracks[i].sector_size,
-                   cdi_sec_buf[0],cdi_sec_buf[1],cdi_sec_buf[2],cdi_sec_buf[3],
-                   cdi_sec_buf[4],cdi_sec_buf[5],cdi_sec_buf[6],cdi_sec_buf[7]);
-            ConvertSector(cdi_sec_buf, out, cdi_tracks[i].sector_size, out_size, sector);
+// BootDreams selfboot CDIs leave FAD 150's first 0x300 bytes blank, and without "SEGA SEGAKATANA" the BIOS drops to
+// its menu: patch a valid header (ChuChu Rocket US fields).
+static void cdi_patch_ip(u8* sec, u32 sector, const CdiTrack& t)
+{
+    if (sector != 150 || sec[0] != 0 || sec[1] != 0 || t.ctrl != 0x04)
+        return;
+    for (int z = 0; z < 16; z++)
+        if (sec[z])
             return;
-        }
-    }
-    printf("[CDI] WARN: sector FAD=%u not found in any track\n", sector);
-    memset(out, 0, out_size);
+    printf("[CDI] Injecting IP.BIN header into blank FAD 150 sector\n");
+    memcpy(sec + 0x000, "SEGA SEGAKATANA ", 16);   // hardware ID
+    memcpy(sec + 0x010, "SEGA ENTERPRISES", 16);   // maker ID
+    memcpy(sec + 0x020, "CD-ROM1/1       ", 16);   // device info: selfboot CDIs are standard CDs
+    memcpy(sec + 0x030, "JUE             ", 16);   // area symbols
+    memcpy(sec + 0x040, "E000F10         ", 16);   // peripherals
+    memcpy(sec + 0x050, "T-8101N   ", 10);         // product number
+    memcpy(sec + 0x05A, "V1.002", 6);              // version
+    memcpy(sec + 0x060, "20000208  ", 10);         // release date
+    memcpy(sec + 0x070, "1ST_READ.BIN    ", 16);   // boot file
+    memcpy(sec + 0x080, "SEGA ENTERPRISES", 16);   // publisher
+    memcpy(sec + 0x090, "ChuChu Rocket!                          ", 40);   // title
 }
 
 void cdi_DriveReadSector(u8* buff, u32 StartSector, u32 SectorCount, u32 secsz)
 {
-    printf("[CDI] ReadSector FAD=%u count=%u secsz=%u\n",
-           StartSector, SectorCount, secsz);
-    while (SectorCount--)
+    printf("[CDI] ReadSector FAD=%u count=%u secsz=%u\n", StartSector, SectorCount, secsz);
+    while (SectorCount)
     {
-        cdi_ReadOneSector(buff, StartSector, secsz);
-        buff += secsz;
-        StartSector++;
+        const s32 t = cdi_track_of(StartSector);
+        if (t < 0)
+        {
+            printf("[CDI] WARN: sector FAD=%u not found in any track\n", StartSector);
+            memset(buff, 0, secsz);
+            buff += secsz;
+            StartSector++;
+            SectorCount--;
+            continue;
+        }
+        // The run: the following sectors of the same track, which lie back to back in the file.
+        const CdiTrack& tr = cdi_tracks[t];
+        const u32 ss = tr.sector_size <= 2448 ? tr.sector_size : 2448;
+        u32 n = 1;
+        while (n < SectorCount && n < CDI_RUN && cdi_track_of(StartSector + n) == t)
+            n++;
+        if (ss != tr.sector_size)
+            n = 1;   // a corrupt size: the stride in the file is not ss
+        fseek(cdi_fp, tr.file_offset + (StartSector - tr.FAD) * tr.sector_size, SEEK_SET);
+        const size_t got = fread(cdi_run_buf, ss, n, cdi_fp);
+        for (u32 k = 0; k < n; k++)
+        {
+            u8* sec = cdi_run_buf + k * ss;
+            if (k >= got)
+                memset(sec, 0, ss);   // past the end of the file
+            cdi_patch_ip(sec, StartSector + k, tr);
+            ConvertSector(sec, buff, ss, secsz, StartSector + k);
+            buff += secsz;
+        }
+        StartSector += n;
+        SectorCount -= n;
     }
 }
 
@@ -134,13 +128,8 @@ void cdi_DriveGetTocInfo(TocInfo* toc, DiskArea area)
         // No high-density area on a standard CD — return empty
         printf("[CDI] GetTocInfo(DoubleDensity) => empty\n");
         memset(toc, 0xFF, sizeof(TocInfo));
-        // ConvToc() indexes tracks[FistTrack-1]/[LastTrack-1] unconditionally.
-        // The memset above also stomps these to 0xFF (255), which would index
-        // tracks[254] -- ~2KB past the 99-entry array, off the end of the
-        // stack-allocated TocInfo in GetDriveToc(). Keep them in-bounds;
-        // tracks[0] is still the same 0xFF "empty" sentinel used elsewhere
-        // (e.g. iso9660.cpp's unused track slots), so the returned entry is
-        // still nonsense-but-safe, just no longer a wild stack read.
+        // ConvToc() indexes tracks[FistTrack-1]/[LastTrack-1] unconditionally: 0xFF would read ~2 KB past the
+        // 99-entry array. Track 1 keeps it in bounds; tracks[0] is the same 0xFF "empty" sentinel.
         toc->FistTrack       = 1;
         toc->LastTrack       = 1;
         toc->LeadOut.FAD     = cdi_leadout_fad;
@@ -201,35 +190,8 @@ static void skip(FILE* f, int n) { fseek(f, n, SEEK_CUR); }
 
 // ─── header parser ───────────────────────────────────────────────────────────
 
-// Per-track record layout, ported verbatim from devcast's cdipsr.cpp
-// (CDI_read_track).  This is the authoritative DiscJuggler track descriptor
-// walk; the previous hex-dump-derived layout was missing the two track start
-// marks, the DJ extra-data / DJ4 markers, and read the sector size by track
-// type instead of from the on-disk sector_size_value field.
-//
-//   u32  temp            ; if != 0 -> skip 8  (DJ 3.00.780+ extra data)
-//   u8[10] start_mark     ; { 00 00 01 00 00 00 FF FF FF FF }
-//   u8[10] start_mark     ; (same, twice)
-//   skip 4
-//   u8   filename_length  ; + filename[filename_length]
-//   skip 11
-//   skip 4
-//   skip 4
-//   u32  temp            ; if == 0x80000000 -> skip 8  (DJ4)
-//   skip 2
-//   u32  pregap_length
-//   u32  length
-//   skip 6
-//   u32  mode             ; 0=audio, 1=Mode1, 2=Mode2
-//   skip 12
-//   u32  start_lba
-//   u32  total_length
-//   skip 16
-//   u32  sector_size_value; 0->2048 1->2336 2->2352 4->2448
-//   skip 29
-//   if version != V2:
-//       skip 5
-//       u32 temp ; if == 0xffffffff -> skip 78  (DJ 3.00.780+ extra data)
+// Per-track record, as devcast's cdipsr.cpp CDI_read_track walks it (the DiscJuggler descriptor): the reads below
+// follow its fields in order; sector_size_value 0/1/2/4 = 2048/2336/2352/2448.
 
 static bool cdi_read_track(FILE* f, u32 version, u32 ses,
                            u32* out_pregap, u32* out_length, u32* out_total,
@@ -514,9 +476,8 @@ bool cdi_init(char* file)
         fclose(f); return false;
     }
 
-    // cdirip CDI_init: only V3.5 stores the header size measured back from the
-    // end of the file. V2 and V3 store its absolute offset. Treating V3 like
-    // V3.5 landed on zeros, so the session count read 0 and the parse failed.
+    // cdirip CDI_init: only V3.5 stores the header size back from the file end; V2 and V3 store an absolute offset
+    // (V3 read as V3.5 landed on zeros: 0 sessions, failed parse).
     long hdr_pos = (version == CDI_V35)
                  ? file_size - (long)hdr_offset
                  : (long)hdr_offset;

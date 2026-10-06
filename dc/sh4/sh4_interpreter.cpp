@@ -20,11 +20,11 @@
 #include "dc/mem/sh4_mem.h"
 #include "ccn.h"
 #include "sh4_sched.h"   // SCHED preset: unified cycle-deadline event scheduler
+#include "ps3/ps3_stall.h"
 
-// SCHED preset accessor (wii/main.cpp). When on, migrated completion/IRQ events
+// SCHED preset accessor (ps3_presets.cpp). When on, migrated completion/IRQ events
 // fire through sh4_sched (deadline-ordered) instead of at their own cascade tier.
 extern "C" int get_sched_preset();
-// #include <gccore.h>  // Uncomment for Wii VIDEO_WaitVSync() frame limiter
 #include <time.h>
 #include <float.h>
 
@@ -219,7 +219,7 @@ void GenerateSinCos()
 	fclose(tbl);
 #endif
 
-	// Endian-swap the loaded half (no-op on big-endian / Wii)
+	// The table file is little-endian: host_to_le swaps it on big-endian hosts
 	for (int i = 0; i < 0x8000; i++)
 		(u32&)sin_table[i] = host_to_le<4>((u32&)sin_table[i]);
 
@@ -325,6 +325,7 @@ int FASTCALL UpdateSystem()
 // GPRs, returns nonzero if one is pending); _handle_event() does only the dispatch.
 int FASTCALL UpdateSystem_no_event()
 {
+	StallScope st_(ST_SYS);
 	CCALL(CC_TIMESLICE);
 	if (!(update_cnt & (s_medium_period - 1)))
 		MediumUpdate();
@@ -344,6 +345,7 @@ int FASTCALL UpdateSystem_no_event()
 
 int FASTCALL UpdateSystem_handle_event()
 {
+	StallScope st_(ST_SYS);
 	return UpdateINTC();
 }
 

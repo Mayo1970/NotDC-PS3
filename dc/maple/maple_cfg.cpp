@@ -4,7 +4,7 @@
 #include "maple_devs.h"
 #include "maple_cfg.h"
 
-// Per-device input hooks; on PS3 they are in ps3/ps3_input.cpp (plugs/drkMapleDevices is not built).
+// Per-device input hooks, in ps3/ps3_input.cpp.
 void UpdateInputState(u32 port);        // Standard controller
 void UpdateLightGunState(u32 port);     // Light gun
 void UpdateMaracasState(u32 port);      // Maracas
