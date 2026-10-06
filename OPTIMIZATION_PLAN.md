@@ -13,9 +13,29 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-06)
 
+**Merged 2026-10-06: the OPTIMIZATION_POTENTIAL items that have a plan
+goal (Matt: "Can you do the merge, then?").** Nothing is built. Each item
+now sits at its goal with a short entry. The full text (evidence, file and
+line numbers) stays in `OPTIMIZATION_POTENTIAL.md` under the same P number.
+- Section 5: P41 is 5.2 (done); P3 = 5.34 and P6 = 5.35 from before. P17
+  BCACHE and P46 + P32 (mac.w) in 5.3; P42 and P43 in 5.12; P20 in 5.13
+  A3; P55 + P7 in 5.17; P15 in 5.19; P22 (DMA rules) and P9 (GD-ROM DMA)
+  in 5.34. New rows: 5.36 (P5), 5.37 (P17 fschg), 5.38 (P19), 5.39 (P56),
+  5.40 (P4).
+- Section 6: P11 and P57 (TMU test) in 6.4; P24 and P31 (CA clamp) in
+  6.5; P44, P40 and P49 in 6.8.
+- Section 3: P14 in 3a/3b, P27 in 3c, P38 and P57 (RM verify) in 3d, P47,
+  P21 and P23 (TOC fields) in 3h, P54 in the RTT note.
+- Parked Soul Calibur faults (this section, "Parked by Matt 2026-10-03"):
+  P16, P18, P1, P2, P51.
+- Not merged (no plan goal): P8, P10, P12, P13, P25, P26, P28-P30,
+  P33-P37, P39, P45, P48, P50, P52, P53, and the other parts of P9, P22,
+  P23, P31, P32 and P57.
+
 **Done: 5.34 GD-ROM Async (OPTIMIZATION_POTENTIAL P3) and 5.35 JIT EXIT
-(P6), HW SUCCESS (Matt 2026-10-06: "SUCCESS for both then").** Both stay
-default OFF (defaults are Matt's call). Known, parked (Matt: "place the
+(P6), HW SUCCESS (Matt 2026-10-06: "SUCCESS for both then").** Default ON
+since the package of 18:19 (Matt: "Keep toggles on"): GD-ROM Async at +
+CD-DA, JIT Exit ON. Known, parked (Matt: "place the
 loop bug in the known list ... we will catch up with it waaay later"):
 with + CD-DA, a ring miss (song start or loop) still stalls the SH4 thread
 24-85 ms; options: silence for the missed sector, or start the read-ahead
@@ -38,8 +58,8 @@ XMB exit returns from the JIT loop (no 3 s forced exit) and saves
 `dc_flash_wb.bin` (Matt: "Save the flash only"). P6 was wrong on one point:
 nothing calls `Term_DC()`, so `EMU_TERM` stays unrun. PC: `gdasync_check`
 ALL PASS, 17 of 17 planted bugs fail (after the fix); `exit_check` PASS, 10
-of 10. UDP: this session's listener (PID 7484, `ps3log_534_run1.txt`)
-still runs; start a new one only when Matt says so.
+of 10. UDP: this session's listener (`ps3log_534_run1.txt`) was stopped
+at Matt's request; port 18194 is free. Start one only when Matt says so.
 
 **Done: 5.2 JIT Carry (Matt 2026-10-06: "I'd say to work on 5.2 since It's
 a known issue."), default ON in the source since 2026-10-06 (Matt: "Sure"),
@@ -81,7 +101,7 @@ no reads). Matt: "We can park them for now. It's okay.": 5.33 stays in;
 the unbuffered read test and P3 (async reads) are parked. See section 5
 after 5.31.
 Left from the list: the TA per-record counters and the deadline
-scheduler (P5). Not useful now: a lower SH4 Clock (JIT IDLE SKIP makes the wait time
+scheduler (P5, now 5.36). Not useful now: a lower SH4 Clock (JIT IDLE SKIP makes the wait time
 almost free) and frame skip (the SH4 never waits for the render thread).
 UDP: the 5.33 listener of session 8112eaf0 (`ps3log_533_run1.txt`) was
 stopped at Matt's request at 22:57; port 18194 is free.
@@ -523,8 +543,8 @@ Workflow: `./build.sh pkg`, UDP listener on port 18194 (scratchpad
 JIT C-Calls (VIDEO / DEBUG) give `[IFB]`/`[CC]`/`[ARMJIT]`; the `[rend] busy=`
 `[rend] draw split %:` and `[rend] tex split %:` lines are always on.
 
-Other open items: the XMB exit takes the "SH4 did not stop in 3 s"
-fallback unless EMULATION -> JIT Exit is ON (5.35, HW SUCCESS 2026-10-06).
+Other open items: the XMB exit no longer takes the "SH4 did not stop in
+3 s" fallback (5.35 JIT Exit, HW SUCCESS, default ON since 18:19).
 Known, parked (Matt 2026-10-06): 5.34's CD-DA ring misses at song starts
 and loops stall the SH4 thread 24-85 ms each (section 0, 5.34).
 JitCarry was broken on PS3; fixed in 5.2 (HW 2026-10-06).
@@ -543,6 +563,26 @@ not caused by S3 (5.12 S3 runs 2-3).
   dropped.
 - S2 compare: the SPU writes min_w = 0 where the PPU keeps a denormal
   (`wden`); stats only, but it stops the compare of those fences.
+- Leads merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md`, in its order.
+  One change per HW run, each behind its own toggle, default OFF:
+  1. P16, texture cache slots collide (~3 lines): the slot depends only on
+     the low 10 bits of the TCW, so textures 8 KB apart with the same size
+     and flags share one 8-slot window. In the fight every decode is a
+     cache miss with only 88 textures live (fits eviction; measure). The
+     opening has the same misses. Measure the fight again after it: it can
+     change the facts of P1 and P2.
+  2. P18, depth precision, option (a): RSX float depth with z = n/W (~15
+     lines, no shader). Today the 1/W step is 6-75% of the value at the
+     stage's W (500-2500), so the background z-fights: the probable cause
+     of the flicker.
+  3. P2 step 1 (no code): Frame Drop DROP against the default in one
+     fight. P1 step 0 (split the re-decodes into palette and texel
+     changes), if still needed after P16.
+  4. P1 steps 1-3: the palette snapshot at STARTRENDER (the render thread
+     reads the live `PALETTE_RAM` today; this race and 6.7 are the
+     black-texture suspects), block decoders, 16-bit uploads. Then P2
+     step 2 (one pending slot), if step 1 shows the trade.
+  - P51, screenshot to PNG (~60-80 lines): pixel evidence for the flicker.
 
 | Item | Status |
 |---|---|
@@ -551,14 +591,14 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 2.3 DSP | PARKED: Matt wants a PPC DSP JIT |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04 |
-| 3c modifier volumes (Flycast GL) | `[x]` HW |
-| 3d background depth bias | `[x]` HW, no regression |
+| 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) merged, open |
+| 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open) |
 | 3e background vertex order | dropped, our code has no such fault |
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
-| 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl` |
-| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN |
+| 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged) |
+| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
 work is section 5, SH4-side speed.
@@ -761,6 +801,11 @@ Status 2026-09-23 (all big-endian checked):
   emulation, and ours has none (`dc/mem/mmu.cpp` only remaps the store queue).
   They cannot boot here yet, so their FMV fix does not apply. What is left:
   Xtreme Sports skybox, Blue Stinger (JP) intro.
+  Merged 2026-10-06 (open): the SH4 MMU for these games is
+  `OPTIMIZATION_POTENTIAL.md` P38 (an interpreter form first, ~1.3-1.6K
+  lines with longjmp; a JIT form is very high risk). P57:
+  `verify(fpu_cfg.RM<2)` in `dc/sh4/rec_v2/decoder.cpp` hangs the JIT when
+  a WinCE game sets RM = 3; Flycast removed it (1 line).
 - 3e dropped. Our `background_plane()` + `bg_eval()` evaluates the plane from
   the 3 real vertices (position, colour, UV) at the canvas corners. That is
   independent of vertex order and never rebuilds UVs, which is what both
@@ -789,6 +834,12 @@ Status 2026-09-23 (all big-endian checked):
   - HW test: Crazy Taxi car shadows (~250 volume tris per frame): shadow on
     the road only, not on the HUD or sky, at the game's strength. Soul Calibur.
   - HW 2026-09-23: Matt, "Shadows look fine" (Crazy Taxi, Soul Calibur).
+  - Merged 2026-10-06 (open): `OPTIMIZATION_POTENTIAL.md` P27, Flycast dev
+    `f2013c652`. When a pass shares the opaque and translucent volume
+    pointers (region-array words +8 and +16) and the TR list has more
+    volumes, Flycast draws the TR list's volumes (Xtreme Sports shadows).
+    Ours drops list 3 at decode, on the PPU and on the SPU. ~30 lines in
+    both decoders.
 
 - 3g `[x]` built (big-endian checked).
   - `dc/gdrom/gdromv3.cpp` SPI_CD_READ: `other` or expected data type 1
@@ -818,16 +869,45 @@ Status 2026-09-23 (all big-endian checked):
   `[flash] region 1 fits disc area 'JUE     '`. So Matt's flash region is USA
   (1), not EU as assumed earlier. No switch happened on that disc, so the
   switch path itself is still unexercised on hardware. NBA Hoopz not run.
+- 3h, merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (open):
+  - P47: REQ_STAT position bytes. Ours copies `cdda.CurrAddr.B0`-`B2` from
+    a union, so on our BE host the guest reads FAD >> 8 (FAD 45150 reads
+    as 176). Flycast `e5344d37d` (one of the two 3h commits) sends
+    `curFad >> 16`, `curFad >> 8`, `curFad`, and the track, control/ADR
+    and index 1 from the TOC. ~8 lines with shifts, own toggle. Change
+    GET_SCD only after a HW test: it is tuned for the BIOS CD player and
+    the ChuChu pause fix.
+  - P21: step 1, SPI_CD_READ stops CD-DA (1 line, plus PLAY -> PAUSE in
+    the status that GET_SCD reads; Hydro Thunder, NFL Blitz 2001). Step 2,
+    Flycast dev status timing (PLAY until 67 ms after a data read, SEEK for
+    20 ms, BUSY for 5 or 20 ms): ~60 lines, medium risk. Its
+    resume-only-when-paused rule needs a 3-state CD-DA flag (overlaps 3h).
+  - P23, TOC fields: ADR=1 in every entry, the lead-out with ADR=1 and
+    CTRL=4, the single-density lead-out at the end of track 2 + 1 (ours,
+    GDI: fixed at 13085). V-Rally 2 CD-DA tracks, Eldorado Gate. Flycast's
+    other 3h commit, `9ea0563a7`, changes the same files
+    (`core/imgread/common.cpp`, `common.h`).
+  - HW check: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player,
+    Crazy Taxi loading.
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
 
 None of section 3 is a speed gain. 3a-3c share one piece of work: a real PVR
 shader for `ps3gl`, which replaces the fixed-function texture modes.
+Merged 2026-10-06: the shader reference for 3a and 3b is
+`OPTIMIZATION_POTENTIAL.md` P14: Reicast's GLES shader, and Flycast's dx9
+shaders (the closest to Cg; the fog table is a 128x2 A8 texture). ps3gl
+already draws with precompiled Cg fragment programs, one per texture mode,
+so fog and offset colour mean more programs and a second colour attribute.
 
 RTT test discs (for `rtt=0/0`): Flycast `core/emulator.cpp:64-157` lists games
 that need RTT copy to VRAM - Tony Hawk 1/2, Shenmue, Jet Set Radio, Skies of
 Arcadia, Grandia II, Worms World Party, Silent Scope.
+Merged 2026-10-06 (open): `OPTIMIZATION_POTENTIAL.md` P54, the RTT pixel
+packing for those games: the 1555 alpha threshold from FB_W_CTRL (ours: a
+fixed 128), rounding (ours truncates), the clip origin, alpha in pack mode
+6, writers for modes 4 and 5. ~15 lines plus the two modes, endian-neutral.
 
 ---
 
@@ -856,15 +936,15 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
-| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11 |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending |
+| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form) |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending; merged 2026-10-06: P20 (A3 by default, gaps G2-G4) |
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[~]` HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
 | 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[x]` HW 2026-10-05: same load +0.5% (10K+ bins +2.4% to +5.0%), render busy 56 -> 32%, 80% of dense windows at full speed; SPE Draw default ON since the package of 20:13 (Matt); SPE Wait Yield (db16cyc in the fence spin) HW: no gain, default OFF |
-| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF |
+| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | `[~]` Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06: P55 + P7 (VRAM writes from SQ and DMA) |
 | 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
-| 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]` |
+| 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]`; merged 2026-10-06: P15 (freerunning, a dynamic form) |
 | 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[~]` HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean; Soul Calibur pending |
 | 5.21 | Minicast M3 + M4: constant propagation (no memory baking) + dead value elimination | `[x]` HW, correct, no gain, default OFF; built + PC tested 2026-10-04 ("JIT CONSTPROP", "JIT DEAD VALUES", default OFF; fuzzer PASS 1.6 M blocks, 31/31 mutants fail), package of 22:06; HW 2026-10-04: Crazy Taxi log clean, SHIL ops -2.9%, same-load VPS +0.2% (noise); geometry and sound right (Matt) |
 | 5.22 | Minicast M5: cycle check out of line, then only on backward branches | `[x]` HW, LOOPS ONLY default since 2026-10-04 (Matt); built 2026-10-04 ("JIT CYCLE CHECK": OLD / COLD EXIT / LOOPS ONLY, default OLD), package of 22:27; HW 2026-10-04: logs clean, same-load VPS +0.8% (COLD EXIT), +1.9% (LOOPS ONLY) against 5.21 |
@@ -879,19 +959,25 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.31 | JIT GUARD REUSE: an access skips the RAM or SQ check its base register passed earlier in the block (a CR flag) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (greuse_check PASS, 25/25 mutants fail), VIDEO / DEBUG "JIT GUARD REUSE"; package of 21:50; HW 2026-10-05: clean, 20994 reuse sites, same load +0.1% against `run516` (noise) |
 | 5.32 | Stall probe: the SH4 thread's slowest frame each second, split by cause (rides on JIT C-Calls) | `[x]` HW 2026-10-05 (package of 22:22, `runstall_ct.txt`): the Crazy Taxi dip is one 330 ms disc read; dense play ~61 ms/s in disc reads |
 | 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
-| 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default OFF; CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each |
-| 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default OFF; built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
+| 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp) |
+| 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
+| 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | `[ ]` merged 2026-10-06; estimate 1% or less (scheduler), 0.1-0.5% (TA peak store) |
+| 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level |
+| 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[ ]` merged 2026-10-06; every game (the signed idiom matches in Crazy Taxi, Sonic Adventure and Soul Calibur); ~60 lines, PC check first |
+| 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]` |
+| 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
 default ON since the package of 23:22 on 2026-10-05 (Matt).
+GD-ROM Async (+ CD-DA) and JIT Exit are default ON since the package of 18:19 on 2026-10-06 (Matt: "Keep toggles on").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
-| 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON in the source (Matt), not in a package yet; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log |
-| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]` |
+| 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON in the source (Matt), not in a package yet; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log; = OPTIMIZATION_POTENTIAL P41 (the FMV fallbacks) |
+| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]`; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w) |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` is Wii-gated) | `[ ]` |
 
 - 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
@@ -1240,6 +1326,16 @@ clock by VPS.
     Left out by Matt: the YUV FMV converter (latency-bound, less important).
     Stay on the PPE: SH4 JIT, ARM7 JIT, MMU, memory handlers, the TA store
     FSM, maple, GD-ROM, RSX/ps3gl calls.
+    Merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (open):
+    - #4 for YUV FMVs is P42: (a) a block decoder that writes straight to
+      the RSX buffer (estimate ~10-12 instructions per texel against ~60
+      now, both passes), (b) the RSX 4:2:2 formats with a Cg program, (c)
+      this SPE item, (d) decode only the rows and columns the converter
+      wrote. Do it after P16 (section 0, Soul Calibur) shows how many
+      decodes are left.
+    - The converter stays on the PPU: P43 loads the planes as 32-bit words
+      (`rlwimi`) and skips the copy when a block starts at offset 0 (~40
+      lines; estimate ~1-3% of the SH4 thread in a Sofdec FMV).
   - S0 built 2026-10-03, HW pending. Toggle: VIDEO / DEBUG -> "SPE Doorbell"
     (`nullDC.cfg [ps3] SpeDoorbell`), default OFF, read in `InitRenderer`.
     - `ps3/spu/spe_bell.c` (spu-gcc, embedded with `bin2s`, `sysSpuImageImport`):
@@ -2128,6 +2224,28 @@ clock by VPS.
           issue; he has an idea of "what we got wrong". Next session.
         - 2026-10-04, later: the echo, the menu crackle and Looney Tunes
           were investigated. See section 6.
+      - Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P20, open):
+        - G1: the default (SPE AICA Sound ON, SPE AICA DSP OFF) runs A2,
+          with no DSP: no reverb, and a voice that only feeds the DSP
+          (DISDL = 0) is silent. Fix: Matt's A3 verdict, then SPE AICA DSP
+          ON and SPE DSP JIT ON by default (CHECK costs ~2.5x the SPU
+          time). No logged run has A3 and SPE ARM7 both ON (SPE ARM7 is
+          default ON since 2026-10-05), so one HW run first: today's
+          defaults plus both DSP options; Crazy Taxi, Sonic Adventure,
+          ChuChu Rocket, Looney Tunes. Read the `dsp jit` line (`slow=`,
+          `bad=`), SPU busy, SPEED/VPS; listen for reverb, missing voices,
+          old echo after a scene change. Looney Tunes also tests F3
+          (section 6; a link is not shown).
+        - G2: the ring is in LS, not in wave RAM (the limits above). Fix
+          idea: a "ring dirty" record on guest writes inside the ring, and
+          the SPU writes its ring output back by DMA after each block.
+        - G3: a 64K-word ring (RBL 3) and TABLE writes outside the LS ring
+          are lost at each CHECK. Fix idea: write the dirty lines back by
+          DMA before the invalidate.
+        - G4: guest reads of TEMP, MEMS, MIXS and EFREG return nullAICA's
+          copy of the CPU writes, not DSP values (rarely read, unverified).
+        - Do not port Flycast's dry mix (Matt 2026-10-06: "the DSP fix is
+          wrong").
 - 5.14 (Matt 2026-10-04: "let's go with ARM7+AICA off the SH4 thread"):
   the ARM7 and the AICA run on a second PPU thread. Option AUDIO -> "Sound
   Thread" (`nullDC.cfg [ps3] SoundThread`), default OFF, set before boot,
@@ -2672,6 +2790,22 @@ clock by VPS.
       (RPS ~29, the game's 30 fps); `sqst` 7674 (it also copies RAM through
       the SQ: 61% of its SQ flushes go to the TA); the code cache clears on
       the game's code loads, no fault.
+  - Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P55 + P7, open; one
+    branch, do the two together):
+    - P55: `TAWriteSQ()` and the DMA path `TAWrite()` (`dc/pvr/pvr_if.cpp`)
+      call `pvr_write_area1_32` per word, each through the out-of-line
+      `vramlock_ConvOffset32toOffset64()` (no LTO). Map the address once
+      per 32-byte block (a block never crosses the bank bit 22); the DMA
+      path needs a fallback when a run crosses a bank. ~10 lines, own
+      toggle, the same stores. First count the VRAM-direct blocks in
+      `[ta-split]`: dense Crazy Taxi sends ~127K SQ flushes/s to targets
+      other than the TA (Step 1); if all were VRAM, ~0.5% of the SH4
+      thread (estimate).
+    - P7 (bug): `SB_LMMODE0/1` are never read. SQ writes to 0x11/0x13
+      always take the 32-bit path; ch2 DMA to 0x11 is always 64-bit, and
+      to 0x13 moves no data. A texture sent through the wrong path lands
+      scrambled. Log LMMODE0/1 once per change first (Rez must stay right),
+      then Flycast's rule in both paths. ~40 lines, no speed cost.
 - 5.18 JIT hot-block profile, then fixes.
   - Facts: ~92% of the SH4 thread is recompiled code and its C calls. 5.0's
     lesson: removing C calls or interpreter fallbacks did not move SPEED; the
@@ -2830,6 +2964,14 @@ clock by VPS.
   A lower floor (e.g. 120-140) buys VPS, but the guest gets fewer cycles per
   frame, so heavy scenes drop more of the game's own frames (already at 150:
   dense 46.6 fps at 54.8 VPS). Last resort, Matt's call.
+  - Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P15): Minicast
+    freerunning, a dynamic form of this option. The scheduler advances by
+    wall-clock time (the PPE timebase), at most 1/60 s per call. When the
+    SH4 thread is short, the guest gets fewer cycles and drops its own
+    frames, so it is not a speedup. Costs: when ahead, the SH4 spins in
+    idle loops and takes SMT slots from the render thread (it needs a
+    sleep), VPS stops measuring speed, runs are not deterministic. Matt's
+    call, as a pacing option.
 - 5.20-5.24 Minicast JIT review (2026-10-04, Matt: "Can you investigate the
   JIT optimizations that Minicast has? ... I'd like to port them"). Code
   read only, nothing built. Minicast
@@ -3766,6 +3908,30 @@ clock by VPS.
     (JSR/JMP, Matt's pick of the two levels) since the package of 16:42
     (`.got` 0xA5B8, 0 `r2off`). Its sites also ran in the Sonic boot at +
     RTS, which holds the JSR/JMP sites too.
+- 5.3 `bcache` and `JitMac`, merged 2026-10-06 from
+  `OPTIMIZATION_POTENTIAL.md` (open, not built):
+  - `bcache` (P17 BCACHE): the dynamic-end lookup (BET_Dynamic* in
+    `ps3/ps3_driver.cpp`) is ~16 instructions: `ldx cache[idx]`, dependent
+    loads of addr and code, and a `lookups++` load and store. Every rts
+    takes it at the default DYN IC level, and `loop_no_update` calls
+    `bm_GetCode` in C after every timeslice (getcode 115K/s, 5.18). The
+    BCACHE path exists but cannot run on the PS3: `BlockCacheFlatEntry`
+    (`dc/sh4/rec_v2/blockmanager.h`) holds a u32 addr and a
+    `DynarecCodeEntry*` code, 16 bytes on PPC64, and the emitted code
+    expects 8 (it reads code with `lwz` at +4). Declare `code` as a u32
+    (the code cache is in `.text` below 32 MB): ~9 instructions, two
+    independent loads, no store. ~5 lines. Expected gain: noise level
+    (5.26).
+  - `JitMac`: it builds MACL/MACH with `addc`/`adde` in 64-bit mode, the
+    defect that 5.2 fixed for the carry ops ("Not in 5.2"). Its check is
+    P46: Flycast's `tests/src/sh4_ops.h` (300 asserts, mac.l and mac.w
+    among them) as `misc/interp_check` (WSL, ~400 lines, little-endian
+    branches only) and as a boot self-test of the interpreter (the real BE
+    `GetDR`/`SetDR`, the XOR byte lanes); its PrepareOp/RunOp split allows
+    a JIT runner later. Trap: its `mach()` helper returns `mac.l`, so
+    compare `(mach << 32) | macl`. P32: with JitMac OFF, the interpreter's
+    mac.w with S=1 prints a message and skips the op (no pointer
+    increments).
 - 5.28 Larger SH4 code cache (Matt 2026-10-05: "We gotta move to the
   next goal", then picked "Larger SH4 code cache" from section 0's
   list). Built 2026-10-05, HW pending.
@@ -4247,6 +4413,22 @@ clock by VPS.
   - Expected: `[stall] gd read` in dense Crazy Taxi ~50 -> ~0 ms/s and the
     330 ms stall off the SH4 thread (the game waits for that read in
     emulated time instead). The SPEED gain is not known.
+  - Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P22 DMA part and P9
+    GD-ROM part, open), all in `UpdateGDRom()`, which 5.34 changed:
+    - SB_GDLEN = 0 means 32 MB (Flycast `d0d971254`, Pro Pinball Trilogy
+      intro hang). Ours raises the end IRQ with no data and leaves the
+      drive mid-read.
+    - DMA pacing: Flycast moves 10 KB chunks at 1.8 MB/s and small
+      transfers at 25 MB/s (World Series Baseball 2K2 freezes, Sakura
+      Taisen 3 music). Ours, before 5.34: 32,000 bytes inside the SB_GDST
+      write, then more every SlowUpdate (~446 MB/s). Form: a "GD-ROM Speed"
+      FAST / REAL option, counted down in SlowUpdate; REAL loads as slowly
+      as a Dreamcast.
+    - A DMA longer than the data read hangs in
+      `verify(read_params.remaining_sectors>0)` or `verify(!(SB_GDST&1))`
+      (`verify` ends in an endless loop). Reicast clamps the length.
+    - No byte-order issue, low risk. P22's command hangs and P48 stay in
+      `OPTIMIZATION_POTENTIAL.md`.
 - 5.35 JIT EXIT (OPTIMIZATION_POTENTIAL P6; Matt 2026-10-06: test it with
   5.34; at exit "Save the flash only"). Built and PC tested, package of
   17:35, HW pending.
@@ -4331,11 +4513,53 @@ clock by VPS.
     not show the play commands). Clean XMB exit, the flash saved.
   - `mutate.py` after the fix: 17 of 17 planted bugs fail (one new: the
     run kept after a loop back inside it, the HW bug).
-  - Matt 2026-10-06: "SUCCESS for both then." Both stay default OFF. The
-    CD-DA miss stalls go to the known list, parked: "we will catch up with
-    it waaay later". Options when it comes back: silence for the missed
+  - Matt 2026-10-06: "SUCCESS for both then." Then "Keep toggles on":
+    GD-ROM Async defaults to + CD-DA and JIT Exit to ON since the package of
+    18:19 (`ps3/ps3_presets.cpp`). The CD-DA miss stalls go to the known
+    list, parked: "we will catch up with it waaay later". Options when it comes back: silence for the missed
     sector (no stall, a 13 ms gap), or start the read-ahead at the play
     command (fewer misses, a miss can still stall).
+- 5.36-5.40, merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (Matt:
+  "Can you do the merge, then?"). Not built; the full text is under the
+  same P number there.
+  - 5.36 (P5): the deadline scheduler (Reicast: one decrement per
+    timeslice). Ours runs the whole peripheral update every slice (TMU,
+    PVR counters, AICA DMA, the INTC check): estimate 1% or less, medium
+    refactor. And `raw_note_peak()` (`ps3/ps3_rend.cpp`) stores to a
+    global on every 32-byte TA record: update the peak at reset and at
+    STARTRENDER instead (estimate 0.1-0.5% of the SH4 thread).
+  - 5.37 (P17 fschg): Flycast's fschg is an xor on FPSCR plus a decoder SZ
+    flip, and it does not end the block. Ours (`dc/sh4/rec_v2/decoder.cpp`)
+    emits a sync and ends the block outside delay slots; the SZ-only sync
+    reloads FPSCR right after the xor stored it, a load-hit-store on every
+    fschg (hot block 0C0820C2 in `run518b.txt`). Change: drop the
+    `dec_End` and the SZ-only sync; `emit_frchg_test`
+    (`ps3/ps3_jit_frchg.h`, 5.29) must then mask bit 20. ~10 lines.
+    Expected gain: noise level (5.26 removed 1.9M load-hit-stores/s with
+    no measurable gain).
+  - 5.38 (P19, bug): `MatchDiv32` (`dc/sh4/rec_v2/decoder.cpp`) turns
+    div0u/div0s + 32 x (rotcl; div1) into one divide, but rs3 is empty:
+    the high dividend word is dropped, and the ops do a 32/32 divide with
+    an unsigned-only fixup. Simulated (200K cases per row, our
+    interpreter's div1 chain as the reference): unsigned 64/32 wrong in
+    100%; the signed SH manual idiom wrong in 32% of final quotients. That
+    idiom matches in Crazy Taxi, Sonic Adventure and Soul Calibur. ON by
+    default; only JitSafe turns it off. Fix: Flycast's 64/32 form, with
+    `divdu`/`divd` on a dividend built by `clrldi` + `rldimi` and an
+    `extsw` divisor (poisoned upper halves); T back to 0/1 (JIT T COPY, T
+    forwarding, CR0); quo = 0 and rem = dividend on a divide by zero. ~60
+    lines. PC check first: Flycast's `div32_test.cpp` plus random cases in
+    a `misc/*_check` against the interpreter. The `[DIV]` probe must skip
+    pc < 0x8C010000 (its 16 slots fill with boot sites).
+  - 5.39 (P56): with PR=1 every FPU op is an interpreter fallback with a
+    full spill; fmov, flds, fsts and fneg do not depend on PR (Flycast
+    `62085539a`). ~5 lines. Build it only if a PR=1 game shows in `[IFB]`
+    (none in the Crazy Taxi census); fneg only after the P32 fix.
+  - 5.40 (P4): `SetFloatStatusReg()` sets only RM. SH4 DN=1 (the reset
+    FPSCR has it) means denormals are zero; the PPC form is
+    `mtfsfi 7,(DN?4:0)|RM` (NI). A gain only if the PPE stalls on
+    denormals: check what NI does on the PPE first. 1 line, own option.
+    The render thread keeps its own FPSCR.
 
 ---
 
@@ -4362,11 +4586,11 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
 | 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
-| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]` |
-| 6.5 AICA Race Fix | F3 Looney Tunes | `[ ]` |
+| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test) |
+| 6.5 AICA Race Fix | F3 Looney Tunes | `[ ]`; merged 2026-10-06: P24, P31 (CA clamp) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]` |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
-| 6.8 Verified, not scheduled | various | - |
+| 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49 | - |
 
 ### 6.0 Facts set on 2026-10-04
 
@@ -4665,6 +4889,15 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   both are the same. Cost: one multiply per timeslice (<0.05%).
 - HW test: ChuChu menu at SH4 150, SH4 against EFF; Crazy Taxi and Soul
   Calibur for regressions.
+- Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P11 + P57, open):
+  - P11: TCNT is updated once per timeslice (`UpdateTMU_chan()`), so a read
+    inside the slice sees an old count. Flycast `b31f92f8e` adds the cycles
+    spent inside the slice (issue #2093: no randomness in Soul Calibur).
+    Our JIT keeps the cycle count in a register (`ppc_cycles`), so it must
+    store it before a cold memory call. Medium, minor gain.
+  - P57: Flycast's `tests/src/hw/sh4/modules/TimerTest.cpp` (4 tests, 27
+    asserts) as P11's PC check. Its "precision" and "underflow" cases
+    encode P11's rule, so they fail on ours today. ~100 lines of harness.
 
 ### 6.5 AICA Race Fix (Looney Tunes)  `[ ]`
 
@@ -4702,6 +4935,21 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   effects? Also live: Batch 1 moves 34.76 to about 31-32 = timer reload
   after FIQ latency; ARM7 Speed HALF moves it to about 70 = ARM-bound loop;
   neither = paced by the SH4 or a monitor value (`[montrace]`).
+- Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md`, open):
+  - P24, the same G2 DMA code: Flycast raises the end IRQ inside the start
+    call when a transfer takes 512 SH4 cycles or less (128 bytes or less);
+    longer ones stay scheduled at len x 4 cycles (Bangai-O startup, Nomad
+    Soul, the Sports Jam announcer). Ours (DmaFix=1, the default) defers
+    every transfer by at least 64 cycles, so it ends on a later timeslice.
+    3 lines, behind DmaFix for an A/B, apart from the AicaRaceFix option.
+    Keep the Read_SB_ADST guard.
+  - P31, CA clamp: the LEA-3 clamp of 2.2 runs only in nullAICA mode; the
+    twin and SPE ARM7 paths return the raw CA. Near the end of Looney
+    Tunes' ring (LEA 8192) the two modes read a different CA (8189 with the
+    clamp, 8191 without). Clamp after `ps3aica_read_mon` and `ac_twin_mon`
+    with the slot's LSA/LEA (the halfword at A+2 on BE). caique: the
+    hardware reads LEA at a one-shot end, so the clamp is Flycast's
+    workaround, not hardware behaviour.
 
 ### 6.6 SPE AICA Sync (Crazy Taxi crackle)  `[ ]`
 
@@ -4790,6 +5038,31 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 - ARM7 self-test: no STR/STRB, unaligned STR or register-window cases.
 - `_vmem` handler ids: only ids 0-7 fit (id*4 under HANDLER_MAX 0x1F,
   `dc/mem/_vmem.cpp:16-17`); 8 are registered, so a 9th would break.
+- Merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (not scheduled):
+  - P44: `arm_Reset()` sets `armMode = 0x1F` (System) for the cached
+    engine and the JIT (`plugs/vbaARM/arm7.cpp`), and the SPE ARM7 does the
+    same (`ps3/spu/arm7_spu.h`). A reset enters SVC (0x13): the AICA's
+    ARM7DI is ARMv3, with no System mode. Reicast `4caa2b47` and Flycast
+    `882e14f13` (2020) changed it to 0x13. A driver that sets SP right
+    after reset (for SVC) and later selects SVC with a constant runs with
+    SP at ARAM 0x7FE0 (the VBA R13_SVC), so its stack can overwrite its
+    code or data. Link to F1 and F3 unverified. Steps: a log probe in one
+    ChuChu Rocket boot (the first 8 mode changes after a reset; armMode
+    and R13 per mode every 5 s; an SP of 0x03007Fxx in use confirms it),
+    then 0x13 in both engines (2 lines, own toggle), the 45 self-tests,
+    `misc/arm7spe_check` and `misc/arm7spu_check`. HW: ChuChu Rocket,
+    Crazy Taxi, Sonic Adventure, Looney Tunes.
+  - P40: Flycast `tests/src/AicaArmTest.cpp` (13 groups, ~312 checks) as
+    self-tests on all three engines (cached, JIT, SPU). A pass rules out an
+    engine bug in F1's note-off logic. Test only, no risk. It does not
+    catch P49.
+  - P49: with a register shift, Rn = PC reads insn+8 where the ARM7 reads
+    insn+12 (the Rd = PC forms too), and STR/STRB of PC store a stale
+    reg[15], in all three engines (Rm = PC is right). Not in the
+    `[ARMHOT]` dumps (ChuChu is in none); a link to F1 is unlikely. Steps:
+    a log census first; fix only if it fires (2-3 lines per engine,
+    regenerate `arm7_cached_gen.inc`, two self-tests). Do not paste
+    Reicast's `arm-new.h` diff.
 
 ---
 

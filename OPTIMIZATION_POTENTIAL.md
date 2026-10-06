@@ -38,6 +38,12 @@ Items P44-P57. New facts in P2, P8, P10, P26, P34, P37, P40 and in section
 reading. The main claims of P44, P45, P47-P50, P54, P55 and P57 were checked
 again in the code. Review only: nothing is built.
 
+Merge 2026-10-06 (Matt: "Can you do the merge, then?"): the items with a
+plan goal now sit in `OPTIMIZATION_PLAN.md` at that goal, with a short
+entry; its section 0 lists where. Their headings here say "merged: plan
+...". The text here stays the full reference (evidence, file and line
+numbers). Items and parts with no plan goal stay only here.
+
 Rule: every item ends with a hardware test on Matt's PS3. Never RPCS3.
 One change per HW run, each behind its own toggle, default OFF until HW
 validated, SH4 Clock 200.
@@ -59,63 +65,63 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
 | # | Item | Kind | Helps | Size | Relation to the plan |
 |---|---|---|---|---|---|
-| P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | extends the parked Soul Calibur faults (section 0), 5.12 SPE list #4, TArender.MD TR5 item 3 |
-| P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | TArender.MD TR5 item 1: "the A/B was not run" |
-| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06; CD-DA miss stalls known, parked |
-| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | extends RESEARCH.MD 3e |
-| P5 | Small speed items | speed | <= 1% each | small to medium | bind scan is 5.10 (not chosen) |
-| P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06; EMU_TERM still never runs |
-| P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | new |
+| P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | merged: plan section 0, parked Soul Calibur faults; also 5.12 SPE list #4, TArender.MD TR5 item 3 |
+| P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | merged: plan section 0, parked Soul Calibur faults; TArender.MD TR5 item 1: "the A/B was not run" |
+| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06, default + CD-DA; CD-DA miss stalls known, parked |
+| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | merged: plan 5.40; extends RESEARCH.MD 3e |
+| P5 | Small speed items | speed | <= 1% each | small to medium | merged: plan 5.36; bind scan is 5.10 (not chosen) |
+| P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06, default ON; EMU_TERM still never runs |
+| P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | merged: plan 5.17 (with P55) |
 | P8 | Intensity colour clamp order | bug | brightness (Reicast: Red Dog) | small | new |
-| P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | TArender.MD TR4 covers the store stage only |
+| P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | GD-ROM DMA part merged: plan 5.34; TArender.MD TR4 covers the store stage only |
 | P10 | PVR register and list rules (7) | bug | unknown games | small to medium | new |
-| P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | new |
+| P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
 | P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
-| P14 | Fog and offset colour shader reference | reference | 3a, 3b | - | 3a, 3b (open) |
-| P15 | Freerunning (Minicast) | pacing option | - | medium | RESEARCH.MD says "not applicable"; close to 5.19 |
-| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | do before P1 and P2: it can change their facts |
-| P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | 5.18 load-hit-store list; 5.3 bcache |
-| P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | parked Soul Calibur faults |
-| P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | new |
-| P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | 5.13 A3 verdict |
-| P21 | CD-DA during data reads, GD-ROM status timing | bug | Hydro Thunder, NFL Blitz 2001, Cool Boarders Burrrn, Ms. Pac-Man, Bust-a-Move 4 | 1 line, then ~60 | plan 3h |
-| P22 | GD-ROM command hangs and DMA rules | bug | Pro Pinball Trilogy, WSB 2K2, Sakura Taisen 3 | ~30-40 lines | extends P9; corrects section 4 |
-| P23 | TOC fields and the GDI parser | bug | GDI sets, V-Rally 2, Eldorado Gate | ~25 lines | new |
-| P24 | Small G2 DMAs complete at once | bug | Bangai-O, Nomad Soul | 3 lines | next to plan 6.5 |
+| P14 | Fog and offset colour shader reference | reference | 3a, 3b | - | merged: plan 3a, 3b (open) |
+| P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
+| P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2 |
+| P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
+| P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults |
+| P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | merged: plan 5.38 |
+| P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict) |
+| P21 | CD-DA during data reads, GD-ROM status timing | bug | Hydro Thunder, NFL Blitz 2001, Cool Boarders Burrrn, Ms. Pac-Man, Bust-a-Move 4 | 1 line, then ~60 | merged: plan 3h |
+| P22 | GD-ROM command hangs and DMA rules | bug | Pro Pinball Trilogy, WSB 2K2, Sakura Taisen 3 | ~30-40 lines | DMA part merged: plan 5.34; commands: extends P9; corrects section 4 |
+| P23 | TOC fields and the GDI parser | bug | GDI sets, V-Rally 2, Eldorado Gate | ~25 lines | TOC fields merged: plan 3h; GDI parser: new |
+| P24 | Small G2 DMAs complete at once | bug | Bangai-O, Nomad Soul | 3 lines | merged: plan 6.5 |
 | P25 | Render rules: depth write, sprite cull, flat shading, trilinear, VQ formats | bug | Worms World Party, Bust-a-Move 4, Re-Volt, South Park Rally, NFL 2K2 | 1-5 lines each | new |
 | P26 | Framebuffer output: write watch, interlaced and 24-bit reads | bug | Ikaruga loading screens, 2D screens | ~40 lines | GOALS.md G6.4 magic word |
-| P27 | Modifier volumes in the TR list | bug | Xtreme Sports shadows | ~30 lines | plan 3c |
+| P27 | Modifier volumes in the TR list | bug | Xtreme Sports shadows | ~30 lines | merged: plan 3c |
 | P28 | SPG timing: field bit, HBlank modes | bug | interlaced games (unknown) | small | new |
 | P29 | Maple reply timing and commands | bug | Geist Force, Silent Scope | ~40 lines | corrects section 4 |
 | P30 | P4 mirrors and operand-cache RAM banks | bug | NHL 2K2 | ~15 lines | new |
-| P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | plan 2.2, 6.8 |
-| P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | new |
+| P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | CA clamp merged: plan 6.5; rest: plan 2.2, 6.8 |
+| P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | mac.w merged: plan 5.3 `JitMac`; fneg: new |
 | P33 | ELF loader: segments first | bug | homebrew .elf | ~30 lines | new |
 | P34 | Disc swap | feature | Shenmue, Skies of Arcadia, Grandia II, D2, RE Code Veronica | ~150 lines | corrects section 4 |
 | P35 | CUE/BIN and CHD readers | feature | more image formats | ~250 lines / 6-8K lines | new |
 | P36 | Cheat files and 16:9 output | feature | widescreen codes | ~250 lines | new |
 | P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13 |
-| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | plan 3d (those games need it) |
+| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it) |
 | P39 | reios (HLE BIOS) | feature | boot without `dc_boot.bin` | ~2K lines | low value |
-| P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | plan 6.8 |
-| P41 | FMV: interpreter fallbacks (addc, swap.b, xtrct) | speed | Sofdec FMVs: Sonic Adventure intro (SPEED 57-71%), Space Channel 5 (~94%) | no new code | = plan 5.2 (built, HW pending); add an FMV boot to its HW test |
-| P42 | FMV: YUV texture decode | speed | Soul Calibur opening (after P16), every YUV FMV | medium to large | P1 step 2, 5.12 SPE list #4, the Cg work of P1 and P14 |
-| P43 | FMV: YUV converter on the SH4 thread | speed | Sofdec FMVs (~1-3% of the SH4 thread, estimate) | ~40 lines | 5.12 left the converter off the SPE |
-| P44 | ARM7 resets in System mode, not SVC | bug | sound drivers that select SVC after reset; F1 and F3 unverified | 2 lines + a log probe | plan section 6 |
+| P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | merged: plan 6.8 |
+| P41 | FMV: interpreter fallbacks (addc, swap.b, xtrct) | speed | Sofdec FMVs: Sonic Adventure intro (SPEED 57-71%), Space Channel 5 (~94%) | no new code | = plan 5.2, HW 2026-10-06: Sonic FMV +23% VPS |
+| P42 | FMV: YUV texture decode | speed | Soul Calibur opening (after P16), every YUV FMV | medium to large | merged: plan 5.12 (SPE list #4); P1 step 2, the Cg work of P1 and P14 |
+| P43 | FMV: YUV converter on the SH4 thread | speed | Sofdec FMVs (~1-3% of the SH4 thread, estimate) | ~40 lines | merged: plan 5.12 (the converter stays on the PPU) |
+| P44 | ARM7 resets in System mode, not SVC | bug | sound drivers that select SVC after reset; F1 and F3 unverified | 2 lines + a log probe | merged: plan 6.8 |
 | P45 | Mipmaps: upload the whole mip chain | bug (image) | distant textures alias; about half the texture fills in Crazy Taxi and Sonic Adventure | ~70 lines | gives P25's trilinear weights a meaning |
-| P46 | Flycast SH4 op tests as a PC check and a boot self-test | test | the interpreter runs every PR=1 FPU op | ~400 lines | P32 |
-| P47 | GD-ROM REQ_STAT position bytes | bug | software that reads the CD-DA position (unknown) | ~8 lines | plan 3h |
+| P46 | Flycast SH4 op tests as a PC check and a boot self-test | test | the interpreter runs every PR=1 FPU op | ~400 lines | merged: plan 5.3 `JitMac` (its check); P32 |
+| P47 | GD-ROM REQ_STAT position bytes | bug | software that reads the CD-DA position (unknown) | ~8 lines | merged: plan 3h |
 | P48 | GD-ROM SET_MODE writes at twice the offset | bug | SET_MODE with an offset (unknown) | 1 line | extends P22 |
-| P49 | ARM7 PC reads: Rn = PC with a register shift, STR PC | bug | rare encodings (none in the hot-code dumps) | log census, then 2-3 lines per engine | P40 |
+| P49 | ARM7 PC reads: Rn = PC with a register shift, STR PC | bug | rare encodings (none in the hot-code dumps) | log census, then 2-3 lines per engine | merged: plan 6.8 |
 | P50 | On-screen FPS and SPEED | feature | speed on the TV without the UDP listener | ~30-50 lines | new |
-| P51 | Screenshot to PNG | feature | pixel evidence for visual faults | ~60-80 lines | new |
+| P51 | Screenshot to PNG | feature | pixel evidence for visual faults | ~60-80 lines | merged: plan section 0, parked Soul Calibur faults (evidence) |
 | P52 | Anisotropic filtering, texture filter override | quality | textures at steep angles | ~10 lines | after P45 |
 | P53 | Widescreen: draw geometry outside 4:3 | feature | 16:9 output | ~20 lines | not P36's stretch |
-| P54 | Render-to-texture pixel packing | bug | RTT games (none of our test games) | ~15 lines + modes 4 and 5 | GOALS.md G6.4 |
-| P55 | VRAM writes from SQ and DMA: one address map per block | speed | 0.5% of the SH4 thread or less (estimate) | ~10 lines | with P7 |
-| P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (none seen) | ~5 lines | after P32 |
-| P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | P23, P11 |
+| P54 | Render-to-texture pixel packing | bug | RTT games (none of our test games) | ~15 lines + modes 4 and 5 | merged: plan section 3 (RTT note); GOALS.md G6.4 |
+| P55 | VRAM writes from SQ and DMA: one address map per block | speed | 0.5% of the SH4 thread or less (estimate) | ~10 lines | merged: plan 5.17 (with P7) |
+| P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (none seen) | ~5 lines | merged: plan 5.39; after P32 |
+| P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -141,7 +147,7 @@ our backend, because every SH4 register is pinned (section 4).
 
 ## 1. Speed
 
-### P1 Soul Calibur texture path  `[ ]`
+### P1 Soul Calibur texture path  `[ ]` merged: plan section 0 (Soul Calibur faults)
 
 2026-10-06: do P16 first. In the fight windows of `run526c.txt` (scratchpad
 of session 3f596c0b), `[texfmt]` shows yuv=840 565=210 p4=0-7 per 5 s. That
@@ -246,7 +252,7 @@ PS3 form, in steps:
   Calibur fight (`tex split`, busy, RPS, VPS), Crazy Taxi (no stale textures:
   FMV, menus, map).
 
-### P2 Frame Drop A/B, then one pending slot  `[ ]`
+### P2 Frame Drop A/B, then one pending slot  `[ ]` merged: plan section 0 (Soul Calibur faults)
 
 Ours:
 - Frame Drop defaults to WAIT 1 FRAME (`ps3/ps3_presets.cpp:49`,
@@ -355,7 +361,7 @@ scratchpad of session 8112eaf0, after 5.33), `[stall] gd read` is 77.4,
 28.6 ms), and the SH4 thread never sleeps. That is 1.5-13% of the SH4
 thread. P3 stays parked (Matt 2026-10-05).
 
-### P4 FPSCR.DN -> PPC NI bit  `[ ]`
+### P4 FPSCR.DN -> PPC NI bit  `[ ]` merged: plan 5.40
 
 - Ours: `SetFloatStatusReg()` (`dc/sh4/sh4_registers.cpp:89-96`) sets only the
   rounding mode (`mtfsfi 7,RM`).
@@ -368,7 +374,7 @@ thread. P3 stays parked (Matt 2026-10-05).
 - Value: unverified. A gain only if the PPE stalls on denormals; check what NI
   does on the PPE before use. One line, behind an option.
 
-### P5 Small speed items  `[ ]`
+### P5 Small speed items  `[ ]` merged: plan 5.36
 
 - Deadline scheduler (Reicast `hw/sh4/SuperH4_impl.cpp:15-28`,
   `sh4_sched.cpp`): one decrement per timeslice. Ours runs the whole
@@ -381,7 +387,7 @@ thread. P3 stays parked (Matt 2026-10-05).
 - ps3gl bind scan: see 5.10 in the plan (not chosen). It weighs more in the
   render-bound Soul Calibur than in Crazy Taxi.
 
-### P16 Texture cache slots collide  `[ ]`
+### P16 Texture cache slots collide  `[ ]` merged: plan section 0 (Soul Calibur faults)
 
 Our bug, found by the Flycast comparison. Flycast keeps its textures in an
 `unordered_map` with a 64-bit key (TSP size bits + TCW,
@@ -430,7 +436,7 @@ FMV (2026-10-06): the Soul Calibur opening shows the same misses.
   a third of the decodes gave an all-black tile (`blacktex` 3596, 3615).
 - HW check: also the Soul Calibur opening (`tex decodes`, `live`, busy).
 
-### P17 Small JIT items from Flycast  `[ ]`
+### P17 Small JIT items from Flycast  `[ ]` merged: plan 5.3 (BCACHE), 5.37 (fschg)
 
 Expect gains at noise level: 5.26 removed 1.9M load-hit-stores/s with no
 measurable gain.
@@ -465,7 +471,10 @@ measurable gain.
   - An exact table (Flycast's way) needs 8M slots (32 MB) and aliases the RAM
     mirrors and the BIOS. Not proposed.
 
-### P41 FMV: interpreter fallbacks (addc, swap.b, xtrct)  `[ ]`
+### P41 FMV: interpreter fallbacks (addc, swap.b, xtrct)  `[x]` = plan 5.2, HW 2026-10-06
+
+- HW 2026-10-06 (plan 5.2): the Sonic Adventure FMV after boot ran +23%
+  VPS (SPEED 69-71% -> 86-87%); play equal.
 
 This is plan 5.2 (JIT Carry), built and waiting for its HW test. It changes
 the 5.2 line "Expected: correctness only" for FMVs.
@@ -519,7 +528,7 @@ Steps:
   says it cuts the memory ops by ~94% ("sel"). It needs its own toggle and
   a HW test.
 
-### P42 FMV: YUV texture decode  `[ ]`
+### P42 FMV: YUV texture decode  `[ ]` merged: plan 5.12
 
 Facts:
 - Soul Calibur opening (`ps3log_a2hv_run1.txt`): ~270-280 us per tile
@@ -579,7 +588,7 @@ Checks: PC test first, bit-exact against the current `decode()` (random
 VRAM; planar, twiddled and VQ YUV). HW: Soul Calibur opening (after P16)
 and the Sonic Adventure intro FMV: `tex split` decode %, busy, SPEED.
 
-### P43 FMV: YUV converter on the SH4 thread  `[ ]`
+### P43 FMV: YUV converter on the SH4 thread  `[ ]` merged: plan 5.12
 
 Facts (Sonic Adventure intro FMV, `ps3log_533_run1.txt`): `[stall] dma`
 (ch2 DMA, `dc/sh4/dmac.cpp:53`) is 15.6-41.6 ms per second, ~1 ms per
@@ -617,7 +626,7 @@ Checks: PC test first, bit-exact against the current converter (random
 planes, all four quadrants, blocks split across calls). HW: Sonic
 Adventure intro FMV, `[stall] dma`.
 
-### P55 VRAM writes from SQ and DMA: one address map per block  `[ ]`
+### P55 VRAM writes from SQ and DMA: one address map per block  `[ ]` merged: plan 5.17
 
 - Minicast `2d84a2e` (`r6b/tacore-opts`, `libswirl/gpl/lxdream/tacore.inl`
   `ta_write_polygon_buffer`): when a run stays inside one 4 MB VRAM bank,
@@ -638,7 +647,7 @@ Adventure intro FMV, `[stall] dma`.
   all were VRAM: about 0.5% of the SH4 thread (estimate). Count the
   VRAM-direct blocks in `[ta-split]` first.
 
-### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[ ]`
+### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[ ]` merged: plan 5.39
 
 - Flycast `62085539a` (2022, `core/hw/sh4/dyna/decoder.cpp:660-667`): with
   PR=1 every FPU op falls back to the interpreter, except fmov, flds, fsts
@@ -684,7 +693,7 @@ Adventure intro FMV, `[stall] dma`.
   does. Dev `bcbc43fad` ("end the timeslice on Stop") adds nothing for us
   (section 4).
 
-### P7 SB_LMMODE0/1 ignored  `[ ]`
+### P7 SB_LMMODE0/1 ignored  `[ ]` merged: plan 5.17
 
 - Ours: `SB_LMMODE0/1` are registered (`dc/mem/sb.cpp:56-59`, :637-648) but
   never read.
@@ -726,7 +735,7 @@ Adventure intro FMV, `[stall] dma`.
     double precision is not fully pipelined (Cell documentation; not
     measured here).
 
-### P9 Hangs on rare input  `[ ]`
+### P9 Hangs on rare input  `[ ]` GD-ROM DMA part merged: plan 5.34
 
 None of these messages appears in the logs of past sessions (461 scratchpad
 text files checked). Each fix is 1-4 lines.
@@ -804,7 +813,7 @@ Games affected: unknown for each.
   (`plugs/drkPvr/SPG.cpp:84`), so our scissor must scale the clip the same
   way.
 
-### P11 TMU TCNT inside the timeslice  `[ ]`
+### P11 TMU TCNT inside the timeslice  `[ ]` merged: plan 6.4
 
 - Flycast `b31f92f8e` ("sh4: increase timers resolution", issue #2093: lack
   of randomness in Soul Calibur) reads TCNT with the cycles spent inside the
@@ -821,7 +830,7 @@ Games affected: unknown for each.
   localtime - gmtime offset (`hw/aica/aica_mmio.cpp:46-59`). On PS3 `isdst` is
   probably 0, so it may never fire (unverified). One line.
 
-### P18 Depth precision (Soul Calibur background)  `[ ]`
+### P18 Depth precision (Soul Calibur background)  `[ ]` merged: plan section 0 (Soul Calibur faults)
 
 - Ours: `ps3/ps3_rend.cpp` `draw_scene()` (:1827-1858) maps depth to
   z = 1 - n/W (:1854 `m[14] = -2n`) in a fixed-point Z24S8 buffer
@@ -851,7 +860,7 @@ Games affected: unknown for each.
 - HW check: Soul Calibur fight (background stable); Crazy Taxi, Sonic
   Adventure and the BIOS menu without new depth faults.
 
-### P19 div32 match gives wrong results  `[ ]`
+### P19 div32 match gives wrong results  `[ ]` merged: plan 5.38
 
 - Ours: the matched `div0u`/`div0s` + 32 x (`rotcl`; `div1`) becomes one
   divide (`dc/sh4/rec_v2/decoder.cpp:1158-1186`). But rs3 is empty (:1163,
@@ -895,7 +904,7 @@ Games affected: unknown for each.
 - About 60 lines. PC check first: port `div32_test.cpp` plus random cases
   into a `misc/*_check`, against the interpreter.
 
-### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[ ]`
+### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[ ]` merged: plan 5.13 A3
 
 Missing DSP in the default setup:
 - Default setup: SPE AICA Sound ON, SPE AICA DSP OFF
@@ -995,7 +1004,7 @@ DSP JIT ON. Crazy Taxi, Sonic Adventure, ChuChu Rocket, Looney Tunes. Read the
 `dsp jit` line (`slow=`, `bad=`), SPU busy and SPEED/VPS. Listen for reverb,
 for voices that were missing, and for old echo after a scene change (G2).
 
-### P21 CD-DA during data reads, GD-ROM status timing  `[ ]`
+### P21 CD-DA during data reads, GD-ROM status timing  `[ ]` merged: plan 3h
 
 - Step 1 (1 line): SPI_CD_READ stops CD-DA.
   - Flycast master `core/hw/gdrom/gdromv3.cpp:752` (`cdda.status = NoInfo`;
@@ -1027,7 +1036,7 @@ for voices that were missing, and for old echo after a scene change (G2).
   - The change is 2 days old in dev and already needed one regression fix.
 - HW check: ChuChu Rocket and Looney Tunes CD-DA, Crazy Taxi loading.
 
-### P22 GD-ROM command hangs and DMA rules  `[ ]`
+### P22 GD-ROM command hangs and DMA rules  `[ ]` DMA part merged: plan 5.34
 
 More hangs on rare input (P9 has the first five). Flycast
 `core/hw/gdrom/gdromv3.cpp` against ours (`dc/gdrom/gdromv3.cpp`):
@@ -1057,7 +1066,7 @@ More hangs on rare input (P9 has the first five). Flycast
   loads as slow as on a Dreamcast.
 - About 30-40 lines. No byte-order issue. Low risk.
 
-### P23 TOC fields and the GDI parser  `[ ]`
+### P23 TOC fields and the GDI parser  `[ ]` TOC fields merged: plan 3h
 
 - GDI parser (`plugs/ImgReader/iso9660.cpp`):
   - :174 reads each line with `fscanf("%d %d %d %d %s %d")`. A quoted file
@@ -1079,7 +1088,7 @@ More hangs on rare input (P9 has the first five). Flycast
 - About 25 lines. TOC bytes are built one by one, so byte order is neutral.
   Low risk.
 
-### P24 Small G2 DMAs complete at once  `[ ]`
+### P24 Small G2 DMAs complete at once  `[ ]` merged: plan 6.5
 
 - Flycast `core/hw/aica/aica_if.cpp:404-409`: a transfer of 512 SH4 cycles
   or less (128 bytes or less) raises its end IRQ inside the start call.
@@ -1163,7 +1172,7 @@ Each one is small and needs no shader.
   `SPG_CONTROL.interlace ? FB_R_SOF2 : FB_R_SOF1`
   (`core/hw/pvr/Renderer_if.cpp:633-637`).
 
-### P27 Modifier volumes in the TR list (Xtreme Sports)  `[ ]`
+### P27 Modifier volumes in the TR list (Xtreme Sports)  `[ ]` merged: plan 3c
 
 - Flycast dev `f2013c652` (`origin/dev core/hw/pvr/ta_vtx.cpp:1303-1322`):
   when a pass shares the opaque and translucent modifier-volume pointers
@@ -1230,7 +1239,7 @@ Each one is small and needs no shader.
 - About 15 lines. Only the RAM offset changes; storage stays the same. Low
   risk. NHL 2K2 itself not checked.
 
-### P31 AICA register details  `[ ]`
+### P31 AICA register details  `[ ]` CA clamp merged: plan 6.5
 
 Default path (SPE AICA Sound ON):
 - CA clamp. The LEA-3 clamp of plan 2.2 (Flycast `788cbfb64`: VC 2K sports
@@ -1261,7 +1270,7 @@ nullAICA only (SPE AICA Sound OFF):
   Byte-order trap: in the AICA_PS3 branch, split `rez_28_0` MSB-first into
   `rez:1, VOFF:1, LPOFF:1`. About 10 lines.
 
-### P32 SH4 interpreter fixes  `[ ]`
+### P32 SH4 interpreter fixes  `[ ]` mac.w merged: plan 5.3 (JitMac)
 
 - fneg with PR=1 on an odd register. Flycast `11fcadf37` (issue #2139) flips
   FR(n) whatever PR is. Ours (`dc/sh4/sh4_fpu_ops.h:474-483`) flips
@@ -1287,7 +1296,7 @@ nullAICA only (SPE AICA Sound OFF):
 - About 30 lines; keep the per-word swap from word-aligned starts. Homebrew
   only. Whether current KOS ELFs use .init_array: unverified.
 
-### P44 ARM7 resets in System mode, not SVC  `[ ]`
+### P44 ARM7 resets in System mode, not SVC  `[ ]` merged: plan 6.8
 
 - Ours: `arm_Reset()` sets `armMode = 0x1F` (System;
   `plugs/vbaARM/arm7.cpp:350`, used by the cached engine and the JIT). The
@@ -1369,7 +1378,7 @@ nullAICA only (SPE AICA Sound OFF):
 - HW check: Crazy Taxi roads and Sonic Adventure floors at a distance;
   `[ps3gl] mip uploads` above 0; render `busy` against the last run.
 
-### P47 GD-ROM REQ_STAT position bytes  `[ ]`
+### P47 GD-ROM REQ_STAT position bytes  `[ ]` merged: plan 3h
 
 - Ours (`dc/gdrom/gdromv3.cpp:653-678`): `stat[5..7]` =
   `cdda.CurrAddr.B0`, `B1`, `B2`. The union (:127-136) puts B0-B2 on the
@@ -1410,7 +1419,7 @@ nullAICA only (SPE AICA Sound OFF):
   (`gdrom_response.cpp:25-26`); Flycast has "Rev 6.43" / "990408"
   (`core/hw/gdrom/gdromv3.cpp:1373-1374`).
 
-### P49 ARM7 PC reads: Rn = PC with a register shift, and STR PC  `[ ]`
+### P49 ARM7 PC reads: Rn = PC with a register shift, and STR PC  `[ ]` merged: plan 6.8
 
 - Rule (ARM7 pipeline): when the shift amount comes from a register, every
   PC operand reads insn+12, not insn+8. STR and STRB of PC store insn+12.
@@ -1448,7 +1457,7 @@ nullAICA only (SPE AICA Sound OFF):
   skips an instruction.
 - No byte-order issue. Risk: low (rare encodings).
 
-### P54 Render-to-texture pixel packing  `[ ]`
+### P54 Render-to-texture pixel packing  `[ ]` merged: plan section 3 (RTT note)
 
 RTT has never fired in Crazy Taxi, Sonic Adventure or Soul Calibur
 (`rtt=0/0`). These fixes matter only for RTT games (plan section 3 lists
@@ -1473,7 +1482,7 @@ Flycast's RTT games).
 - About 15 lines, plus the two missing modes. Endian-neutral: the pack
   works on host words.
 
-### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[ ]`
+### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[ ]` RM verify merged: plan 3d; TMU test: plan 6.4
 
 - GDI track paths with a backslash. Flycast's fixture
   `tests/files/test_gdis/a/cs.gdi` names `tracks\cs01.bin`. Ours
@@ -1512,7 +1521,7 @@ Flycast's RTT games).
   reads `AST = dma_buffer_in[10]` (`core/hw/maple/maple_devs.cpp:1091`); on
   our word-ordered buffer that needs XOR-3 byte access.
 
-### P14 Fog and offset colour reference (plan 3a, 3b)  `[ ]`
+### P14 Fog and offset colour reference (plan 3a, 3b)  `[ ]` merged: plan 3a, 3b
 
 Reicast GLES shader, the reference for a PVR Cg shader:
 - shader text `rend/gles/glesrend.cpp:138-323`: `fog_mode2()` :208-216,
@@ -1533,7 +1542,7 @@ Flycast (2026-10-06), closest to a Cg path:
 - Fixed function is enough for outside-mode tile clip (scissor,
   `core/rend/transform_matrix.cpp:206-254`), the FB clip and P25.
 
-### P15 Freerunning (Minicast)  `[ ]`
+### P15 Freerunning (Minicast)  `[ ]` merged: plan 5.19
 
 - Commits `2874978`, `02f4ab3`, `b40f51b` (`hw/sh4/SuperH4_impl.cpp`):
   `UpdateSystem` advances the scheduler by wall-clock time (the A9 global
@@ -1626,7 +1635,7 @@ Flycast (2026-10-06), closest to a Cg path:
   table (`38045d1`) is not needed. Its mouse bits: left = bit 2, right =
   bit 1, middle = bit 3, active low; the wheel is inverted.
 
-### P38 Windows CE (SH4 MMU)  `[ ]`
+### P38 Windows CE (SH4 MMU)  `[ ]` merged: plan 3d
 
 - Flycast: `core/hw/sh4/modules/mmu.cpp` 596 + `fastmmu.cpp` 337 + `mmu.h`
   169 lines; `wince.h` (409 lines) is mostly tracing.
@@ -1662,7 +1671,7 @@ Flycast (2026-10-06), closest to a Cg path:
   pointer writes into ROM and RAM (:411-427, :740-765). About 2K lines. Low
   value.
 
-### P40 Flycast ARM7 tests as self-tests  `[ ]`
+### P40 Flycast ARM7 tests as self-tests  `[ ]` merged: plan 6.8
 
 - Flycast `tests/src/AicaArmTest.cpp` (13 groups, ~312 checks): post-index
   loads with Rd == Rn, LSR/ASR #32 and RRX offsets, unaligned LDR with
@@ -1679,7 +1688,7 @@ Flycast (2026-10-06), closest to a Cg path:
   Rm = PC with a register shift (`AicaArmTest.cpp:522`, :765) and STM {pc}
   (:1016), but never Rn = PC with a register shift or STR of PC.
 
-### P46 Flycast SH4 op tests as a PC check and a boot self-test  `[ ]`
+### P46 Flycast SH4 op tests as a PC check and a boot self-test  `[ ]` merged: plan 5.3 (JitMac check)
 
 - Flycast `tests/src/sh4_ops.h` (1473 lines, 300 asserts) with
   `tests/src/Sh4InterpreterTest.cpp` (13 test groups; commits `e70a0dcf3`
@@ -1725,7 +1734,7 @@ Flycast (2026-10-06), closest to a Cg path:
 - Value: Matt reads SPEED on the TV without the UDP listener. Cost: a few
   quads per frame, nothing when OFF. Risk: low-medium (GL state).
 
-### P51 Screenshot to PNG  `[ ]`
+### P51 Screenshot to PNG  `[ ]` merged: plan section 0 (Soul Calibur faults, evidence)
 
 - Minicast: `3b5c9b7` (a mappable button), `e7bb698`, `450eb49`, `22c3a7c`
   (PNG with stb; `libswirl/rend/mister_rend/mister_support.cpp:277`
@@ -2092,6 +2101,9 @@ Fourth review (2026-10-06):
 
 ## 5. Suggested order
 
+Merge 2026-10-06: pick the merged items from `OPTIMIZATION_PLAN.md` (its
+section 0 lists where). The lists below stay as the reference order.
+
 Updated 2026-10-06 with the Flycast items. The Soul Calibur items (P1, P2,
 P16, P18) stay parked until Matt brings them back.
 
@@ -2108,7 +2120,7 @@ P16, P18) stay parked until Matt brings them back.
 7. The rest when Matt picks them.
 
 FMV order (2026-10-06):
-1. P41: the plan 5.2 HW test with an FMV boot added. No new code.
+1. P41: done (plan 5.2, HW 2026-10-06: Sonic FMV +23% VPS).
 2. P16 (parked with the Soul Calibur items). It also fixes the Soul Calibur
    opening misses; run the opening after it.
 3. P42 (a) or (b), after P16 shows how many decodes are left.

@@ -69,8 +69,8 @@ int g_jit_code_cache_preset = 2;  // SH4 code cache in use: 0 = 6 MB, 1 = 12 MB,
 int g_jit_frchg_preset     = 0;   // 1 = an FPSCR sync that only flips FR swaps the pinned bank inline (5.29)
 int g_jit_prefetch_preset  = 0;   // 1 = a pref outside the store queue prefetches the RAM line with dcbt (5.30)
 int g_jit_guard_reuse_preset = 0; // 1 = a memory op whose base passed its check earlier in the block skips it (5.31)
-int g_jit_exit_preset      = 0;   // 1 = an XMB exit returns from the JIT loop and saves the flash (OPTIMIZATION_POTENTIAL P6)
-int g_gd_async_preset      = 0;   // disc reads on a worker thread: 1 data, 2 also a CD-DA read-ahead (P3)
+int g_jit_exit_preset      = 1;   // 1 = an XMB exit returns from the JIT loop and saves the flash (5.35 = P6, HW)
+int g_gd_async_preset      = 2;   // disc reads on a worker thread: 1 data, 2 also a CD-DA read-ahead (5.34 = P3, HW)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
