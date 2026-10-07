@@ -33,6 +33,8 @@ extern "C" void ccall_census_dump(double seconds, double vbs);
 void arm_jit_census_dump(double seconds);
 // [arm7s] ARM7 and AICA timer activity (plugs/nullAICA/aica.cpp), always on.
 void aica_arm7s_dump(double wall_s);
+// [aicafix] the Looney Tunes fixes at work (plugs/nullAICA/aica.cpp, plan 6.5), on while one of them is on.
+void aica_fix_dump(double wall_s);
 // [ta-split] TA store path split (plugs/drkPvr/ta.cpp, plan 5.17), always on.
 void ta_split_dump(double seconds);
 // [gdr] disc reads per caller (ps3/ps3_gdasync.cpp, OPTIMIZATION_POTENTIAL P3), on when there were reads.
@@ -369,6 +371,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 stall_dump(tdiff);                 // plan 5.32, the same switch
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs
                 aica_arm7s_dump(tdiff);
+                aica_fix_dump(tdiff);
                 ta_split_dump(tdiff);
                 gda_stats(tdiff);
                 snd_thread_stats();

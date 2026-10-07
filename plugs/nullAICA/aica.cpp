@@ -106,6 +106,21 @@ void UpdateSh4Ints()
     aica_sh4_irq_apply(on);
 }
 
+extern "C" int get_aica_race_fix_preset();
+void arm_avoid_race();   // vbaARM/arm7.cpp
+u32 g_aicafix_raises;    // [aicafix]: arm_avoid_race calls
+
+// AICA Race Fix (Flycast c7d214e55 + 51089c5e0): an SH4 interrupt left pending, new or not, gives the ARM7 its ticks.
+static void sh4_ints_race()
+{
+    UpdateSh4Ints();
+    if ((MCIEB->full & MCIPD->full) != 0)
+    {
+        g_aicafix_raises++;
+        arm_avoid_race();
+    }
+}
+
 // ---- Timers ----
 
 static void timer_overflow_diag(u32 id);
@@ -283,6 +298,44 @@ void aica_arm7s_dump(double wall_s)
         aica_montrace_dump();
 }
 
+void g2dma_take(u32 out[7]);                          // dc/aica/aica_if.cpp
+void arm_spe_fix_take(u32 out[6]);                    // ps3/ps3_arm_spe.cpp
+extern u32 g_arm_races, g_arm_resets, g_arm_stale;    // vbaARM/arm7.cpp
+extern u32 g_aicafix_ca_reads, g_aicafix_ca_clamped;  // sgc_if.cpp
+extern "C" int get_arm7_reset_fix_preset();
+extern "C" int get_aica_ca_clamp_preset();
+
+// [aicafix] (plan 6.5, P44, P31) every ~5 s while one of the three fixes is on: G2 DMA starts and what its guards
+// did, SH4 interrupts raised and ARM7 slices extended, ARM7 resets and stale FIQ latches, CA reads and clamps.
+void aica_fix_dump(double wall_s)
+{
+    const int race = get_aica_race_fix_preset(), rst = get_arm7_reset_fix_preset(), clamp = get_aica_ca_clamp_preset();
+    if (!race && !rst && !clamp)
+        return;
+    static double acc;
+    acc += wall_s;
+    if (acc < 5.0)
+        return;
+    acc = 0.0;
+    u32 g[7], s[6];
+    g2dma_take(g);
+    if (g_arm_spe)
+        arm_spe_fix_take(s);
+    else
+    {
+        s[0] = g_arm_races;
+        s[1] = g_aicafix_raises;
+        s[2] = g_arm_resets;
+        s[3] = g_arm_stale;
+        s[4] = g_aicafix_ca_reads;
+        s[5] = g_aicafix_ca_clamped;
+        g_arm_races = g_aicafix_raises = g_arm_resets = g_arm_stale = g_aicafix_ca_reads = g_aicafix_ca_clamped = 0;
+    }
+    printf("[aicafix] race %d reset %d clamp %d | g2 starts %u %u KB busy %u noaden %u irqrd %u dup %u end31 %u"
+           " | sh4 irq raises %u slices extended %u | arm7 resets %u stale latch %u | ca reads %u clamped %u\n",
+           race, rst, clamp, g[0], g[1] >> 10, g[2], g[3], g[4], g[5], g[6], s[1], s[0], s[2], s[3], s[4], s[5]);
+}
+
 // ---- Main loop ----
 
 void FASTCALL UpdateAICA(u32 Samples)
@@ -330,9 +383,24 @@ void WriteAicaReg(u32 reg, u32 data)
         {
             verify(sz != 1);
             MCIPD->SCPU = 1;
-            UpdateSh4Ints();
+            if (get_aica_race_fix_preset())
+                sh4_ints_race();
+            else
+                UpdateSh4Ints();
         }
         return; // read-only
+
+    case SCIEB_addr:   // with AICA Race Fix a new enable raises a pending interrupt at once
+        WriteMemArr(aica_reg, reg, data, sz);
+        if (get_aica_race_fix_preset())
+            update_arm_interrupts();
+        break;
+
+    case MCIEB_addr:
+        WriteMemArr(aica_reg, reg, data, sz);
+        if (get_aica_race_fix_preset())
+            sh4_ints_race();
+        break;
 
     case MCIRE_addr:
         verify(sz != 1);

@@ -152,6 +152,20 @@ static void a7_wr8(uint32_t addr, uint32_t v)
 #include "arm7_spu.h"
 
 static A7Cpu cpu;
+static uint32_t s_resets;   // ARM7 resets under ARM7 Reset Fix
+
+static void ac_race(void) { a7_race(&cpu); }
+
+// An ARM7 reset (ARMRST release, or the PPU's arm_Reset); ARM7 Reset Fix also clears the FIQ latch.
+static void arm_reset_edge(void)
+{
+	aram_invalidate_all();
+	if (setup.flags & ARM_SETUP_RESET_FIX)
+	{
+		s_resets++;
+		ac_reset_latch();
+	}
+}
 
 // ── The caique control twin and the AICA log (ps3_aica_spe.cpp's PPU side) ──
 
@@ -370,7 +384,7 @@ static void run_cmd(const ArmCmd* c)
 		{
 			const int en = !(c->b & 1);
 			if (en && !cpu.enabled)
-				aram_invalidate_all();
+				arm_reset_edge();
 			a7_set_enabled(&cpu, en);
 		}
 		ac_write(c->a, c->b, c->c);
@@ -384,7 +398,7 @@ static void run_cmd(const ArmCmd* c)
 		break;
 	case ARM_CMD_RESET:
 		a7_reset(&cpu);
-		aram_invalidate_all();
+		arm_reset_edge();
 		break;
 	case ARM_CMD_FLUSH:
 		a7_flush(&cpu);
@@ -412,6 +426,12 @@ static uint32_t run_cmds(uint32_t tail, uint32_t head)
 		st.fiqs = cpu.fiqs;
 		st.decodes = cpu.decodes;
 		st.evicts = cpu.evicts;
+		st.races = cpu.races;
+		st.raises = ac.raises;
+		st.resets = s_resets;
+		st.stale = ac.stale;
+		st.ca_reads = ac.ca_reads;
+		st.ca_clamped = ac.ca_clamped;
 		put_echo();
 	}
 	return tail;
@@ -424,7 +444,9 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_setup)
 	mfc_get(&setup, arg_setup, sizeof(setup), TAG_CMD, 0, 0);
 	wait_tag(TAG_CMD);
 	ac_init();
-	a7_init(&cpu);
+	ac.race_fix = (setup.flags & ARM_SETUP_RACE_FIX) != 0;
+	ac.ca_clamp = (setup.flags & ARM_SETUP_CA_CLAMP) != 0;
+	a7_init(&cpu, (setup.flags & ARM_SETUP_RESET_FIX) != 0);
 	M->init();
 	M->reset();
 	aram_invalidate_all();

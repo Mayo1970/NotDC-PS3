@@ -14,7 +14,7 @@ S=$PS3DEV/spu/bin
 F="-O2 -Wall -Wno-unused -fno-strict-aliasing -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections -I$PSL1GHT/spu/include -Iout/ref"
 $S/spu-g++ $F -Iout/mut -c ac_test.cpp -o out/mut/ac_test.o &&
 $S/spu-g++ -Wl,--gc-sections out/aica.o out/aica_mem.o out/sgc_if.o out/dsp.o out/arm_mem.o out/glue_aica.o out/glue_arm.o out/mut/ac_test.o -o out/mut/ac_test.elf' > out/mut/build.log 2>&1 || { echo "BUILD FAILED: $1"; return; }
-	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/aicactl_check && ./out/ac_harness out/mut/ac_test.elf 5 1500 > out/mut/run.log 2>&1 && ./out/ac_harness out/mut/ac_test.elf 8 1500 >> out/mut/run.log 2>&1'; then
+	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/aicactl_check && ./out/ac_harness out/mut/ac_test.elf 5 1500 > out/mut/run.log 2>&1 && ./out/ac_harness out/mut/ac_test.elf 8 1500 >> out/mut/run.log 2>&1 && ./out/ac_harness out/mut/ac_test.elf 27 4000 >> out/mut/run.log 2>&1 && ./out/ac_harness out/mut/ac_test.elf 20 4000 >> out/mut/run.log 2>&1'; then
 		echo "NOT CAUGHT: $1"
 	else
 		echo "caught: $1"
@@ -35,4 +35,17 @@ try "REG_M accepts on any write" 's/if (data \& 1)\n\t\t\tac_e68k_accept();/X/;/
 try "timer md has two bits" 's/1u << (ac.reg\[0x2892 + 4 \* i\] \& 7)/1u << (ac.reg[0x2892 + 4 * i] \& 3)/'
 try "MCIRE does not update the SH4 line" '/case 0x28BC:/,/return;/s/ac_update_sh4_ints();/;/'
 try "upper halfword of a common register" 's/ac.reg\[(a + 1) ^ 3\] = (uint8_t)(data >> 8);/ac.reg[(a + 1) ^ 3] = (uint8_t)data;/'
+# The Looney Tunes fixes (plan 6.5, P31, P44)
+try "SCIEB write leaves the ARM7 line" '/case 0x289C:/,/return;/s/ac_update_arm_ints();/;/'
+try "MCIEB write leaves the SH4 line" '/case 0x28B4:/,/return;/s/ac_sh4_ints_race();/;/'
+try "no race call" 's/^\t\tac_race();/\t\t;/'
+try "race on an SCIEB write too" '/case 0x289C:/,/return;/s/ac_update_arm_ints();/ac_sh4_ints_race();/'
+try "MCIPD race without the fix" '/case 0x28B8:/,/return;/s/if (ac.race_fix)/if (1)/'
+try "CA clamp at LEA-2" 's/return lea - 3;/return lea - 2;/'
+try "CA clamp without the LSA test" 's/if (lea > lsa \&\& lea > 3/if (lea > 3/'
+try "CA clamp: MSLC from the wrong byte" 's/ac.reg\[0x280E\] \& 0x3F/ac.reg[0x280F] \& 0x3F/'
+try "CA clamp: LEA from the LSA register" 's/lea = ac_rd16(s + 0x0E)/lea = ac_rd16(s + 0x0C)/'
+try "CA clamp without the flag" 's/if (ac.ca_clamp)/if (1)/'
+try "latch reset keeps e68k L" '/^static void ac_reset_latch/,/^}/s/ac.e68k_l = 0;/;/'
+try "latch reset keeps the pending level" '/^static void ac_reset_latch/,/^}/s/ac.interr = 0;/;/'
 echo "$caught of $total mutations caught"

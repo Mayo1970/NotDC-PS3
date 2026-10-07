@@ -16,6 +16,19 @@ bool e68k_out;
 uint64_t ps3_timebase_hz = 1;
 static int g_idle_pref;
 extern "C" int get_arm7_idle_skip_preset() { return g_idle_pref; }
+// The Looney Tunes fixes (plan 6.5, P44): the reset mode and the race hook, on both cores alike
+static int g_reset_fix, g_race;
+static bool g_no_fix;   // argv[3] "nofix": both off, the baseline before the fixes
+extern "C" int get_arm7_reset_fix_preset() { return g_reset_fix; }
+bool arm_reset_latch()
+{
+	const bool stale = e68k_out;
+	e68k_out = false;
+	return stale;
+}
+void arm_jit_avoid_race() {}
+void arm_avoid_race();   // arm7.cpp
+static u64 g_race_calls;
 void arm_jit_after_init() {}
 void arm_jit_on_reset() {}
 bool g_arm_spe;   // 5.15 hooks in arm7.cpp, off here
@@ -36,7 +49,6 @@ struct Side
 	std::vector<LogRec> log;
 	u32 devcnt;
 };
-static Side g_side[2];   // 0 reference, 1 arm7_spu
 static bool g_immutable;  // random programs: writes are logged, not applied, so code never changes under a block
 
 static u32 dev_read(Side& s, u32 a, int sz)
@@ -51,12 +63,26 @@ static u32 dev_read(Side& s, u32 a, int sz)
 	return v;
 }
 
+static Side g_side[2];   // 0 reference, 1 arm7_spu
+static void spu_race();  // a7_race on the core under test
+
+// With g_race on, a register write outside REG_M stands for one that left an SH4 interrupt pending.
 static void dev_write(Side& s, u32 a, u32 v, int sz)
 {
 	a &= 0x7FFF;
 	if (a == 0x2D04 && (v & 1))
 		*s.e68k = false;                         // REG_M: the FIQ is accepted
 	s.log.push_back({ 2, a, v, (u32)sz });
+	if (g_race && a != 0x2D04)
+	{
+		if (&s == &g_side[0])
+		{
+			g_race_calls++;
+			arm_avoid_race();
+		}
+		else
+			spu_race();
+	}
 }
 
 static u32 mem_read(Side& s, int sz, u32 addr)
@@ -147,6 +173,15 @@ static inline void a7_cov(int kind, u32 pc, u32 x, int ticks)
 #include "../../ps3/spu/arm7_spu.h"
 
 static A7Cpu g_cpu, g_snap;
+static void spu_race() { a7_race(&g_cpu); }
+
+// The integrator's side of a reset (spe_arm7.cpp arm_reset_edge): ARM7 Reset Fix clears the FIQ latch too.
+static void spu_set_enabled(int en)
+{
+	if (en && !g_cpu.enabled && g_reset_fix)
+		g_spu_e68k = false;
+	a7_set_enabled(&g_cpu, en);
+}
 
 // ---- random programs ----
 static u64 g_rng;
@@ -344,10 +379,13 @@ static bool run_program(u32 prog)
 	}
 	g_idle_pref = pick(2);
 	g_cpu.idle_pref = (uint8_t)g_idle_pref;
+	g_reset_fix = pick(2) && !g_no_fix;
+	g_cpu.reset_svc = (uint8_t)g_reset_fix;
+	g_race = pick(2) && !g_no_fix;
 	arm_SetEnabled(false);
 	arm_SetEnabled(true);
-	a7_set_enabled(&g_cpu, 0);
-	a7_set_enabled(&g_cpu, 1);
+	spu_set_enabled(0);
+	spu_set_enabled(1);
 	for (int i = 0; i < 15; i++)
 		set_both_reg(i, pick(100) < 5 ? rnd() : (pick(100) < 70 ? pick(0x20000) : pick(ARAM_SIZE)));
 	const u32 start = pick(16384) * 4;
@@ -401,7 +439,7 @@ static bool run_program(u32 prog)
 		{
 			const bool en = pick(2);
 			arm_SetEnabled(en);
-			a7_set_enabled(&g_cpu, en);
+			spu_set_enabled(en);
 		}
 		const u32 budget = pick(10) == 0 ? pick(6) : pick(400);
 		memcpy(&g_snap, &g_cpu, sizeof(g_cpu));
@@ -432,35 +470,68 @@ static bool run_program(u32 prog)
 	return true;
 }
 
-// ---- conformance tests on arm7_spu (flat memory, as nativetest) ----
+// ---- conformance tests on arm7_spu and on the reference (flat memory, as nativetest), both reset modes ----
 static int run_selftests()
 {
 	int failed = 0;
 	g_immutable = false;
-	for (int t = 0; t < arm7_selftest_count; t++)
+	g_race = 0;
+	for (int svc = 0; svc < 2; svc++)
 	{
-		const Arm7SelfTest& st = arm7_selftests[t];
-		memset(g_side[1].mem, 0, ARAM_SIZE);
-		memcpy(g_side[1].mem, st.data, st.size);
-		g_spu_e68k = false;
-		a7_set_enabled(&g_cpu, 0);
-		a7_set_enabled(&g_cpu, 1);
-		g_cpu.next_pc = 0;
-		g_cpu.r[15] = 4;
-		u32 n = 0;
-		while (*(u32*)&g_side[1].mem[g_cpu.next_pc & ARAM_MASK] != 0xDEADBEEFu && n < 100000)
+		g_reset_fix = svc;
+		g_cpu.reset_svc = (uint8_t)svc;
+		for (int t = 0; t < arm7_selftest_count; t++)
 		{
-			a7_run(&g_cpu, 1);
-			n++;
-		}
-		g_side[1].log.clear();
-		if (n >= 100000 || (g_cpu.r[1] & 0x3FFFFFFFu))
-		{
-			failed++;
-			printf("SELFTEST FAIL %-10s r1=%08X%s\n", st.name, g_cpu.r[1], n >= 100000 ? " (timeout)" : "");
+			const Arm7SelfTest& st = arm7_selftests[t];
+			memset(g_side[1].mem, 0, ARAM_SIZE);
+			memcpy(g_side[1].mem, st.data, st.size);
+			g_spu_e68k = false;
+			spu_set_enabled(0);
+			spu_set_enabled(1);
+			if (g_cpu.mode != (svc ? 0x13 : 0x1F))
+				printf("SELFTEST reset mode %X with reset_svc %d\n", g_cpu.mode, svc), failed++;
+			g_cpu.next_pc = 0;
+			g_cpu.r[15] = 4;
+			u32 n = 0;
+			while (*(u32*)&g_side[1].mem[g_cpu.next_pc & ARAM_MASK] != 0xDEADBEEFu && n < 100000)
+			{
+				a7_run(&g_cpu, 1);
+				n++;
+			}
+			g_side[1].log.clear();
+			if (n >= 100000 || (g_cpu.r[1] & 0x3FFFFFFFu))
+			{
+				failed++;
+				printf("SELFTEST FAIL spu %-10s mode %X r1=%08X%s\n", st.name, svc ? 0x13 : 0x1F, g_cpu.r[1],
+				       n >= 100000 ? " (timeout)" : "");
+			}
+
+			// The same test on arm7.cpp + arm7_cached.cpp, as arm7_selftest.cpp drives it at boot
+			memset(g_side[0].mem, 0, ARAM_SIZE);
+			memcpy(g_side[0].mem, st.data, st.size);
+			e68k_out = false;
+			arm_SetEnabled(false);
+			arm_SetEnabled(true);
+			if (armMode != (svc ? 0x13 : 0x1F))
+				printf("SELFTEST reference reset mode %X with the fix %d\n", armMode, svc), failed++;
+			arm_ArmNextPC = 0;
+			arm_Reg[15].I = 4;
+			n = 0;
+			while (*(u32*)&g_side[0].mem[arm_ArmNextPC & ARAM_MASK] != 0xDEADBEEFu && n < 100000)
+			{
+				arm_Run(1);
+				n++;
+			}
+			g_side[0].log.clear();
+			if (n >= 100000 || (arm_Reg[1].I & 0x3FFFFFFFu))
+			{
+				failed++;
+				printf("SELFTEST FAIL ref %-10s mode %X r1=%08X%s\n", st.name, svc ? 0x13 : 0x1F, arm_Reg[1].I,
+				       n >= 100000 ? " (timeout)" : "");
+			}
 		}
 	}
-	printf("selftest: %d / %d passed\n", arm7_selftest_count - failed, arm7_selftest_count);
+	printf("selftest: %d failures over %d tests x 2 reset modes x 2 cores\n", failed, arm7_selftest_count);
 	return failed;
 }
 
@@ -468,12 +539,13 @@ int main(int argc, char** argv)
 {
 	const u32 progs = argc > 1 ? (u32)strtoul(argv[1], 0, 10) : 200;
 	g_rng = argc > 2 ? strtoull(argv[2], 0, 10) * 2654435761ull + 7 : 88172645463325252ull;
+	g_no_fix = argc > 3 && !strcmp(argv[3], "nofix");
 	g_side[0].e68k = &e68k_out;
 	g_side[1].e68k = &g_spu_e68k;
 	g_side[0].mem = (u8*)calloc(1, ARAM_SIZE);
 	g_side[1].mem = (u8*)calloc(1, ARAM_SIZE);
 	arm_Init();
-	a7_init(&g_cpu);
+	a7_init(&g_cpu, 0);
 	int bad = run_selftests();
 	g_immutable = true;
 	u32 okp = 0;
@@ -495,8 +567,9 @@ int main(int argc, char** argv)
 			g_rng = after;
 		}
 	}
-	printf("random: %u / %u programs, %llu slices, decodes %u, evicts %u, fiqs %u\n", okp, progs,
-	       (unsigned long long)g_slices, g_cpu.decodes, g_cpu.evicts, g_cpu.fiqs);
+	printf("random: %u / %u programs, %llu slices, decodes %u, evicts %u, fiqs %u | race calls %llu, slices extended %u\n",
+	       okp, progs, (unsigned long long)g_slices, g_cpu.decodes, g_cpu.evicts, g_cpu.fiqs,
+	       (unsigned long long)g_race_calls, g_cpu.races);
 	printf("coverage: %llu instructions, %llu failed conditions, %llu dispatches, %llu Rd=15, %llu idle branches,"
 	       " %llu cap rehomes, %llu shifts by register\n", (unsigned long long)g_cov[0], (unsigned long long)g_cov[1],
 	       (unsigned long long)g_cov[2], (unsigned long long)g_cov[3], (unsigned long long)g_cov[4],

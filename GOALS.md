@@ -239,3 +239,20 @@ the plan 5.12 list (shelved).
 2. Long soak test (command buffer wrap, memory creep).
 3. Open from G7: the DS3 `user_controls.cfg` remap (deferred by Matt).
 4. Every exit to the XMB takes the 3 s fallback (`OPTIMIZATION_POTENTIAL.md` P6).
+
+## G11 - Online play (modem)  `[ ]` (added 2026-10-07 at Matt's request)
+No DreamPi box needed: the emulator replaces the phone line, the modem and the DreamPi in software, as Flycast does.
+Reference: Flycast `core/hw/modem/` and `core/network/`.
+1. Modem chip: port Flycast `modem.cpp`, `v42.cpp` and `v42bis.cpp` into `plugs/nullExtDev/nullExtDev.cpp` (a stub
+   today). Area 0 `0x600000-0x6007FF` and `RaiseInterrupt` are already wired to the plugin. The game's modem driver
+   uses V.42/V.42bis, so the emulator decodes them back to plain PPP bytes.
+2. Big endian: Flycast `modem_regs.h` uses `u8` bitfields, which GCC on PPC orders the other way. Give each register
+   struct a big-endian layout.
+3. Network end (Matt picks at goal start):
+   a. DCNet: one TCP socket to `dcnet.flyca.st:7654` carries the raw modem bytes (plain pipe, no handshake,
+      `core/network/dcnet.cpp`). No IP stack on the PS3. Depends on Flyinghead's free service.
+   b. Local PPP: port `core/network/picoppp.cpp` (picoTCP), DNS `dns.flyca.st`. No outside service, more work
+      (per-game port lists, UPnP, Alien Front Online address fix).
+   Both: replace asio and `std::thread` with a PPU thread and PSL1GHT sockets.
+4. Optional, later: broadband adapter (`core/hw/bba/bba.cpp`, `rtl8139c.cpp`); fewer games support it.
+5. HW test: a modem game dials, connects and reaches its revived server.

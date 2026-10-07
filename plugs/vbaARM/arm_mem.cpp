@@ -35,6 +35,18 @@ void e68k_AcceptInterrupt()
 	update_e68k();
 }
 
+// ARM7 Reset Fix (Flycast reset()): the e68k latch and the pending level clear. True when one was still set.
+bool arm_reset_latch()
+{
+	const bool stale = e68k_out || aica_interr;
+	aica_interr = false;
+	aica_reg_L = 0;
+	e68k_out = false;
+	e68k_reg_L = 0;
+	e68k_reg_M = 0;
+	return stale;
+}
+
 //Reg reads from arm side ..
 template <u32 sz,class T>
 inline T fastcall arm_ReadReg(u32 addr)

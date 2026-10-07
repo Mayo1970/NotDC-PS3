@@ -1313,6 +1313,9 @@ void aica_montrace_dump()
     }
 }
 
+extern "C" int get_aica_ca_clamp_preset();
+u32 g_aicafix_ca_reads, g_aicafix_ca_clamped;   // [aicafix], CA Clamp in the twin path
+
 void ReadCommonReg(u32 reg, bool byte)
 {
     switch (reg)
@@ -1341,7 +1344,20 @@ void ReadCommonReg(u32 reg, bool byte)
         g_arm7s_mon_rd[g_arm7_in_run]++;
         if (g_aica_spe_snd)
         {
-            *(u16*)&aica_reg[0x2816] = ps3aica_read_mon(0x2814, false);
+            u32 ca = ps3aica_read_mon(0x2814, false);
+            // CA Clamp (P31): the rule below, with the slot's own LSA and LEA registers
+            if (get_aica_ca_clamp_preset())
+            {
+                const ChannelCommonData* c = Chans[CommonData->MSLC].ccd;
+                const u32 lsa = c->LSA, lea = c->LEA;
+                g_aicafix_ca_reads++;
+                if (lea > lsa && lea > 3 && ca > lea - 3)
+                {
+                    ca = lea - 3;
+                    g_aicafix_ca_clamped++;
+                }
+            }
+            *(u16*)&aica_reg[0x2816] = (u16)ca;
             break;
         }
         {

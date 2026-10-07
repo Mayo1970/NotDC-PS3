@@ -143,6 +143,12 @@ static bool   s_inline_blk;         // arm7_jit >= 4: LDM/STM inline for ARAM ad
 static bool   s_idle_safe;          // ARM7 Idle Skip SAFE (6.1)
 static Arm7IdleScan s_idle_scan;    // the block being compiled
 static u32    s_slices;             // arm_jit_run calls: the clock for return-cache demotion
+static bool   s_race_fix;           // AICA Race Fix (6.5): a C store helper that raised the SH4 line keeps 50 ticks
+static bool   s_jit_in_run;         // a slice runs: arm_jit_avoid_race comes from the ARM7
+static u8     s_race_done;          // this slice was extended already (at most once per slice)
+u8            g_arm_jit_race;       // set by arm_jit_avoid_race, taken by the code after the helper
+extern u32    g_arm_races;          // arm7.cpp, [aicafix]
+extern "C" int get_aica_race_fix_preset();
 
 // Census for the jit_ccalls probe, latched at reset so emitted and C counters describe the same blocks. When off, no
 // counter is emitted, so it costs nothing.
@@ -399,6 +405,7 @@ struct ColdStub
 	u32* site;     // conditional branch to patch
 	u32  pc;       // ARM pc handed to exit_now / dispatch (CK_BLOCK: the opcode)
 	u32* back;     // where to resume (CK_FAIL: next instruction; CK_RD/WR/BLOCK: join)
+	u32  race_x;   // CK_WR / CK_BLOCK: e_race_check's floor
 };
 
 static ColdStub s_cold[256];
@@ -406,11 +413,38 @@ static u32      s_cold_n;
 static u32*     s_pending_back[16];
 static u32      s_pending_n;
 
+// e_race_check's floor here: 50 plus the ticks this instruction has not charged yet (level 5).
+static inline u32 race_floor() { return 50 + (s_fold ? s_ticks : 0); }
+
 static void cold_push(u32 kind, u32* site, u32 pc, u32* back, u32 size)
 {
 	verify(s_cold_n < sizeof(s_cold) / sizeof(s_cold[0]));
 	ColdStub& c = s_cold[s_cold_n++];
-	c.kind = kind; c.site = site; c.pc = pc; c.back = back; c.size = size;
+	c.kind = kind; c.site = site; c.pc = pc; c.back = back; c.size = size; c.race_x = race_floor();
+}
+
+// AICA Race Fix: after a C store helper that raised the SH4 line, at least x ticks stay in the budget, so the slice
+// ends where the cached interpreter's does. An STM charges after its last word, so its 50 count from there.
+static void e_race_check(u32 x)
+{
+	if (!s_race_fix)
+		return;
+	e_load_byte(12, &g_arm_jit_race);
+	ppc_cmpi(0, 12, 0, 0);
+	u32* none = e_bc_placeholder(BO_TRUE, BI_CR0_EQ);
+	ppc_li(12, 0);
+	e_store_byte(12, &g_arm_jit_race);
+	ppc_cmpi(0, R_BUD, x, 0);
+	u32* enough = e_bc_placeholder(BO_FALSE, BI_CR0_LT);
+	ppc_li(R_BUD, x);
+	ppc_li(12, 1);
+	e_store_byte(12, &s_race_done);
+	u32 lo = ppc_addr_high(12, &g_arm_races);
+	ppc_lwz(11, 12, lo);
+	ppc_addi(11, 11, 1);
+	ppc_stw(11, 12, lo);
+	patch_bc(none, emit_ptr);
+	patch_bc(enough, emit_ptr);
 }
 
 // Leave the block for a pc known at compile time (DISPATCH_PC semantics).
@@ -549,6 +583,7 @@ static void flush_cold()
 			else
 				e_clrldi32(4, R_VAL);
 			e_ccall(c.size == 1 ? (void*)&jit_wr8 : (void*)&jit_wr32);
+			e_race_check(c.race_x);
 			ppc_jump(c.back);
 			break;
 
@@ -556,6 +591,8 @@ static void flush_cold()
 			e_li32(3, c.pc);
 			e_ccall(c.size == 0 ? (void*)&jit_stm :
 			         c.size == 1 ? (void*)&jit_ldm_nopc : (void*)&jit_ldm_pc);
+			if (c.size == 0)
+				e_race_check(c.race_x);
 			if (c.size == 2)
 			{
 				u32 lo = ppc_addr_high(3, &arm_ArmNextPC);
@@ -1450,6 +1487,8 @@ static void emit_block(u32 pc, u32 op, bool& last)
 		e_li32(3, op);
 		e_call(!load ? (void*)&jit_stm : hasPC ? (void*)&jit_ldm_pc : (void*)&jit_ldm_nopc);
 		ppc_subfx(R_BUD, 3, R_BUD, 0, 0);
+		if (!load)
+			e_race_check(race_floor());
 		if (hasPC)
 		{
 			u32 lo = ppc_addr_high(3, &arm_ArmNextPC);
@@ -1578,6 +1617,7 @@ static void emit_insn(u32 block_pc, u32 pc, u32 op, bool& last, bool& blockSafe)
 		{
 			e_li32(3, op);
 			e_call((void*)&jit_swp);
+			e_race_check(race_floor());
 			e_ticks(4);
 			blockSafe = false;
 		}
@@ -1826,6 +1866,7 @@ void arm_jit_on_reset()
 	s_fold     = get_arm7_jit_preset() >= 5;
 	s_census   = g_jit_ccalls_preset != 0;
 	s_idle_safe = get_arm7_idle_skip_preset() != 0;
+	s_race_fix = get_aica_race_fix_preset() != 0;
 
 	jit_flush(true);
 	if (!s_announced)
@@ -1845,7 +1886,19 @@ void arm_jit_run(u32 CycleCount)
 {
 	s_slices++;
 	ARMC(ARMC_SLICE);
+	g_arm_jit_race = 0;
+	s_race_done = 0;
+	s_jit_in_run = true;
 	((void (*)(s32))(void*)&s_entry_opd)((s32)CycleCount);
+	s_jit_in_run = false;
+}
+
+// AICA Race Fix: an ARM7 store raised the SH4 line; the code after its C helper keeps 50 ticks (e_race_check). At most
+// one extension per slice, as the cached interpreter.
+void arm_jit_avoid_race()
+{
+	if (s_jit_in_run && s_race_fix && !s_race_done)
+		g_arm_jit_race = 1;
 }
 
 // Once a second from the SPG stats block, next to the jit_ccalls [CC] dump.
@@ -1958,5 +2011,6 @@ void arm_jit_on_reset() {}
 bool arm_jit_active() { return false; }
 void arm_jit_run(u32) {}
 void arm_jit_census_dump(double) {}
+void arm_jit_avoid_race() {}
 
 #endif

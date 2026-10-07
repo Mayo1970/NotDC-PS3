@@ -20,6 +20,9 @@ int g_arm7_speed_preset    = 0;   // clock divider stage, ~10 MHz >> stage
 int g_arm7_batch_preset    = 4;
 int g_arm7_idle_skip_preset = 0;  // 0 OLD: +100 ticks on any store-free self-loop, 1 SAFE: true wait loops only (6.1)
 int g_aica_kyonb_preset    = 0;   // 0 nullAICA clears KYONB on release, 1 never cleared, as on hardware (6.1)
+int g_aica_race_fix_preset = 1;   // 1 = Flycast's SH4/ARM7 race fixes: G2 DMA guards, +50 ARM7 ticks per SH4 interrupt (6.5, HW)
+int g_arm7_reset_fix_preset = 1;  // 1 = an ARM7 reset enters SVC mode and clears the FIQ latch, as Flycast (P44, 6.8, HW)
+int g_aica_ca_clamp_preset = 1;   // 1 = CA reads stop at LEA-3 in the SPE AICA paths too, as nullAICA's (P31, HW)
 int g_audio_buffers_preset = -1;  // -1 leaves the nullDC.cfg value alone
 int g_exit_fix_preset      = 1;
 int g_aica_fast_preset     = 1;
@@ -83,9 +86,9 @@ int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA
 int g_spe_draw_preset      = 1;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3, 5.16 HW)
 int g_spe_wait_yield_preset = 0;  // 1 = the render thread's SPU fence wait leaves the PPE core to the SH4 thread (5.16)
 int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against a PPU control pass (5.13 A1)
-int g_spe_dsp_jit_preset   = 2;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b)
+int g_spe_dsp_jit_preset   = 1;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b, A3 HW)
 int g_spe_aica_snd_preset  = 1;   // 1 = that SPU model makes the sound; nullAICA's mixer off (5.13 A2, HW)
-int g_spe_aica_dsp_preset  = 0;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3)
+int g_spe_aica_dsp_preset  = 1;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3, HW)
 int g_sound_thread_preset  = 0;   // 1 = ARM7 and AICA on their own PPU thread (5.14)
 int g_spe_arm7_preset      = 1;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15, HW)
 
@@ -106,6 +109,9 @@ static const CfgItem s_items[] = {
 	{ "Arm7Batch",     &g_arm7_batch_preset },
 	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
+	{ "AicaRaceFix",   &g_aica_race_fix_preset },
+	{ "Arm7ResetFix",  &g_arm7_reset_fix_preset },
+	{ "AicaCaClamp",   &g_aica_ca_clamp_preset },
 	{ "AudioBuffers",  &g_audio_buffers_preset },
 	{ "ExitFix",       &g_exit_fix_preset },
 	{ "AicaFast",      &g_aica_fast_preset },
@@ -193,6 +199,9 @@ static const CfgItem s_snd_items[] = {
 	{ "Arm7Batch",     &g_arm7_batch_preset },
 	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
+	{ "AicaRaceFix",   &g_aica_race_fix_preset },
+	{ "Arm7ResetFix",  &g_arm7_reset_fix_preset },
+	{ "AicaCaClamp",   &g_aica_ca_clamp_preset },
 	{ "AicaFast",      &g_aica_fast_preset },
 	{ "MutePcm16",     &g_mute_pcm16_preset },
 	{ "Cdda",          &g_cdda_preset },
@@ -303,6 +312,10 @@ int get_spe_aica_dsp_preset()  { return g_spe_aica_dsp_preset; }
 int get_sound_thread_preset()  { return g_sound_thread_preset; }
 // OPTIMIZATION_PLAN 5.15, read once in InitAica.
 int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
+// OPTIMIZATION_PLAN 6.5, P44 and P31 (the Looney Tunes fixes), set before boot.
+int get_aica_race_fix_preset() { return g_aica_race_fix_preset; }
+int get_arm7_reset_fix_preset() { return g_arm7_reset_fix_preset; }
+int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

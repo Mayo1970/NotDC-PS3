@@ -108,6 +108,13 @@ int armMode;
 
 bool Arm7Enabled=false;
 
+extern "C" int get_arm7_reset_fix_preset();
+bool arm_reset_latch();   // arm_mem.cpp
+
+// [aicafix]: AICA Race Fix slice extensions (arm7_cached.cpp, arm7_jit.cpp); ARM7 Reset Fix resets, and how many found
+// the FIQ latch or the pending level still set.
+u32 g_arm_races, g_arm_resets, g_arm_stale;
+
 BYTE cpuBitsSet[256];
 
 u16 IE;
@@ -160,6 +167,7 @@ void arm_Init()
 	// arm7_jit preset: run the conformance self-test on the JIT once, before
 	// any game code (falls back to the cached interpreter on failure).
 	arm_jit_after_init();
+	g_arm_resets = g_arm_stale = 0;   // [aicafix] counts the game's resets, not the self-test's
 }
 
 void CPUSwitchMode(int mode, bool saveState, bool breakLoop)
@@ -337,6 +345,16 @@ void CPUUndefinedException()
 	reg[15].I += 4;  
 }
 
+void arm_cached_avoid_race();   // arm7_cached.cpp
+void arm_jit_avoid_race();      // arm7_jit.cpp
+
+// AICA Race Fix: each engine acts only while its own slice runs, so an SH4 write changes nothing.
+void arm_avoid_race()
+{
+	arm_cached_avoid_race();
+	arm_jit_avoid_race();
+}
+
 void arm_Reset()
 {
 	Arm7Enabled = false;
@@ -347,7 +365,14 @@ void arm_Reset()
 	IF       = 0x0000;
 	IME      = 0x0000;
 
-	armMode = 0x1F;
+	// ARM7 Reset Fix (P44): the ARM7DI is ARMv3 and has no System mode, so a reset enters SVC (Flycast, Reicast).
+	const bool reset_fix = get_arm7_reset_fix_preset() != 0;
+	armMode = reset_fix ? 0x13 : 0x1F;
+	if (reset_fix)
+	{
+		g_arm_resets++;
+		g_arm_stale += arm_reset_latch();
+	}
 
 	reg[13].I = 0x03007F00;
 	reg[15].I = 0x0000000;

@@ -16,6 +16,9 @@ extern "C" int get_arm7_speed_preset();
 extern "C" int get_arm7_batch_preset();
 extern "C" int get_arm7_idle_skip_preset();
 extern "C" int get_cdda_preset();
+extern "C" int get_aica_race_fix_preset();
+extern "C" int get_arm7_reset_fix_preset();
+extern "C" int get_aica_ca_clamp_preset();
 void FASTCALL gdrom_get_cdda(s16* sector);   // dc/gdrom/gdromv3.cpp
 bool aica_sh4_irq_apply(bool on);            // plugs/nullAICA/aica.cpp
 extern u64 AicaTicks;
@@ -258,6 +261,9 @@ bool arm_spe_init(u8* aica_ram)
 	s_setup.ring_ea = (u32)(uintptr_t)s_ring;
 	s_setup.aram_ea = (u32)(uintptr_t)aica_ram;
 	ps3aica_spe_eas(&s_setup.aica_bell_ea, &s_setup.aica_echo_ea, &s_setup.aica_log_ea);
+	s_setup.flags = (get_aica_race_fix_preset() ? ARM_SETUP_RACE_FIX : 0) |
+	                (get_arm7_reset_fix_preset() ? ARM_SETUP_RESET_FIX : 0) |
+	                (get_aica_ca_clamp_preset() ? ARM_SETUP_CA_CLAMP : 0);
 	s_head = s_tail_seen = s_rd_seq = 0;
 	s_dead = false;
 	g_arm_spe_dlo = 0xFFFF;
@@ -329,6 +335,19 @@ void arm_spe_term()
 	sysSpuImageClose(&s_img);
 	s_up = false;
 	printf("[arm7spe] SPU thread down\n");
+}
+
+// [aicafix]: the SPU's counts since the last call (races, raises, resets, stale, CA reads, CA clamped).
+void arm_spe_fix_take(u32 out[6])
+{
+	static u32 last[6];
+	const volatile ArmEcho* e = echo();
+	const u32 now[6] = { e->races, e->raises, e->resets, e->stale, e->ca_reads, e->ca_clamped };
+	for (int i = 0; i < 6; i++)
+	{
+		out[i] = now[i] - last[i];
+		last[i] = now[i];
+	}
 }
 
 // Every ~5 s: rates per wall second, and what the SH4 thread waited for.

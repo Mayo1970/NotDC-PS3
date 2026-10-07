@@ -13,11 +13,128 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-07)
 
+**Open (Matt 2026-10-07: "mark the busy SH4 for Looney Tunes. It may be
+worth coming back later on."): Looney Tunes Space Race is SH4-bound in its
+races.** With every fix on (below), dense race windows run at SPEED 99.0%,
+66% at full speed, the SH4 thread sleeping 49 ms/s; the heavy scenes (30-38K
+vertices per frame) fall to SPEED 92-95% with worst frames of 20-40 ms of SH4
+work, and the game draws 22-27 frames/s there (26-30 elsewhere). The same in
+the DSP OFF boots before the fixes (57-59% at full speed). Not the disc (no
+reads or waits in the race), not the render thread, not the sound SPUs.
+`ps3log_ltfix_run1.txt` (cut as `lt_fix.txt`), scratchpad of session 7b7c1c88.
+
+**Done: the Looney Tunes fixes (Matt 2026-10-07: "Can we apply the Looney
+Tunes fixes?", then picked AICA Race Fix, ARM7 Reset Fix and CA Clamp; not
+the DSP ring in ARAM), HW SUCCESS (Matt: "This session is a success"),
+default ON since the package of 03:41, with SPE AICA DSP and SPE DSP JIT ON
+(Matt: "mark this on by default"; 5.13 A3 and P20 G1 done).** Built and PC
+tested in the package of 03:24 (`.got` 0xC310, 0 `r2off`, only the old
+`.text` attribute warning); the package of 03:41 only changes the five
+defaults (same `.got`, no warning). AUDIO page, set before boot. A default
+only reaches a cfg without the key; Matt's has all five ON already. While
+one is on, `[aicafix]` every ~5 s: G2 DMA starts and guard hits, SH4
+interrupts raised and ARM7 slices extended, ARM7 resets and stale FIQ
+latches, CA reads and clamps.
+- AICA Race Fix (`AicaRaceFix`, 6.5 + Flycast 51089c5e0, the Test Drive Le
+  Mans freeze fix). G2 DMA: no start while one runs; SB_ADST reads 1 once
+  while the DMA end IRQ pends (`Read_SB_ADST` live); STAR/STAG move at the
+  end; ADEN after a bit-31 transfer is 0 (Flycast a44619931); ADSUSP bit 4
+  set while idle. AICA: an SCIEB/MCIEB write updates the lines at once; an
+  ARM7 store that leaves an SH4 interrupt pending (MCIPD SCPU or MCIEB,
+  raised now or before) keeps 50 ticks of its slice after it, one extension
+  per slice (so a raising loop still ends its slice). In the SPU core, the
+  cached interpreter and the ARM7 JIT (`e_race_check`; an STM to registers
+  counts its 50 from its end there).
+- ARM7 Reset Fix (`Arm7ResetFix`, P44 + 6.8): a reset enters SVC (0x13),
+  not System (0x1F), and clears aica_interr, e68k_out, e68k L and M.
+- CA Clamp (`AicaCaClamp`, P31): a CA read stops at LEA-3 (LEA > LSA, LEA >
+  3) in the twin and SPE ARM7 paths too, with the slot's LSA/LEA registers.
+- PC (WSL): `misc/arm7spu_check` (B0) ALL PASS, 6 x 400 programs with ~4.5K
+  extensions each; the 45 conformance tests pass in both reset modes on both
+  cores; the 8192-entry map has the same 3 eviction mismatches with the
+  fixes off (`nofix`); new `mutate.sh` 10 of 10. `misc/aicactl_check` (B1) 32
+  seeds ALL PASS, `mutate.sh` 26 of 26. `misc/arm7spe_check` (B2) 22 seeds x
+  6000 batches ALL PASS, `mutate.sh` 19 of 19 (harness fix: a random SH4
+  write to 0x2C00 is ARMRST on the SPU, the reference now applies it too).
+  New `misc/g2dma_check`: the real `aica_if.cpp` against a model of both
+  rule sets, 8 configurations (fix x DmaFix x SCHED), 3600 runs PASS,
+  `mutate.sh` 12 of 12.
+- HW steps (package of 03:24): install (keeps `nullDC.cfg`); AUDIO: the
+  three fixes ON, SPE AICA DSP ON, SPE DSP JIT ON (as the last Looney Tunes
+  run), SPE ARM7 ON; SH4 Clock 200. UDP listener only when Matt says so.
+  Boot Looney Tunes: menus (voice lines), a load (the echo/noise), one race
+  (effects and voices, frame rate). Log: `[sndcfg]` with the three keys at
+  1, `[aicafix]`, `[arm7spe] fiq` after the game's ARM7 reset (0 before),
+  race RPS against `lt_part.txt` (16-22; DSP OFF boots 26-30). On a fault:
+  the next boot with one fix OFF at a time.
+- HW 2026-10-07 (package of 03:24, Looney Tunes, the three fixes + SPE AICA
+  DSP and SPE DSP JIT ON; `ps3log_ltfix_run1.txt`, scratchpad of session
+  7b7c1c88; the log starts at t=71 s). Matt: "The sound cues ALL played
+  correctly. But the performance wasn't good." Clean XMB exit, flash saved.
+  - Race frame rate back to the DSP OFF boots: RPS median 26-30 at 10-35K
+    vertices (`lt_part.txt` 15-22, P16 boots 26-30). Dense windows: SPEED
+    99.0%, 66% at full speed, SH4 sleep 49 ms/s (P16 boots 98.3-98.6%,
+    57-59%, 46-49 ms/s). So the fixes and the DSP cost no SH4 time; the
+    race was below full speed before them too (the SH4 thread is the limit).
+  - FIQs still stop after the game's ARM7 reset (542/s, then 0 from t=76 s)
+    with no stale latch at either reset, yet every cue plays: the driver
+    runs on its monitor loop (now ~2500 reads/s, ARAM puts ~210K/s in the
+    race; `lt_part.txt` ~1174, ~88K).
+  - [aicafix] in the race: 30-600 SH4 interrupts raised by the ARM7 per 5 s,
+    0-13 slices extended; G2 DMA busy refusals 0, the SB_ADST guard once;
+    ~1000 CA reads/s, 0-3 clamped per 5 s. Which fix gives the cues is not
+    known (no A/B yet). DSP jit ON: bad=0, slow=0, drops=0.
+  - Settings that cost SH4 time in Matt's cfg: only the JIT C-Calls probe
+    (VIDEO / DEBUG; the `[CC]` and `[stall]` lines are in the log).
+  - Matt's theory (disc seeks in the slowdowns): no. In the race the only
+    disc traffic is the CD-DA read-ahead (~74 sectors/s on the worker, ring
+    misses ~0.02/s); no game data reads and no SH4 disc wait in any race
+    window, slow or not (`gdrrace.py`). The slow windows are the 30-38K
+    vertex scenes (SH4 work); the 335/401 ms stalls are SPU waits at scene
+    changes, also in the DSP OFF boots.
+- HW 2026-10-07, Crazy Taxi, same settings (same log, cut as `ct_fix.txt`):
+  clean, FIQs ~1993/s throughout; DSP: program 1434 words, 79 live steps,
+  slow=0, bad=0, drops=0, DSP 5.3% of the AICA SPU (busy 5-20%); at the
+  game's ARM7 reset ARM7 Reset Fix cleared a stale latch; no G2 DMA, no SH4
+  interrupt from the ARM7. Speed against the P18 Crazy Taxi run (no fixes,
+  DSP OFF): same-load VPS -0.0%, spare time within ~5-10 ms/s per load bin;
+  91.3% of dense windows at full speed (96.4%), this run had 3x the 10K+
+  windows. ChuChu Rocket was booted briefly before it (no verdict).
+
+**Done: the open HW checks (Matt 2026-10-07: "Start the listener. I'll do
+the HW checks."); the Looney Tunes one led to the fixes above.** P18's Crazy Taxi check: done (P18 below). 5.36 TA Peak
+Frame and 5.20 (the Soul Calibur check, the known-w pass): BLOCKED (Matt:
+"You can block this goal and the others"). Now: 5.13 A3 + SPE ARM7 (P20
+G1) on Looney Tunes (Matt: "I'll go with 4th aka 5.13 on Looney Tunes").
+Log `ps3log_p18_run2.txt`; the Looney Tunes boot starts after byte 428607
+(cut as `lt_part.txt`, with `rpsbins.py`, `monrps.py` and `ccrace.py`,
+scratchpad of session 7b7c1c88). That listener stopped with the session;
+port 18194 is free.
+- HW 2026-10-07, Looney Tunes with SPE AICA DSP ON, SPE DSP JIT ON, SPE
+  ARM7 ON. Matt: "Looney Tunes has the voice lines in! Perfect!" (they go
+  through the DSP only: G1 confirmed). Then: "There's an echo going on
+  during loading. A noise.", "This would kill the effects/voices
+  in-game", "It also ran much worse." Clean XMB exit.
+- DSP: program 113 words, 2 live steps, recompiled at each load (46 ->
+  109 compiles); slow=0, fails=0, and bad=0, drops=0 in every window; AICA
+  SPU busy ~5%.
+- Race windows (10K+ vertices): game frame rate (RPS) median 16-22, in
+  both P16 Looney Tunes boots (DSP OFF) 26-30, at the same SPEED
+  (98.5-100%). The SH4 thread sleeps 218 ms/s (P16: 44), so the guest
+  makes fewer frames per emulated second; the host is not slower. Against
+  the P16 boots only `SpeAicaDsp` 0 -> 1 and `SpeDspJit` CHECK -> ON
+  changed; this build also has Depth Float ON.
+- FIQs stop at the game's ARM7 reset (t=201: 988/s -> 161 -> 0), as in
+  the P16 log with the DSP OFF: F3's lead (section 6), not new.
+- Next (Matt picks): the same race with SPE AICA DSP OFF; if the frame
+  rate stays low there, Depth Float OFF (live) in that race.
+
 **Done: P18 Depth Float (Matt 2026-10-07: "We now work on P18."), HW SUCCESS
 (Matt: "It was"), default ON since the package of 01:01 (Matt: "Yes,
 absolutely!").** Built and PC tested in the package of 00:42. The second of
 the parked Soul Calibur leads (below), option (a). The UDP listener of
-session 783a0c22 was stopped at Matt's request; port 18194 is free.
+session 783a0c22 was stopped at Matt's request; the one of session 7b7c1c88
+(01:12, Matt: "Start the listener") stopped with that session.
 - VIDEO / DEBUG -> "Depth Float" (`DepthFloat`), live. A change acts at the
   next frame and logs `[rend] depth float ON|OFF` (also once at boot). A
   default only reaches a cfg without the key; Matt's has ON already.
@@ -82,7 +199,13 @@ session 783a0c22 was stopped at Matt's request; port 18194 is free.
     depth fault. 205 windows at SPEED 100%, render busy at most 13%.
   - Power Stone 2 (second boot): Matt: "An issue in Power Stone 2 is also
     fixed." 50 windows at SPEED 100%.
-  - Not run: Crazy Taxi (car shadows, modifier volumes with GREATER).
+  - Crazy Taxi, run later (`ps3log_p18_run2.txt`, scratchpad of session
+    7b7c1c88), Depth Float ON from the cfg: Matt: "Ran perfect." The log
+    starts at t=86 s, so the boot's `[rend] depth float` line is missing.
+    56 dense windows (vt >= 6K): SPEED 100.0%, 96.4% at full speed (5.36:
+    94.5%). Car shadows drawn: 246-452 modifier-volume tris per render, W
+    up to 9567. Render busy 26-44%, one dropped render (first scene), SPE
+    fences all ok. Clean XMB exit, flash saved.
 
 **Done: P16 Tex Slot Hash (Matt 2026-10-06: "Ok then, do P16."), HW SUCCESS
 (Matt: "It's a success"), default ON since the package of 23:46 (Matt: "Tex
@@ -130,7 +253,8 @@ the package of 22:27. HW 2026-10-06 (5.36 "HW"): three boots clean (Crazy
 Taxi GATE, Crazy Taxi + RESUME, Sonic Adventure + RESUME); dense Crazy
 Taxi at full speed in 94.5% of windows with + RESUME (86.3% in the 5.38
 run), ~2-3% more spare time; Matt: "It felt much smoother now". TA Peak
-Frame: built, default OFF, not run on HW (expected gain none).
+Frame: built, default OFF, not run on HW (expected gain none); BLOCKED
+2026-10-07 (Matt: "You can block this goal").
 - Found first: the 5.38 logs (JIT C-Calls ON) give the per-timeslice
   update 61-73 ms/s of the SH4 thread (`[stall]` sys), 6-7%, at 112K
   calls/s: 550-650 ns per call. HW then showed this is work per slice:
@@ -1110,7 +1234,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
 | 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form) |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[~]` built 2026-10-04, PC tested (bit-exact), HW pending; merged 2026-10-06: P20 (A3 by default, gaps G2-G4) |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[x]` HW SUCCESS 2026-10-07 (Matt), default ON with SPE DSP JIT ON since the package of 03:41 (P20 G1; Looney Tunes' voices go through the DSP only); merged 2026-10-06: P20 (gaps G2-G4 open) |
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[x]` HW, default ON since the package of 23:22 on 2026-10-05 (Matt); HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
@@ -1118,7 +1242,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | Steps 1-3 `[x]` HW, TA SQ Direct and JIT SQ STORES default ON since the package of 23:22 on 2026-10-05 (Matt); Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06, open: P55 + P7 (VRAM writes from SQ and DMA) |
 | 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]`; merged 2026-10-06: P15 (freerunning, a dynamic form) |
-| 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[~]` HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean; Soul Calibur pending |
+| 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[!]` blocked 2026-10-07 (Matt): the Soul Calibur check and the known-w pass; HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean |
 | 5.21 | Minicast M3 + M4: constant propagation (no memory baking) + dead value elimination | `[x]` HW, correct, no gain, default OFF; built + PC tested 2026-10-04 ("JIT CONSTPROP", "JIT DEAD VALUES", default OFF; fuzzer PASS 1.6 M blocks, 31/31 mutants fail), package of 22:06; HW 2026-10-04: Crazy Taxi log clean, SHIL ops -2.9%, same-load VPS +0.2% (noise); geometry and sound right (Matt) |
 | 5.22 | Minicast M5: cycle check out of line, then only on backward branches | `[x]` HW, LOOPS ONLY default since 2026-10-04 (Matt); built 2026-10-04 ("JIT CYCLE CHECK": OLD / COLD EXIT / LOOPS ONLY, default OLD), package of 22:27; HW 2026-10-04: logs clean, same-load VPS +0.8% (COLD EXIT), +1.9% (LOOPS ONLY) against 5.21 |
 | 5.23 | Minicast M6: `fmov.s @Rn+` pair fusion | `[ ]` not scheduled (low) |
@@ -1134,7 +1258,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
 | 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp) |
 | 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
-| 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[ ]` not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
+| 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[!]` blocked 2026-10-07 (Matt), not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
 | 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level |
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
 | 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]` |
@@ -1148,6 +1272,7 @@ JIT Div32 defaults to FIXED since the package of 21:02 on 2026-10-06 (Matt: "Yes
 JIT SYS GATE defaults to + RESUME since the package of 22:52 on 2026-10-06 (Matt: "Yes, make +RESUME the default").
 Tex Slot Hash (P16) defaults to ON since the package of 23:46 on 2026-10-06 (Matt: "Tex Slot Hash should become the default ON").
 Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt: "Yes, absolutely!").
+AICA Race Fix, ARM7 Reset Fix, CA Clamp, SPE AICA DSP and SPE DSP JIT ON default to ON since the package of 03:41 on 2026-10-07 (Matt: "mark this on by default").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -2412,7 +2537,11 @@ clock by VPS.
           ChuChu Rocket, Looney Tunes. Read the `dsp jit` line (`slow=`,
           `bad=`), SPU busy, SPEED/VPS; listen for reverb, missing voices,
           old echo after a scene change. Looney Tunes also tests F3
-          (section 6; a link is not shown).
+          (section 6; a link is not shown). HW 2026-10-07, Looney Tunes:
+          voice lines now play; noise at loads, in-game frame rate lower
+          (section 0). With the Looney Tunes fixes all cues play at the old
+          frame rate: SUCCESS (Matt), SPE AICA DSP and SPE DSP JIT ON by
+          default since the package of 03:41. G1 done.
         - G2: the ring is in LS, not in wave RAM (the limits above). Fix
           idea: a "ring dirty" record on guest writes inside the ring, and
           the SPU writes its ring output back by DMA after each block.
@@ -4975,7 +5104,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test) |
-| 6.5 AICA Race Fix | F3 Looney Tunes | `[ ]`; merged 2026-10-06: P24, P31 (CA clamp) |
+| 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (open), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]` |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
 | 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49 | - |
@@ -5003,6 +5132,10 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   probe of the interrupt latch at each ARM7 reset and of the driver's timer
   and interrupt register writes (6.5, 6.8, P44). Parked (Matt: "Park it for
   now").
+- F3 FIXED 2026-10-07 (Matt: "The sound cues ALL played correctly"): 5.13
+  A3 (the voices go through the DSP only) with 6.5, P44 and P31, all
+  default ON (section 0). The FIQs still stop after the game's ARM7 reset;
+  the driver runs on its monitor loop and needs none.
 - Quake 3: Matt cannot recall the issue. No Quake 3 PS3 audio bug makes a
   sound slower. Dropped.
 - ARM7 cycles per AICA sample: ours 170 at SH4 150, 226.7 at 200; Reicast
@@ -5295,7 +5428,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     asserts) as P11's PC check. Its "precision" and "underflow" cases
     encode P11's rule, so they fail on ours today. ~100 lines of harness.
 
-### 6.5 AICA Race Fix (Looney Tunes)  `[ ]`
+### 6.5 AICA Race Fix (Looney Tunes)  `[x]` HW SUCCESS 2026-10-07, default ON, see section 0
 
 - Reference: Flycast a920ae590 (2021-02-14), "aica: fix race conditions
   between sh4/arm - Fix sound issue in Test Drive Le Mans and Looney Tunes".
@@ -5339,7 +5472,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     every transfer by at least 64 cycles, so it ends on a later timeslice.
     3 lines, behind DmaFix for an A/B, apart from the AicaRaceFix option.
     Keep the Read_SB_ADST guard.
-  - P31, CA clamp: the LEA-3 clamp of 2.2 runs only in nullAICA mode; the
+  - P31, CA clamp (built 2026-10-07 as "CA Clamp", section 0): the LEA-3 clamp of 2.2 runs only in nullAICA mode; the
     twin and SPE ARM7 paths return the raw CA. Near the end of Looney
     Tunes' ring (LEA 8192) the two modes read a different CA (8189 with the
     clamp, 8191 without). Clamp after `ps3aica_read_mon` and `ac_twin_mon`
@@ -5435,7 +5568,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 - `_vmem` handler ids: only ids 0-7 fit (id*4 under HANDLER_MAX 0x1F,
   `dc/mem/_vmem.cpp:16-17`); 8 are registered, so a 9th would break.
 - Merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (not scheduled):
-  - P44: `arm_Reset()` sets `armMode = 0x1F` (System) for the cached
+  - P44 (built 2026-10-07 as "ARM7 Reset Fix", with the latch clear above; section 0): `arm_Reset()` sets `armMode = 0x1F` (System) for the cached
     engine and the JIT (`plugs/vbaARM/arm7.cpp`), and the SPE ARM7 does the
     same (`ps3/spu/arm7_spu.h`). A reset enters SVC (0x13): the AICA's
     ARM7DI is ARMv3, with no System mode. Reicast `4caa2b47` and Flycast

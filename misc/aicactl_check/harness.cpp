@@ -41,10 +41,11 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	static const char* const cov[] = { "rd", "wr", "arm rd", "arm wr", "samples", "fiq up", "-", "sh4 irq up",
-	                                   "sh4 irq down", "timer ovf", "kyonex", "lfore", "mon", "cdda", "accept" };
+	                                   "sh4 irq down", "timer ovf", "kyonex", "lfore", "mon", "cdda", "accept", "race",
+	                                   "ca clamp", "latch stale" };
 	printf("seed %s: %s (stop %u, %llu insns)", argv[2], get32(0) == 1 && sim->stop_code == 1 ? "PASS" : "FAIL",
 	       sim->stop_code, (unsigned long long)sim->insns);
-	for (int i = 0; i < 15; i++)
+	for (int i = 0; i < 18; i++)
 		if (i != 6)
 			printf(" | %s %u", cov[i], get32(8 + i));
 	printf(" | verify %u\n", get32(7));

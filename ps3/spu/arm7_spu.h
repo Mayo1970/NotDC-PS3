@@ -37,9 +37,15 @@ typedef struct
 	uint8_t idle_pref;       // ARM7 Idle Skip SAFE wanted (the integrator keeps it current)
 	uint8_t idle_safe;       // latched at the first run after a flush, as s_idle_safe
 	uint8_t dirty;           // block map flushed: latch idle_safe on the next run
+	uint8_t running;         // a7_run is running: an AICA write comes from the ARM7
+	uint8_t race_req;        // AICA Race Fix: the store just made raised the SH4 line (a7_race)
+	uint8_t reset_svc;       // ARM7 Reset Fix: a reset enters SVC (0x13), not System (0x1F); the integrator sets it
+	uint8_t race_done;       // AICA Race Fix: this slice was extended already (once per slice)
 	uint8_t pad[2];
 	int32_t mode;            // armMode
 	uint32_t decodes, evicts, fiqs;   // stats
+	int32_t budget;          // the running slice's ticks
+	uint32_t races;          // AICA Race Fix: slices extended
 	uint32_t map[A7_MAP_N];
 } A7Cpu;
 
@@ -185,7 +191,7 @@ static void a7_reset(A7Cpu* a)
 {
 	a->enabled = 0;
 	memset(a->r, 0, sizeof(a->r));
-	a->mode = 0x1F;
+	a->mode = a->reset_svc ? 0x13 : 0x1F;
 	a->r[13] = 0x03007F00u;
 	a->r[15] = 0;
 	a->r[16] = 0;
@@ -208,11 +214,34 @@ static void a7_set_enabled(A7Cpu* a, int enabled)
 	a->enabled = (uint8_t)(enabled != 0);
 }
 
-static void a7_init(A7Cpu* a)
+// reset_svc: ARM7 Reset Fix, kept by every later a7_reset.
+static void a7_init(A7Cpu* a, int reset_svc)
 {
 	memset(a, 0, sizeof(*a));
+	a->reset_svc = (uint8_t)(reset_svc != 0);
 	a7_reset(a);
 }
+
+// AICA Race Fix (Flycast avoidRaceCondition): a store that left an SH4 interrupt pending keeps 50 ticks of its slice
+// after it. The integrator's write path calls a7_race; one extension per slice, so a raising loop still ends it.
+static inline void a7_race(A7Cpu* a)
+{
+	if (a->running && !a->race_done)
+		a->race_req = 1;
+}
+
+static void a7_race_clamp(A7Cpu* a, int32_t* ticks)
+{
+	a->race_req = 0;
+	const int32_t lim = a->budget - 50;
+	if (*ticks > lim)
+	{
+		*ticks = lim;
+		a->race_done = 1;
+		a->races++;
+	}
+}
+#define A7_RACE(a, ticks) do { if (__builtin_expect((a)->race_req, 0)) a7_race_clamp((a), (ticks)); } while (0)
 
 // ── Block map: the arm7_cached block a dispatch to this address lands in ────
 
@@ -596,6 +625,7 @@ static void a7_stm(A7Cpu* a, uint32_t op, int32_t* ticks)
 		else
 			v = r[i];
 		a7_wr32(addr, v);
+		A7_RACE(a, ticks);
 		*ticks += 2;
 		addr += 4;
 		if (W && !wrote_base)
@@ -743,13 +773,15 @@ static inline int a7_mem(A7Cpu* a, uint32_t op, uint32_t pc, int32_t* ticks)
 		a7_wr8(addr, r[dest] & 0xFF);
 	else
 		a7_wr32(addr, r[dest]);
+	A7_RACE(a, ticks);
 	if (!P)
 		r[base] = moved;
 	*ticks += 3;
 	return 0;
 }
 
-// One slice of `budget` ticks, as arm_Run_Cached(CycleCount). Returns the ticks charged.
+// One slice of `budget` ticks, as arm_Run_Cached(CycleCount). Returns the ticks charged (less after an a7_race_clamp).
+// Signed tests: a7_race_clamp can leave ticks below 0 in a slice under 50 ticks.
 static int32_t a7_run(A7Cpu* a, uint32_t budget)
 {
 	if (!a->enabled)
@@ -762,6 +794,9 @@ static int32_t a7_run(A7Cpu* a, uint32_t budget)
 	uint32_t* r = a->r;
 	int32_t ticks = 0;
 	uint32_t pc = a->next_pc, meta = 0;
+	a->budget = (int32_t)budget;
+	a->running = 1;
+	a->race_done = 0;
 
 dispatch:
 	if (a->fiq_en && (A7_E68K_OUT))
@@ -770,7 +805,7 @@ dispatch:
 		a7_fiq(a);
 		pc = a->next_pc;
 	}
-	if ((uint32_t)ticks >= budget)
+	if (ticks >= (int32_t)budget)
 		goto out;
 	ticks += 6;
 	meta = a7_lookup(a, pc);
@@ -824,6 +859,7 @@ dispatch:
 					a7_wr32(addr, r[op & 0xF]);
 					r[(op >> 12) & 0xF] = t;
 				}
+				A7_RACE(a, &ticks);
 				ticks += 4;
 			}
 			else if (((op >> 23) & 3) == 2 && !(op & 0x00100000))
@@ -900,7 +936,7 @@ dispatch:
 		// ADVANCE: next instruction of the block; after a capped block's last one, the rehome dispatch follows.
 		const int rehome = (meta & A7_META_CAP) && (pc & A7_ARAM_MASK & ~3u) == (meta & ~3u);
 		pc += 4;
-		if ((uint32_t)ticks >= budget)
+		if (ticks >= (int32_t)budget)
 			goto out;
 		ticks += 6;
 		if (rehome)
@@ -910,5 +946,6 @@ dispatch:
 out:
 	a->next_pc = pc;
 	r[15] = pc + 4;
+	a->running = 0;
 	return ticks;
 }

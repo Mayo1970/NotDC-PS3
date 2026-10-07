@@ -155,6 +155,29 @@ static bool         s_idle_safe;   // ARM7 Idle Skip SAFE (6.1), latched with th
 
 extern "C" int get_arm7_idle_skip_preset();
 
+// The running slice: its ticks (at file scope for arm_cached_avoid_race), its CycleCount, whether one runs, and whether
+// it was extended already.
+static int          clockTicks;
+static u32          s_slice_cycles;
+static bool         s_in_slice;
+static bool         s_race_done;
+extern u32          g_arm_races;   // arm7.cpp, [aicafix]
+
+// AICA Race Fix (Flycast avoidRaceCondition): the slice runs at least 50 more ticks after the raising store. At most one
+// extension per slice, so a loop that raises on every turn still ends its slice.
+void arm_cached_avoid_race()
+{
+	if (!s_in_slice || s_race_done)
+		return;
+	const int lim = (int)s_slice_cycles - 50;
+	if (clockTicks > lim)
+	{
+		clockTicks = lim;
+		s_race_done = true;
+		g_arm_races++;
+	}
+}
+
 // The ARM7 JIT borrows the block table rather than adding its own. arm_Reset() latches one engine and flushes both
 // (s_cache_dirty makes this one rebuild its tables before its next run).
 void arm7_cached_borrow_buffers(u8** code, u32* code_bytes, void*** entries, u32* entry_count)
@@ -353,7 +376,6 @@ void arm_Run(u32 CycleCount);
 
 void arm_Run_Cached(u32 CycleCount, bool reset)
 {
-	static int clockTicks;            // matches arm-new.h / LDM-STM helper signature
 	static ARM7CACHEOP* pc_op;
 	// Guard-uop label per condition (opcode[31:28]), filled below: label addresses exist only in this function.
 	// AL (0xE) has no guard; NV (0xF) always skips.
@@ -393,6 +415,9 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 	}
 
 	clockTicks = 0;
+	s_slice_cycles = CycleCount;
+	s_in_slice = true;
+	s_race_done = false;
 
 	// Hot-block profiler: once per slice, dump the top 10 if >=1s has elapsed.
 	PROF_TICK();
@@ -409,7 +434,7 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 				CPUFiq();                                 \
 				dispatch_pc = armNextPC;                  \
 			}                                             \
-			if ((u32)clockTicks >= CycleCount) goto lbl_exit; \
+			if (clockTicks >= (int)CycleCount) goto lbl_exit; \
 			clockTicks += 6;                              \
 			PROF_HIT(dispatch_pc);                        \
 			pc_op = ARM7_ENTRYPOINTS[ARM7_EP_INDEX(dispatch_pc)]; \
@@ -418,9 +443,10 @@ void arm_Run_Cached(u32 CycleCount, bool reset)
 
 	// Sequential advance: the next uop is the next slot (a block is laid out in order), so no table lookup; a capped
 	// block ends in a rehome uop, so pc_op++ never leaves its block.
+	// Signed tests: arm_cached_avoid_race can leave clockTicks below 0 in a slice under 50 ticks.
 	#define ADVANCE() do {                               \
 			dispatch_pc += 4;                             \
-			if ((u32)clockTicks >= CycleCount) goto lbl_exit; \
+			if (clockTicks >= (int)CycleCount) goto lbl_exit; \
 			clockTicks += 6;                              \
 			pc_op++;                                      \
 			goto *pc_op->dispatch;                        \
@@ -848,6 +874,7 @@ lbl_exit:
 	// The architectural PC as the next slice's kickoff and FIQ entry expect it: next instruction, reg[15] = it + 4.
 	armNextPC = dispatch_pc;
 	reg[15].I = dispatch_pc + 4;
+	s_in_slice = false;
 	return;
 
 	#undef DISPATCH

@@ -49,13 +49,22 @@ typedef struct
 	volatile uint32_t cmds, recs;          // commands done, log records written
 	volatile uint32_t log_waits, log_drops, cdda_under, mon_reads, checks;
 	volatile uint32_t ls_end;   // end of the SPU image in LS
-	uint32_t pad[8];
+	// [aicafix]: slices extended, SH4 interrupts raised under AICA Race Fix; ARM7 resets and stale latches under
+	// ARM7 Reset Fix; CA reads and clamps under CA Clamp
+	volatile uint32_t races, raises, resets, stale, ca_reads, ca_clamped;
+	uint32_t pad[2];
 } __attribute__((aligned(128))) ArmEcho;
+
+// ArmSetup flags: the Looney Tunes fixes (OPTIMIZATION_PLAN 6.5, P44, P31), set before boot
+#define ARM_SETUP_RACE_FIX  1u
+#define ARM_SETUP_RESET_FIX 2u
+#define ARM_SETUP_CA_CLAMP  4u
 
 typedef struct
 {
 	uint32_t ring_ea;        // ArmCmd[ARM_CMDS]
 	uint32_t aram_ea;        // PS3 aica_ram: DC byte a at host byte a ^ 3
 	uint32_t aica_bell_ea, aica_echo_ea, aica_log_ea;   // the sound SPU's AicaBell, AicaEcho, AicaShared::log
-	uint32_t pad[27];
+	uint32_t flags;          // ARM_SETUP_*
+	uint32_t pad[26];
 } __attribute__((aligned(128))) ArmSetup;

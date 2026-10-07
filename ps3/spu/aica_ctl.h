@@ -1,5 +1,5 @@
 // OPTIMIZATION_PLAN 5.15: nullAICA's registers, timers and interrupts (SPE AICA Sound mode) in portable C, byte-exact
-// with aica_reg. The includer defines ac_twin_write, ac_twin_mon, ac_twin_step and ac_cdda_refill.
+// with aica_reg. The includer defines ac_twin_write, ac_twin_mon, ac_twin_step, ac_cdda_refill and ac_race.
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -16,6 +16,8 @@ typedef struct
 	uint32_t cdda_index;
 	uint32_t sh4_irq;          // UpdateSh4Ints: MCIEB & MCIPD != 0
 	uint32_t smp;              // g_aica_smp
+	uint32_t race_fix, ca_clamp;   // AICA Race Fix and CA Clamp, set by the includer after ac_init
+	uint32_t raises, ca_reads, ca_clamped, stale;   // [aicafix]: ac_race calls, CA reads, clamped, stale latches
 } AicaCtl;
 
 static AicaCtl ac;
@@ -24,6 +26,7 @@ static void ac_twin_write(uint32_t off, uint32_t data, uint32_t size, uint32_t o
 static uint32_t ac_twin_mon(uint32_t reg, int keep_lp);                                  // ps3aica_read_mon
 static void ac_twin_step(void);                                                           // ps3aica_step
 static void ac_cdda_refill(void);   // cdda_refill + ps3aica_cdda
+static void ac_race(void);          // arm_avoid_race: an SH4 interrupt is pending after this write
 
 // The 16-bit register at A (A % 4 == 0) is the big-endian halfword at [A + 2], as the AICA_PS3 bitfields lay it out.
 static inline uint32_t ac_rd16(uint32_t h) { return ((uint32_t)ac.reg[h] << 8) | ac.reg[h + 1]; }
@@ -94,6 +97,41 @@ static void ac_update_arm_ints(void)
 
 static inline void ac_update_sh4_ints(void) { ac.sh4_irq = (ac_rd32(0x28B4) & ac_rd32(0x28B8)) != 0; }
 
+// AICA Race Fix (Flycast c7d214e55 + 51089c5e0): an SH4 interrupt left pending, new or not, gives the ARM7 its ticks.
+static void ac_sh4_ints_race(void)
+{
+	ac_update_sh4_ints();
+	if (ac.sh4_irq)
+	{
+		ac.raises++;
+		ac_race();
+	}
+}
+
+// ARM7 Reset Fix (Flycast reset()): the e68k latch and the pending level clear.
+static void ac_reset_latch(void)
+{
+	ac.stale += ac.e68k_out || ac.interr;
+	ac.interr = 0;
+	ac.reg_l = 0;
+	ac.e68k_out = 0;
+	ac.e68k_l = 0;
+	ac.e68k_m = 0;
+}
+
+// CA Clamp (P31): nullAICA's rule (Flycast 788cbfb64) with the monitored slot's LSA and LEA registers.
+static uint32_t ac_ca_clamp(uint32_t ca)
+{
+	const uint32_t s = (ac.reg[0x280E] & 0x3F) * 0x80, lsa = ac_rd16(s + 0x0A), lea = ac_rd16(s + 0x0E);
+	ac.ca_reads++;
+	if (lea > lsa && lea > 3 && ca > lea - 3)
+	{
+		ac.ca_clamped++;
+		return lea - 3;
+	}
+	return ca;
+}
+
 // ── Timers: count is [0x2893 + 4i], md the low 3 bits of [0x2892 + 4i] ──
 
 static void ac_timer_write(uint32_t i)
@@ -130,8 +168,13 @@ static void ac_read_common(uint32_t reg, int byte)
 		ac_wr16(0x2812, ac_twin_mon(0x2810, byte && reg == 0x2810) & 0xFFFF);
 		break;
 	case 0x2814: case 0x2815:
-		ac_wr16(0x2816, ac_twin_mon(0x2814, 0) & 0xFFFF);
+	{
+		uint32_t ca = ac_twin_mon(0x2814, 0) & 0xFFFF;
+		if (ac.ca_clamp)
+			ca = ac_ca_clamp(ca);
+		ac_wr16(0x2816, ca);
 		break;
+	}
 	}
 }
 
@@ -173,8 +216,21 @@ static void ac_write_aica(uint32_t reg, uint32_t data, uint32_t sz)
 		if (data & 0x20)
 		{
 			ac_setbit(0x28B8, 5);
-			ac_update_sh4_ints();
+			if (ac.race_fix)
+				ac_sh4_ints_race();
+			else
+				ac_update_sh4_ints();
 		}
+		return;
+	case 0x289C:   // SCIEB: with AICA Race Fix a new enable raises a pending interrupt at once
+		ac_wr(reg, data, sz);
+		if (ac.race_fix)
+			ac_update_arm_ints();
+		return;
+	case 0x28B4:   // MCIEB
+		ac_wr(reg, data, sz);
+		if (ac.race_fix)
+			ac_sh4_ints_race();
 		return;
 	case 0x28BC:   // MCIRE, not stored
 		ac_wr32(0x28B8, ac_rd32(0x28B8) & ~data);

@@ -42,6 +42,15 @@ extern "C" void ps3_audio_aica_ready() {}
 bool g_arm7_in_run;
 u32 g_arm7s_runs, g_arm7s_fiqs;
 u64 g_arm7s_ticks;
+// The Looney Tunes fixes (plan 6.5, P31): seed bits 3 and 4
+static int g_race, g_clamp;
+extern "C" int get_aica_race_fix_preset() { return g_race; }
+extern "C" int get_aica_ca_clamp_preset() { return g_clamp; }
+extern "C" int get_arm7_reset_fix_preset() { return 0; }
+u32 g_arm_races, g_arm_resets, g_arm_stale;
+void g2dma_take(u32 out[7]) { for (int i = 0; i < 7; i++) out[i] = 0; }
+void arm_spe_fix_take(u32 out[6]) { for (int i = 0; i < 6; i++) out[i] = 0; }
+bool arm_reset_latch();   // arm_mem.cpp
 // The reference's diagnostic prints go nowhere: these replace newlib's, which would stop the SPU for the PPU.
 extern "C" int printf(const char*, ...) { return 0; }
 extern "C" int puts(const char*) { return 0; }
@@ -83,7 +92,9 @@ u16 ps3aica_read_mon(u32 reg, bool keep_lp)
 }
 void ps3aica_step() { g_hs[0].steps++; }
 void ps3aica_cdda(const s16*, bool silent) { hook(0, 'C', silent, 0, 0, 0); }
+void arm_avoid_race() { hook(0, 'X', 0, 0, 0, 0); }
 
+static void ac_race(void) { hook(1, 'X', 0, 0, 0, 0); }
 static void ac_twin_write(u32 off, u32 data, u32 size, u32 old16) { hook(1, 'W', off, data, size, old16); }
 static u32 ac_twin_mon(u32 reg, int keep_lp)
 {
@@ -107,6 +118,10 @@ static u32 pick_addr()
 {
 	static const u8 offs[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x08, 0x0C, 0x10, 0x14, 0x18, 0x1C, 0x1D, 0x1E, 0x1F,
 	                           0x20, 0x24, 0x28, 0x29, 0x40, 0x44, 0x7C, 0x7D, 0x7E, 0x7F };
+	if (rnd(25) == 0)
+		return 0x2814 + rnd(2);   // CA: CA Clamp (P31) wants many
+	if (rnd(25) == 0)
+		return (ac.reg[0x280E] & 0x3F) * 0x80 + (rnd(2) ? 0x08 : 0x0C);   // the monitored slot's LSA or LEA
 	const u32 r = rnd(100);
 	if (r < 28) return rnd(64) * 0x80 + offs[rnd(sizeof(offs))];
 	if (r < 44) return 0x2800 + rnd(0x18);
@@ -136,7 +151,7 @@ static u32 pick_data(u32 a)
 
 // ---- report, put to main memory at the end ----
 enum { COV_RD, COV_WR, COV_ARM_RD, COV_ARM_WR, COV_STEPS, COV_E68K_UP, COV_E68K_DOWN, COV_IRQ_UP, COV_IRQ_DOWN,
-       COV_OVF, COV_KYONEX, COV_LFORE, COV_MON, COV_CDDA, COV_ACCEPT, COV_N };
+       COV_OVF, COV_KYONEX, COV_LFORE, COV_MON, COV_CDDA, COV_ACCEPT, COV_RACE, COV_CLAMP, COV_LATCH, COV_N };
 struct OpRec { u32 kind, addr, size, data; };
 struct Report
 {
@@ -212,6 +227,8 @@ static int compare_hooks(u32 op)
 			g_rep.cov[COV_MON]++;
 		else if (x.kind == 'C')
 			g_rep.cov[COV_CDDA]++;
+		else if (x.kind == 'X')
+			g_rep.cov[COV_RACE]++;
 	}
 	return 0;
 }
@@ -226,6 +243,8 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 	g_aica_fast_preset = (int)(seed & 1);
 	g_aica_kyonb_preset = (int)((seed >> 1) & 1);
 	g_mute = (int)((seed >> 2) & 1);
+	g_race = (int)((seed >> 3) & 1);
+	g_clamp = (int)((seed >> 4) & 1);
 	aica_reg = s_reg_ref;
 	aica_ram_l = s_aram;
 	ref_aica_params(s_aram, &g_istext, ref_raise, ref_cancel);
@@ -235,11 +254,14 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 	arm_init_mem();
 	AICA_Init_test();
 	ac_init();
+	ac.race_fix = (u32)g_race;
+	ac.ca_clamp = (u32)g_clamp;
 	g_rep.status = 1;
 	int bad = compare(0, 1);
 
 	for (u32 op = 1; op <= (u32)nops && !bad; op++)
 	{
+		const u32 clamped0 = ac.ca_clamped;
 		const u32 kind = rnd(100);
 		if (kind < 30)   // SH4 write
 		{
@@ -286,6 +308,16 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 			}
 			g_rep.cov[COV_ARM_WR]++;
 			g_rep.cov[COV_ACCEPT] += e0 && !ac.e68k_out;
+		}
+		else if (kind < 70 && rnd(10) == 0)   // ARM7 Reset Fix: the latch clear of an ARM7 reset
+		{
+			const u32 stale0 = ac.stale;
+			trace('Z', 0, 0, 0);
+			const bool x = arm_reset_latch();
+			ac_reset_latch();
+			if (x != (ac.stale != stale0))
+				bad = fail(op, 'Z', x, ac.stale - stale0, 0, 0);
+			g_rep.cov[COV_LATCH] += x;
 		}
 		else if (kind < 70)   // interrupt traffic: FIQ accepts, pending clears, enables and levels
 		{
@@ -363,6 +395,7 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 			bad = compare(op, 1);
 		if (!bad)
 			bad = compare_hooks(op);
+		g_rep.cov[COV_CLAMP] += ac.ca_clamped - clamped0;
 	}
 	if (!bad)
 		bad = compare((u32)nops, 1);

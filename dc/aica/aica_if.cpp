@@ -11,6 +11,12 @@
 #include <stdio.h>
 
 extern "C" int get_dma_fix_preset();
+extern "C" int get_aica_race_fix_preset();
+
+// G2 DMA counters for [aicafix] (plan 6.5), taken by g2dma_take().
+static struct { u32 starts, bytes, busy, noaden, irqrd, dup, end31, star, stag, len; } s_g2;
+// AICA Race Fix: bytes the running transfer copied; STAR/STAG move by them at its end, as in Flycast.
+static u32 s_g2_len;
 
 // SCHED preset (ps3_presets.cpp): the AICA G2-DMA end IRQ goes through the deadline scheduler, in true order
 // with the ch2/PVR/GD-ROM completions, not the aica_dma_delay_cycles countdown in UpdateAicaDma().
@@ -194,8 +200,16 @@ s32 aica_dma_delay_cycles = 0;
 
 static void aica_dma_complete()
 {
-    // Bit 31 of ADLEN: keep ADEN asserted (continuous mode)
-    SB_ADEN  = (SB_ADLEN & 0x80000000) ? 1 : 0;
+    if (get_aica_race_fix_preset())
+    {
+        // Flycast a44619931: bit 31 of ADLEN ends with ADEN cleared; ADSUSP bit 4 set = no transfer running
+        SB_ADEN    = (SB_ADLEN & 0x80000000) ? 0 : 1;
+        SB_ADSTAR += s_g2_len;
+        SB_ADSTAG += s_g2_len;
+        SB_ADSUSP |= 0x10;
+    }
+    else
+        SB_ADEN = (SB_ADLEN & 0x80000000) ? 1 : 0;   // Bit 31 of ADLEN: keep ADEN asserted (continuous mode)
     SB_ADST  = 0;
     SB_ADLEN = 0;
     asic_RaiseInterrupt(holly_SPU_DMA);
@@ -233,13 +247,14 @@ static int aica_dma_end_cb(int tag, int sch_cycl, int jitter)
     return 0;   // single-shot
 }
 
-// Verbatim PSP port: Le Mans/Looney Tunes resend a DMA after SB_ADST==0, so it reads as set once while the IRQ pends.
-// Dead in PSP too (REG_READ_DATA, same flags, makes sb.cpp return the raw reg first); kept to match, not the stall.
+// Flycast a920ae590: Le Mans/Looney Tunes resend a DMA after SB_ADST==0, so it reads as set once while the IRQ pends.
+// Live only with AICA Race Fix: else REG_READ_DATA (aica_sb_Init) makes sb.cpp return the raw register first.
 u32 Read_SB_ADST()
 {
     if ((SB_ISTNRM & (1u << (u8)holly_SPU_DMA)) && !(SB_ADST & 2))
     {
         SB_ADST |= 2;
+        s_g2.irqrd++;
         return 1;
     }
     else
@@ -254,8 +269,19 @@ void Write_SB_ADST(u32 data)
     if (!(data & 1))
         return;
 
-    if (!(SB_ADEN & 1))
+    // AICA Race Fix (Flycast a920ae590): no second start while a transfer runs
+    const bool race_fix = get_aica_race_fix_preset() != 0;
+    if (race_fix && (SB_ADST & 1))
+    {
+        s_g2.busy++;
         return;
+    }
+
+    if (!(SB_ADEN & 1))
+    {
+        s_g2.noaden++;
+        return;
+    }
 
     if (SB_ADDIR == 1)
     {
@@ -278,8 +304,26 @@ void Write_SB_ADST(u32 data)
         WriteMem32_nommu(dst + i, word);
     }
 
-    SB_ADSTAR += len;
-    SB_ADSTAG += len;
+    s_g2.starts++;
+    s_g2.bytes += len;
+    if (src == s_g2.star && dst == s_g2.stag && len == s_g2.len)
+        s_g2.dup++;
+    s_g2.star = src;
+    s_g2.stag = dst;
+    s_g2.len  = len;
+    if (SB_ADLEN & 0x80000000)
+        s_g2.end31++;
+
+    if (race_fix)
+    {
+        s_g2_len   = len;
+        SB_ADSUSP &= ~0x10u;
+    }
+    else
+    {
+        SB_ADSTAR += len;
+        SB_ADSTAG += len;
+    }
     SB_ADST    = 1;
 
     if (get_dma_fix_preset())
@@ -403,7 +447,8 @@ void Write_SB_E2ST(u32 data)
 // ---- SB register setup ----
 void aica_sb_Init()
 {
-    sb_regs[((SB_ADST_addr - SB_BASE) >> 2)].flags         = REG_32BIT_READWRITE | REG_READ_DATA;
+    // AICA Race Fix: no REG_READ_DATA, so reads go through Read_SB_ADST
+    sb_regs[((SB_ADST_addr - SB_BASE) >> 2)].flags         = REG_32BIT_READWRITE | (get_aica_race_fix_preset() ? 0 : REG_READ_DATA);
     sb_regs[((SB_ADST_addr - SB_BASE) >> 2)].readFunction  = Read_SB_ADST;
     sb_regs[((SB_ADST_addr - SB_BASE) >> 2)].writeFunction = Write_SB_ADST;
 
@@ -422,3 +467,16 @@ void aica_sb_Init()
 
 void aica_sb_Reset(bool Manual) {}
 void aica_sb_Term()             {}
+
+// [aicafix]: the G2 DMA counters since the last call (starts, bytes, busy, noaden, irqrd, dup, end31), then zeroed.
+void g2dma_take(u32 out[7])
+{
+    out[0] = s_g2.starts;
+    out[1] = s_g2.bytes;
+    out[2] = s_g2.busy;
+    out[3] = s_g2.noaden;
+    out[4] = s_g2.irqrd;
+    out[5] = s_g2.dup;
+    out[6] = s_g2.end31;
+    s_g2.starts = s_g2.bytes = s_g2.busy = s_g2.noaden = s_g2.irqrd = s_g2.dup = s_g2.end31 = 0;
+}

@@ -95,6 +95,26 @@ static void a7_wr8(uint32_t addr, uint32_t v)
 #include "arm7_spu.h"
 
 static A7Cpu g_cpu;
+static void ac_race(void) { a7_race(&g_cpu); }
+
+// The Looney Tunes fixes (plan 6.5, P44, P31) from the seed's bits 3-5, as ArmSetup.flags
+static u32 g_flags, r_resets;
+
+// spe_arm7.cpp arm_reset_edge: an ARM7 reset; ARM7 Reset Fix also clears the FIQ latch
+static void ref_reset_edge()
+{
+	if (g_flags & ARM_SETUP_RESET_FIX)
+	{
+		r_resets++;
+		ac_reset_latch();
+	}
+}
+static void ref_set_enabled(int en)
+{
+	if (en && !g_cpu.enabled)
+		ref_reset_edge();
+	a7_set_enabled(&g_cpu, en);
+}
 
 uint8_t caique_rd8(uint32_t a) { return g_raram[(a ^ 3) & 0x1FFFFF]; }
 uint16_t caique_rd16(uint32_t a) { return (uint16_t)(g_raram[(a ^ 3) & 0x1FFFFF] | (g_raram[((a + 1) ^ 3) & 0x1FFFFF] << 8)); }
@@ -315,6 +335,11 @@ static void gen_program(u8* mem)
 		if (r < 3 && i + 160 < 16384)
 			for (u32 n = 140 + pick(20); n; n--)
 				w[i++] = gen_insn(true);
+		else if (r < 63 && i + 2 < 16384)
+		{
+			w[i++] = 0xE3A00020;   // MOV r0, #0x20
+			w[i++] = 0xE58800B8;   // STR r0, [r8, #0xB8]: MCIPD SCPU, the ARM7 interrupts the SH4 (AICA Race Fix)
+		}
 		else if (r < 30 && i + 8 < 16384)
 		{
 			w[i++] = 0xE5810000 | (pick(8) << 12) | (pick(8) << 16) | pick(64);
@@ -356,6 +381,8 @@ static void gen_program(u8* mem)
 	w[f++] = 0xE59A0000;   // LDR r0, [r10]      REG_L
 	w[f++] = 0xE3A01001;   // MOV r1, #1
 	w[f++] = 0xE58A1004;   // STR r1, [r10, #4]  REG_M accept
+	w[f++] = 0xE3A01020;   // MOV r1, #0x20
+	w[f++] = 0xE50A1448;   // STR r1, [r10, #-0x448]  MCIPD SCPU: the ARM7 interrupts the SH4 (AICA Race Fix)
 	w[f++] = 0xE25EF004;   // SUBS pc, lr, #4
 	for (u32 j = 0; j < 16384; j++)
 		put32(mem + 4 * j, w[j]);
@@ -381,7 +408,7 @@ static u32 pick_data(u32 a)
 {
 	const u32 w = a & ~3u;
 	if (w >= 0x2890 && w < 0x289C && pick(4)) return (0xF0 + pick(16)) | (pick(4) << 8);
-	if ((w == 0x289C || w == 0x28B4) && pick(2)) return pick(0x800);
+	if ((w == 0x289C || w == 0x28B4) && pick(2)) return pick(0x800) | (w == 0x28B4 ? 0x20 : 0);   // MCIEB: SCPU often on
 	if ((w == 0x28A8 || w == 0x28AC || w == 0x28B0) && pick(2)) return pick(0x100);
 	if (a < 0x2000 && (a & 0x7F) <= 1 && pick(2)) return 0xC000 | pick(0x10000);
 	return pick(0x10000);
@@ -485,6 +512,10 @@ static bool compare(bool rd, u32 rd_seq, u32 rd_val)
 		return fail("echo samples", be32(e + offsetof(ArmEcho, samples)), ac.smp, 0);
 	if (rd && (be32(e + offsetof(ArmEcho, rd_seq)) != rd_seq || be32(e + offsetof(ArmEcho, rd_val)) != rd_val))
 		return fail("register read", be32(e + offsetof(ArmEcho, rd_seq)), be32(e + offsetof(ArmEcho, rd_val)), rd_val);
+	const u32 fx[6] = { g_cpu.races, ac.raises, r_resets, ac.stale, ac.ca_reads, ac.ca_clamped };
+	for (u32 i = 0; i < 6; i++)
+		if (be32(e + offsetof(ArmEcho, races) + 4 * i) != fx[i])
+			return fail("echo fix count", i, be32(e + offsetof(ArmEcho, races) + 4 * i), fx[i]);
 	if (be32(e + offsetof(ArmEcho, log_drops)) || be32(e + offsetof(ArmEcho, cdda_under)))
 		return fail("log drops / cdda under", be32(e + offsetof(ArmEcho, log_drops)), be32(e + offsetof(ArmEcho, cdda_under)), 0);
 	// The SPU's ARM7 and AICA state, read from its LS
@@ -543,6 +574,8 @@ int main(int argc, char** argv)
 		return 2;
 	}
 	const u32 seed = (u32)strtoul(argv[3], 0, 0), batches = (u32)strtoul(argv[4], 0, 0);
+	g_flags = argc > 5 ? (u32)strtoul(argv[5], 0, 0) : ((seed >> 3) & 1 ? ARM_SETUP_RACE_FIX : 0) | ((seed >> 4) & 1 ? ARM_SETUP_RESET_FIX : 0) |
+	          ((seed >> 5) & 1 ? ARM_SETUP_CA_CLAMP : 0);
 	g_rng = 0x9E3779B97F4A7C15ull * (seed + 1);
 	g_lag = g_storm = (seed % 4) == 3;
 	g_log = (u8*)calloc(AICA_LOG, 16);
@@ -561,12 +594,15 @@ int main(int argc, char** argv)
 	put32(g_setup + offsetof(ArmSetup, aica_bell_ea), (u32)EA_ABELL);
 	put32(g_setup + offsetof(ArmSetup, aica_echo_ea), (u32)EA_AECHO);
 	put32(g_setup + offsetof(ArmSetup, aica_log_ea), (u32)EA_LOG);
+	put32(g_setup + offsetof(ArmSetup, flags), g_flags);
 	gen_program(g_aram);
 	memcpy(g_raram, g_aram, ARAM);
 
 	// reference, as the PPU starts it: AICA_Init, arm_Init (core off), the twin's constructor and reset()
 	ac_init();
-	a7_init(&g_cpu);
+	ac.race_fix = (g_flags & ARM_SETUP_RACE_FIX) != 0;
+	ac.ca_clamp = (g_flags & ARM_SETUP_CA_CLAMP) != 0;
+	a7_init(&g_cpu, (g_flags & ARM_SETUP_RESET_FIX) != 0);
 	g_m = new caique::AicaModel();
 	g_m->reset();
 
@@ -595,8 +631,11 @@ int main(int argc, char** argv)
 	{
 		Cmd c = { ARM_CMD_WR, 0, 0x2C00, 0, 2 };
 		push_cmd(c);
-		a7_set_enabled(&g_cpu, 1);
+		ref_set_enabled(1);
 		ac_write(0x2C00, 0, 2);
+		Cmd e = { ARM_CMD_WR, 0, 0x28B4, 0x20, 2 };   // MCIEB: the ARM7's SCPU interrupts reach the SH4
+		push_cmd(e);
+		ac_write(0x28B4, 0x20, 2);
 	}
 	for (u32 b = 0; b < batches && ok; b++)
 	{
@@ -655,6 +694,8 @@ int main(int argc, char** argv)
 				const u32 d = sz == 1 ? d0 & 0xFF : sz == 2 ? d0 & 0xFFFF : d0;
 				c = { ARM_CMD_WR, 0, (u16)a, d, sz };
 				push_cmd(c);
+				if (a == 0x2C00)   // a random write that lands on ARMRST: the SPU applies it as such
+					ref_set_enabled(!(d & 1));
 				ac_write(a, d, sz);
 				n_wr++;
 			}
@@ -672,7 +713,7 @@ int main(int argc, char** argv)
 				const u32 d = pick(3) ? 0 : 1;
 				c = { ARM_CMD_WR, 0, 0x2C00, d, 2 };
 				push_cmd(c);
-				a7_set_enabled(&g_cpu, !(d & 1));
+				ref_set_enabled(!(d & 1));
 				ac_write(0x2C00, d, 2);
 				n_rst++;
 			}
@@ -688,9 +729,10 @@ int main(int argc, char** argv)
 				c = { ARM_CMD_RESET, 0, 0, 0, 0 };
 				push_cmd(c);
 				a7_reset(&g_cpu);
+				ref_reset_edge();
 				Cmd r = { ARM_CMD_WR, 0, 0x2C00, 0, 2 };   // and the driver restarts it
 				push_cmd(r);
-				a7_set_enabled(&g_cpu, 1);
+				ref_set_enabled(1);
 				ac_write(0x2C00, 0, 2);
 			}
 		}
@@ -698,9 +740,11 @@ int main(int argc, char** argv)
 			g_lag = false;   // the lagging sound SPU wakes up; the storm goes on, so the log wraps off a flush edge
 		ok = run_spu() && compare(rd, rd_seq, rd_val);
 	}
-	printf("seed %u: %s | batches %u cmds %llu | samples %u recs %zu (checks %u) | arm runs %u fiqs %u decodes %u evicts %u"
+	printf("seed %u: %s | fixes %u: races %u raises %u resets %u stale %u ca %u/%u | batches %u cmds %llu | samples %u"
+	       " recs %zu (checks %u) | arm runs %u fiqs %u decodes %u evicts %u"
 	       " | aram misses %u puts %u | sh4 wr %u rd %u aram %u armrst %u | log waits %u limit runs %llu | %llu insns\n",
-	       seed, ok ? "PASS" : "FAIL", batches, (unsigned long long)g_cmds, ac.smp, g_rlog.size(), r_checks,
+	       seed, ok ? "PASS" : "FAIL", g_flags, g_cpu.races, ac.raises, r_resets, ac.stale, ac.ca_clamped, ac.ca_reads,
+	       batches, (unsigned long long)g_cmds, ac.smp, g_rlog.size(), r_checks,
 	       be32(g_echo + offsetof(ArmEcho, runs)), g_cpu.fiqs, g_cpu.decodes, g_cpu.evicts,
 	       be32(g_echo + offsetof(ArmEcho, misses)), be32(g_echo + offsetof(ArmEcho, puts)), n_wr, n_rd, n_aram, n_rst,
 	       be32(g_echo + offsetof(ArmEcho, log_waits)), (unsigned long long)g_limit_runs, (unsigned long long)g_sim->insns);

@@ -395,6 +395,12 @@ static Option s_audio[] = {
 	  "ARM7 and AICA on their own PPU thread; looser sound timing. Set before boot." },
 	{ "SPE ARM7",        &g_spe_arm7_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "ARM7 and AICA registers on an SPE; needs SPE AICA Sound. Set before boot." },
+	{ "AICA Race Fix",   &g_aica_race_fix_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Flycast's SH4/ARM7 race fixes: G2 DMA guards, +50 ARM7 ticks. Set before boot." },
+	{ "ARM7 Reset Fix",  &g_arm7_reset_fix_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "An ARM7 reset enters SVC mode and clears the FIQ latch. Set before boot." },
+	{ "CA Clamp",        &g_aica_ca_clamp_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Channel position reads stop at LEA-3 with SPE AICA too. Set before boot." },
 };
 
 static Option s_video[] = {
