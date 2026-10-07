@@ -106,7 +106,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P39 | reios (HLE BIOS) | feature | boot without `dc_boot.bin` | ~2K lines | low value |
 | P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | merged: plan 6.8 |
 | P41 | FMV: interpreter fallbacks (addc, swap.b, xtrct) | speed | Sofdec FMVs: Sonic Adventure intro (SPEED 57-71%), Space Channel 5 (~94%) | no new code | = plan 5.2, HW 2026-10-06: Sonic FMV +23% VPS |
-| P42 | FMV: YUV texture decode | speed | Soul Calibur opening (after P16), every YUV FMV | medium to large | merged: plan 5.12 (SPE list #4); P1 step 2, the Cg work of P1 and P14 |
+| P42 | FMV: YUV texture decode | speed | Soul Calibur opening (after P16), every YUV FMV | medium to large | merged: plan 5.12 (SPE list #4); P1 step 2, the Cg work of P1 and P14; (a) built 2026-10-07, "YUV Block Decode", HW pending |
 | P43 | FMV: YUV converter on the SH4 thread | speed | Sofdec FMVs (~1-3% of the SH4 thread, estimate) | ~40 lines | merged: plan 5.12 (the converter stays on the PPU) |
 | P44 | ARM7 resets in System mode, not SVC | bug | sound drivers that select SVC after reset; F1 and F3 unverified | 2 lines + a log probe | merged: plan 6.8 |
 | P45 | Mipmaps: upload the whole mip chain | bug (image) | distant textures alias; about half the texture fills in Crazy Taxi and Sonic Adventure | ~70 lines | gives P25's trilinear weights a meaning |
@@ -533,7 +533,12 @@ Steps:
   says it cuts the memory ops by ~94% ("sel"). It needs its own toggle and
   a HW test.
 
-### P42 FMV: YUV texture decode  `[ ]` merged: plan 5.12
+### P42 FMV: YUV texture decode  `[~]` merged: plan 5.12
+
+2026-10-07 (Matt: "Let's work on the YUV Decode.", option (a)): built as
+"YUV Block Decode" (`ps3/ps3_tex_yuv.h`, `ps3gl_tex_direct_begin()`), PC
+tested (`misc/yuv_check`), default OFF, HW pending. Details and HW steps:
+`OPTIMIZATION_PLAN.md` section 0. Options (b)-(d) not built.
 
 Facts:
 - Soul Calibur opening (`ps3log_a2hv_run1.txt`): ~270-280 us per tile

@@ -13,6 +13,89 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-07)
 
+**Built, HW tested on Looney Tunes (Matt: "Perfect.") and Sonic Adventure
+(Matt: "Video looked fine."): P42 YUV Block Decode
+(Matt 2026-10-07: "Let's work on the YUV Decode.", then option (a), the
+block decoder).** Built and PC tested in the package of 10:01. Default OFF.
+5.12 SPE list #4 stays open (this is the PPU form).
+- HW 2026-10-07 (package of 10:01, ON from boot, our listener at Matt's
+  request; `ps3log_p42_run1.txt`, scratchpad of session 18a23bec). Matt ran
+  the ON boots only; OFF is the Looney Tunes FMV in `ps3log_ltfix_run1.txt`
+  and `ps3log_p18_run2.txt`.
+  - Looney Tunes intro FMV (t=26-37 s): every YUV decode on the block path
+    (`yuvblk` 65 and 68 = the decodes); the texture is 1024x512 planar,
+    pitch 640 (so 384 of 1024 columns are the zero tail). Decode 5.4 ms per
+    frame (OFF 21.6 ms, 4.0x), render busy 7-8% (OFF 28%). SH4 thread:
+    slept in 17.5 frames per s (OFF 5.5-5.8), SPEED mean 100.6% and lowest
+    second 96.6% (OFF 98.3-99.0% and 86.5-90.5%). `blacktex` 0.
+  - A Sonic Adventure boot before it (ON, 56 s) reached no FMV. Clean XMB
+    exit, flash saved.
+  - Sonic Adventure intro FMV (third boot), the first 27 s against the
+    same span of the P16 run (OFF): Matt: "Video looked fine." All YUV
+    decodes on the block path; the texture is 512x512 planar, pitch 320.
+    Decode 2.5 ms per frame (OFF 10.7 ms, 4.3x), render busy 5-7% (OFF
+    11-16%). SPEED mean 94.8% (OFF 88.8%), lowest second 90.0% (OFF 85.1%),
+    FMV frame rate median 27.8 (OFF 26.0). The SH4 thread is still the
+    limit (it slept in no FMV second, in both runs). Not a same-build A/B:
+    the P16 build lacked Depth Float and the Looney Tunes AICA fixes.
+  - Space Channel 5: not run (Matt: "Space Channel already ran fine from
+    previous runs."). Soul Calibur opening: not run.
+- VIDEO / DEBUG -> "YUV Block Decode" (`YuvBlockDecode`), default OFF, live.
+  A change acts at the next YUV decode and logs `[tex] yuv block decode
+  ON|OFF` (also once at boot). Both settings give the same texels, so a
+  switch does not clear the texture cache.
+- ON (`ps3/ps3_tex_yuv.h`): a YUV texture (planar, stride, twiddled, VQ,
+  mip) decodes by tables straight into its RSX texture. One word load per
+  texel pair (planar) or two per 2x2 block (twiddled, VQ); three chroma
+  lookups per pair (the green term is 11 * (u + 2v) / 32, one table by
+  u + 2v); three clamp-table lookups per texel; no multiply, no branch.
+  `volatile` word stores (RSX memory is cache-inhibited). No `s_out` pass,
+  no ps3gl `convert_pixels()` pass. New ps3gl entry point
+  `ps3gl_tex_direct_begin()` / `_end()` (`ps3gl_textures.c`; the level-0
+  allocation is now one function shared with `glTexImage2D`). A source that
+  crosses the end of VRAM takes the old path.
+- OFF: `decode()` + `glTexImage2D`, unchanged (the decode now runs after the
+  bind; same result).
+- `[texfmt]` ends in `| yuvblk=N yuvlast=WxH{p|t|v}P`: block-path decodes in
+  the window, and the size, kind (planar, twiddled, VQ) and pitch of the
+  last YUV texture (the FMV texture sizes were never logged).
+- PPU code (`ps3_tex.o`): the planar loop is 81 instructions per 4 texels
+  (~20 per texel, no branch). The old planar `yuv_pair` loop is 103 per
+  texel pair (~52 per texel, 12 conditional branches for the clamps), plus
+  ~10 per texel in `convert_pixels`. Expected: decode time per YUV texture
+  ~3-5x lower (estimate, not measured).
+- Before (HW logs, OFF): Looney Tunes FMV decode 27.6% of the render thread
+  (21.6 ms per decode, ~12.8 per s), Sonic Adventure intro 10-15% (10.7 ms),
+  Space Channel 5 ~12% (5 ms, ~24 per s). The Soul Calibur opening is light
+  since P16 (80 decodes per 5 s, 2.8%, `ps3log_p18_run1.txt`). In these
+  FMVs the render thread shares the PPE core with the SH4 thread.
+- PC (WSL): `misc/yuv_check/run.sh` PASS. The new header against a copy of
+  the old path (`decode()` for fmt 3 + `convert_pixels()` with the PPE byte
+  order), bit-exact on the final RSX words, row padding included, and the
+  same black-texture count: every U, V, Y0 and Y1 (16.7M pairs); 240 fixed
+  textures (black, white, chroma extremes, odd texels lit); 144 sources at
+  the end of VRAM (96 fast, 48 fall back); 3000 random textures (planar and
+  stride, twiddled, VQ, mip; 145M texels). `mutate.py`: 32 of 32 planted
+  bugs fail.
+- Link: `.got` 0xC358, 0 `r2off`, no warning. No wide store and no memset
+  on the RSX pointer in the disassembly.
+- HW steps (package of 10:01):
+  1. Install. The install keeps `nullDC.cfg`. VIDEO / DEBUG -> YUV Block
+     Decode OFF; the rest as now, SH4 Clock 200.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1: Looney Tunes, the intro FMV: ~20 s with OFF, then SELECT ->
+     VIDEO / DEBUG -> YUV Block Decode ON -> SELECT for the rest of it.
+     Look at the video: colours, no stripes, no black or green blocks.
+     Log: `[tex] yuv block decode ON` at the switch, then `[texfmt]
+     yuvblk` equal to the YUV decodes, `[rend] tex split` decode % and
+     `busy` lower than with OFF.
+  4. Boot 2: Sonic Adventure intro FMV with ON: SPEED against the 86-97%
+     of the P16 run.
+  5. Boot 3: Space Channel 5, a stage with the FMV backdrop, with ON.
+  6. Optional: the Soul Calibur opening with ON (twiddled tiles).
+  7. On a fault (wrong colours, garbage): SELECT -> YUV Block Decode OFF
+     (live).
+
 **Open (Matt 2026-10-07: "mark the busy SH4 for Looney Tunes. It may be
 worth coming back later on."): Looney Tunes Space Race is SH4-bound in its
 races.** With every fix on (below), dense race windows run at SPEED 99.0%,
@@ -1634,7 +1717,8 @@ clock by VPS.
       now, both passes), (b) the RSX 4:2:2 formats with a Cg program, (c)
       this SPE item, (d) decode only the rows and columns the converter
       wrote. Do it after P16 (section 0, Soul Calibur) shows how many
-      decodes are left.
+      decodes are left. 2026-10-07: (a) built on the PPU, "YUV Block
+      Decode" (section 0), HW pending; ~20 instructions per texel.
     - The converter stays on the PPU: P43 loads the planes as 32-bit words
       (`rlwimi`) and skips the copy when a block starts at offset 0 (~40
       lines; estimate ~1-3% of the SH4 thread in a Sofdec FMV).

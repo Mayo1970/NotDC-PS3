@@ -8,6 +8,7 @@
 #include "plugs/drkPvr/regs.h"
 #include "dc/pvr/pvr_if.h"
 #include "ps3_tex_slot.h"
+#include "ps3_tex_yuv.h"
 
 
 
@@ -19,6 +20,9 @@ extern "C" {
 #pragma GCC diagnostic pop
 
 extern "C" int get_tex_slot_hash_preset();
+extern "C" int get_yuv_block_preset();
+extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint32_t* pitch);
+extern "C" void ps3gl_tex_direct_end(void);
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -43,6 +47,13 @@ static u32 s_black_tex, s_alpha0_tex;
 static u32 s_live;
 static int s_slot_hash = -1;
 static u32 s_evict, s_evict_hot;
+
+static YuvTables s_yuvt;
+static int s_yuv_block = -1;
+// [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
+static u32 s_yuv_blk;
+static u32 s_yuv_last_w, s_yuv_last_h, s_yuv_last_pitch;
+static char s_yuv_last_kind = '-';
 
 // Temporary G7 texture-mix counters, reset with the other per-window stats.
 static u32 s_fmt_count[8];
@@ -391,6 +402,43 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 	if (!opaque) s_alpha0_tex++;
 }
 
+// P42: a YUV texture straight into the bound texture's RSX rows; false leaves it to decode() + glTexImage2D.
+static bool upload_yuv_block(const TexDesc& d)
+{
+	if (s_yuv_block <= 0 || !yuvd_fits(d.w, d.addr, d.src_bytes, d.pitch, d.twiddled, d.vq, d.vq_cb))
+		return false;
+	u32 pitch;
+	volatile u32* dst = ps3gl_tex_direct_begin(d.w, d.h, &pitch);
+	if (!dst)
+		return false;
+	if (d.twiddled)
+		build_twiddle(d.w, d.h);
+	const u32 lit = yuvd_decode(&s_yuvt, (const u32*)PVRPARAMS.vram, d.w, d.h, d.addr, d.pitch, d.twiddled, d.vq,
+	                            d.vq_cb, s_tx, s_ty, dst, pitch / 4);
+	ps3gl_tex_direct_end();
+	// YUV texels are opaque, so only the black count applies (decode()'s check).
+	if (!(lit & 0xFFFFFF))
+		s_black_tex++;
+	s_yuv_blk++;
+	return true;
+}
+
+// Decodes d into the bound texture.
+static void upload(const TexDesc& d, bool ignore_alpha)
+{
+	if (d.fmt == 3)
+	{
+		s_yuv_last_w = d.w;
+		s_yuv_last_h = d.h;
+		s_yuv_last_pitch = d.pitch;
+		s_yuv_last_kind = d.vq ? 'v' : d.twiddled ? 't' : 'p';
+		if (upload_yuv_block(d))
+			return;
+	}
+	decode(d, ignore_alpha);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+}
+
 static void free_entry(TexEntry& e)
 {
 	if (e.name)
@@ -410,6 +458,15 @@ void ps3tex_frame_begin()
 		ps3tex_reset();
 		s_slot_hash = slot_hash;
 		printf("[tex] slot hash %s, cache cleared\n", slot_hash ? "ON" : "OFF");
+	}
+	// Both YUV paths give the same texels, so a switch needs no cache clear.
+	const int yuv_block = get_yuv_block_preset() != 0;
+	if (yuv_block != s_yuv_block)
+	{
+		if (s_yuv_block < 0)
+			yuvd_init(&s_yuvt);
+		s_yuv_block = yuv_block;
+		printf("[tex] yuv block decode %s\n", yuv_block ? "ON" : "OFF");
 	}
 
 	s_frame++;
@@ -482,9 +539,8 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		{
 			REND_PHASE(PH_TEX);
 			const u64 t_d = PERF_TICKS();
-			decode(d, tsp.IgnoreTexA);
 			glBindTexture(GL_TEXTURE_2D, hit->name);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+			upload(d, tsp.IgnoreTexA);
 			s_t_decode += PERF_TICKS() - t_d;
 			hit->hash = hsh;
 			s_decodes++;
@@ -526,15 +582,14 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
 		REND_PHASE(PH_TEX);
 		const u64 t_d = PERF_TICKS();
-		decode(d, tsp.IgnoreTexA);
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
 		set_tex_params(tsp, mirror_u, mirror_v);
-		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy.
-		// Must be set before the first glTexImage2D: the layout is fixed at allocation.
+		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy (and P42 needs linear).
+		// Must be set before the first upload: the layout is fixed at allocation.
 		if (d.fmt == 3)
 			ps3gl_texture_hint_no_swizzle();
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+		upload(d, tsp.IgnoreTexA);
 		s_t_decode += PERF_TICKS() - t_d;
 		s_live++;
 		s_decodes++;
@@ -576,16 +631,19 @@ void ps3tex_stats(u32* decodes, u32* live)
 
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
-	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u\n",
+	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u"
+	       " | yuvblk=%u yuvlast=%ux%u%c%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
-	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot);
+	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
+	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
 	s_bind_total = s_bind_mirror = 0;
 	s_black_tex = s_alpha0_tex = 0;
 	s_evict = s_evict_hot = 0;
+	s_yuv_blk = 0;
 }

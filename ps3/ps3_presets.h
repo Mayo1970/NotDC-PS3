@@ -47,6 +47,7 @@ extern int g_strip_merge_preset;
 extern int g_vertex_array_preset;
 extern int g_tex_slot_hash_preset;
 extern int g_depth_float_preset;
+extern int g_yuv_block_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;
