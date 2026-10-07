@@ -13,6 +13,242 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-07)
 
+**Done: 5.12 #2 SPE Build, the SPU rewrite (Matt 2026-10-07: "SPU rewrite
+now", after HW runs 1 and 2 below), HW tested: correct and fast.** Package
+of 17:41; default ON since the package of 18:36 (Matt: "Yes, I want it ON by
+default."). A `nullDC.cfg` with a `SpeBuild` key keeps its value.
+- HW run 3 2026-10-07 (package of 17:41; `ps3log_spevb_run1.txt` from line
+  26728, cut per boot as `run3_check.txt`, `run4_on.txt`,
+  `run5_sonic.txt`, `run6_ct.txt`, scratchpad of session 9d577958):
+  - Boot 1, CHECK, a Looney Tunes race: 6117 scenes checked in 50 windows,
+    `bad=0 late=0 fail=0`, no MISMATCH. Heavy race builds (28-33K vertices
+    in, 37-43K out) 1.66-1.92 ms each, 2.19 ms at most (run 2: 7-10 ms).
+  - Boot 2, ON, Looney Tunes (Matt: "very smooth", some micro-stutters he
+    does not put on this): vt >= 10K SPEED 98.3% (run 2 95.9%, PPU path
+    `lt_fix.txt` 99.2%), render busy 9.4% (22.1%), vtx+other 1.5% (13.2%);
+    vt >= 25K 97.7% (98.7%), busy 10.5% (26.9%). Builds 1.9-2.5 ms average,
+    3.1 ms max; render-thread waits ~1% of the wall; `fail=0 amis=0`. Frames
+    over 25 ms in ~28% of the seconds in this run, run 2 and `lt_fix.txt`
+    alike (the `[stall]` lines put them in "other", the SH4 side).
+  - Boot 3, ON, Sonic Adventure (Matt: "the same"): SPEED 99.8-100% (already
+    full speed), render busy 6-7%, vtx+other 0.6-0.8%, builds up to 1.9 ms.
+  - Boot 4, ON, Crazy Taxi dense (48 windows at vt >= 6K): SPEED 99.9%
+    (`ct_fix.txt` 99.8%), RPS 59.8 (59.8), render busy 21.4% (35.7%),
+    vtx+other 1.8% (13.9%); builds 1.2-1.4 ms average, 1.7 ms max; `fail=0
+    amis=0`; frames over 25 ms in 3.3% of the seconds (7.4%). Clean exits.
+  - So: correct in all four boots, and the render thread loses its vertex
+    work (13-16 points). The three games already ran at or near full speed
+    in these scenes, so the frame rate does not change; the time is headroom.
+  - Left open: publish waits of 0.26-0.34 ms per build in Sonic and Crazy
+    Taxi (the echo put waits for the vertex puts; a fenced put on one tag
+    could drop it); translucent-heavy scenes cost more SPU time (simulator:
+    4000 TR strips -> 4.1 ms per build).
+- Rewrite of `spe_vb_build.h` (same output, bit for bit, as the PPU merge):
+  - Output: each vertex is a 48-byte slot (the 36 bytes of ps3gl_vertex_t,
+    then 12 zero bytes), written with 3 whole quadword stores (no
+    read-modify-write). The RSX reads stride 48: `ps3gl_draw_vb_stride`
+    (new in ps3gl; `ps3gl_draw_vb` calls it with 36). The SPU block is
+    cap x 48 + 128 bytes from `ps3gl_vring_alloc_raw`; if that fails, the
+    scene goes the PPU path. Each put sends only the bytes since the last.
+  - Input: the in-order passes (opaque, punch-through, the key pass) read
+    strip records, vertices and params through two LS windows each (4080
+    bytes, 8160 bytes with a 64-vertex overlap, 2 KB): the next window loads
+    while one is in use. One scan per build finds each list's blocks of
+    strip records, so a pass skips the other lists. The sorted TR pass keeps
+    the per-strip DMA ring. EAs in 32 bits (64-bit math called `__muldi3`).
+  - Vertices: two per vector (x and y of both, W of each twice):
+    vertex_inf and the fast product range tested in one go; x, y, W turned
+    into doubles with integer steps; one dfm and one frds per vertex. The
+    next pair's tests run beside this pair's DP chain. Join copies and the
+    first vertex's copies (dupe, parity) are plain stores. The old exact
+    code takes inf vertices, zero/denormal/out-of-range products, the cap
+    and strips over 64 vertices.
+  - Keys: two exact 1/W per double vector without branches (the midpoints
+    are q and q - 1 as doubles plus bit 28); fadds and its rounding with
+    integer steps (round to nearest even; the overflow gives the Inf bits).
+  - draw_strip is inlined into each pass (it saved 45 registers per strip);
+    the join test and run records without branches or scalar stores.
+  - TR_PPU: the PPU's 36-byte vertices go to a new vring block, with the cap
+    the SPU left. CHECK: the SPU copy is 160K x 48 bytes; the compare checks
+    the 9 words and the 3 zero words of each slot.
+- misc/spu_sim (the SPU image with its timing; it gave 11.49 ms where HW
+  measured 11.7 ms before), a Looney Tunes-like scene (38.5K vertices in,
+  49.2K out; 4620 OP, 25 PT, 889 TR strips): 11.49 -> 2.21 ms per build
+  (OP/PT ~8.7 -> 1.33 ms, key pass 1.23 -> 0.42 ms, sort 0.11 ms, TR pass
+  1.49 -> 0.35 ms). Output the same as the PPU merge in the simulator too.
+- PC: `run.sh 3000` PASS (106M vertices, 889K runs, 492 TR_PPU, 371 at the
+  cap). `mutate.py` (96 planted bugs, 300 scenes each): 93 fail run.sh. One
+  ("window one element long") hangs the check (the strip window never moves;
+  on HW the 20 ms deadline turns SPE Build off). Missed, so test gaps, not
+  bugs: the pair test without its W range (needs W = +Inf/NaN with x and y
+  near 0 in the same vertex; the decoder never writes such a W), the fast
+  path's cap test one slot short (needs the cap to fall on a first vertex
+  with 3 copies), and the slide's wait on the wrong window (the MFC model
+  completes old puts too soon to show the race).
+- SPU: text 29.6 KB, data + bss 197 KB (~30 KB of LS left for the stack).
+  `.got` 0xC638, no warning. The package also holds the menu footer icons
+  of another session (`assets/`, `ps3_ui.*`, from this morning, already in
+  the packages of 13:03 and 14:20).
+- HW steps (package of 17:41):
+  1. Install. The install keeps `nullDC.cfg`. VIDEO / DEBUG -> SPE Build
+     CHECK; SPE Draw, Strip Merge, Vertex Arrays ON (defaults); SH4 Clock
+     200; SPE Wait Yield OFF (as in runs 1-2: "wait spins").
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1 (CHECK, short): one Looney Tunes race. Log: `check ok=N bad=0
+     late=0`, no MISMATCH line.
+  4. Boot 2 (ON): a Looney Tunes race, then Crazy Taxi ~2 min dense. Look
+     for missing or broken geometry. Log: `[spevb]` build avg/max and wait
+     total, `split/build`, `[rend]` SPEED and vtx+other against run 2 and
+     `lt_fix.txt`.
+  5. On a fault: SPE Build OFF for the next boot.
+
+History of #2 before the rewrite (Matt 2026-10-07: "We now work on 5.12",
+then job "#2 vertex build" and "SPU build directly", not the XDR test
+first). Package of 13:03, then the diagnostic build of 14:20.
+- HW run 1 2026-10-07 (package of 13:03, ON from boot, Looney Tunes;
+  `ps3log_spevb_run1.txt`, scratchpad of session 9d577958; Matt went to ON
+  without CHECK). Boot: `RSX DMA test: ok` (the SPU can write RSX local
+  memory). Every window `fail=0 amis=0 trppu=0`; clean XMB exit, flash
+  saved.
+  - Too slow: the SPU needs 8.1-9.8 ms per race frame (37-40K vertices out,
+    ~28K in; estimate was ~1.7 ms), ~0.3 us per input vertex in light scenes
+    too. The render thread spins 750-890 ms per 5 s waiting for runs.
+  - Race windows against `lt_fix.txt` (the PPU path): vt >= 10K: SPEED
+    91.3% (99.2%), RPS 24.9 (28.1), busy 24.2% (22.1%), vtx+other 16.1%
+    (13.2%); vt >= 25K: SPEED 88.3% (98.7%), vtx+other 19.7% (16.1%).
+  - So the spin costs the SH4 thread far more than the PPU path's vertex
+    stores did: those stores mostly stall on cache-inhibited writes and
+    leave the issue slots to the SH4 thread; a spin takes them.
+- Diagnostic build (Matt: "Sure"), package of 14:20: `[spevb] bench:` at
+  boot (SPU put bandwidth to RSX local and main memory, put and get round
+  trips) and `[spevb] split/build:` every 5 s (waits for the strip DMAs,
+  the publish and window puts, input loads and a full MFC queue; key pass,
+  sort and TR pass; strips, vertices, puts, commands, KB out, slow
+  products per build). Same behaviour otherwise; spevb_check PASS.
+  `.got` 0xC638, 0 `r2off`, no warning.
+- HW run 2 2026-10-07 (package of 14:20, ON, Looney Tunes; same log from
+  line 10881, cut as `run2_lt.txt`): correct again (`fail=0 amis=0`,
+  clean exit).
+  - Bench: 1 MB of SPU puts to RSX local memory in 317 us (3.3 GB/s), to
+    main memory in 48 us; one 128-byte put and wait 0.11 us (RSX) and 0.12
+    us (main); one 192-byte get and wait 0.24 us. DMA is not the limit.
+  - Split of a heavy build (36.6K vertices in, 48.6K out, 5536 strips; OP
+    4620, PT 25, TR 889 strips): 11.7 ms = OP/PT passes ~8.7 ms, key pass
+    1.3 ms, sort 0.1 ms, TR pass 1.6 ms. All waits together 0.41 ms (slot
+    0.21, publish 0.16, input 0.04, full queue 0.002). So it is SPU compute:
+    ~900 cycles per input vertex in the draw passes, ~700 in the key pass.
+  - Why (from the code): it is scalar code on a SIMD core. Each 4-byte LS
+    store is a quadword load, shuffle and store (9 per vertex out, chained
+    through the same quadwords); each field load is a quadword load and a
+    rotate; emit is a call; mul_xy is a chain of 4 DP ops (each stalls
+    issue 6 cycles).
+  - Race windows: vt >= 10K (34): SPEED 95.9% (run 1 91.3%, PPU path 99.2%),
+    RPS 25.2; vt >= 25K (14): 93.7% (88.3%, 98.7%), RPS 23.5.
+- VIDEO / DEBUG -> "SPE Build" (`SpeBuild`): OFF / ON / CHECK, set before
+  boot. Needs SPE Draw (the SPU lists; default ON), Strip Merge and Vertex
+  Arrays (defaults ON); else the PPU path, as now.
+- ON: a fourth SPU thread (`ps3/spu/spe_vb.c`, `spe_vb_build.h`) builds
+  draw_scene's merged vertex buffer and runs from the S3 lists, bit for bit:
+  draw_list (opaque, punch-through), then draw_tr_sorted (keys, stable sort)
+  or the translucent list in order, with draw_strip's merge, inf-vertex,
+  parity and cull rules. The render thread asks after the background quad
+  (`ps3spevb_request`), with the scene's vring block moved to a 128-byte
+  line. The SPU writes the vertices by DMA straight into that block (RSX
+  local memory) and publishes runs in batches: the first run at once, then
+  every 256 vertices and at each list end. The render thread walks the runs:
+  apply_param + one `ps3gl_draw_vb` each, as run_close does. No PPU vertex
+  stores.
+- TR_PPU: with more than 4096 translucent strips (autosort), or a W outside
+  {0} and [2^-126, 1e9] in that list, the SPU stops after punch-through; the
+  PPU sorts and draws the translucent list as now, in the same block.
+- A missed deadline (20 ms per wait) logs `[spevb] SPU build late`, stops
+  the SPU group and turns SPE Build off. The PPU draws the rest of that
+  scene in a fresh vring block (a list the SPU had begun is lost for that
+  frame).
+- CHECK: the SPU builds into a copy in main memory. The render thread draws
+  as now, then runs the same merge again as a dry pass (no GL call) into a
+  second copy, and compares runs, list ends, strip counts and vertex words,
+  bit for bit. The first 8 mismatches print `[spevb] check MISMATCH what[idx]
+  spu/ppu: ...`. A copy holds 160K vertices; a larger scene is checked up to
+  there, with the same cap on both sides.
+- Boot: `[spevb] RSX DMA test: ok` (the SPU writes 128 bytes into RSX local
+  memory, the PPU reads them back), then `[spevb] SPU thread up, mode ON|
+  CHECK`. If the test fails, SPE Build stays off.
+- Every 5 s: `[spevb] mode= up= builds/s runs/s vtx/s | spu busy % build
+  avg max us | wait first avg max us, total ms | trppu fail amis | check ok
+  bad late`. `amis`: apply_param's alpha force against the SPU's rule
+  (expected 0: a texture always binds).
+- Float steps (SPU single math truncates): x*W and y*W are the exact double
+  product rounded once (frds), with an integer fmuls for denormal results.
+  The sort keys use exact fdivs (frest + 2 Newton steps + midpoint residuals,
+  as S2's 1/W) and fadds through double; +Inf and the overflow by hand. A
+  radix sort (stable) on the key bits orders as std::stable_sort does.
+- PPU code: run_close, draw_strip, draw_list and draw_tr_sorted are now
+  templates on DRY (CHECK's dry pass). Their default instantiation compiles
+  to the same instructions as before (checked in the disassembly; only TOC
+  offsets differ).
+- PC (WSL): `misc/spevb_check/run.sh` PASS: 3000 scenes (107M vertices,
+  913K runs; 470 with TR_PPU, 381 at the vertex cap). The real
+  `spe_vb_build.h` runs on SPU shims: frds/fesd range checks, a frest model
+  with 2^-12 to 2^-7 error, and an MFC model (alignment and size rules, junk
+  in a get's buffer until its tag wait, random completion order, puts read LS
+  when they complete). The reference is ps3_rend.cpp's own merge code,
+  extracted between two markers, in both the DRY and the GL instantiation.
+  Every echo is checked as it lands (its runs and vertices are already
+  final). 13.6M checks of the float steps against x86 IEEE single math.
+  `mutate.py`: 60 of 60 planted bugs fail. Left out as equivalent: the
+  list test in the merge (each list is its own pass), the window wait in
+  `os_slide`, and the q - 1 steps of the divisions (two Newton steps always
+  land below the true quotient, so they never fire).
+- SPU: text 14.3 KB, bss 167 KB. Link: `.got` 0xC608, 0 `r2off`, no
+  warning. The package also holds the menu footer icons of another session
+  (`assets/`, `ps3_ui.*`, `ps3_menu.cpp`, Makefile).
+- Estimate (not measured): the SPU needs ~180 cycles per input vertex
+  (~1.7 ms for a 30K-vertex Looney Tunes scene, ~0.6 ms for dense Crazy
+  Taxi), the render thread's run walk ~1.5 us per run. In Looney Tunes the
+  render thread may wait for the SPU (`wait total` in the `[spevb]` line).
+  Render-thread time reaches the SH4 thread only through SMT (5.16).
+- HW steps (package of 13:03):
+  1. Install. The install keeps `nullDC.cfg`. VIDEO / DEBUG -> SPE Build
+     CHECK; SPE Draw ON, Strip Merge ON, Vertex Arrays ON (defaults); SH4
+     Clock 200; the rest as in the last runs.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1 (CHECK): Crazy Taxi, ~2 min of dense traffic, then exit; Looney
+     Tunes, one race. Log: `[spevb] RSX DMA test: ok`, `check ok=N bad=0
+     late=0`, no MISMATCH line, `trppu`.
+  4. Boot 2: SPE Build ON (set in the menu before boot). Crazy Taxi ~2 min
+     dense: look for missing or wrong geometry. Log: `[rend] draw split`
+     vtx+other and `busy` against `ct_fix.txt`, `[spevb] wait`, same-load
+     VPS.
+  5. Boot 3 (ON): a Looney Tunes race, the 30-38K-vertex scenes: vtx+other,
+     `[spevb] wait`, SPEED.
+  6. On a fault (missing or broken geometry): SPE Build OFF for the next
+     boot.
+
+**Active: 5.12 (Matt 2026-10-07: "Let's go with 5.12", then "start
+5.12").** Matt picks the job before any build. S0-S3 (job #1, TA decode)
+are done; SPE Draw is ON by default. Matt picked #2 (block above). Cost of the open jobs in the latest
+HW logs (`ct_fix.txt`: 22 windows at vt >= 6K; `lt_fix.txt`: 51 windows
+at vt >= 10K; both from `ps3log_ltfix_run1.txt`, scratchpad of session
+7b7c1c88; `rsplit.py` in the scratchpad of session b309523f):
+- #2 strip merge + vertex build (`draw_strip`, `vb_emit`): `vtx+other`
+  13.9% of the render thread's wall in dense Crazy Taxi (busy 35.7%), 13.2%
+  in the Looney Tunes races (busy 22.1%), 16.1% at 25K+ vertices. The
+  largest render-thread item left. `vb_emit` writes 9 words per vertex
+  into the vring in RSX local memory (cache-inhibited). ps3gl already has
+  a host ring in XDR mapped for the RSX (`ps3gl_hring_*`, 2 x 1 MB) and a
+  draw path from XDR (`GCM_LOCATION_CELL`).
+- #3 texture hash: 3.1% (Crazy Taxi), 2.1-2.6% (Looney Tunes races).
+- #4 texture decode: 0.8% in play; Sonic Adventure FMV 7% with P42 ON.
+- #5 `present_fb_convert`: no cost in the test games (1-2 presents per
+  boot).
+- P43 YUV converter (SH4 thread): Sonic Adventure FMV (`ps3log_p42_run1.txt`,
+  P42 ON): `[stall] dma` 34-45 ms/s (3.4-4.5% of the SH4 thread), SPEED
+  92-102%; the SH4 thread is the limit there.
+- The SH4 thread is the limit in the open cases. Render-thread work
+  reaches it only through SMT (5.16: busy 56 -> 32%, same load +0.5%, 10K+
+  bins +2.4% to +5.0%).
+
 **Built, HW tested on Looney Tunes (Matt: "Perfect.") and Sonic Adventure
 (Matt: "Video looked fine."): P42 YUV Block Decode
 (Matt 2026-10-07: "Let's work on the YUV Decode.", then option (a), the
@@ -105,6 +341,25 @@ work, and the game draws 22-27 frames/s there (26-30 elsewhere). The same in
 the DSP OFF boots before the fixes (57-59% at full speed). Not the disc (no
 reads or waits in the race), not the render thread, not the sound SPUs.
 `ps3log_ltfix_run1.txt` (cut as `lt_fix.txt`), scratchpad of session 7b7c1c88.
+- Stutters (Matt 2026-10-07, with SPE Build ON: "very smooth. But there are
+  some micro-stutters sometimes"; "add the stutter ... with a possible fix
+  later on"). Race seconds (vt >= 10K) whose worst frame is over 25 ms, by
+  the `[stall]` split (`stalls2.py`, scratchpad of session 9d577958): SPE
+  Build ON (`run4_on.txt`) 13 of 87 (15%), OFF (`lt_fix.txt`) 43 of 248
+  (17%):
+  - SPU wait, 300-430 ms (2 in each run): at race start and race end. One
+    render job decodes the new track's textures (VQ, mipmaps) in 364-426 ms
+    (`job_max`); the TA-decode SPU waits for the render thread's release
+    (S3), and the SH4 thread waits for that SPU (`[stall] spe`).
+  - Frame pacing (7 ON, 20 OFF): the slow frame holds a pacer sleep of 9-14
+    ms. The game draws 24-27 frames/s on a 60 Hz screen, so a frame stays 2
+    or 3 refreshes: judder even at full speed.
+  - Render thread (1 ON, 7 OFF): SPE Build took most of these away.
+  - SH4 work, 23-28 ms in one frame (3 ON, 14 OFF): the SH4-bound item above.
+  - Possible fixes, for later (Matt): texture decode off the render thread
+    for the freezes (5.12 job #4, an SPU decodes; or the decode spread over
+    frames); JIT work on the race's hot code for the SH4 frames; a look at
+    the pacer's sleep for the judder.
 
 **Done: the Looney Tunes fixes (Matt 2026-10-07: "Can we apply the Looney
 Tunes fixes?", then picked AICA Race Fix, ARM7 Reset Fix and CA Clamp; not
@@ -380,6 +635,34 @@ planted bugs fail; `constprop_check` PASS. The OLD forms on the same rows:
 unsigned 64/32 93% wrong, the signed idiom 50%. HW steps in section 5
 after 5.36-5.40. Start a UDP listener only when Matt says so.
 
+**Merged 2026-10-07: the OPTIMIZATION_POTENTIAL bundles (Matt: "Merge the
+bundles then on OPTIMIZATION_PLAN.md").** Nothing is built or scheduled.
+Section 7 groups the open items into 12 bundles: items that share code and
+checks, so one session can build them together. Each item keeps its own
+toggle and its own HW run. Matt picks a bundle, then the items.
+1. VRAM and TA-area writes (P43, P55, P7, the P26 watch): the only
+   SH4-thread speed left (P43 ~1-3% in Sofdec FMVs, P55 0.5% or less;
+   estimates).
+2. GD-ROM and disc images (3h, the open 5.34 parts and its CD-DA misses,
+   P22, P48, P9, the P23 GDI parser, the P57 GDI paths, P34): the most
+   games fixed.
+3. Texture path (P45, P52, P25, P1 steps 2-3): the most visible change
+   (mipmaps).
+4. TA decode and draw rules (P8, P27, P25, P10, P9).
+5. AICA RAM coherency (6.6, P20 G2-G4, P31): the Crazy Taxi crackle.
+6. G2 DMA (P24, P9).
+7. Time base (6.4, P11, the P57 TMU test, P28).
+8. SH4 interpreter, FPU and small JIT items (P46, P32, 5.3 `JitMac` and
+   `bcache`, 5.37, 5.39, 5.40, the P57 RM verify).
+9. ARM7 engines (P49, P40, 6.8).
+10. Maple (P29, P9, P13, P37).
+11. Output stage (P10, P53, P36, the P26 reads, P54).
+12. HW test tools (P50, P51).
+
+Not bundled: P1 steps 0-1 and P2 (no target left), P14 (3a, 3b), P42
+(b)-(d) (5.12), P35 and P39 (section 4), P15, P38, P12, P30, P33, and
+P31's nullAICA-only fixes (section 7, "Not bundled").
+
 **Merged 2026-10-06: the OPTIMIZATION_POTENTIAL items that have a plan
 goal (Matt: "Can you do the merge, then?").** Nothing is built. Each item
 now sits at its goal with a short entry. The full text (evidence, file and
@@ -397,7 +680,8 @@ line numbers) stays in `OPTIMIZATION_POTENTIAL.md` under the same P number.
   P16, P18, P1, P2, P51.
 - Not merged (no plan goal): P8, P10, P12, P13, P25, P26, P28-P30,
   P33-P37, P39, P45, P48, P50, P52, P53, and the other parts of P9, P22,
-  P23, P31, P32 and P57.
+  P23, P31, P32 and P57. 2026-10-07: now in the section 7 bundles, except
+  P12, P30, P33, P35, P39 and P31's nullAICA-only fixes.
 
 **Done: 5.34 GD-ROM Async (OPTIMIZATION_POTENTIAL P3) and 5.35 JIT EXIT
 (P6), HW SUCCESS (Matt 2026-10-06: "SUCCESS for both then").** Default ON
@@ -963,6 +1247,8 @@ not caused by S3 (5.12 S3 runs 2-3).
      black-texture suspects), block decoders, 16-bit uploads. Then P2
      step 2 (one pending slot), if step 1 shows the trade.
   - P51, screenshot to PNG (~60-80 lines): pixel evidence for the flicker.
+  - 2026-10-07 (section 7): P1 steps 0-1 and P2 have no target left. P1
+    steps 2-3 are in bundle 3, P51 is in bundle 12.
 
 | Item | Status |
 |---|---|
@@ -971,14 +1257,14 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 2.3 DSP | PARKED: Matt wants a PPC DSP JIT |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04 |
-| 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) merged, open |
-| 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open) |
+| 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) merged, open; bundle 4 (section 7) |
+| 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open); the P57 RM verify is in bundle 8 (section 7) |
 | 3e background vertex order | dropped, our code has no such fault |
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
 | 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged) |
-| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged |
+| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged; bundle 2 (section 7) |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
 work is section 5, SH4-side speed.
@@ -1185,7 +1471,8 @@ Status 2026-09-23 (all big-endian checked):
   `OPTIMIZATION_POTENTIAL.md` P38 (an interpreter form first, ~1.3-1.6K
   lines with longjmp; a JIT form is very high risk). P57:
   `verify(fpu_cfg.RM<2)` in `dc/sh4/rec_v2/decoder.cpp` hangs the JIT when
-  a WinCE game sets RM = 3; Flycast removed it (1 line).
+  a WinCE game sets RM = 3; Flycast removed it (1 line). 2026-10-07: P57's
+  RM verify is in bundle 8 (section 7); P38 stays here.
 - 3e dropped. Our `background_plane()` + `bg_eval()` evaluates the plane from
   the 3 real vertices (position, colour, UV) at the canvas corners. That is
   independent of vertex order and never rebuilds UVs, which is what both
@@ -1219,7 +1506,7 @@ Status 2026-09-23 (all big-endian checked):
     pointers (region-array words +8 and +16) and the TR list has more
     volumes, Flycast draws the TR list's volumes (Xtreme Sports shadows).
     Ours drops list 3 at decode, on the PPU and on the SPU. ~30 lines in
-    both decoders.
+    both decoders. 2026-10-07: in bundle 4 (section 7).
 
 - 3g `[x]` built (big-endian checked).
   - `dc/gdrom/gdromv3.cpp` SPI_CD_READ: `other` or expected data type 1
@@ -1269,6 +1556,8 @@ Status 2026-09-23 (all big-endian checked):
     (`core/imgread/common.cpp`, `common.h`).
   - HW check: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player,
     Crazy Taxi loading.
+  - 2026-10-07: 3h is part of bundle 2 (section 7), with the other GD-ROM
+    items and the parked 5.34 CD-DA misses.
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
@@ -1288,6 +1577,7 @@ Merged 2026-10-06 (open): `OPTIMIZATION_POTENTIAL.md` P54, the RTT pixel
 packing for those games: the 1555 alpha threshold from FB_W_CTRL (ours: a
 fixed 128), rounding (ours truncates), the clip origin, alpha in pack mode
 6, writers for modes 4 and 5. ~15 lines plus the two modes, endian-neutral.
+2026-10-07: P54 is in bundle 11 (section 7).
 
 ---
 
@@ -1316,13 +1606,13 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
-| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form) |
-| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (open); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[x]` HW SUCCESS 2026-10-07 (Matt), default ON with SPE DSP JIT ON since the package of 03:41 (P20 G1; Looney Tunes' voices go through the DSP only); merged 2026-10-06: P20 (gaps G2-G4 open) |
+| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form); P43 in bundle 1 (section 7); #2 SPE Build (vertex buffer + runs on an SPU, Matt 2026-10-07), VIDEO / DEBUG "SPE Build" OFF / ON / CHECK, HW runs 1-2 correct but too slow (8-12 ms per build); SPU rewrite (Matt) package of 17:41, HW tested: correct, builds 1.2-2.5 ms, render thread -13 to -15 points; default ON since package 18:36 (Matt) (section 0) |
+| 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (fixed 2026-10-07: A3 with 6.5, P44, P31); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[x]` HW SUCCESS 2026-10-07 (Matt), default ON with SPE DSP JIT ON since the package of 03:41 (P20 G1; Looney Tunes' voices go through the DSP only); merged 2026-10-06: P20 (gaps G2-G4 open); G2-G4 in bundle 5 (section 7) |
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
 | 5.15 | SPE ARM7: ARM7 + nullAICA registers + caique control twin on an SPU (AUDIO "SPE ARM7", `SpeArm7`) | `[x]` HW, default ON since the package of 23:22 on 2026-10-05 (Matt); HW 2026-10-04: Crazy Taxi dense VPS 52.9 -> 54.7, ChuChu stage 100%, Sonic Adventure fine; the Crazy Taxi popping is 6.6 (old path pops too); clean-up package 19:03 |
 | 5.16 | SPE Draw check with SPE ARM7 ON (existing option, one boot) | `[x]` HW 2026-10-05: same load +0.5% (10K+ bins +2.4% to +5.0%), render busy 56 -> 32%, 80% of dense windows at full speed; SPE Draw default ON since the package of 20:13 (Matt); SPE Wait Yield (db16cyc in the fence spin) HW: no gain, default OFF |
-| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | Steps 1-3 `[x]` HW, TA SQ Direct and JIT SQ STORES default ON since the package of 23:22 on 2026-10-05 (Matt); Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06, open: P55 + P7 (VRAM writes from SQ and DMA) |
+| 5.17 | TA store off the SH4 thread (`ta` 6.0% of wall in dense Crazy Taxi) | Steps 1-3 `[x]` HW, TA SQ Direct and JIT SQ STORES default ON since the package of 23:22 on 2026-10-05 (Matt); Step 1 probe HW 2026-10-04: SQ path ~252 ns per TA flush, 9.5% of wall (dense, SH4 200), call chain 47%; Step 2 option 1 ("TA SQ Direct", call-chain fix) HW 2026-10-04: dense VPS 48.4 -> 50.5 (+3.2% same load), no faults, default OFF; Step 3 (Minicast M2, "JIT SQ STORES") HW 2026-10-04: dense VPS 51.5, +4.2% same load vs Step 2 (+6.7% vs Step 1), log clean, default OFF; merged 2026-10-06, open: P55 + P7 (VRAM writes from SQ and DMA); bundle 1 (section 7) |
 | 5.18 | JIT hot-block profile in dense Crazy Taxi, then fix the hottest generated code | `[x]` measured: Step 1 built + PC tested 2026-10-04 (VIDEO / DEBUG "JIT HOTBLOCKS", default OFF), package of 23:13; Step 2 HW 2026-10-04: ranking in 5.18 "HW" (wait loop 12.4% of JIT instructions, real load-hit-stores ~6M/s, dynamic ends 2.6M/s, `mfcr` 3.5M/s, missed SQ stores 0.88M/s); fixes are their own items (5.25 first) |
 | 5.19 | SH4 Clock below 150 MHz (speed trade, last resort) | `[ ]`; merged 2026-10-06: P15 (freerunning, a dynamic form) |
 | 5.20 | Minicast M1: ftrv with known w + interleaved MAC chains | `[!]` blocked 2026-10-07 (Matt): the Soul Calibur check and the known-w pass; HW 2026-10-04 ("JIT FTRV", bit-exact form, no known-w pass): Crazy Taxi dense VPS 53.5, +3.8% same load vs 5.17 Step 3, log clean |
@@ -1339,13 +1629,13 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.31 | JIT GUARD REUSE: an access skips the RAM or SQ check its base register passed earlier in the block (a CR flag) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (greuse_check PASS, 25/25 mutants fail), VIDEO / DEBUG "JIT GUARD REUSE"; package of 21:50; HW 2026-10-05: clean, 20994 reuse sites, same load +0.1% against `run516` (noise) |
 | 5.32 | Stall probe: the SH4 thread's slowest frame each second, split by cause (rides on JIT C-Calls) | `[x]` HW 2026-10-05 (package of 22:22, `runstall_ct.txt`): the Crazy Taxi dip is one 330 ms disc read; dense play ~61 ms/s in disc reads |
 | 5.33 | CDI batched reads: one seek and one read per run of up to 32 sectors (was one per sector) | `[x]` HW, small gain, kept (Matt: "It's okay"), follow-ups parked; built + PC tested 2026-10-05 (cdi_check PASS, 14/14 mutants fail), package of 22:38; HW 2026-10-05: Crazy Taxi and Sonic Adventure clean; Crazy Taxi read time per request -7%, dense 60.9 -> 49.9 ms/s, the 330 ms read stays; same load +0.7% (noise) |
-| 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp) |
+| 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp); with the CD-DA misses in bundle 2 (section 7) |
 | 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
 | 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[!]` blocked 2026-10-07 (Matt), not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
-| 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level |
+| 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level; bundle 8 (section 7) |
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
-| 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]` |
-| 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first |
+| 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]`; bundle 8 (section 7) |
+| 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first; bundle 8 (section 7) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
@@ -1362,7 +1652,7 @@ Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
 | 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON (Matt), in the packages since 17:35; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log; = OPTIMIZATION_POTENTIAL P41 (the FMV fallbacks) |
-| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]`; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w) |
+| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]`; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w); `JitMac` and `bcache` in bundle 8 (section 7) |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` was Wii-gated) | `[x]` HW 2026-09-23, same item as the 5.4 row above |
 
 - 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
@@ -1718,10 +2008,16 @@ clock by VPS.
       this SPE item, (d) decode only the rows and columns the converter
       wrote. Do it after P16 (section 0, Soul Calibur) shows how many
       decodes are left. 2026-10-07: (a) built on the PPU, "YUV Block
-      Decode" (section 0), HW pending; ~20 instructions per texel.
+      Decode" (section 0), ~20 instructions per texel; HW tested
+      2026-10-07 (Looney Tunes, Sonic Adventure; decode ~4x faster),
+      default OFF.
     - The converter stays on the PPU: P43 loads the planes as 32-bit words
       (`rlwimi`) and skips the copy when a block starts at offset 0 (~40
       lines; estimate ~1-3% of the SH4 thread in a Sofdec FMV).
+    - 2026-10-07: #2 built as "SPE Build" (section 0): an SPU thread builds
+      the vertex buffer by DMA into the vring block, from the S3 lists; the
+      render thread draws its runs. HW runs 1-2: correct, too slow; SPU rewrite
+      (Matt: "SPU rewrite now") built, package of 17:41, HW pending.
   - S0 built 2026-10-03, HW pending. Toggle: VIDEO / DEBUG -> "SPE Doorbell"
     (`nullDC.cfg [ps3] SpeDoorbell`), default OFF, read in `InitRenderer`.
     - `ps3/spu/spe_bell.c` (spu-gcc, embedded with `bin2s`, `sysSpuImageImport`):
@@ -5187,11 +5483,11 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
 | 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
-| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test) |
-| 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (open), P31 (CA clamp, done) |
-| 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]` |
+| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test); bundle 7 (section 7) |
+| 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (open), P31 (CA clamp, done); P24 in bundle 6 (section 7) |
+| 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]`; bundle 5 (section 7) |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
-| 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49 | - |
+| 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | - |
 
 ### 6.0 Facts set on 2026-10-04
 
@@ -5676,6 +5972,342 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     a log census first; fix only if it fires (2-3 lines per engine,
     regenerate `arm7_cached_gen.inc`, two self-tests). Do not paste
     Reicast's `arm-new.h` diff.
+
+---
+
+## 7. Bundles of open OPTIMIZATION_POTENTIAL items (2026-10-07)
+
+Matt 2026-10-07: "Merge the bundles then on OPTIMIZATION_PLAN.md". A bundle
+is a set of open items that share code and checks, so one session can build
+them together. The plan rule stays: each item keeps its own toggle and its
+own HW run, default OFF until HW validated, SH4 Clock 200. Nothing is built
+or scheduled: Matt picks a bundle, then the items. The full text (evidence,
+file and line numbers) stays in `OPTIMIZATION_POTENTIAL.md` under the same
+P numbers. Its line numbers are from 2026-10-04 and 2026-10-06, so search
+for the function.
+
+| # | Bundle | Items (plan home) | Main gain | Status |
+|---|---|---|---|---|
+| 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[ ]` |
+| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34 | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[ ]` |
+| 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[ ]` |
+| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[ ]` |
+| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[ ]` (section 6 is parked) |
+| 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[ ]` |
+| 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
+| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d) | correctness; speed at noise level | `[ ]` |
+| 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
+| 10 | Maple | P29, P9 SB_MDST, P13, P37 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game | `[ ]` |
+| 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note) | 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
+| 12 | HW test tools | P50, P51 (section 0, Soul Calibur faults) | SPEED on the TV without the UDP listener; PNG evidence | `[ ]` |
+
+Main gains:
+- Speed: little is left. Only bundle 1 gives SH4-thread time, and it is
+  small (estimates). Bundle 2 removes stalls, not average load. Bundle 8 is
+  at noise level. No open item targets the Looney Tunes race (SH4-bound,
+  section 0); the 5.18 profile measured only Crazy Taxi.
+- Most games fixed: bundle 2. Most visible: bundle 3 (mipmaps). Audible:
+  bundle 5 (the crackle).
+
+### Bundle 1: VRAM and TA-area writes  `[ ]`
+
+- Items: P43 (5.12: the YUV converter, PPU form), P55 and P7 (5.17), P26
+  (the framebuffer write watch only; its reads are in bundle 11).
+- Shared code: `dc/pvr/pvr_if.cpp` (`TAWrite()`, `TAWriteSQ()`,
+  `pvr_write_area1_16/32`, `YUV_data()`) and the ch2 DMA in
+  `dc/sh4/dmac.cpp`.
+- Shared first step, one probe build (log only): split the SQ flushes and
+  the ch2 DMA bytes by target (TA FIFO, YUV converter, VRAM 64-bit, VRAM
+  32-bit) on the `[ta-split]` line, and log SB_LMMODE0/1 at each change.
+  It is the first step of P7 (LMMODE in a few games; Rez must stay right),
+  P55 (count the VRAM-direct blocks) and P43 (the split is not logged).
+- Merge point: P55 replaces the per-word `pvr_write_area1_32` calls with
+  direct stores. P26 puts its watch in those calls, so the direct path
+  must keep the watch.
+- Gain:
+  - P43: ~1-3% of the SH4 thread in Sofdec FMVs (estimate). In the Sonic
+    Adventure intro FMV with YUV Block Decode ON, `[stall] dma` is 34-45
+    ms/s (3.4-4.5% of the SH4 thread), and the SH4 thread is the limit
+    (section 0, the 5.12 block). P43 is also on that 5.12 list.
+  - P55: 0.5% of the SH4 thread or less in dense Crazy Taxi (estimate).
+  - P7: a texture sent through the 64-bit LMMODE path no longer lands
+    scrambled (games unknown). P26: a 2D screen that redraws only part of
+    the frame shows again (Flycast: Ikaruga loading screens).
+- Byte order: only P43 needs care (it loads the planes as 32-bit words).
+- Checks: PC first, bit-exact (P43 against the current converter: random
+  planes, the four quadrants, blocks split across calls). HW: the Sonic
+  Adventure intro FMV (`[stall] dma`, SPEED), dense Crazy Taxi (same-load
+  VPS), the Looney Tunes intro FMV.
+
+### Bundle 2: GD-ROM and disc images  `[ ]`
+
+- Items: 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp,
+  the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23
+  GDI parser, P57 GDI paths, P34 disc swap.
+- Shared code: `dc/gdrom/gdromv3.cpp`, `plugs/ImgReader/` (`iso9660.cpp`
+  for GDI, `common.cpp` for the TOC and the sector forms),
+  `ps3/ps3_gdasync.cpp`.
+- Shared checks: `misc/gdasync_check` already builds the real
+  `gdromv3.cpp` and `ps3_gdasync.cpp`. Flycast's `tests/files/test_gdis`
+  fixtures and `GdiTest.cpp` can become a check in the `misc/cdi_check`
+  style (P57, ~60 lines).
+- Merge points:
+  - P21 step 2 starts CD-DA 5 ms after CD_PLAY. The parked 5.34 fix
+    ("silence for the missed sector, or start the read-ahead at the play
+    command") goes in the same CD_PLAY handler. The read-ahead is
+    `gda_cdda_next()` in `ps3/ps3_gdasync.cpp`.
+  - P34 must wait for the 5.34 worker (`gda_wait()`, as the GD-ROM reset
+    does) and drop the CD-DA ring before it opens the next image.
+  - P22's DMA pacing and 5.34's wait both set when a DMA ends: build the
+    pacing on top of 5.34.
+- Gain: hangs and freezes in named games: Pro Pinball Trilogy (SB_GDLEN =
+  0), World Series Baseball 2K2 and Sakura Taisen 3 music (DMA pacing),
+  Hydro Thunder and NFL Blitz 2001 (P21 step 1), Cool Boarders Burrrn, Ms.
+  Pac-Man and Bust-a-Move 4 (P21 step 2), V-Rally 2 CD-DA and Eldorado
+  Gate (P23 TOC fields). GDI sets with quoted names or `\` paths boot.
+  Multi-disc games get past disc 1 (Shenmue I and II, Skies of Arcadia,
+  Grandia II, D2, RE Code Veronica). Each CD-DA miss stalls the SH4 thread
+  24-85 ms (ChuChu: 11 misses in the 5.34 re-test). No average speed.
+- Section 3 (3h) was shelved by Matt on 2026-09-23.
+- HW: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player, Crazy Taxi
+  loading; a GDI set with spaces in its file names; a two-disc game for
+  P34.
+
+### Bundle 3: Texture path  `[ ]`
+
+- Items: P45 (the whole mip chain), P52 (anisotropic filtering, a filter
+  override), P25 (the two-pass trilinear weights, palette VQ and planar
+  VQ), P1 steps 2-3 (block decoders, 16-bit RSX formats).
+- Shared code: `ps3/ps3_tex.cpp` (`describe()`, `decode()`, the hash) and
+  `ps3/ps3gl/ps3gl_textures.c` (the mip path that never ran,
+  `g_mipmap_enabled` = 0, `GCM_TEXTURE_MAX_ANISO_1`).
+- Merge point: P42's `ps3gl_tex_direct_begin()` returns NULL for a
+  swizzled texture and writes level 0 only. (YUV textures are linear:
+  `ps3_tex.cpp` sets the no-swizzle hint for fmt 3.) P1 step 2 needs the
+  swizzled order and P45 needs the mip levels: extend it once for both.
+- P52 and the P25 trilinear weights come after P45: they need mip levels.
+- Gain:
+  - Image: mipmaps on about half of the texture fills: Crazy Taxi 879 of
+    1856, Sonic Adventure 810 of 1252 (`[ps3gl] mip uploads` reads 0
+    today). Distant roads and floors stop aliasing. Palette VQ and planar
+    VQ textures stop decoding as garbage. Trilinear: NFL 2K2 field,
+    Shenmue snowflakes.
+  - Speed: small. Decode runs on misses only, 0.8% of the render thread in
+    play (section 0, the 5.12 block). P45 adds ~33% decode on mipmapped
+    misses and ~1% of the render thread for the longer hash (estimate). P1
+    step 3 halves the RSX memory of 16-bit textures.
+- Risks: the ps3gl mip path never ran on HW. RSX linear textures froze the
+  console twice in G7, so the first build puts no mips on mirrored
+  textures. Check the 16-bit byte order on HW with a non-uniform image.
+- Checks: PC first, bit-exact on the final RSX bytes, as `misc/yuv_check`
+  (every format, mip and VQ case, random VRAM). HW: Crazy Taxi roads and
+  Sonic Adventure floors at a distance (`[ps3gl] mip uploads` above 0,
+  render `busy`); Rayman 2 (mip and VQ textures in use; its untextured
+  surfaces are a separate open item).
+
+### Bundle 4: TA decode and draw rules  `[ ]`
+
+- Items: P8 (intensity colour clamp order), P27 (3c: TR-list modifier
+  volumes), P25 (depth write, sprite cull, flat shading), P10 (region
+  array, LIST_CONT passes, user tile clip, TA_ISP_CURRENT, SOFTRESET bit 1,
+  empty frame), P9 (the TA replay `die()` on Object_List_Set and types 3
+  and 6).
+- Shared code: the PPU decoder and draw (`ps3/ps3_rend.cpp`) and the SPU
+  decoder (`ps3/spu/spe_dec.c`). SPE Draw is ON by default, so the RSX
+  draws the SPU lists.
+- Merge points: P8, P27 and the P10 tile clip change both decoders the
+  same way (the tile clip also changes DcParam and the SPE layout). The P25
+  sprite cull changes only `apply_param_body` and the merge parity check.
+  For P9, also check what the SPU decoder does with those records.
+- Gain: image fixes: Red Dog (P8), Xtreme Sports shadows (P27), Worms World
+  Party, Bust-a-Move 4 and Re-Volt (P25 PT depth write), South Park Rally
+  and Wacky Races menus (P25 sprite cull), Cosmic Smash (P10 LIST_CONT),
+  KOS homebrew backgrounds (P10 TA_ISP_CURRENT). No render-thread hang on
+  reserved TA records (P9). The integer form of P8 also removes 3
+  double-precision multiplies per intensity vertex on the SPU.
+- Checks: the S2 compare (SPE Draw OFF, SPE Doorbell ON) stays bit-exact,
+  then SPE Draw ON for the image. HW: Crazy Taxi, Sonic Adventure, Soul
+  Calibur; the named games only if Matt has them.
+
+### Bundle 5: AICA RAM coherency  `[ ]`  (section 6 is parked)
+
+- Items: 6.6 (SPE AICA Sync), P20 G2-G4 (5.13: the DSP ring in wave RAM,
+  64K-word rings, live DSP register reads), P31 (Mono halving, LFORE).
+- Shared part: one hook on guest wave RAM writes. A write inside a live
+  slot's unrendered span syncs the SPU (6.6). A write inside the DSP ring
+  sends a ring-dirty record (G2). The SPU writes its ring output and its
+  dirty cache lines back to wave RAM by DMA (G2, G3).
+- Trap: 6.6 and G2 assume that the PPU sees every wave RAM write. With SPE
+  ARM7 ON (default since 2026-10-05), ARM7 stores reach wave RAM by DMA
+  from that SPU (`ps3/spu/spe_arm7.cpp` puts lines at `aram_ea`). The hook
+  must cover those puts too.
+- Gain: the Crazy Taxi crackle with SPE AICA Sound, also at full speed
+  (F2). The DSP ring in wave RAM: no old echo after a DSP program change
+  (Looney Tunes changes its DSP program at each load; a link to its
+  loading echo is not shown). 64K-word rings work (`slow=` on the `dsp
+  jit` line finds such games; Crazy Taxi, Sonic Adventure and ChuChu
+  Rocket show 0). Mono: Sega Bass Fishing Challenge saturation.
+- Cost: 6.6's sync waits have a cap: 3.9% of wall or less with A2, 15% or
+  less with A3 and the DSP JIT ON (now the default). 6.6 expects
+  0.01-0.3% with A2.
+- Checks: `misc/spu_sim`, `misc/a2_check` and `misc/a3_check` stay
+  bit-exact (6.6). HW: the 6.6 steps (Crazy Taxi main menu music at full
+  speed), Looney Tunes loads.
+
+### Bundle 6: G2 DMA  `[ ]`
+
+- Items: P24 (6.5: small transfers complete at once), P9 (SB_ADDIR = 1:
+  wave RAM to system RAM).
+- Shared code: the G2 DMA start in `dc/aica/aica_if.cpp`, next to the AICA
+  Race Fix (6.5). `misc/g2dma_check` builds the real `aica_if.cpp` (8
+  configurations).
+- P24: a transfer of 512 SH4 cycles or less (128 bytes or less) raises its
+  end IRQ in the start call, behind DmaFix for an A/B. Longer ones stay
+  scheduled (the Sports Jam announcer needs that). Keep the Read_SB_ADST
+  guard. P9: swap the source and the destination (both RAMs hold native
+  u32 words), then raise the end IRQ.
+- Gain: the Bangai-O startup freeze, the Nomad Soul freeze and crash
+  (P24). No endless wait on a DMA from wave RAM (P9; no game known, the
+  Looney Tunes logs have no such message). About 5 lines.
+- HW: Looney Tunes (it uses G2 DMA; Crazy Taxi does not); Bangai-O and
+  Nomad Soul only if Matt has them.
+
+### Bundle 7: Time base  `[ ]`
+
+- Items: 6.4 (TMU Clock EFF, with P11 and P57's TMU test), P28 (the SPG
+  field bit, HBlank IRQ modes, the SPG_VBLANK_INT reset value).
+- Shared code: the 5.36 SYS GATE. TCNT reads add the skipped slices
+  (`tmu_tcnt_now()` in `dc/sh4/tmu.cpp`), SPG_STATUS reads work out their
+  value, and the planner asks `tmu_slices_to_event()` and
+  `spg_slices_to_event()` (`dc/sh4/sys_gate.h`).
+- Merge points: P11 adds the cycles inside the current slice to
+  `tmu_tcnt_now()` (the JIT must store `ppc_cycles` before a cold memory
+  call). 6.4 changes the TMU rate. P28 changes the SPG events, so
+  `spg_slices_to_event()` and the SPG_STATUS read must follow it.
+- Checks: `misc/sysgate_check` builds the real `tmu.cpp`, `SPG.cpp`,
+  `regs.cpp` and `sh4_interpreter.cpp`. Add Flycast's TimerTest: its
+  "precision" and "underflow" cases fail on ours today (P11's rule).
+- Gain: accuracy only. TMU periods right at SH4 150 (at 200, the HW test
+  clock, they are already exact). TCNT inside a slice (Soul Calibur
+  randomness, Flycast issue #2093). The field bit once per frame. HBlank
+  IRQ modes 0 and 2. Cost: one multiply per slice (6.4); HBlank mode 2
+  adds one event per line, only in games that set it.
+- HW: the ChuChu Rocket menu at SH4 150 (6.4), Soul Calibur, Crazy Taxi.
+
+### Bundle 8: SH4 interpreter, FPU and small JIT items  `[ ]`
+
+- Items: P46 (Flycast's SH4 op tests), P32 (fneg with PR=1, mac.w with
+  S=1), `JitMac` and `bcache` (5.3), 5.37 (P17 fschg), 5.39 (P56), 5.40
+  (P4), P57 RM verify (3d).
+- Shared code: `dc/sh4/rec_v2/decoder.cpp` (the fschg block end, the PR=1
+  fallback gate, `verify(fpu_cfg.RM<2)`), the interpreter's FPU ops,
+  `SetFloatStatusReg()`, and the JIT FPSCR and lookup code in
+  `ps3/ps3_driver.cpp`.
+- Shared check: P46 first. `misc/interp_check` (WSL, ~400 lines) and a
+  boot self-test (the real big-endian `GetDR`/`SetDR`) run every
+  interpreter op. From reading, only P32's fneg fails them. They are also
+  JitMac's check. 5.39 adds fneg only after the P32 fix.
+- Gain: correctness: fneg on an odd register with PR=1, mac.w with S=1 in
+  the interpreter, JitMac's 64-bit carry (the 5.2 defect), no JIT hang
+  when a game sets RM = 2 or 3 (WinCE games, which also need P38). Speed:
+  noise level (5.37, `bcache`), no user seen (5.39: no PR=1 game; JitMac:
+  no mac.l or mac.w in the Crazy Taxi fallback census), unverified (5.40).
+- HW: Crazy Taxi and Sonic Adventure (`[IFB]`, same-load VPS).
+
+### Bundle 9: ARM7 engines  `[ ]`
+
+- Items: P49 (PC reads with a register shift, STR of PC), P40 (Flycast's
+  AicaArmTest as self-tests), 6.8 (no STR, STRB or unaligned STR
+  self-tests; an unaligned ARM word store scatters 4 bytes). P44 is done
+  (ARM7 Reset Fix, section 0).
+- Shared code: the three engines change together (cached:
+  `gen_arm7_cached.py` -> `arm7_cached_gen.inc`; JIT: `arm7_jit.cpp`; SPU:
+  `ps3/spu/arm7_spu.h`). Shared checks: `misc/arm7spu_check` (B0) and
+  `misc/arm7spe_check` (B2) compare the engines; the 45 self-tests.
+- P49's log census comes first; fix only if it fires. Then P40's tests,
+  with the STR cases and P49's two cases (`orr r0,pc,r1,lsl r2`;
+  `str pc,[r1]`).
+- Gain: rare encodings right in all three engines. A full pass rules an
+  engine bug in or out for F1 (ChuChu, section 6, parked). No speed.
+- Trap: do not paste Reicast's `arm-new.h` diff (P49).
+- HW: ChuChu Rocket, Crazy Taxi, Sonic Adventure, Looney Tunes.
+
+### Bundle 10: Maple  `[ ]`
+
+- Items: P29 (reply timing and commands), P9 (SB_MDST before the vblank
+  maple DMA), P13 (Puru Puru pack), P37 (one VMU file per game, VMU LCD,
+  BIOS language, keyboard and mouse).
+- Shared code: `dc/maple/maple_if.cpp`, `maple_devs.cpp`, `maple_cfg.cpp`,
+  `ps3/ps3_input.cpp`.
+- Byte order: keep a u32-aligned scratch buffer, so the XOR-3 byte writes
+  stay valid (P29). The rumble AST byte also needs XOR-3 access (P13).
+- Gain: the Geist Force freeze and the Silent Scope VMU load at boot
+  (P29). No hang in `maple_DoDma()` (P9). DS3 rumble (P13). One VMU file
+  per game, keyboard and mouse (P37). No speed.
+- Trap: today the saves are one file per port (`vmu_save_A1.bin` in
+  `/dev_hdd0/savedata/vmu`). P37 changes the file names.
+- HW: Sonic Adventure VMU save and load, Crazy Taxi controls.
+
+### Bundle 11: Output stage  `[ ]`
+
+- Items: P10 (the FB clip as a scissor, the scaler), P53 (widescreen
+  geometry), P36 (cheat files, 16:9 stretch), P26 (interlaced and 24-bit
+  framebuffer reads), P54 (RTT pixel packing, the RTT note in section 3).
+- Shared code: the output stage of `ps3/ps3_rend.cpp`: the viewport and
+  scissor (`draw_frame()`, the canvas rect of `draw_scene()`), the
+  framebuffer present, and the RTT pack (`pack16()`, `rtt_render()`).
+- Merge points: P53's full-width scissor needs P10's clip rule (Flycast
+  `isClipped()`), and the clip must scale with our X Scaler option (P10).
+  P36's stretch and P53 share one 16:9 viewport option (two different
+  images). P26's reads and P54's writes share the framebuffer pixel
+  formats (565, 555, 888, 8888, the fb_concat bits).
+- Gain: 16:9 output (P53 draws outside 4:3; P36 stretches 4:3 with a user
+  cheat file). The FB clip as a scissor. RTT games (Flycast's list in the
+  RTT note; none of our test games, `rtt=0/0`). Interlaced 2D screens as
+  one 480-line image, and 24-bit framebuffers shown. No speed.
+- Traps: games cull at 4:3, so P53 can show missing geometry. The JIT does
+  not see cheats that patch code (P36).
+- HW: Crazy Taxi and Sonic Adventure at 16:9, a 2D screen; an RTT game
+  only if Matt has one.
+
+### Bundle 12: HW test tools  `[ ]`
+
+- Items: P50 (on-screen FPS and SPEED), P51 (screenshot to PNG; its home
+  was the parked Soul Calibur faults, now closed).
+- Shared code: the end of `draw_frame()` on the render thread, the
+  `ps3/ps3_ui.cpp` text and libpng (with the jmp_buf fix), a SELECT menu
+  entry. Call `reset_param_cache()` after the overlay, so no GL state
+  leaks into the next frame.
+- Today: SPG already builds "FPS: x / SPEED: y%" (`rend_set_fps_text()`),
+  and `SetFpsText()` in `ps3/ps3_rend.cpp` is empty.
+- Gain: SPEED on the TV without the UDP listener (Matt starts it only when
+  he says so). A PNG of the 4:3 viewport for image faults (open: the
+  untextured Rayman 2 surfaces). No cost when OFF; one RSX wait per shot.
+- Byte order: a big-endian A8R8G8B8 word is the bytes A, R, G, B: write
+  bytes 1-3 (P51).
+- HW: any game: the text in the left pillarbox bar, a PNG under
+  `/dev_hdd0/data/NotDC/`.
+
+### Not bundled
+
+- P1 steps 0-1 and P2: no target left. Soul Calibur runs at full speed
+  since P16 (decode 0.2-1.0% of the render thread, no dropped renders),
+  and its black textures are closed (2026-10-07). P1 steps 2-3 are in
+  bundle 3.
+- P14 (3a, 3b): already one shared piece of work in section 3 (a PVR Cg
+  shader in ps3gl).
+- P42 (b)-(d): stay in 5.12 (active, section 0).
+- P35 (CUE/BIN, CHD) and P39 (reios): section 4 says "Do not take".
+- P15 (5.19): a pacing option, not a speedup.
+- P38 (WinCE SH4 MMU): stays in 3d (large; the JIT form is very high
+  risk).
+- P12 (RTC DST, 1 line), P30 (P4 mirrors and operand-cache RAM banks, NHL
+  2K2, ~15 lines), P33 (ELF loader, homebrew, ~30 lines): small, alone.
+- P31's nullAICA-only fixes (a pitch write recomputes the AEG rates, VOFF):
+  they act only with SPE AICA Sound OFF.
+- Done or built, but still open in `OPTIMIZATION_POTENTIAL.md`: P44 (ARM7
+  Reset Fix), the P31 CA clamp (CA Clamp) and P20 G1 (A3 default ON) are
+  done; P42 (a) is built and HW tested, default OFF (section 0).
 
 ---
 

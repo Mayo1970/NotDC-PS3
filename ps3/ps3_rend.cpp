@@ -7,6 +7,7 @@
 #include "ps3_rend_regs.h"
 #include "ps3_depth.h"
 #include "ps3_spe.h"
+#include "ps3_spevb.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_tasplit.h"
@@ -151,6 +152,8 @@ struct DrawLists
 	u32 mv_tris[5];
 };
 static DrawLists s_rl;
+// 5.12 #2: the context whose SpeOut lists s_rl points at, or -1 for the PPU replay's lists.
+static int s_rl_spe = -1;
 static u32 s_cur_list;
 static u32 s_overflow;
 // TA raw-stream health: dropped records, and the high-water mark for sizing.
@@ -1352,6 +1355,8 @@ static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
 	glVertex3f(v->x * v->w, v->y * v->w, v->w);
 }
 
+// misc/spevb_check compiles the code from here to "spevb_check: end" as the reference for the SPU build.
+
 // Flycast ta_util.cpp makeIndex(): consecutive strips with the same state share one GL
 // strip, joined by degenerate triangles, and inf vertices split a strip.
 #define RUN_MAX_VTX 16000   // ps3gl drops vertices past PS3GL_MAX_VERTS (16384) per glBegin
@@ -1426,10 +1431,30 @@ static inline void run_emit(const DcVertex* v)
 	s_run.count++;
 }
 
-static void run_close()
+// 5.12 #2 CHECK: DRY runs the same merge with no GL call and records the runs, for the compare with the SPU.
+static SpeRun* s_dry_runs;
+static u32 s_dry_nruns, s_dry_strips;
+
+// apply_param's alpha force without the bind: a texture always binds (its sizes cap at 1024).
+static inline u32 alpha_rule(const DcParam& p)
+{
+	return (!p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1)) ? 0xFF000000u : 0;
+}
+
+template <bool DRY = false> static void run_close()
 {
 	if (!s_run.open)
 		return;
+	if (DRY)
+	{
+		SpeRun& r = s_dry_runs[s_dry_nruns++];
+		r.first = s_run.first;
+		r.count = s_run.count;
+		r.param = s_run.param;
+		r.pad = 0;
+		s_run.open = false;
+		return;
+	}
 	const u64 t0 = PERF_TICKS();
 	if (s_vb)
 		ps3gl_draw_vb(GL_TRIANGLE_STRIP, s_vb_off, (int)s_run.first, (int)s_run.count);
@@ -1441,11 +1466,14 @@ static void run_close()
 		s_stat_draws[s_run.list]++;
 }
 
-// No GL state may change while a run is open: apply_param only runs after run_close().
-static void draw_strip(const DcStrip& s, u32 list)
+// No GL state may change while a run is open: apply_param only runs after run_close(). DRY needs Strip Merge.
+template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 {
 	const DcParam& p = s_rl.param[s.param];
-	s_stat_strips[list]++;
+	if (DRY)
+		s_dry_strips++;
+	else
+		s_stat_strips[list]++;
 
 	if (!s_merge)
 	{
@@ -1485,8 +1513,8 @@ static void draw_strip(const DcStrip& s, u32 list)
 	}
 	else
 	{
-		run_close();
-		s_run.alpha_or = apply_param(p, list);
+		run_close<DRY>();
+		s_run.alpha_or = DRY ? alpha_rule(p) : apply_param(p, list);
 		if (!s_vb)
 			glBegin(GL_TRIANGLE_STRIP);
 		s_run.first = s_vb_used;
@@ -1535,15 +1563,15 @@ static void draw_strip(const DcStrip& s, u32 list)
 }
 
 // Draws one list in submission order: opaque, punch-through, and presorted translucent.
-static void draw_list(u32 list)
+template <bool DRY = false> static void draw_list(u32 list)
 {
 	for (u32 i = 0; i < s_rl.nstrip; i++)
 	{
 		const DcStrip& s = s_rl.strip[i];
 		if (s.list == list)
-			draw_strip(s, list);
+			draw_strip<DRY>(s, list);
 	}
-	run_close();
+	run_close<DRY>();
 }
 
 // nullDC-v1 sort entry: one per translucent polygon, keyed like PolyParam::zvZ.
@@ -1556,7 +1584,7 @@ static SortStrip s_order[MAX_STRIPS];
 
 // Autosort pass, nullDC-v1 SortPParams (AlphaSortMode 1): polygons ordered by average 1/W, nearest
 // last. The PVR sorts per pixel; this is the approximation the reference ships.
-static void draw_tr_sorted()
+template <bool DRY = false> static void draw_tr_sorted()
 {
 	const u64 t_sort = PERF_TICKS();
 	u32 n = 0;
@@ -1574,16 +1602,210 @@ static void draw_tr_sorted()
 	}
 	if (n == 0)
 	{
-		s_dt[DT_SORT] += PERF_TICKS() - t_sort;
+		if (!DRY)
+			s_dt[DT_SORT] += PERF_TICKS() - t_sort;
 		return;
 	}
 	std::stable_sort(s_order, s_order + n, [](const SortStrip& a, const SortStrip& b) { return a.key < b.key; });
-	s_dt[DT_SORT] += PERF_TICKS() - t_sort;
+	if (!DRY)
+		s_dt[DT_SORT] += PERF_TICKS() - t_sort;
 
 	// Merging after the sort keeps the draw order, as Flycast's per-strip sort mode does.
 	for (u32 j = 0; j < n; j++)
-		draw_strip(s_rl.strip[s_order[j].idx], ListType_Translucent);
-	run_close();
+		draw_strip<DRY>(s_rl.strip[s_order[j].idx], ListType_Translucent);
+	run_close<DRY>();
+}
+// spevb_check: end
+static_assert(RUN_MAX_VTX == SPEVB_RUN_MAX_VTX && sizeof(ps3gl_vertex_t) == SPEVB_VTX_BYTES, "SPE build layout");
+
+// 5.12 #2 ON: one list from the SPU's runs; each run is apply_param and one draw, as run_close does.
+// False when the SPU fails; s_spevb_drawn then says whether any run of the list went out.
+static u32 s_spevb_drawn;
+
+static bool draw_runs(u32 sec, u32 list)
+{
+	s_spevb_drawn = 0;
+	for (u32 k = ps3spevb_sec_start(sec);; k++)
+	{
+		const SpeRun* r = ps3spevb_run(k, sec);
+		if (!r)
+			break;
+		const DcParam& p = s_rl.param[r->param];
+		const u32 alpha_or = apply_param(p, list);
+		ps3spevb_note_alpha(alpha_or == alpha_rule(p));
+		if (r->count)
+		{
+			const u64 t0 = PERF_TICKS();
+			ps3gl_draw_vb_stride(GL_TRIANGLE_STRIP, s_vb_off, SPEVB_VTX_STRIDE, (int)r->first, (int)r->count);
+			s_dt[DT_GLEND] += PERF_TICKS() - t0;
+			s_stat_draws[list]++;
+		}
+		s_spevb_drawn++;
+	}
+	if (!ps3spevb_mode())
+		return false;
+	s_stat_strips[list] += ps3spevb_strips(sec);
+	return true;
+}
+
+// After a failed SPU build the PPU draws the rest of the scene in a fresh vring block: late SPU puts may
+// still land in the old one. A list the SPU had begun is lost for this frame.
+static bool spevb_lost(int& build)
+{
+	build = SPEVB_OFF;
+	s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+	s_vb_used = 0;
+	return s_spevb_drawn != 0;
+}
+
+static void draw_list_or_runs(u32 sec, u32 list, int& build)
+{
+	if (build == SPEVB_ON && (draw_runs(sec, list) || spevb_lost(build)))
+		return;
+	draw_list(list);
+}
+
+// TR_PPU: past SPEVB_TR_MAX strips (or a W the SPU keys do not cover) the PPU sorts. Its 36-byte vertices
+// go to a block of their own, with the cap the SPU left.
+static void draw_tr(int& build)
+{
+	if (build == SPEVB_ON)
+	{
+		if (!draw_runs(SPEVB_SEC_TR, ListType_Translucent))
+		{
+			if (spevb_lost(build))
+				return;
+		}
+		else
+		{
+			ps3spevb_end_frame();
+			if (!ps3spevb_tr_ppu())
+				return;
+			s_vb_cap -= ps3spevb_vb_used();
+			s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+			s_vb_used = 0;
+		}
+	}
+	if (g_rr.autosort)
+		draw_tr_sorted();
+	else
+		draw_list(ListType_Translucent);
+}
+
+// Starts the SPU build of this scene. ON writes 48-byte slots into the scene's own vring block, moved to a
+// 128-byte line (128 spare bytes cover the move); CHECK writes into the SPU's copy, both sides with one cap.
+static u32 s_chk_cap;
+
+static int spevb_begin(int build)
+{
+	if (!s_vb || build == SPEVB_OFF)
+		return SPEVB_OFF;
+	void* dst = s_vb;
+	u32 cap = s_vb_cap;
+	if (build == SPEVB_ON)
+	{
+		const u32 pad = (u32)(-(uintptr_t)s_vb & 127);
+		s_vb = (ps3gl_vertex_t*)((u8*)s_vb + pad);
+		s_vb_off += pad;
+		dst = s_vb;
+	}
+	else
+	{
+		u32 *spu_vb, *dry_vb, ccap;
+		SpeRun* dry_runs;
+		if (!ps3spevb_check_bufs(&spu_vb, &dry_vb, &dry_runs, &ccap))
+			return SPEVB_OFF;
+		dst = spu_vb;
+		cap = s_chk_cap = s_vb_cap < ccap ? s_vb_cap : ccap;
+	}
+	return ps3spevb_request((u32)s_rl_spe, s_rl.nvtx, s_rl.nstrip, s_rl.nparam, dst, cap, g_rr.autosort)
+	     ? build : SPEVB_OFF;
+}
+
+static void spevb_report(const char* what, u32 idx, const u32* spu, const u32* ppu, u32 words)
+{
+	static u32 s_logged;
+	if (s_logged++ >= 8)
+		return;
+	char line[320];
+	int n = snprintf(line, sizeof(line), "[spevb] check MISMATCH %s[%u] spu/ppu:", what, idx);
+	for (u32 k = 0; k < words && n > 0 && n < (int)sizeof(line); k++)
+		n += snprintf(line + n, sizeof(line) - n, " %08X/%08X", spu[k], ppu[k]);
+	printf("%s\n", line);
+}
+
+// 5.12 #2 CHECK: the PPU's merge again as a dry pass into a cacheable copy, against the SPU's build.
+static void spevb_check()
+{
+	u32 *spu_vb, *dry_vb, ccap;
+	SpeRun* dry_runs;
+	if (!ps3spevb_check_bufs(&spu_vb, &dry_vb, &dry_runs, &ccap))
+		return;
+	ps3gl_vertex_t* const vb = s_vb;
+	const u32 vb_off = s_vb_off, vb_used = s_vb_used, vb_cap = s_vb_cap;
+	s_vb = (ps3gl_vertex_t*)dry_vb;
+	s_vb_used = 0;
+	s_vb_cap = s_chk_cap;
+	s_dry_runs = dry_runs;
+	s_dry_nruns = 0;
+	static const u32 lists[3] = { ListType_Opaque, ListType_Punch_Through, ListType_Translucent };
+	u32 sec_end[3], strips[3], vtx_end[3];
+	for (u32 k = 0; k < 3; k++)
+	{
+		s_dry_strips = 0;
+		if (k == SPEVB_SEC_TR && g_rr.autosort)
+			draw_tr_sorted<true>();
+		else
+			draw_list<true>(lists[k]);
+		sec_end[k] = s_dry_nruns;
+		strips[k] = s_dry_strips;
+		vtx_end[k] = s_vb_used;
+	}
+	s_vb = vb;
+	s_vb_off = vb_off;
+	s_vb_used = vb_used;
+	s_vb_cap = vb_cap;
+
+	const volatile SpeVbEcho* e = ps3spevb_wait_final();
+	if (!e)
+		return;
+	ps3spevb_end_frame();
+	const u32 nsec = (e->flags & SPEVB_TR_PPU) ? 2 : 3;
+	bool ok = true;
+	for (u32 k = 0; k < nsec && ok; k++)
+	{
+		const u32 hs[] = { e->sec_end[k], e->strips[k] }, hp[] = { sec_end[k], strips[k] };
+		if (hs[0] != hp[0] || hs[1] != hp[1])
+		{
+			spevb_report("sec_end/strips", k, hs, hp, 2);
+			ok = false;
+		}
+	}
+	const u32 nv = vtx_end[nsec - 1];
+	if (ok && e->vb_used != nv)
+	{
+		const u32 hs = e->vb_used;
+		spevb_report("vb_used", 0, &hs, &nv, 1);
+		ok = false;
+	}
+	const SpeRun* sr = ps3spevb_runs();
+	for (u32 i = 0; ok && i < sec_end[nsec - 1]; i++)
+		if (memcmp(&sr[i], &dry_runs[i], sizeof(SpeRun)) != 0)
+		{
+			spevb_report("run", i, (const u32*)&sr[i], (const u32*)&dry_runs[i], 4);
+			ok = false;
+		}
+	// The SPU's slot: the 9 words of ps3gl_vertex_t, then 3 zero words.
+	for (u32 i = 0; i < nv && ok; i++)
+	{
+		const u32* s = spu_vb + i * (SPEVB_VTX_STRIDE / 4);
+		if (memcmp(s, dry_vb + i * 9, SPEVB_VTX_BYTES) != 0 || s[9] || s[10] || s[11])
+		{
+			spevb_report("vtx", i, s, dry_vb + i * 9, 9);
+			ok = false;
+		}
+	}
+	ps3spevb_check_result(ok);
 }
 
 // Flycast gldraw.cpp SetMVS_Mode. Stencil bit 7 = polygon takes shadows (kept), bit 1 = volume
@@ -1923,20 +2145,30 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			collect_diag();
 		// Worst case per strip: 3 joins, and per vertex a join copy, a parity copy and itself.
 		s_vb = 0;
+		int build = SPEVB_OFF;
 		if (s_merge && get_vertex_array_preset())
 		{
 			s_vb_cap = 3 * s_rl.nvtx + 4 * s_rl.nstrip + 16;
 			s_vb_used = 0;
-			s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+			build = s_rl_spe >= 0 ? ps3spevb_mode() : SPEVB_OFF;
+			if (build == SPEVB_ON)
+			{
+				s_vb = (ps3gl_vertex_t*)ps3gl_vring_alloc_raw(s_vb_cap * SPEVB_VTX_STRIDE + 128, &s_vb_off);
+				if (!s_vb)
+					build = SPEVB_OFF;
+			}
+			if (build != SPEVB_ON)
+				s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+			build = spevb_begin(build);
 		}
 		// Hardware order: opaque, punch-through, translucent.
 		reset_param_cache();
-		draw_list(ListType_Opaque);
+		draw_list_or_runs(SPEVB_SEC_OP, ListType_Opaque, build);
 
 		glEnable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
 		reset_param_cache();
-		draw_list(ListType_Punch_Through);
+		draw_list_or_runs(SPEVB_SEC_PT, ListType_Punch_Through, build);
 
 		// Hardware shades the opaque volumes between punch-through and translucent.
 		const u64 t_mv = PERF_TICKS();
@@ -1948,10 +2180,9 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		glDisable(GL_ALPHA_TEST);
 		glAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
-		if (g_rr.autosort)
-			draw_tr_sorted();
-		else
-			draw_list(ListType_Translucent);
+		draw_tr(build);
+		if (build == SPEVB_CHECK)
+			spevb_check();
 		s_vb = 0;
 	}
 	glDisable(GL_ALPHA_TEST);
@@ -2305,6 +2536,7 @@ static void rth_print_stats()
 	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024));
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
+	ps3spevb_stats(now - s_stat_t0);
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
@@ -2418,6 +2650,7 @@ static void spe_compare(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 
 static void lists_from_ctx(const TaContext* c)
 {
+	s_rl_spe = -1;
 	s_rl.vtx = c->vtx;
 	s_rl.strip = c->strip;
 	s_rl.param = c->param;
@@ -2458,6 +2691,7 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 		return false;
 	}
 	const SpeOut* o = ps3spe_out(ctx);
+	s_rl_spe = (int)ctx;
 	s_rl.vtx = (const DcVertex*)o->vtx;
 	s_rl.strip = (const DcStrip*)o->strip;
 	s_rl.param = (const DcParam*)o->param;
@@ -2746,11 +2980,13 @@ bool InitRenderer()
 	ta_store_reset();
 	rth_start();
 	ps3spe_init();
+	ps3spevb_init();
 	return true;
 }
 
 void TermRenderer()
 {
+	ps3spevb_term();
 	ps3spe_term();
 	rth_stop();
 	TileAccel.Term();

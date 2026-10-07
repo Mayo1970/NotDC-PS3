@@ -78,6 +78,7 @@ extern int g_hotblocks_preset;
 extern int g_spe_bell_preset;
 extern int g_spe_draw_preset;
 extern int g_spe_wait_yield_preset;
+extern int g_spe_build_preset;
 extern int g_spe_aica_preset;
 extern int g_spe_dsp_jit_preset;
 extern int g_spe_aica_snd_preset;

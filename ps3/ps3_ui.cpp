@@ -21,9 +21,20 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
-// bg/0.png, linked in by ps3_ui_assets.S.
+// assets/0.png and the button icons, linked in by ps3_ui_assets.S.
 extern "C" const u8 ui_bg_png[];
 extern "C" const u8 ui_bg_png_end[];
+extern "C" const u8 ui_ico_cross_png[], ui_ico_cross_png_end[];
+extern "C" const u8 ui_ico_circle_png[], ui_ico_circle_png_end[];
+extern "C" const u8 ui_ico_triangle_png[], ui_ico_triangle_png_end[];
+extern "C" const u8 ui_ico_square_png[], ui_ico_square_png_end[];
+
+static const struct { const u8* png; const u8* end; } k_icon_png[PS3UI_ICON_COUNT] = {
+	{ ui_ico_cross_png,    ui_ico_cross_png_end },
+	{ ui_ico_circle_png,   ui_ico_circle_png_end },
+	{ ui_ico_triangle_png, ui_ico_triangle_png_end },
+	{ ui_ico_square_png,   ui_ico_square_png_end },
+};
 
 // The XMB's own Rodin files; nothing ships with the emulator. Sizes are for 720p.
 #define FONT_DIR "/dev_flash/data/font/"
@@ -65,6 +76,7 @@ struct Packer
 
 static Font   s_font[PS3UI_FONT_COUNT];
 static GLuint s_font_tex, s_glow_tex, s_bg_tex;
+static GLuint s_icon_tex[PS3UI_ICON_COUNT];
 static float  s_w = 1280, s_h = 720;
 static int    s_ready;
 
@@ -386,6 +398,29 @@ static void load_background()
 	printf("[ui] background %ux%u\n", (unsigned)w, (unsigned)h);
 }
 
+static void load_icons()
+{
+	for (int i = 0; i < PS3UI_ICON_COUNT; i++)
+	{
+		u32 w = 0, h = 0;
+		size_t size = (size_t)(k_icon_png[i].end - k_icon_png[i].png);
+		u8* px = decode_png(k_icon_png[i].png, size, &w, &h);
+		if (!px)
+		{
+			printf("[ui] icon %d PNG did not decode (%u bytes)\n", i, (unsigned)size);
+			continue;
+		}
+		// Clear texels hold white, which GL_LINEAR blends into a light rim when the icon
+		// is scaled; black matches the icons' dark edge.
+		for (u32 j = 0; j < w * h; j++)
+			if (px[j * 4 + 3] == 0)
+				px[j * 4] = px[j * 4 + 1] = px[j * 4 + 2] = 0;
+		s_icon_tex[i] = upload(GL_RGBA, (int)w, (int)h, px);
+		free(px);
+		printf("[ui] icon %d: %ux%u\n", i, (unsigned)w, (unsigned)h);
+	}
+}
+
 int ps3ui_init(void)
 {
 	if (s_ready)
@@ -400,6 +435,7 @@ int ps3ui_init(void)
 
 	load_fonts();
 	load_background();
+	load_icons();
 
 	s_ready = 1;
 	printf("[ui] ready, %ux%u\n", (unsigned)w, (unsigned)h);
@@ -415,6 +451,12 @@ void ps3ui_term(void)
 		if (tex[i])
 			glDeleteTextures(1, &tex[i]);
 	s_font_tex = s_glow_tex = s_bg_tex = 0;
+	for (int i = 0; i < PS3UI_ICON_COUNT; i++)
+		if (s_icon_tex[i])
+		{
+			glDeleteTextures(1, &s_icon_tex[i]);
+			s_icon_tex[i] = 0;
+		}
 	s_ready = 0;
 }
 
@@ -490,6 +532,26 @@ void ps3ui_rect(float x, float y, float w, float h, u32 argb)
 	glVertex2f(x + w, y + h);
 	glVertex2f(x, y + h);
 	glEnd();
+}
+
+int ps3ui_icon(int icon, float x, float y, float size)
+{
+	if (!s_ready || icon < 0 || icon >= PS3UI_ICON_COUNT || !s_icon_tex[icon])
+		return 0;
+	// Whole pixels, so every icon scales the same way.
+	x = floorf(x + 0.5f);
+	y = floorf(y + 0.5f);
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, s_icon_tex[icon]);
+	set_color(0xFFFFFFFFu);
+	glBegin(GL_QUADS);
+	glTexCoord2f(0, 0); glVertex2f(x, y);
+	glTexCoord2f(1, 0); glVertex2f(x + size, y);
+	glTexCoord2f(1, 1); glVertex2f(x + size, y + size);
+	glTexCoord2f(0, 1); glVertex2f(x, y + size);
+	glEnd();
+	glDisable(GL_TEXTURE_2D);
+	return 1;
 }
 
 // -- Text --------------------------------------------------------------------

@@ -256,3 +256,19 @@ Reference: Flycast `core/hw/modem/` and `core/network/`.
    Both: replace asio and `std::thread` with a PPU thread and PSL1GHT sockets.
 4. Optional, later: broadband adapter (`core/hw/bba/bba.cpp`, `rtl8139c.cpp`); fewer games support it.
 5. HW test: a modem game dials, connects and reaches its revived server.
+
+## G12 - Second analog stick (Full Controller)  `[ ]` (added 2026-10-07 at Matt's request)
+Some games read a 2nd analog stick ("Panther mode", made for the Mad Catz Panther DC flight stick + trackball):
+Quake III Arena, Unreal Tournament, Star Wars Episode I Racer, Vigilante 8, KISS Psycho Circus, Railroad Tycoon II.
+Today the pad reports one stick (`0xfe060f00` in `dc/maple/maple_devs.cpp`), always sends X2/Y2 as 0x80, and the
+DS3 right stick is not read.
+Reference: Flycast `FullController` in `core/hw/maple/maple_devs.cpp` (commit 4d5ced1ce, "Panther DC/Full Controller").
+1. `ps3/ps3_input.cpp`: read `ANA_R_H`/`ANA_R_V` into per-port X2/Y2 values, with the left stick's dead zone.
+2. `dc/maple/maple_cfg.cpp`: copy them into `pjs.joy[PJAI_X2]`/`pjs.joy[PJAI_Y2]`.
+3. `dc/maple/maple_devs.cpp`: add the full controller. It reports `0xffff3f00` (6 axes, all buttons) and sends X2/Y2
+   in the last two condition bytes. Keep the `0xF901` kcode mask in `maple_cfg.cpp`: the triggers also set C/D in
+   `ps3_input.cpp`, so without it each trigger press is also a C or D press.
+4. CONTROLS > Controller: add "FULL (2 STICKS)". STANDARD PAD stays the default and keeps its capability word, so
+   other games see no change. Value 1 is the light gun in `maple_cfg.cpp`, so the new type needs its own value. Give
+   it the two VMU slots (Flycast does).
+5. HW test: the right stick works in Quake III Arena; a standard-pad game plays as before.

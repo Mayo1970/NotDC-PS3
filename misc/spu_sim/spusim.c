@@ -34,6 +34,8 @@ enum
 	X_IL, X_IOHL, X_FSMBI,
 	X_ILA, X_HBRA, X_HBRR,
 	X_SELB, X_SHUFB, X_MPYA, X_FNMS, X_FMA, X_FMS,
+	X_FESD, X_FRDS, X_DFA, X_DFS, X_DFM, X_DFMA, X_DFMS, X_DFNMS, X_DFNMA, X_FREST, X_FRSQEST, X_FI, X_FCMGT, X_FCMEQ,
+	X_FSCRWR, X_FSCRRD,
 	X_COUNT
 };
 
@@ -99,6 +101,16 @@ static const OpInfo k_ops[] = {
 	{"fa", X_FA, 11, 0x2C4, EVEN, 6, F_RR, 0, 1}, {"fs", X_FS, 11, 0x2C5, EVEN, 6, F_RR, 0, 1},
 	{"fm", X_FM, 11, 0x2C6, EVEN, 6, F_RR, 0, 1}, {"fceq", X_FCEQ, 11, 0x3C2, EVEN, 2, F_RR, 0, 1},
 	{"fcgt", X_FCGT, 11, 0x2C2, EVEN, 2, F_RR, 0, 1},
+	// 5.12 #2: double precision (13 cycles, and 6 more cycles with no issue after each), estimates, magnitude compares.
+	{"fesd", X_FESD, 11, 0x3B8, EVEN, 13, F_RI7, 0, 1}, {"frds", X_FRDS, 11, 0x3B9, EVEN, 13, F_RI7, 0, 1},
+	{"dfa", X_DFA, 11, 0x2CC, EVEN, 13, F_RR, 0, 1}, {"dfs", X_DFS, 11, 0x2CD, EVEN, 13, F_RR, 0, 1},
+	{"dfm", X_DFM, 11, 0x2CE, EVEN, 13, F_RR, 0, 1}, {"dfma", X_DFMA, 11, 0x35C, EVEN, 13, F_RR, 1, 1},
+	{"dfms", X_DFMS, 11, 0x35D, EVEN, 13, F_RR, 1, 1}, {"dfnms", X_DFNMS, 11, 0x35E, EVEN, 13, F_RR, 1, 1},
+	{"dfnma", X_DFNMA, 11, 0x35F, EVEN, 13, F_RR, 1, 1}, {"frest", X_FREST, 11, 0x1B8, ODD, 4, F_RI7, 0, 1},
+	{"frsqest", X_FRSQEST, 11, 0x1B9, ODD, 4, F_RI7, 0, 1}, {"fi", X_FI, 11, 0x3D4, EVEN, 7, F_RR, 0, 1},
+	{"fcmgt", X_FCMGT, 11, 0x2CA, EVEN, 2, F_RR, 0, 1}, {"fcmeq", X_FCMEQ, 11, 0x3CA, EVEN, 2, F_RR, 0, 1},
+	// The FPSCR: only the rounding modes, which the simulator keeps at nearest.
+	{"fscrwr", X_FSCRWR, 11, 0x3BA, EVEN, 7, F_RI7, 0, 0}, {"fscrrd", X_FSCRRD, 11, 0x398, EVEN, 13, F_NONE, 0, 1},
 	{"shlhi", X_SHLHI, 11, 0x07F, EVEN, 4, F_RI7, 0, 1}, {"shli", X_SHLI, 11, 0x07B, EVEN, 4, F_RI7, 0, 1},
 	{"shlqbii", X_SHLQBII, 11, 0x1FB, ODD, 4, F_RI7, 0, 1}, {"shlqbyi", X_SHLQBYI, 11, 0x1FF, ODD, 4, F_RI7, 0, 1},
 	{"rothi", X_ROTHI, 11, 0x07C, EVEN, 4, F_RI7, 0, 1}, {"roti", X_ROTI, 11, 0x078, EVEN, 4, F_RI7, 0, 1},
@@ -353,6 +365,53 @@ static uint32_t f_out(double d)
 	if (((w >> 23) & 0xFF) == 0xFF)
 		w = (w & 0x80000000u) | 0x7FFFFFFFu;
 	return w;
+}
+
+// Doubleword i of a quadword is words 2i (high) and 2i+1 (low), big-endian.
+static double qd(const SpuQ* q, int i)
+{
+	const uint64_t b = (uint64_t)q->w[2 * i] << 32 | q->w[2 * i + 1];
+	double d;
+	memcpy(&d, &b, 8);
+	return d;
+}
+static void set_qd(SpuQ* q, int i, double d)
+{
+	uint64_t b;
+	memcpy(&b, &d, 8);
+	q->w[2 * i] = (uint32_t)(b >> 32);
+	q->w[2 * i + 1] = (uint32_t)b;
+}
+
+// fesd: an SPU single has no denormal or Inf/NaN; exponent 0 is zero, 255 an ordinary exponent.
+static double s2d(uint32_t w)
+{
+	const int e = (int)((w >> 23) & 0xFF);
+	if (!e)
+		return (w >> 31) ? -0.0 : 0.0;
+	const double d = ldexp(1.0 + (w & 0x7FFFFFu) / 8388608.0, e - 127);
+	return (w >> 31) ? -d : d;
+}
+
+// frds: round to nearest even; below FLT_MIN flushes to zero; past the SPU's range saturates.
+static uint32_t d2s(double d)
+{
+	const uint32_t sg = signbit(d) ? 0x80000000u : 0;
+	const double a = fabs(d);
+	if (a < 0x1p-126)
+		return sg;
+	int e;
+	const double m = frexp(a, &e);   // a = m * 2^e, m in [0.5, 1)
+	double r = nearbyint(ldexp(m, 24));
+	if (r >= 16777216.0)
+	{
+		r /= 2;
+		e++;
+	}
+	const int be = e - 1 + 127;
+	if (be > 255)
+		return sg | 0x7FFFFFFFu;
+	return sg | (uint32_t)be << 23 | ((uint32_t)r & 0x7FFFFFu);
 }
 
 void spusim_init(SpuSim* s, SpuEaFn ea, void* ctx)
@@ -804,6 +863,29 @@ int spusim_run(SpuSim* s, uint64_t max_insns)
 		case X_FM: for (int i = 0; i < 4; i++) R.w[i] = f_out((double)f_in(A.w[i]) * f_in(B.w[i])); break;
 		case X_FMA: for (int i = 0; i < 4; i++) R.w[i] = f_out((double)f_in(A.w[i]) * f_in(B.w[i]) + f_in(C.w[i])); break;
 		case X_FMS: for (int i = 0; i < 4; i++) R.w[i] = f_out((double)f_in(A.w[i]) * f_in(B.w[i]) - f_in(C.w[i])); break;
+		case X_FESD: R = splat(0); set_qd(&R, 0, s2d(A.w[0])); set_qd(&R, 1, s2d(A.w[2])); break;
+		case X_FRDS: R = splat(0); R.w[0] = d2s(qd(&A, 0)); R.w[2] = d2s(qd(&A, 1)); break;
+		case X_DFA: for (int i = 0; i < 2; i++) set_qd(&R, i, qd(&A, i) + qd(&B, i)); break;
+		case X_DFS: for (int i = 0; i < 2; i++) set_qd(&R, i, qd(&A, i) - qd(&B, i)); break;
+		case X_DFM: for (int i = 0; i < 2; i++) set_qd(&R, i, qd(&A, i) * qd(&B, i)); break;
+		case X_DFMA: for (int i = 0; i < 2; i++) set_qd(&R, i, fma(qd(&A, i), qd(&B, i), qd(&T, i))); break;
+		case X_DFMS: for (int i = 0; i < 2; i++) set_qd(&R, i, fma(qd(&A, i), qd(&B, i), -qd(&T, i))); break;
+		case X_DFNMS: for (int i = 0; i < 2; i++) set_qd(&R, i, fma(-qd(&A, i), qd(&B, i), qd(&T, i))); break;
+		case X_DFNMA: for (int i = 0; i < 2; i++) set_qd(&R, i, -fma(qd(&A, i), qd(&B, i), qd(&T, i))); break;
+		// frest + fi give about 12 bits: frest keeps 12 significant bits, fi passes them on.
+		case X_FREST:
+			for (int i = 0; i < 4; i++)
+				R.w[i] = ((A.w[i] >> 23) & 0xFF) ? d2s(1.0 / s2d(A.w[i])) & ~0x7FFu : 0x7FFFFFFFu | (A.w[i] & 0x80000000u);
+			break;
+		case X_FRSQEST:
+			for (int i = 0; i < 4; i++)
+				R.w[i] = ((A.w[i] >> 23) & 0xFF) ? d2s(1.0 / sqrt(fabs(s2d(A.w[i])))) & ~0x7FFu : 0x7FFFFFFFu;
+			break;
+		case X_FI: R = B; break;
+		case X_FSCRWR: break;
+		case X_FSCRRD: R = splat(0); break;
+		case X_FCMGT: for (int i = 0; i < 4; i++) R.w[i] = fabs(s2d(A.w[i])) > fabs(s2d(B.w[i])) ? ~0u : 0; break;
+		case X_FCMEQ: for (int i = 0; i < 4; i++) R.w[i] = fabs(s2d(A.w[i])) == fabs(s2d(B.w[i])) ? ~0u : 0; break;
 		case X_FNMS: for (int i = 0; i < 4; i++) R.w[i] = f_out(f_in(C.w[i]) - (double)f_in(A.w[i]) * f_in(B.w[i])); break;
 		case X_FCEQ: for (int i = 0; i < 4; i++) R.w[i] = f_in(A.w[i]) == f_in(B.w[i]) ? ~0u : 0; break;
 		case X_FCGT: for (int i = 0; i < 4; i++) R.w[i] = f_in(A.w[i]) > f_in(B.w[i]) ? ~0u : 0; break;
@@ -936,6 +1018,8 @@ int spusim_run(SpuSim* s, uint64_t max_insns)
 			s->prof[pc >> 2] += d;
 		}
 		s->next_min = s->cycle;
+		if (o->x >= X_FESD && o->x <= X_DFNMA)
+			s->next_min = s->cycle + 7;   // a double-precision op blocks issue for 6 cycles
 		const int is_branch = (o->x >= X_BRA && o->x <= X_BRHZ) || (o->x >= X_BI && o->x <= X_BIHNZ);
 		if (is_branch)
 		{

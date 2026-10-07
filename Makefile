@@ -46,7 +46,7 @@ SPU_CC     := $(PS3DEV)/spu/bin/spu-gcc
 SPU_CXX    := $(PS3DEV)/spu/bin/spu-g++
 BIN2S      := $(PS3DEV)/bin/bin2s
 SPU_CFLAGS := -O2 -Wall -ffunction-sections -fdata-sections -I$(PSL1GHT)/spu/include -Ips3/spu
-SPU_PROGS  := spe_bell spe_aica spe_arm7
+SPU_PROGS  := spe_bell spe_aica spe_arm7 spe_vb
 OBJS       += $(patsubst %,$(BUILD)/spu/%.bin.o,$(SPU_PROGS))
 
 ifeq ($(DEBUG),1)
@@ -68,7 +68,7 @@ CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
 LDFLAGS := -Wl,--no-multi-toc -L$(PSL1GHT)/ppu/lib -L$(PS3DEV)/portlibs/ppu/lib \
            -Wl,--wrap,printf -Wl,--wrap,vprintf -Wl,--wrap,puts -Wl,--wrap,putchar
 
-# freetype + png + z: the menu's Rodin text and bg/0.png (ps3/ps3_ui.cpp).
+# freetype + png + z: the menu's Rodin text and assets/ PNGs (ps3/ps3_ui.cpp).
 LIBS := -lrsx -lgcm_sys -lio -laudio -lsysutil -lsysmodule \
         -lnet -lnetctl -lrt -llv2 -lfreetype -lpng -lz -lm
 
@@ -96,8 +96,8 @@ $(BUILD)/ps3/ps3_fsca_table.o: ps3/ps3_fsca_table.S misc/fsca-table.bin
 	@echo "AS $<"
 	@$(CC) $(CFLAGS) -Ips3 -c $< -o $@
 
-# The menu background, linked in the same way.
-$(BUILD)/ps3/ps3_ui_assets.o: ps3/ps3_ui_assets.S bg/0.png
+# The menu background and button icons, linked in the same way.
+$(BUILD)/ps3/ps3_ui_assets.o: ps3/ps3_ui_assets.S assets/0.png $(wildcard assets/buttons/*.png)
 	@mkdir -p $(dir $@)
 	@echo "AS $<"
 	@$(CC) $(CFLAGS) -c $< -o $@
@@ -124,6 +124,12 @@ $(BUILD)/spu/spe_arm7.elf: ps3/spu/spe_arm7.cpp plugs/caiqueAICA/aica_model.cpp 
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -Iplugs/caiqueAICA -Wl,--gc-sections -s ps3/spu/spe_arm7.cpp plugs/caiqueAICA/aica_model.cpp -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+
+# 5.12 #2: the merged vertex buffer and draw runs of each scene, from the TA decoder's lists.
+$(BUILD)/spu/spe_vb.elf: ps3/spu/spe_vb.c ps3/spu/spe_vb_build.h ps3/spu/spe_vb.h ps3/spu/spe_bell.h
+	@mkdir -p $(dir $@)
+	@echo "SPU $@"
+	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s ps3/spu/spe_vb.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

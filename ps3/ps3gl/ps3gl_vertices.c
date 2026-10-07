@@ -226,22 +226,22 @@ extern uint32_t ps3gl_frame_batched_poly_count;
  * actual bug behind "textures and polygons glitched": every batch drew
  * one state-change late, every single chain, every frame. */
 
-/* Binds the four ps3gl_vertex_t attributes of a vring block. */
-static void bind_vertex_attribs(gcmContextData *ctx, uint32_t vb_offset)
+/* Binds the four ps3gl_vertex_t attributes of a vring block, vertices stride bytes apart. */
+static void bind_vertex_attribs(gcmContextData *ctx, uint32_t vb_offset, uint32_t stride)
 {
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, vb_offset + PS3GL_VATTR_POS_OFF,
-                             PS3GL_VERTEX_SIZE, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                             stride, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, vb_offset + PS3GL_VATTR_TC0_OFF,
-                             PS3GL_VERTEX_SIZE, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                             stride, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, vb_offset + PS3GL_VATTR_TC1_OFF,
-                             PS3GL_VERTEX_SIZE, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
+                             stride, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_COLOR0, 0, vb_offset + PS3GL_VATTR_COLOR_OFF,
-                             PS3GL_VERTEX_SIZE, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
+                             stride, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
 }
 
-/* Draws [first, first+count) of a caller-filled vring block under the current GL state.
- * The caller writes the vertices in ps3gl_vertex_t form; nothing is copied here. */
-void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count)
+/* Draws [first, first+count) of a caller-filled vring block under the current GL state. The
+ * vertices are in ps3gl_vertex_t form, stride bytes apart; nothing is copied here. */
+void ps3gl_draw_vb_stride(GLenum mode, uint32_t vb_offset, uint32_t stride, int first, int count)
 {
     if (count <= 0) return;
     ps3gl_flush_polygon_batch();
@@ -254,8 +254,13 @@ void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count)
     if (!ctx) return;
     ps3gl_frame_flush_count++;
     ps3gl_frame_flush_vertex_count += (uint32_t)count;
-    bind_vertex_attribs(ctx, vb_offset);
+    bind_vertex_attribs(ctx, vb_offset, stride);
     rsxDrawVertexArray(ctx, ps3gl_gl_to_gcm_prim(mode), first, count);
+}
+
+void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count)
+{
+    ps3gl_draw_vb_stride(mode, vb_offset, PS3GL_VERTEX_SIZE, first, count);
 }
 
 static void submit_ranges(int total_verts, const int *first, const int *cnt,
@@ -279,7 +284,7 @@ static void submit_ranges(int total_verts, const int *first, const int *cnt,
     gcmContextData *ctx = ps3gl_get_ctx();
     if (!ctx) return;
 
-    bind_vertex_attribs(ctx, vb_offset);
+    bind_vertex_attribs(ctx, vb_offset, PS3GL_VERTEX_SIZE);
 
     /* Draw -- one call per range, all against the single binding above */
     for (int i = 0; i < nranges; i++)

@@ -86,6 +86,7 @@ int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census a
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
 int g_spe_draw_preset      = 1;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3, 5.16 HW)
 int g_spe_wait_yield_preset = 0;  // 1 = the render thread's SPU fence wait leaves the PPE core to the SH4 thread (5.16)
+int g_spe_build_preset     = 1;   // 1 = an SPU builds the merged vertex buffer and runs, 2 = it builds a checked copy (5.12 #2, HW)
 int g_spe_aica_preset      = 0;   // 1 = caique AICA on an SPE, checked against a PPU control pass (5.13 A1)
 int g_spe_dsp_jit_preset   = 1;   // that model's DSP: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check (5.13 A1b, A3 HW)
 int g_spe_aica_snd_preset  = 1;   // 1 = that SPU model makes the sound; nullAICA's mixer off (5.13 A2, HW)
@@ -170,6 +171,7 @@ static const CfgItem s_items[] = {
 	{ "SpeDoorbell",   &g_spe_bell_preset },
 	{ "SpeDraw",       &g_spe_draw_preset },
 	{ "SpeWaitYield",  &g_spe_wait_yield_preset },
+	{ "SpeBuild",      &g_spe_build_preset },
 	{ "SpeAicaCheck",  &g_spe_aica_preset },
 	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
 	{ "SpeAicaSound",  &g_spe_aica_snd_preset },
@@ -302,10 +304,11 @@ int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
 int get_depth_float_preset()   { return g_depth_float_preset; }
 int get_yuv_block_preset()     { return g_yuv_block_preset; }
 
-// OPTIMIZATION_PLAN 5.12 S0, S3 and 5.16, read once in InitRenderer.
+// OPTIMIZATION_PLAN 5.12 S0, S3, #2 and 5.16, read once in InitRenderer.
 int get_spe_bell_preset()      { return g_spe_bell_preset; }
 int get_spe_draw_preset()      { return g_spe_draw_preset; }
 int get_spe_wait_yield_preset() { return g_spe_wait_yield_preset; }
+int get_spe_build_preset()     { return g_spe_build_preset; }
 // OPTIMIZATION_PLAN 5.13 A1, A1b, A2 and A3, read once in InitAica.
 int get_spe_aica_preset()      { return g_spe_aica_preset; }
 int get_spe_dsp_jit_preset()   { return g_spe_dsp_jit_preset; }

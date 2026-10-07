@@ -501,6 +501,8 @@ void ps3gl_flush_polygon_batch(void);
 /* Draws a range of a caller-filled vring block (ps3gl_vring_alloc) under the current GL
  * state: the vertex-array path, with no per-vertex calls and no copy. */
 void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count);
+/* The same for ps3gl_vertex_t vertices stride bytes apart (a ps3gl_vring_alloc_raw block). */
+void ps3gl_draw_vb_stride(GLenum mode, uint32_t vb_offset, uint32_t stride, int first, int count);
 
 /* Texture helpers */
 ps3gl_texture_t *ps3gl_texture_find(GLuint name);

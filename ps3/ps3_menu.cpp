@@ -442,6 +442,8 @@ static Option s_video[] = {
 	  "TA decode on an SPE; the render thread draws its lists. Set before boot." },
 	{ "SPE Wait Yield",  &g_spe_wait_yield_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
 	  "The render thread's SPE wait leaves the core to the SH4. Set before boot." },
+	{ "SPE Build",       &g_spe_build_preset,     OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
+	  "An SPE builds the merged vertex runs; CHECK compares them. Set before boot." },
 	{ "JIT FRCHG",       &g_jit_frchg_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "frchg swaps the FR banks inline, not through a C call. Set before boot." },
 	{ "JIT PREFETCH",    &g_jit_prefetch_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -561,7 +563,7 @@ static void option_step(Option* o, int dir)
 
 // -- Drawing -----------------------------------------------------------------
 
-// COL_BG shows only if bg/0.png fails to decode. White text with a shadow reads on the light background.
+// COL_BG shows only if assets/0.png fails to decode. White text with a shadow reads on the light background.
 #define COL_BG       0xFF101018u
 #define COL_TEXT     0xFFFFFFFFu
 #define COL_DIR      0xFFFFE7A0u
@@ -626,13 +628,54 @@ static void draw_header(const char* title, const char* right)
 	ps3ui_rect(s_mx, s_head_y, s_sw - 2 * s_mx, 2, COL_RULE);
 }
 
+static const struct { const char* name; int icon; } k_key_icon[] = {
+	{ "X",   PS3UI_ICON_CROSS },
+	{ "O",   PS3UI_ICON_CIRCLE },
+	{ "/\\", PS3UI_ICON_TRIANGLE },
+	{ "[]",  PS3UI_ICON_SQUARE },
+};
+
+// keys holds hints 3 spaces apart ("X Select   O Back"); a face-button name that starts
+// a hint draws as its icon. If the icon did not load, the name stays as text.
+static void draw_keys(float top, const char* keys)
+{
+	const float gap = ps3ui_text_w(PS3UI_FONT_BODY, " ");
+	const float sep = ps3ui_text_w(PS3UI_FONT_BODY, "   ");
+	const float ico = floorf(24.0f * s_sh / 720.0f + 0.5f);
+	float x = s_mx;
+	char hint[128];
+	while (*keys)
+	{
+		const char* end = strstr(keys, "   ");
+		int n = end ? (int)(end - keys) : (int)strlen(keys);
+		snprintf(hint, sizeof(hint), "%.*s", n, keys);
+		const char* text = hint;
+		for (int i = 0; i < (int)(sizeof(k_key_icon) / sizeof(k_key_icon[0])); i++)
+		{
+			size_t len = strlen(k_key_icon[i].name);
+			if (strncmp(hint, k_key_icon[i].name, len) == 0 && hint[len] == ' ' &&
+			    ps3ui_icon(k_key_icon[i].icon, x, top + (s_row_h - ico) * 0.5f, ico))
+			{
+				x += ico + gap;
+				text = hint + len + 1;
+				break;
+			}
+		}
+		ps3ui_text(x, row_base(top), PS3UI_FONT_BODY, COL_TEXT, text);
+		x += ps3ui_text_w(PS3UI_FONT_BODY, text) + sep;
+		keys += n;
+		while (*keys == ' ')
+			keys++;
+	}
+}
+
 static void draw_footer(const char* help, const char* keys)
 {
 	ps3ui_rect(s_mx, s_foot_y, s_sw - 2 * s_mx, 2, COL_RULE);
 	if (help)
 		ps3ui_text(s_mx, row_base(s_foot_y + 8), PS3UI_FONT_BODY, COL_DIM, help);
 	if (keys)
-		ps3ui_text(s_mx, row_base(s_foot_y + 8 + s_row_h), PS3UI_FONT_BODY, COL_TEXT, keys);
+		draw_keys(s_foot_y + 8 + s_row_h, keys);
 }
 
 static void draw_row(int slot, bool selected, u32 color, const char* left,
