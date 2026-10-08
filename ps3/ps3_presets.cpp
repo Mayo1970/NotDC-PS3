@@ -57,6 +57,10 @@ int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vr
 int g_tex_slot_hash_preset = 1;   // 1 = texture cache slot from a hash of the whole key, not TexAddr bits 0-9 (P16, HW)
 int g_depth_float_preset   = 1;   // 1 = RSX float depth with z = n/W, not Z24 with z = 1 - n/W (P18, HW)
 int g_yuv_block_preset     = 0;   // 1 = YUV textures decode by tables straight into the RSX texture (P42)
+int g_yuv_conv_fast_preset = 1;   // 1 = the TA YUV converter reads plane words, whole blocks in place (P43, HW)
+int g_vram_direct_preset   = 0;   // 1 = SQ/DMA runs on the 32-bit VRAM bus map the address once per bank stretch (P55)
+int g_lmmode_preset        = 0;   // 1 = SQ and ch2 DMA to 0x11/0x13 take the bus SB_LMMODE0/1 selects (P7)
+int g_fb_watch_preset      = 0;   // 1 = a 32-bit VRAM write into the shown frame presents it at vblank (P26)
 int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -145,6 +149,10 @@ static const CfgItem s_items[] = {
 	{ "TexSlotHash",   &g_tex_slot_hash_preset },
 	{ "DepthFloat",    &g_depth_float_preset },
 	{ "YuvBlockDecode", &g_yuv_block_preset },
+	{ "YuvConvFast",   &g_yuv_conv_fast_preset },
+	{ "VramDirect",    &g_vram_direct_preset },
+	{ "Lmmode",        &g_lmmode_preset },
+	{ "FbWatch",       &g_fb_watch_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },

@@ -3,6 +3,7 @@
 #include "ta.h"
 #include "spg.h"
 #include "dc/sh4/sys_gate.h"
+#include "dc/pvr/pvr_vram.h"
 
 // Basic PVR register emulation for the PowerVR CLX2 ("Holly"): a flat 32KB byte array, accessed via PvrReg().
 // TODO: full TA emulation is still needed for accurate rendering.
@@ -44,6 +45,13 @@ static bool spg_plan_reg(u32 addr)
 }
 
 static void pvr_write_reg(u32 addr, u32 data);
+
+// P26: the shown field's bytes (the second field when interlaced), as Flycast's check_framebuffer_write.
+void fb_watch_update()
+{
+	const u32 size = (((FB_R_SIZE >> 10) & 0x3FF) + 1) * ((FB_R_SIZE & 0x3FF) + ((FB_R_SIZE >> 20) & 0x3FF)) * 4;
+	fb_watch_set(SPG_CONTROL.interlace ? FB_R_SOF2 : FB_R_SOF1, size);
+}
 
 void FASTCALL libPvr_WriteReg(u32 paddr, u32 data, u32 size)
 {
@@ -120,6 +128,16 @@ static void pvr_write_reg(u32 addr, u32 data)
 			PvrReg(addr, u32) = data;
 			{
 				// Diagnostic hook: log writes here to catch a game setting vbstart past the wrap point.
+			}
+			return;
+
+		// ---- FB_R_SIZE: P26, a new size clears the dirty mark and moves the watch (Flycast) ----
+		case FB_R_SIZE_addr:
+			if (PvrReg(addr, u32) != data)
+			{
+				PvrReg(addr, u32) = data;
+				g_fb_dirty = false;
+				fb_watch_update();
 			}
 			return;
 

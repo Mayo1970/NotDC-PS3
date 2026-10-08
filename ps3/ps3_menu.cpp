@@ -426,6 +426,14 @@ static Option s_video[] = {
 	  "Float depth buffer with z = n/W: far geometry keeps its order (P18). Live." },
 	{ "YUV Block Decode", &g_yuv_block_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "FMV (YUV) textures decode by tables straight into RSX memory (P42). Live." },
+	{ "YUV Conv Fast",   &g_yuv_conv_fast_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The FMV YUV converter reads words; whole blocks are not copied (P43). Live." },
+	{ "VRAM Direct",     &g_vram_direct_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SQ and DMA texture writes map each VRAM run once, not per word (P55). Live." },
+	{ "LMMODE",          &g_lmmode_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SQ and DMA texture writes take the bus SB_LMMODE0/1 selects (P7). Live." },
+	{ "FB Write Watch",  &g_fb_watch_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A CPU write into the shown frame presents it at the next vblank (P26). Live." },
 	{ "X Scaler",        &g_x_scaler_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Honours SCALER_CTL.hscale, used by games that render 1280 wide." },
 	{ "Debug Loop",      &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -951,7 +959,8 @@ static int* const k_live_opts[] = {
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
 	&g_aica_kyonb_preset, &g_ta_sq_direct_preset, &g_tex_slot_hash_preset, &g_depth_float_preset,
-	&g_yuv_block_preset, &g_frame_hold_preset,
+	&g_yuv_block_preset, &g_frame_hold_preset, &g_yuv_conv_fast_preset, &g_vram_direct_preset, &g_lmmode_preset,
+	&g_fb_watch_preset,
 };
 
 #define MAX_INGAME_OPTS 96

@@ -38,6 +38,25 @@ Items P44-P57. New facts in P2, P8, P10, P26, P34, P37, P40 and in section
 reading. The main claims of P44, P45, P47-P50, P54, P55 and P57 were checked
 again in the code. Review only: nothing is built.
 
+Fifth review 2026-10-08 (Matt: "Given the status of the repo, anything
+that could we could take from Flycast or Minicast that we missed last
+time?"):
+- Minicast: no new commits. On 2026-10-08 all 9 branch heads on GitHub
+  are the ones in our clone.
+- Flycast: the commits after our clone (`master` 869038f40..0d9853df9, 14
+  commits; `dev` 0a304f139..4dca1988d, 19 with merges). Our clone was not
+  fetched; they were read from a scratch fetch. Run `git fetch` in the
+  clone before reading them there.
+- Flycast: the 526 core commits since 2018 that this file and the plan
+  never cite, picked by subject (fixes, register and timing changes), in
+  `core/hw/{sh4,pvr,aica,arm7,gdrom,holly,maple,mem,flashrom}`,
+  `core/imgread`, `core/rend/gles`, `TexCache.cpp`, `transform_matrix.cpp`
+  and `sorter.cpp`, without Naomi. Six read-only agents read them against
+  our tree.
+Items P58-P70. New facts in section 4 (also for P10, P22, P25 and P54).
+The main claims of P58-P68 were checked again in the code, P58 also with a
+big-endian PowerPC compile. Review only: nothing is built.
+
 Merge 2026-10-06 (Matt: "Can you do the merge, then?"): the items with a
 plan goal now sit in `OPTIMIZATION_PLAN.md` at that goal, with a short
 entry; its section 0 lists where. Their headings here say "merged: plan
@@ -53,9 +72,10 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
   step in `OPTIMIZATION_PLAN.md`.
 - Every item was read in both trees. A claim that was not checked in the code
   is marked "unverified".
-- Line numbers: P1-P15 from 2026-10-04, P16-P43 from 2026-10-06. If a line
-  moved, search for the function. `ps3/ps3_driver.cpp` changes often, so the
-  new items cite it by function name.
+- Line numbers: P1-P15 from 2026-10-04, P16-P57 from 2026-10-06, P58-P70
+  from 2026-10-08. If a line moved, search for the function.
+  `ps3/ps3_driver.cpp` changes often, so the new items cite it by function
+  name.
 - Reicast, Minicast and Flycast are little-endian only. Check every ported
   line for byte order.
 
@@ -78,7 +98,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
 | P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
-| P14 | Fog and offset colour shader reference | reference | 3a, 3b | - | merged: plan 3a, 3b (open) |
+| P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a, 3b, 3j (open) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
 | P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; HW SUCCESS 2026-10-06, default ON |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
@@ -122,6 +142,19 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P55 | VRAM writes from SQ and DMA: one address map per block | speed | 0.5% of the SH4 thread or less (estimate) | ~10 lines | merged: plan 5.17 (with P7) |
 | P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (none seen) | ~5 lines | merged: plan 5.39; after P32 |
 | P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
+| P58 | MMUCR fields read the wrong bits on big endian | bug | Border Down (no picture); every game that uses the TLB for store queues | 2 lines; + JIT cache clear (~3) and V = 0 skip (1) | new; Border Down is an open item in plan section 0 |
+| P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | corrects plan 3i ("Broadcast is not touched, as in Flycast") |
+| P60 | Present only the renders the game shows | bug (image) | flashing screens and mirrors (South Park, NFL QB Club 2000, Vanishing Point, Metropolis Street Racer), FMV glitches; Quake III split screen | ~40-80 lines + ~30 | fits bundle 11; P2 has the swap rule as pacing only |
+| P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
+| P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
+| P63 | Face colours reset once per frame | bug | NHL 2K, NHL 2K2 (black players, black ice) | 1-2 lines per decoder | fits bundle 4 |
+| P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | fits bundle 8 |
+| P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | fits bundle 1 (with P7) |
+| P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | fits bundle 4; RTT parts: bundle 11 (P54) |
+| P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | fits bundle 8 |
+| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple: bundle 10; GD-ROM: bundle 2; G2: bundle 6 |
+| P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 11 |
+| P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -142,6 +175,13 @@ and P48 (GD-ROM). P45 is the largest image gap: mipmapped textures draw
 only level 0. Minicast's new JIT work (anchored loops, multi-block regions,
 self-loops, fmov.d fusion, inline TA ring push) gives 0.3% or less each on
 our backend, because every SH4 register is pinned (section 4).
+
+Fifth review (2026-10-08): the strongest items are again bugs in our own
+code. P58 is a big-endian bitfield layout: no game can turn the MMU on, and
+it explains Border Down. P59: Flycast writes NTSC into the flash at every
+boot, ours keeps the PAL byte, so three of Matt's games play at 50 Hz. P60
+is the largest image gap: we flip every DC render, also the ones that the
+game never shows. Minicast has no new commits. Rayman 2 is plan 3j.
 
 ---
 
@@ -1527,6 +1567,391 @@ Flycast's RTT games).
   cycles inside the current timeslice), so they fail on ours today. About
   100 lines of harness. Only together with P11.
 
+### P58 MMUCR fields read the wrong bits on big endian  `[ ]`
+
+- Ours: `CCN_MMUCR_type` (`dc/sh4/ccn.h:81-108`) declares 28 bits: AT:1,
+  res:1, TI:1, res_2:5, SV:1, SQMD:1, URC:6, URB:6, LRUI:6, and the same
+  fields in reverse for big endian. GCC fills big-endian bitfields from bit
+  31, so only LRUI is right. URB reads bits 25-20 (should be 23-18), URC
+  19-14 (15-10), SQMD 13 (9), SV 12 (8), TI 6 (2) and AT 4 (0).
+- Checked with devkitPPC `powerpc-eabi-gcc -O2 -S` (the same big-endian
+  bitfield rule as ppu-gcc): `.AT` compiles to `rlwinm 3,3,28,31,31` (bit
+  4), `.TI` to `rlwinm 3,3,26,31,31` (bit 6), `.URC` to
+  `rlwinm 3,3,18,26,31` (bits 19-14).
+- Flycast `9473c235f` (2023-01, "Some reserved bits were missing, which
+  was breaking the (slow) MMU") adds `u32 : 2;` after URC and after URB
+  (`core/hw/sh4/sh4_mmr.h`). On little endian only URB and LRUI moved; on
+  our build every field below LRUI moves.
+- Effects in ours:
+  - `CCN_MMUCR_write()` (`dc/sh4/ccn.cpp:31-52`) sees AT = 0 when a game
+    writes AT = 1. The store queues never use the TLB: `do_sqw_target()`
+    (`dc/sh4/sh4_sqw.h`) and the JIT PREF (`shop_pref` in
+    `ps3/ps3_driver.cpp`) take QACR.
+  - A TLB flush (TI, bit 2) is not seen, so `sq_remap` is not cleared.
+  - `ldtlb` writes `UTLB[CCN_MMUCR.URC]` (`dc/sh4/sh4_cpu_misc.h:10-13`)
+    with URC from the wrong bits.
+- Border Down (JP), HW 2026-10-08 (`borderdown.txt`, scratchpad of session
+  d24c41ee): the game loads 25 UTLB entries through the address and data
+  arrays (F6, F7). They map the SQ area: E0000000-E0FFFFFF to 0C000000
+  (RAM) and E1000000-E18FFFFF to 10000000 (TA) (`SQ remap` lines). The
+  whole log has no `CCN: MMU address translation ENABLED` line. So the
+  flushes take QACR (area 0): 0xE01FF3E0 goes to 0x001FF3E0 (the `Write
+  to Boot ROM` lines, a polygon list), not to 0x0C1FF3E0 in RAM. The game
+  builds its lists where it cannot read them back: no picture.
+- Take two more Flycast rules with the fix:
+  - Clear the JIT code cache when AT changes. Flycast `CCN_MMUCR_write()`
+    (`core/hw/sh4/modules/ccn.cpp:38-58`) calls `mmu_set_state()` and
+    `ResetCache()`. Our JIT picks `do_sqw_mmu` or `do_sqw_nommu` at
+    compile time (`shop_pref`), and JIT GUARD REUSE and JIT PREFETCH also
+    test AT at compile time. Blocks compiled before the switch keep the
+    QACR path.
+  - `UTLB_Sync()` (`dc/mem/mmu.cpp:41-60`) fills `sq_remap` from every
+    SQ-area entry, V = 0 ones too, and keeps PPN bits below the page size.
+    Flycast's slow MMU skips V = 0 entries
+    (`core/hw/sh4/modules/mmu.cpp:61-62`); its fast MMU masks VPN and PPN
+    to the page size (`fastmmu.cpp:184-185`).
+- Size: 2 lines for the layout (or masks on `reg_data`), ~3 for the cache
+  clear, 1 for V = 0. A check before HW: the devkitPPC `-S` test, or a boot
+  self-test line that writes 0x00000105 and prints AT, TI and URC.
+- Risk: a game that turns AT on now sends its SQ flushes through the TLB.
+  In the saved HW logs only Border Down loads SQ entries; the BIOS writes
+  UTLB entry 0 at boot (`MEM remap [0]`). WinCE games still need P38. HW:
+  Border Down; Crazy Taxi, Sonic Adventure and Looney Tunes unchanged.
+- HW 2026-10-08 (bundle 1 run, plan section 0 "Open, separate"): Rez
+  (PAL GDI), Ikaruga (JP GDI) and Sonic Shuffle load the same 25 SQ-area
+  UTLB entries, with no MMU-enabled line, and stop right after the BIOS
+  logo; Sonic Shuffle's flushes land in boot ROM. Add them to the HW check.
+
+### P59 Flash broadcast byte: NTSC, as Flycast writes it  `[ ]`
+
+- Flycast `fixUpDCFlash()` (`core/hw/flashrom/nvmem.cpp:151-170`) runs at
+  every boot, after the console flash loads (:255-257). It writes Region,
+  Language and Broadcast into both factory copies (0x1a002-0x1a004 and
+  0x1a0a2-0x1a0a4). `Broadcast` defaults to 0, NTSC
+  (`core/cfg/option.cpp:34`). A few PAL and NTSC titles have per-game
+  overrides (`core/emulator.cpp`, `loadSpecialSettings`).
+- Ours: `dc_flash_set_region()` (`dc/flash_fix.cpp:144-177`) writes only
+  the region bytes, and `dc_flash_restore_region()` puts them back before
+  the save. Plan 3i says "Broadcast is not touched, as in Flycast". That is
+  wrong: Flycast writes it at every boot.
+- Logs: the BIOS boots at PAL 50 Hz (plan 5.41 step 1 HW: "Each game boots
+  in PAL 50 Hz (the BIOS)"), so Matt's flash holds a PAL broadcast byte
+  (the byte itself was not read: unverified). Games that follow the flash
+  play at PAL 50 Hz:
+  - Capcom vs. SNK 2 (JP): `VPS:50.00(PAL480i50.00)` (`cvs2.txt`);
+  - Border Down (JP): `PAL480i50.00` (`borderdown.txt`);
+  - Rayman 2 (US GDI): 50 Hz (plan section 0).
+  A JP or US console has an NTSC byte, so there these games run at 60 Hz.
+  Crazy Taxi, Sonic Adventure and Looney Tunes switch to NTSC by
+  themselves.
+- PS3 form: an option CONSOLE / NTSC / PAL / DISC. DISC = NTSC when the
+  disc area lists J or U, PAL when it lists only E (no per-game lists).
+  Write both copies (0x1a004, 0x1a0a4) next to the region bytes and
+  restore them in `dc_flash_restore_region()`. About 10 lines. Byte order:
+  none (the flash is read bytewise).
+- Cost: a 60 Hz game has 20% more frames per second to run and draw. HW:
+  Capcom vs. SNK 2, Border Down and Rayman 2 (VPS ~60, SPEED, the menus);
+  Crazy Taxi unchanged.
+
+### P60 Present only the renders the game shows  `[ ]`
+
+- Flycast `ac43a8c54` ("don't swap gl buffer until FB_R_SOF is set to the
+  rendered framebuffer"), today the DelayFrameSwapping option, ON by
+  default except on macOS (`core/cfg/option.cpp:89-93`;
+  `core/hw/pvr/Renderer_if.cpp:245`, :586-587, :654-666;
+  `core/hw/pvr/pvr_regs.cpp:192-200`). A render shows at once only if
+  FB_R_SOF1 already holds the FB_W_SOF1 it rendered to. Else it waits
+  until the game writes that address to FB_R_SOF1/2. A render into a
+  buffer that is never shown is never presented. Named: flashing screens
+  in South Park: Chef's Luv Shack and NFL Quarterback Club 2000, glitchy
+  FMVs in The Next Tetris, Nightmare Creatures II and Rune Jade, the
+  flashing rear-view mirror in Metropolis Street Racer.
+- Flycast `3a7a08f3f` ("Do not clear the framebuffer before rendering"):
+  today the colour is cleared only when FB_W_SOF1 is not one of the last
+  two framebuffer addresses (`core/hw/pvr/Renderer_if.cpp:562-571`,
+  `core/rend/gles/gles.cpp:1239`). Only the background plane clears,
+  inside the FB clip. Named: Vanishing Point menus (flashing), the Test
+  Drive Le Mans and Vigilante 8 loading screens, the Metropolis Street
+  Racer mirror.
+- Flycast `93523df80` ("pvr: implement tile array region clipping"): the
+  PVR draws only the tiles in the region array. Flycast scissors to their
+  bounding box (x and y times 32), intersected with TA_GLOB_TILE_CLIP and
+  the FB clip (`core/hw/pvr/ta_vtx.cpp:1664-1691`, :1211-1219;
+  `core/rend/transform_matrix.cpp:130-143`). Entries are 5 words, or 6
+  when FPU_PARAM_CFG bit 21 is set; an empty first entry is skipped.
+  Named: Quake III Arena split-screen multiplayer (Quake III is in Matt's
+  set, a HW log of session 9d577958; split screen not tested).
+- Ours (`ps3/ps3_rend.cpp`):
+  - every STARTRENDER that is not RTT draws and flips at once
+    (`rth_job_draw()` calls `ps3_video_end_frame()` or `_at()`), and
+    `plugs/drkPvr/regs.cpp` has no FB_R_SOF1/2 write case;
+  - `draw_frame()` clears colour, depth and stencil at every render
+    (:2251-2254), and `draw_scene()` draws the background over the whole
+    canvas;
+  - the region array is read only for autosort (`using_autosort()`).
+  So a second render into the same DC frame (a mirror, a split-screen
+  half, a menu layer) replaces the first on the TV, and the two alternate.
+- P2 notes Flycast's swap rule only as pacing; P10 has the FB clip as a
+  scissor (bundle 11).
+- PS3 form (outline): at STARTRENDER latch FB_W_SOF1. A held job ends with
+  `ps3_video_end_frame_noflip()` (`ps3/ps3_video.c`) and keeps the PS3
+  buffer, so a later render draws into it with no colour clear. A matching
+  FB_R_SOF1/2 write posts a flip-only job. The vblank JOB_PRESENT and
+  Frame Hold must respect a held frame. Scissor to the region bounding box
+  and the FB clip. About 40-80 lines, plus ~30 for the region scissor.
+- Byte order: none. Compare the registers with mask 0x00FFFFFC (as
+  Flycast); read region entries with `vri()` and shifts, as
+  `using_autosort()` does.
+- Risk: medium (the present path, Frame Hold, SPE Draw). Of the named
+  games only Quake III is in Matt's set.
+
+### P61 CD-DA play limits and resume rules  `[ ]`
+
+- Flycast `e44ed4a8e` (2020-03, "gdrom: don't resume cdda if not playing.
+  stop if cur > end") and the CD-DA part of `959b6344b` (2020-06). No game
+  named.
+- Ours (`dc/gdrom/gdromv3.cpp`):
+  - (a) the end test is `CurrAddr.FAD == EndAddr.FAD` (:196). Flycast uses
+    `>=` (`core/hw/gdrom/gdromv3.cpp:84`). A start past the end, or a
+    play that moved past it, never stops.
+  - (b) SPI_CD_PLAY (:741-775) keeps an end FAD of 0. Flycast takes the
+    session end from REQ_SES session 0 (:917-924).
+  - (c) :747-748 set `playing` and PLAY for every param type, so param 7
+    (resume) plays also when nothing is paused. After SEEK type 3 (stop,
+    CurrAddr = 150) it plays the data track at FAD 150 as audio; after a
+    track ends it runs on past EndAddr, because of (a). Flycast resumes
+    only from Paused, and stops when CurrAddr > EndAddr.
+  - (d) :772 takes the repeat count from byte 6 of every packet, resume
+    too. Flycast sets it only for params 1 and 2 (:926). If a resume
+    packet has 0 there (unverified), a looping track stops looping after a
+    pause.
+  - (e) at the end of a play Flycast sets PAUSE and audio status 0x13
+    (terminated); ours sets STANDBY (:200-202). Do (e) only with P21's
+    3-state flag, else GET_SCD reports 0x15, not 0x13.
+  - (f) `gd_setdisc()` (:368-399, also reached by the ATA soft reset,
+    :472-477) keeps CD-DA playing. Flycast stops it (:318).
+- P21 step 2 has the 3-state flag (resume only when paused). In Flycast
+  master this rule is a separate fix since 2020, not part of the dev
+  timing work.
+- About 20 lines. Byte order: none (u32 FADs; use shifts, not the B0-B2
+  union of P47). HW: ChuChu Rocket and Looney Tunes CD-DA (pause, resume,
+  looping tracks), the BIOS CD player. Bundle 2.
+
+### P62 GET_SCD format 1: Q data layout and length  `[ ]` extends P47
+
+- Ours, the format 1 branch of SPI_GET_SCD
+  (`dc/gdrom/gdromv3.cpp:911-939`): `subc = &subc_info[5]` with
+  `subc[0] = 0x14` writes the control/ADR byte twice, so TNO, index, the
+  elapsed FAD and the absolute FAD land one byte late. `sz = 12` then cuts
+  the absolute FAD. It always reports track 1, index 1 and control 4
+  (data), also during CD-DA.
+- Flycast (`core/hw/gdrom/gdromv3.cpp:642-673`): the Q data starts at
+  `subc_info[4]`, 14 bytes, with the real track, the elapsed FAD and
+  ADR/control from the TOC (`libGDR_GetTrackNumber()`,
+  `libGDR_GetTrackAdrAndControl()`).
+- `959b6344b` also clamps the reply to the allocation length. Our format 0
+  sends `alloc_len` bytes from a 100-byte stack buffer (:848, :905): an
+  over-read when a game asks for more than 100.
+- 3-4 lines, plus the track lookup. Byte order: bytes only. Build it with
+  P47 (the same function). Impact unknown: our comment says the BIOS asks
+  for format 0, 100 bytes.
+
+### P63 Face colours reset once per frame  `[ ]`
+
+- Flycast `f599891e0` and `537c2a4ed` (NHL 2K2 black ice, NHL 2K black
+  players): at every TA context parse it sets FaceBaseColor and
+  FaceOffsColor, and the volume-1 copies, to 0xFF, opaque white
+  (`core/hw/pvr/ta_vtx.cpp:126-139`, through `ta_parse_reset()`). Inside a
+  frame they carry over, so intensity mode 2 reuses them.
+- Ours: the PPU decoder sets `s_face_a/r/g/b` = 1 only at program start
+  (`ps3/ps3_rend.cpp:180`); `ListInit()` (:612) resets only the lists. The
+  SPU decoder is the same (`ps3/spu/spe_dec.c:53`; `dec_reset()` :714 does
+  not touch them). So an intensity mode 2 polygon before any mode 1 header
+  in a frame takes the last colour of the previous frame.
+- 1-2 lines in each decoder. Change both, or the S2 compare fails (with
+  SPE Draw ON the RSX draws the SPU lists).
+- Same commit, 2 lines: TA_LIST_CONT resets the store list type and the
+  FSM state (Flycast `core/hw/pvr/ta.cpp:506-517`). Ours keeps
+  `s_fsm_state` and `s_store_list` (`ListCont()` in `ps3/ps3_rend.cpp`).
+  It matters only if a list is open at LIST_CONT.
+- When 3b or 3j add the per-vertex offset colour, reset the face offset
+  colour the same way.
+- Byte order: none. Neither NHL game is in Matt's set. Bundle 4.
+
+### P64 FPSCR cause bits stay set after a guest write  `[ ]`
+
+- Flycast `bbdef06a0` (master, 2026-10-07, issue #1058): `UpdateFPSCR()`
+  clears the cause field (bits 12-17: `fpscr.full &= ~0x3f000`) on every
+  guest write. Its FPU ops never set the cause field, so a cause bit that
+  lds or lds.l writes stays set forever. Named: Kita He. White
+  Illumination (T14301M, WinCE) resets to the BIOS when a karaoke song
+  starts; its matrix code reads cause.V after fcmp/gt.
+- Ours: `UpdateFPSCR()` (`dc/sh4/sh4_registers.cpp:100-106`) has no clear,
+  and our FPU ops do not set the cause field either. Every FPSCR write
+  reaches it: the interpreter (lds and lds.l in `dc/sh4/sh4_cpu_misc.h`)
+  and the JIT `shop_sync_fpscr` (`ps3/ps3_driver.cpp`). The fschg SZ-only
+  path writes no cause bits, and JIT FRCHG takes the full path when more
+  than FR changed.
+- 1 line. Byte order: none. The named game is WinCE (P38); no game in
+  Matt's set is known to need it.
+
+### P65 Channel 2 DMA: length, the 0x12 mirror and DMAOR  `[ ]`
+
+- Flycast `0d81c9fb0` ("clean dmac module, correct address/len mask, add
+  missing mirror"; "fix infinite loop", no game named): a ch2 DMA always
+  completes and raises holly_CH2_DMA. The length drops its low 5 bits
+  instead of refusing the DMA, and 0x12xxxxxx is a TA mirror. `sb.cpp`
+  masks the registers on write: SB_C2DLEN & 0x00FFFFE0, SB_C2DSTAT =
+  (v & 0x03FFFFE0) | 0x10000000.
+- Ours: `DMAC_Ch2St()` (`dc/sh4/dmac.cpp:52-80`) returns when `len & 0x1F`
+  or `len == 0`: no transfer, no TE, no IRQ, and SB_C2DST stays 1. A guest
+  that waits for the end IRQ hangs. `isDstTA()` (:45) accepts only
+  0x10xxxxxx; a 0x12 target takes the invalid branch (no data, IRQ
+  raised). `dc/mem/sb.cpp:536-548` stores both registers unmasked.
+- Flycast `8001af974` (register write masks) masks DMAOR with 0x8307.
+  `WriteDMAOR()` (`dc/sh4/dmac.cpp:228-231`) stores the raw value, and
+  `DMAOR_MASK` is 0xFFFF8201 (`dc/sh4/dmac.h:121`). The ch2, PVR-DMA and
+  GD-ROM DMA checks use it, so junk in bits 31:16 aborts them with no IRQ.
+- About 6 lines. Byte order: none. P7 (LMMODE) is the other ch2 item.
+  Bundle 1. Not Capcom vs. SNK 2: `cvs2.txt` has no `Ch2 abort` line.
+
+### P66 Small TA and renderer fixes  `[ ]`
+
+None of the named games is in Matt's set.
+- Modifier-volume triangle cap: Flycast `c42799726` and `9f13ded50` (Jet
+  Grind Radio) raised it from 4096 to 8192; today it uses growing lists
+  (`core/hw/pvr/ta_ctx.h:352-354`). Ours: `MAX_MODTRI` 4096 and
+  `MAX_MODVOL` 256 (`ps3/ps3_rend.cpp:86-87`, `ps3/spu/spe_bell.h:17-18`).
+  Triangles past the cap are dropped (`ps3/ps3_rend.cpp:587`, :598;
+  `ps3/spu/spe_dec.c:448`, :459), which breaks the volume parity. 2 lines
+  plus ~1.2 MB for 4 contexts. Our logs peak at ~452 triangles per render
+  (Crazy Taxi).
+- TA store size: Flycast `7da4f09c0` raised its TA store from 2 MB to 8 MB
+  for Dead or Alive 2 LE. Ours is 2 MB per context (`TA_RAW_SIZE`,
+  `ps3/ps3_rend.cpp:91`); past it the replay copy is dropped (geometry
+  lost, no hang; `ta_raw_of=` counts it). 1 line, +8 MB at 4 MB per
+  context. Our 64K vertex cap may bind first (unverified).
+- Object list overflow: Flycast `13de6b9a1` (Ooga Booga crash or hang in
+  multiplayer) raises holly_MATR_NOMEM and drops the record when its 8 MB
+  store is full (`core/hw/pvr/ta.cpp:534-539`). Ours raises nothing (the
+  enum only, `plugins/plugin_header.h:143-144`). About 3 lines. Raise it
+  only past 8 MB of stream: our cap is a quarter of Flycast's. A
+  heuristic: the hardware raises it from TA_OL_LIMIT and TA_ISP_LIMIT.
+- TA data with no list init: Flycast `2bcc3c574` (Vigilante 8 freeze in
+  an FMV) drops TA records while no TA context is current: before the
+  first TA_LIST_INIT, and after STARTRENDER until the next list init
+  (`core/hw/pvr/ta_ctx.cpp:175-188`). Ours: `s_ta` starts at context 0
+  (`ps3/ps3_rend.cpp:142`) and STARTRENDER never clears it, so such
+  records still raise list-end IRQs and are drawn by the next STARTRENDER.
+  About 5 lines. Keep the nullDC-v1 rule "a second STARTRENDER redraws".
+  Unverified that ours freezes in Vigilante 8.
+- Invalid TA types: Flycast `c301bf082` skips a polygon header with
+  Volume = 1 and Col_Type = 1 (obj_ctrl 0x50-0x5F and 0xD0-0xDF, where
+  `ta_type_lut` is 0xFFFFFFFF). Our PPU splitter calls
+  `ta_poly_param_lut[255]` (`plugs/drkPvr/ta.h:384-406`), out of a
+  5-entry table: a crash or a hang. Only when the PPU replays (SPE Draw
+  OFF, a failed SPU fence, TA Fast Store OFF); the SPU decoder skips the
+  record (`ps3/spu/spe_dec.c:589-593`). About 3 lines. It fits P9;
+  `TArender.MD` notes the index.
+- RTT stride: Flycast `b77843b92` ("Happens for Virtua Tennis") clamps the
+  RTT row width to FB_W_LINESTRIDE (`core/rend/TexCache.cpp:1126`);
+  `3256e0281` names the symptom (RTT overwrites other textures: the tennis
+  ball, the players' bags). Ours writes w pixels per row whatever the
+  stride (`rtt_render()`). 2 lines, with P54.
+- RTT scaler: Flycast `e96b38ff5` (Skies of Arcadia PAL pause menu and
+  battle animation, issue #1127) applies SCALER_CTL to RTT
+  (`getWriteFBToVramParams()`, `core/rend/transform_matrix.cpp:458-472`).
+  Ours maps the TA area 1:1 onto the FB clip (`rtt_render()`), and
+  SCALER_CTL is not in the render snapshot. About 8 lines. RTT has never
+  fired in our games (`rtt=0/0`).
+- TA_YUV_TEX_BASE: Flycast masks it with 0x00FFFFF8
+  (`core/hw/pvr/pvr_regs.cpp:182-185`); ours keeps the low 3 bits
+  (`YUV_init()`, `dc/pvr/pvr_if.cpp:165`). 1 line.
+
+### P67 Small SH4 and memory fixes  `[ ]`
+
+- Area 7 registers outside P4: Flycast `b3de6a166` (Resident Evil Code
+  Veronica X, Chris, floor 1F crash; Dolphin Blue) maps the on-chip
+  registers only at P4 (0xFF). In P0-P3, area 7 (0x1F, 0x3F, 0x5F, 0x9F,
+  0xBF, 0xDF) reads 0 and drops writes; on-chip RAM stays at 0x7C-0x7F.
+  Ours maps `area7_handler` at 0x1F | base for every P0-P3 base
+  (`map_area7()`, `dc/mem/sh4_internal_reg.cpp:764-770`), so a stray
+  pointer there writes real TMU, INTC, CCN or DMAC registers. 2 lines.
+  Unverified that this part alone fixed RE CVX (the commit has three
+  parts; ours already reads 0 from unmapped areas).
+- Block writes of odd sizes: Flycast `82e0fc7f6` and `10d9761a6` let
+  `WriteMemBlock_nommu_ptr` take any size (word, halfword and byte
+  tails). Ours has `verify((size & 3) == 0)` (`dc/mem/sh4_mem.cpp:224`,
+  :245, :265), and our `verify` ends in an endless loop (`types.h:186`).
+  A PVR DMA with SB_PDLEN not a multiple of 4 reaches it: DMA Fix (default
+  1) skips the length check (`dc/pvr/pvr_sb_regs.cpp:79`), then :148 calls
+  the block write. Flycast also masks SB_PDLEN to 32-byte units
+  (`core/hw/holly/sb.cpp:598`). 1 line (the mask), or ~10 (the tails, at
+  addr ^ 3 and addr ^ 2 on our word layout).
+- SCI: Flycast `4d815570d` defines the 7 SCI registers (SCBRR1 = 0xFF,
+  SCTDR1 = 0xFF, SCSSR1 = 0x84 = TDRE | TEND at reset). Ours registers
+  none (`dc/sh4/sci.cpp`): every access returns 0 and prints a line, so a
+  TDRE poll never ends and floods the log. About 25 lines. No game named.
+- SB_TFREM: Flycast `e5b18cd8a` reads 8 (256 bytes free in the TA FIFO).
+  Ours reads 0 (`dc/mem/sb.cpp:55`, :630-634), so a guest that polls for
+  FIFO space waits forever. 1 line. Named only for WinCE games.
+- 8-bit VRAM reads: Flycast `c5a42a57b` returns `vram[pvr_map32(addr)]`.
+  Ours returns 0 and prints a line (`dc/pvr/pvr_if.cpp:385-389`). 2 lines;
+  on our word layout read `vram[off ^ 3]`. No game named.
+- Register access sizes on big endian (Flycast `099a758c9`, `8001af974`):
+  Flycast stores each register as a u32 and drops or logs wrong-size
+  accesses. Ours points `data8`, `data16` and `data32` at typed variables
+  (`RegisterStruct`, `types.h:212-222`; on-chip
+  `dc/mem/sh4_internal_reg.cpp:64-66` and :122-124; SB
+  `dc/mem/sb.cpp:355-361` and :415-423). On our host a byte or halfword
+  access to a 32-bit register hits bits 31:24 or 31:16 (a byte write of 1
+  to SB_ADEN sets bit 24), and a mov.l of a 16-bit register returns it
+  and the next one (`tmu_regs_CR` is u16[3]: TCR0 << 16 | TCR1). About 30
+  lines to make them size-safe. No game known (unverified).
+
+### P68 Small system fixes  `[ ]`
+
+- Maple reply outside RAM: Flycast `8fdcea2e2` (Cheats 'N Codes Volume 1)
+  drops the reply and raises holly_MAPLE_OVERRUN (error bit 9) at the end
+  of the DMA. Ours masks the address into RAM and writes there
+  (`dc/maple/maple_if.cpp:112-117`); our HollyInterruptID has no maple
+  error ids. About 8 lines.
+- SB_MMSEL and the recipient address: in Flycast `8192eea38`, SB_MMSEL = 0
+  swaps every frame word in and out, and a recipient address with no unit
+  bit goes to the main unit. Ours ignores SB_MMSEL
+  (`dc/maple/maple_if.cpp:85-164`) and sends that address to sub-unit 1
+  (`dc/maple/maple_helper.cpp:15`). About 15 lines; swap the native u32
+  values, never the XOR-3 byte view. No game named. Its DeviceReset, Kill
+  and AllStatusReq part is P29.
+- SB_MDSTAR outside RAM: `GetMemPtr()` returns NULL and `maple_DoDma()`
+  dereferences it (`dc/maple/maple_if.cpp:121-124`): a PPU crash. Flycast
+  `a1aea570c` stops the DMA. About 5 lines. Only a Naomi test menu named.
+- BIOS and flash mirror: in Flycast (`6af509159`) the BIOS and the flash
+  are not mirrored at 0x02000000 (reads 0, writes dropped). Ours mirrors
+  pages 0x00-0x01 at 0x02 (`dc/mem/sh4_area0.cpp:296-297`), although the
+  comment there says Flash and Boot ROM are excluded. About 5 lines. No
+  game named.
+- ATA soft reset: Flycast `959b6344b` sets GDStatus 0, Error 1, IntReason
+  1, ByteCount 0xEB14 and PAUSE ("DC Checker expects these values", a
+  test program). Ours only calls `gd_reset()`
+  (`dc/gdrom/gdromv3.cpp:472-477`). About 6 lines.
+- SB_ADSTAR and SB_ADSTAG: Flycast `79be46432` stores them as
+  `data & 0x1FFFFFE0`, also the E1, E2 and DD pairs
+  (`core/hw/aica/aica_if.cpp:431-455`, :474-493). Ours stores the raw
+  value (`dc/mem/sb.cpp`, REG_WRITE_DATA) and uses it as it is
+  (`dc/aica/aica_if.cpp:294-305`, E1 :365-366, E2 :415-416): a G2 DMA
+  starts at the raw address, not at the 32-byte boundary below it. About
+  10 lines. No game named (a crash report).
+- ELF boot: Flycast `333b21fac` writes SCIEB = 0x48, SCILV0 = 0x18,
+  SCILV1 = 0x50 and SCILV2 = 0x08 when it boots an ELF without the BIOS
+  (`core/reios/reios.cpp:409-435`). Ours sets only PC, SP and SR
+  (`elf_apply_entry()`, `plugs/ImgReader/elf_loader.cpp:239-245`). 4
+  lines through `libAICA_WriteMem_aica_reg`, so that nullAICA and SPE
+  ARM7 both get them. Homebrew .elf only; with P33.
+- VMU LCD media info: Flycast `dc7f60846` (WinCE VMU issues) sends 2 in
+  the 4th byte of the LCD GetMediaInfo reply; ours sends 0
+  (`dc/maple/maple_devs.cpp:400`). 1 line, WinCE only (P38).
+
 ---
 
 ## 3. Features and references
@@ -1543,7 +1968,7 @@ Flycast's RTT games).
   reads `AST = dma_buffer_in[10]` (`core/hw/maple/maple_devs.cpp:1091`); on
   our word-ordered buffer that needs XOR-3 byte access.
 
-### P14 Fog and offset colour reference (plan 3a, 3b)  `[ ]` merged: plan 3a, 3b
+### P14 Fog, offset colour and bump map reference (plan 3a, 3b, 3j)  `[ ]` merged: plan 3a, 3b, 3j
 
 Reicast GLES shader, the reference for a PVR Cg shader:
 - shader text `rend/gles/glesrend.cpp:138-323`: `fog_mode2()` :208-216,
@@ -1563,6 +1988,19 @@ Flycast (2026-10-06), closest to a Cg path:
   gives the true W.
 - Fixed function is enough for outside-mode tile clip (scissor,
   `core/rend/transform_matrix.cpp:206-254`), the FB clip and P25.
+
+Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
+- Reicast: `rend/gles/glesrend.cpp:253-257` (intensity into texel alpha,
+  texel RGB = 1), :289 (no offset add for bump), `rend/TexCache.h:232-238`
+  and :359-365 (`convBMP_PL`, `convBMP_TW`: raw ARGB4444),
+  `rend/gles/glesdraw.cpp:209` (program picked by PixelFmt 4).
+- Flycast: `core/rend/dx9/d3d_shaders.cpp:195-202` (offset colour read for
+  bump), :224-228 (the same formula), :248 and :259 (no offset add, no
+  vertex fog for bump); `core/rend/texconv.cpp:466` and :526 (`texBMP_TW`
+  = `tex4444_TW`).
+- Ours: `cvt16()` case 4 (`ps3/ps3_tex.cpp`) and `planes16()` f == 4
+  (`ps3/spu/spe_pix_job.h`) return opaque white; `DcVertex` and `SpeVtx`
+  hold no offset colour.
 
 ### P15 Freerunning (Minicast)  `[ ]` merged: plan 5.19
 
@@ -1811,6 +2249,48 @@ Flycast (2026-10-06), closest to a Cg path:
   framebuffer presents stay 4:3. This is not P36's stretch.
 - Value: a feature, no speed cost. Games cull at 4:3, so the new areas can
   show missing geometry (Flycast warns of it). Risk: low.
+
+### P69 Stretch to fill and the VMU beep  `[ ]`
+
+- Stretch to fill: Flycast `5ff3f974d` (dev, 2026-10-04) adds a
+  `rend.StretchToFill` option. It stretches the 4:3 picture to the whole
+  display (`core/rend/transform_matrix.cpp`,
+  `getOutputFramebufferAspectRatio()` and `getVideoShift()`). Ours draws a
+  4:3 pillarbox. PS3 form: one VIDEO option that sets a full-width
+  viewport in `draw_frame()` and in the framebuffer present. About 10
+  lines. Not P53 (no geometry outside 4:3) and not P36 (no cheat). Bundle
+  11.
+- VMU beep: Flycast `8b986dfab` and `4f87a3556`. The maple SetCondition
+  clock command (on, period, alarm 2) drives a beep tone in the output mix
+  (`core/hw/aica/sgc_if.cpp:150-236`, mixed at :1598-1603); a device reset
+  or kill stops it. Ours only prints `BEEP` (`dc/maple/maple_devs.cpp:627`).
+  About 70 lines. Flycast's VmuSound option is OFF by default
+  (`core/cfg/option.cpp:64`); on hardware the beep comes from the VMU
+  itself.
+
+### P70 Facts for G11 (modem) from the new Flycast commits  `[ ]` reference for GOALS.md G11
+
+- Our Flycast clone is from 2026-09-23 (`master` 869038f40, `dev`
+  0a304f139). Fetch it before G11: the modem changed after that.
+- `fe04dd650` (dev, 2026-09-29): V.42 answerer mode, and modem callbacks
+  for dial out, answer mode and handshake start (`core/hw/modem/modem.cpp`
+  +148 lines, `v42.cpp` +172). It also adds Capcom Direct
+  (`core/network/capcom.cpp`): after the lobby matches two players, one
+  modem answers and the other dials it. 15 JP Capcom titles, among them
+  Marvel vs. Capcom 2 (T1215M), Power Stone 2 (T1218M) and Capcom vs. SNK
+  Pro (T1247M); Capcom vs. SNK 2 is not on the list. `7d69c9cfd` and
+  `4dca1988d` (dev): the peer link uses libjuice (ICE with STUN and TURN)
+  and Flyinghead's battle server; battle code addresses fixed.
+- DCNet (`core/network/dcnet.cpp`, master): before the TCP link, an
+  access-point finder sends DISCOVER over UDP to dcnet.flyca.st:7655
+  (magic 0xDC15C001), pings each access point 5 times and picks the lowest
+  ping (since `4d6168dd0`, 2025-04; IPv4 only since `0d9853df9`). With no
+  access point it uses dcnet.flyca.st itself. TCP ports: 7654 PPP (modem),
+  7655 Ethernet (BBA), and 7656 for Power Smash, Pro Yakyuu Team de
+  Asobou Net! and Virtual-On Oratorio Tangram (HDR-0113, HDR-0091,
+  HDR-0040). `2ea7920fd` refuses Ethernet frames above 1514 bytes.
+- GOALS.md G11 step 3a ("one TCP socket ... no handshake") is right for
+  the TCP stream, but it does not list the finder or port 7656.
 
 ---
 
@@ -2119,6 +2599,88 @@ Fourth review (2026-10-06):
   - `87c184001` (`fh/rec-doublefp`, area 7 handlers): not in master, and
     area 7 is not hot here (Crazy Taxi ~23K writes/s).
 
+Fifth review (2026-10-08):
+- Minicast: no commits since the fourth review. `git ls-remote` on
+  2026-10-08: all 9 branch heads are the ones in our clone (`main`
+  934b374; `r6b/*` up to 2026-08-25).
+- New Flycast commits with nothing to take: `df7aedf50` (CUE),
+  `2a57c9ffd` (savestates), `9d4c33734` (GGPO), `89b72a8e3` (Windows
+  HTTP), `b4c38d652` (mouse), `e36e9df2d` (Vulkan OIT), `df5feec55`,
+  `04669ebe4`, `98ce9fb5d`, `552a86086` (build and config), and the
+  translation commits.
+- Rayman 2: plan 3j (bump maps) covers its untextured look. Flycast's
+  Rayman commits do not apply: `09857008b` guards Flycast's log depth
+  against NaN (we use Depth Float), and `688ba5c37` and `0f9218958` are
+  autosort detection hacks (our Rayman logs read `sort=auto` in all 109
+  windows).
+- Border Down: P58, and P59 for its 50 Hz. Flycast uses the same
+  store-queue rule as ours: AT = 1 takes `sq_remap`, AT = 0 takes QACR
+  (`core/hw/sh4/storeq.cpp`, `setSqwHandler()`).
+- Capcom vs. SNK 2 (its own goal, Matt 2026-10-08): no commit explains the
+  slow menus. Leads for that goal:
+  - It plays at PAL 50 Hz (P59).
+  - The loop (`cvs2.txt` line 1440, 8C0687F4-8C06880E): three calls, then
+    `cmp/hi r14,r4` + `bt` as a timeout exit, then `mov.l @r10,r2`,
+    `tst r2,r2`, `bt` back. It is a timed wait for a 32-bit word to become
+    non-zero. Log r10 first.
+  - The `[CC]` a7 bucket is `(addr >> 26) & 7 == 7`
+    (`dc/sh4/rec_v2/ccall_census.h:73`): P4 registers, on-chip RAM
+    (0x7C-0x7F) and the area 7 mirrors. If r10 points into on-chip RAM,
+    P30's bank aliasing fits (ours picks the bank with address bit 12,
+    Flycast with bit 13).
+  - P28's HBlank modes: ours raises holly_HBLank once per frame
+    (`plugs/drkPvr/SPG.cpp:266-272`), whatever SPG_HBLANK_INT says.
+  - Ruled out from `cvs2.txt`: GD-ROM and CD-DA completions (no SH4 reads
+    during the spin, no audio tracks), maple (one DMA per frame), P65's
+    ch2 abort and P67's SCI poll (no such lines).
+- Looney Tunes race: nothing. `8564f497d` (opcode 0 in a delay slot), the
+  only commit that names it, is already ours
+  (`dc/sh4/sh4_interpreter.cpp:262`).
+- Sound: nothing for F1; `c7d214e55` is part of the AICA Race Fix. F2,
+  weak: `7287b3816` interpolates the last sample before LEA against LSA,
+  as nullAICA does (`plugs/nullAICA/sgc_if.cpp:913-917`). caique and the
+  SPU read the word past LEA, which caique measured on hardware (caique-rtl
+  `model/NOTES.md:550-551`); caique wins. A stale word past LEA in a
+  stream ring would click once per loop at a fractional pitch (SPE mode
+  only). Check the FNS and OCT of the Crazy Taxi stream slots first: at
+  pitch 1.0 the fraction stays 0.
+- AICA byte order checked: the nullAICA lanes (^3, ^2), `ps3/spu/aica_ctl.h`
+  and the AICA_PS3 bitfields are full width.
+- Bitfield audit (2026-10-08): the tree has 62 unions with a big-endian
+  bitfield branch. MMUCR (P58) is the only one whose fields do not fill
+  their word. PCW's second big-endian struct (`plugs/drkPvr/ta_structs.h`)
+  is intended.
+- Per-game lists: Flycast's ExtraDepthScale list (NHL 2K2, Re-Volt, Test
+  Drive V-Rally, South Park Rally, Capcom vs. SNK Pro) and its Broadcast
+  overrides (`core/emulator.cpp`) are per-game lists (Matt's rule: none).
+  P59 uses the disc area instead.
+- New facts for older items:
+  - P10 scaler: `c330cdd88`, `3cd9736fc` and `112e27207` name the games. A
+    missing bottom half: Mr Driller (PAL 60 Hz), Kaen Seibo, Mahjong Taikai
+    II Special, Pop'n Music 1 and 2 (composite or RGB). A stretched screen:
+    Cho - Hatsumei Boy Kanipan. A missing half screen: Wacky Races, Buzz
+    Lightyear of Star Command, Rainbow Six Rogue Spear and Sega Worldwide
+    Soccer 2000 (all PAL); the factor must be a float. Flycast today
+    (`core/rend/transform_matrix.cpp:41-60`, :191-203): in 240p (vclk_div
+    0, not interlaced) with a vscalefactor that is not 1024 or 1025, the
+    canvas height is 240 x vscalefactor / 1024; interlaced, only the FB
+    clip scales. Ours sets `fb_scale_y` to 0.5 or 1 only
+    (`plugs/drkPvr/SPG.cpp:94-100`).
+  - P10 "empty frame": since `93523df80` Flycast always renders pass 0.
+    Ours always draws, so that bullet is moot. P10 TA_LIST_INIT:
+    `ac43a8c54` also sets TA_NEXT_OPB = TA_NEXT_OPB_INIT (1 line, next to
+    TA_ISP_CURRENT).
+  - P54: `2ff6d1b81` (Skies of Arcadia start menu) used alpha > threshold,
+    but today's Flycast uses >= (`core/rend/TexCache.cpp:1028`). Keep
+    P54's >=.
+  - P25 flat shading: our strip-merge key already includes Gouraud
+    (`strip_equivalent()`, mask 0x300CE), which `5ac99d3ad` needs.
+  - P22: `6e017fd3e` (Maken X hang) made small DMAs faster. Ours is
+    already fast, so Maken X is not a P22 game.
+  - CD-DA miss stalls (plan 5.34, parked): nothing. Flycast reads CD-DA
+    one sector at a time; its larger DMA buffers (`f76df2da6`,
+    `4aee2eb5f`) were cut back to 16 sectors.
+
 ---
 
 ## 5. Suggested order
@@ -2157,3 +2719,17 @@ Fourth review order (2026-10-06):
 4. P45, then P52.
 5. P49: the log census only.
 6. The rest when Matt picks them. P50 and P51 also help the HW tests.
+
+Fifth review order (2026-10-08):
+1. P58 (Border Down). A check first: the devkitPPC `-S` test, or a boot
+   self-test line. HW: Border Down; Crazy Taxi, Sonic Adventure and Looney
+   Tunes unchanged.
+2. P59. HW: Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz (VPS,
+   SPEED, the menus); Crazy Taxi unchanged.
+3. P64 and P65 (1 line and ~6 lines).
+4. P61 and P62, with P47 (bundle 2). HW: ChuChu Rocket and Looney Tunes
+   CD-DA (pause, resume, looping), the BIOS CD player.
+5. P63 (both decoders, then the S2 compare).
+6. P60 (larger). HW: Quake III split screen, or a game from its list.
+7. P66-P68 when Matt picks them; P69 when Matt wants the options; P70 at
+   the start of G11.

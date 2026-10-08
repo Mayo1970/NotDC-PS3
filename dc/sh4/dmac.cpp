@@ -6,6 +6,8 @@
 #include "dc/mem/sb.h"
 #include "dc/mem/sh4_mem.h"
 #include "dc/pvr/pvr_if.h"
+#include "dc/pvr/pvr_vram.h"
+#include "ps3/ps3_presets.h"
 #include "sh4_registers.h"   // sr.IMASK/BL for the CH2-IRQ timing probe
 #include "dmac.h"
 #include "intc.h"
@@ -106,10 +108,27 @@ void DMAC_Ch2St()
 			}
 		}
 	}
+	// --- P7 LMMODE: 0x11 and 0x13 take the bus SB_LMMODE0/1 selects (Flycast), in RAM runs as above ---
+	else if (g_lmmode_preset && (isDstVRAM_LM0(dst) || isDstVRAM_LM1(dst)))
+	{
+		u32 vram_dst = dst;
+		while (len)
+		{
+			const u32 avail = RAM_SIZE - (src & RAM_MASK);
+			const u32 n     = avail < len ? avail : len;
+			u32 *sys_buf = (u32 *)GetMemPtr(src, n);
+			if (sys_buf)
+				pvr_vram_dma(vram_dst, sys_buf, n);
+			len      -= n;
+			src      += n;
+			vram_dst += n;
+		}
+	}
 	// --- Transfer to VRAM via LMMODE0 (0x11xxxxxx -> VRAM bank 0) ---
 	else if (isDstVRAM_LM0(dst))
 	{
 		u32 vram_dst = (dst & 0x00FFFFFFu) | 0xA4000000u;
+		g_vram_split.dma_v64 += len;
 
 		while (len)
 		{
@@ -140,6 +159,7 @@ void DMAC_Ch2St()
 	{
 		// LMMODE1 path not yet fully implemented; advance src to keep state consistent
 		printf("DMAC: Ch2 LMMODE1 transfer (stub) DST=0x%08X LEN=0x%X\n", dst, len);
+		g_vram_split.dma_stub += len;
 		src += len;
 	}
 	else

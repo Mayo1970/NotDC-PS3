@@ -13,9 +13,136 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-08)
 
-**Active: 5.12 #4 and #5 (Matt 2026-10-08: "Let's go with 5.12 4 and 5"),
+**Open, separate (Matt 2026-10-08: "Also write down the Ikaruga and Rez
+issues. We may be able to get back to them later on."): Rez and Ikaruga
+stop right after the BIOS logo; so does Sonic Shuffle. Not bundle 1: the
+cause looks like P58 (`OPTIMIZATION_POTENTIAL.md`, MMUCR bitfields on big
+endian), as in Border Down.** Bundle 1 HW run, package of 09:28, all four
+rows ON (`ps3log_b1_run1.txt`, scratchpad of session ed40e651; Sonic
+Shuffle cut as `shuffle_b1.txt`).
+- Discs: Rez v1.003 (PAL, GDI), 2 boots (the second with LMMODE OFF);
+  Ikaruga v1.002 (JP, GDI), 1 boot; Sonic Shuffle (CDI), 1 boot. Each
+  loads 25 UTLB entries that map the store-queue area (50 `SQ remap`
+  lines): E0000000-E0FFFFFF to 0C000000-0CFFFFFF (RAM), E1000000-E18FFFFF
+  to 10000000-108FFFFF (TA FIFO and YUV converter). No `CCN: MMU address
+  translation ENABLED` line in any boot. That is the Border Down pattern
+  of P58: the emulator reads MMUCR.AT from the wrong bit, so the SQ
+  flushes take QACR, not the TLB.
+- After the logo: no TA, DMA or SQ activity for the rest of the boot
+  (`[ta-split]` all 0; SPEED ~100%, the SH4 waits). Rez and Ikaruga set
+  SB_LMMODE1 = 1 at that point. Sonic Shuffle's SQ flushes land in boot
+  ROM (~100 blocks/s, ~50K `Write to Boot ROM` word lines at 0x1122B4..),
+  as Border Down's did.
+- Bundle 1 did nothing there: no SQ write to VRAM, no YUV; Ikaruga made one
+  16 KB VRAM DMA with LMMODE0 = 0 (the old path) and one FB Write Watch
+  present. LMMODE OFF changed nothing on Rez (Matt).
+- Rez's stop after the logo is older: `plugs/vbaARM/arm7.cpp:22` notes a
+  "post-logo stall (2026-07-21)", the same with both ARM7 engines.
+- Way back: fix P58 (the 2 bitfield lines, the JIT cache clear on an AT
+  change, `UTLB_Sync` skips V = 0), then boot Border Down, Rez, Ikaruga,
+  Sonic Shuffle. These games are also the tests that bundle 1 lacks: Rez
+  for LMMODE (P7: SQ textures to 0x11), Ikaruga for FB Write Watch (P26:
+  its loading screens).
+
+**Done: bundle 1, VRAM and TA-area writes (section 7; Matt 2026-10-08:
+"Let's go with the first Bundle", then all four items, the probe and the
+items in one package). Package of 09:28; HW run 2026-10-08 with all four
+ON. Verdict (Matt: "Yes, thanks."): YUV Conv Fast (P43) SUCCESS, default
+ON in source (not packaged); VRAM Direct (P55), LMMODE (P7) and FB Write
+Watch (P26) stay OFF (never exercised).** Every item has its own row, live
+(SELECT menu works).
+- HW run (Matt: one boot with the four rows ON, no OFF baseline;
+  `ps3log_b1_run1.txt`, scratchpad of session ed40e651; Crazy Taxi cut as
+  `ct_b1.txt`; parser `fmvsec.py`). Baseline: the 5.12 #4 run
+  (`ps3log_spepix_run1.txt`, session d24c41ee; the same `[jitcfg]` and
+  `[sndcfg]`). JIT C-Calls ON in both.
+  - P43: intro FMV ch2 DMA time on the SH4 thread (`[stall] dma`), seconds
+    aligned from the FMV start: Sonic Adventure 32.2 -> 19.1 ms/s (-41%, 39
+    s), Looney Tunes 47.0 -> 26.1 ms/s (-45%, 11 s): 1.3-2.1% of the SH4
+    thread during FMVs (the estimate was 1-3%). Every macroblock converted
+    in place (`yuv blk cp=0`; the FMVs feed the converter by DMA only).
+    Sonic FMV SPEED 97.2 -> 98.0% (noise level). No image fault (Matt).
+  - P55, P7: no game sent an SQ block to VRAM (`v64=0 v32=0` in every
+    window). VRAM DMA only in Crazy Taxi (<= 32 KB/s) and Ikaruga (16 KB),
+    both with LMMODE0 = 0, which is the old 64-bit path. So neither item
+    changed a single write. Crazy Taxi keeps LMMODE 0/0.
+  - P26: Crazy Taxi `fbw=0` (no 2D frame over 3D play); Ikaruga 1 watch
+    present before its stop (above). The fix itself is unproven.
+  - Crazy Taxi same-load VPS -0.4% (vs the 5.12 #4 run) and -0.1% (vs
+    `ct_on.txt`, 5.12 #3): noise, as expected with nothing acting.
+  - Rez, Ikaruga, Sonic Shuffle: they stop on P58 (the open item above).
+- Probe finding, a new lead (not built, not measured): the non-TA SQ
+  flushes are RAM writes, not VRAM. Crazy Taxi dense ~161K/s (max 264K;
+  the "~127K/s to targets other than the TA" of 5.17 Step 1), Sonic FMV
+  ~200K/s, Looney Tunes race 260-440K/s (next to ~1M/s TA flushes). Each
+  takes `sqw_chain` -> `do_sqw_target` -> `WriteMemBlock_nommu_ptr` (out of
+  line, `sh4_cached_invalidate_range`, a block lookup, a 32-byte memmove).
+  A direct RAM path in the flush, as the TA flat path of 5.17, is the
+  candidate; the Looney Tunes race is SH4-bound (open item below). Measure
+  the cost per flush first.
+- VIDEO / DEBUG: "YUV Conv Fast" (`YuvConvFast`, P43), "VRAM Direct"
+  (`VramDirect`, P55), "LMMODE" (`Lmmode`, P7), "FB Write Watch" (`FbWatch`,
+  P26). Shared code: `dc/pvr/pvr_if.cpp`, new `dc/pvr/pvr_vram.h`.
+- Probe (always on, log only): the `[ta-split]` line now ends in `sq/s ta=
+  yuv= v64= v32= mem= | dma KB/s ta= yuv= v64= v32= lm1stub= | yuv blk in=
+  cp= | lm=LMMODE0/LMMODE1 chg= | p43= p55= p7= p26=`. `mem` = SQ flushes
+  outside area 4 (RAM and the rest); `lm1stub` = ch2 DMA to 0x13 with P7 OFF
+  (moves nothing). `[vram] LMMODE0=X LMMODE1=Y (was ...)`: the first 16
+  changes, read at each SQ or DMA write to 0x11/0x13. `[rend] ... fb=N
+  fbw=N`: fbw = presents only P26 caused.
+- P43: the converter loads the planes as 32-bit words (the host word is the
+  guest LE word, so plane byte k is bits 8k..8k+7) and builds each output
+  word with masks and shifts; a block that arrives whole (DMA) converts
+  where it lies (Flycast); a block split across calls (every SQ block)
+  still collects in `YUV_tempdata`; TA_YUV_TEX_CTRL's format is read in
+  `YUV_init` only (every CTRL write calls it); the region is noted once per
+  frame, not per macroblock.
+- P55: SQ blocks and DMA runs on the 32-bit bus map the address once per
+  stretch inside a 4 MB bank, then store every other word
+  (`vram_write32_run`). OFF: one `pvr_write_area1_32` call per word.
+- P7: SQ and ch2 DMA to 0x11 (SB_LMMODE0) and 0x13 (SB_LMMODE1) take the
+  64-bit bus (a linear copy) when the register is 0, else the 32-bit bus
+  (Flycast `TAWriteSQ`, `DMAC_Ch2St`). OFF: SQ always 32-bit (Rez), DMA to
+  0x11 always 64-bit, DMA to 0x13 the old stub. Not taken: Flycast's
+  SB_C2DSTAT = end address after a VRAM DMA.
+- P26: a 32-bit-bus write (the 0x05 handler, the SQ and DMA 32-bit paths)
+  inside the shown field (FB_R_SOF2 when interlaced, else FB_R_SOF1; (y+1) x
+  (x+modulus) x 4 bytes) marks the frame dirty. The range is set at each
+  vblank and on an FB_R_SIZE change, which also clears the mark (Flycast).
+  VBlank presents when the mark word is gone (as before), or when the frame
+  is dirty and no StartRender came since the last vblank (Flycast);
+  StartRender also clears the mark (the P26 text). The 64-bit bus is not
+  watched (Flycast).
+- PC (WSL): `misc/vram_check/run.sh` PASS: the file after its `vram_check:
+  begin` marker, built twice (A: P43/P55 OFF; B: ON, flipped live), against
+  the frozen old file (958964c, `ref_pvr_if.inc`) and a model of the LMMODE
+  rule and the watch. 400 YUV cases (99K ops: BASE, CTRL and STARTRENDER
+  writes, SQ and DMA feeds, 4:2:2, small mode, resets; 4522 blocks in
+  place, 2382 copied); 400 VRAM cases (67K ops: SQ, DMA across the 4 MB
+  bank and the 8 MB edge, unaligned, 16- and 32-bit handler writes at the
+  watch edges, LMMODE 0-3). A with all OFF is the old file in VRAM and in
+  every converter field. `mutate.py`: 41 of 41 planted bugs fail. Not under
+  the check: the P7 branch in `dc/sh4/dmac.cpp` (RAM runs as the TA path),
+  `fb_watch_update()` in `plugs/drkPvr/regs.cpp`, the VBlank rule in
+  `ps3/ps3_rend.cpp`.
+- The package of 09:28 also carries 5.12 #4/#5 default ON (below).
+- HW steps as planned (Matt ran step 4 only, with Rez, Ikaruga and Sonic
+  Shuffle added; results above):
+  1. Install. The install keeps `nullDC.cfg`. SH4 Clock 200; VIDEO / DEBUG
+     -> JIT C-Calls ON (for `[stall] dma`); the 4 new rows OFF.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1 (probe only): Sonic Adventure intro FMV, Looney Tunes intro
+     FMV, Crazy Taxi a dense drive; Rez if at hand (LMMODE). Log: the
+     `[ta-split]` tail, `[vram] LMMODE` lines, `[stall] dma`, SPEED.
+  4. Boot 2 (the 4 rows ON): the same. Look at the FMVs (P43), textures
+     (P7, P55) and 2D screens. Log: `yuv blk in= cp=`, `[stall] dma` and
+     SPEED against boot 1, Crazy Taxi same-load VPS, `fbw=` with no 2D
+     frame over 3D play.
+  5. On a fault: that row OFF in the SELECT menu (all are live); note when.
+
+**Before bundle 1: 5.12 #4 and #5 (Matt 2026-10-08: "Let's go with 5.12 4 and 5"),
 built and PC tested, package of 01:57, HW run 1 done: no faults. Both
-default ON in source since 2026-10-08 (Matt), not packaged yet.** Matt's picks: the
+default ON in source since 2026-10-08 (Matt), packaged with bundle 1 (09:28).** Matt's picks: the
 render thread waits for each decode (not an RSX label wait), an own SPU
 (the sixth and last free one) runs both jobs, and #5 writes straight into
 RSX textures (not into `s_fb_pix`).
@@ -54,7 +181,7 @@ RSX textures (not into `s_fb_pix`).
     writes/s (`[CC] sync_sr` + `interrupt`), SPEED 100% (PAL 50 Hz). Open,
     not started; log cut as `borderdown.txt` in the same scratchpad.
   - Defaults: both ON in source (Matt 2026-10-08: "Yes, place them as ON by
-    default."), not packaged yet. Matt's nullDC.cfg already has both ON.
+    default."), in the package of 09:28 (bundle 1). Matt's nullDC.cfg already has both ON.
 - VIDEO / DEBUG -> "SPE Tex Decode" (`SpeTexDecode`) and "SPE FB Convert"
   (`SpeFbConvert`): OFF / ON / CHECK each, default ON, set before boot.
   The PPU paths as now when the SPU is down, late (50 ms: `[spepix] SPU job
@@ -980,6 +1107,8 @@ the far tree backdrop are textured. The same with JIT Div32 OLD and FIXED
 (5.38 HW). Log: `blacktex=0`, no YUV, palette or stride textures, mip and
 VQ textures in use, modifier volumes (52 tris), W up to 1e9, 50 Hz mode.
 Not tried yet: Strip Merge OFF and Vertex Arrays OFF (both live).
+2026-10-08: the logs point to its bump maps (PixelFmt 4, TR list), which we
+draw as opaque white. Fix item: 3j in section 3 (Matt). No HW test yet.
 
 **Done: 5.38 JIT DIV32 (OPTIMIZATION_POTENTIAL P19; Matt 2026-10-06: "do
 5.38"), HW SUCCESS, default FIXED since the package of 21:02 (Matt: "Yes,
@@ -1020,7 +1149,7 @@ toggle and its own HW run. Matt picks a bundle, then the items.
 11. Output stage (P10, P53, P36, the P26 reads, P54).
 12. HW test tools (P50, P51).
 
-Not bundled: P1 steps 0-1 and P2 (no target left), P14 (3a, 3b), P42
+Not bundled: P1 steps 0-1 and P2 (no target left), P14 (3a, 3b, 3j), P42
 (b)-(d) (5.12), P35 and P39 (section 4), P15, P38, P12, P30, P33, and
 P31's nullAICA-only fixes (section 7, "Not bundled").
 
@@ -1624,7 +1753,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
-| 3a fog, 3b offset colour | OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged) |
+| 3a fog, 3b offset colour, 3j bump maps | OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged); 3j added 2026-10-08 (Rayman 2) |
 | 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged; bundle 2 (section 7) |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
@@ -1818,6 +1947,7 @@ All changes are uncommitted in the working tree. Matt commits.
 | 3g | GD-ROM: blank sector on FAD miss | NBA Hoopz voice samples. | Small. | `e94b26f1d` |
 | 3h | GD-ROM: CDDA stop at lead-out, restart/pause rules | CD audio that loops or runs past its track. Only matters with the Cdda preset ON. | Medium (touches the image readers). | `9ea0563a7`, `e5344d37d` |
 | 3i | Region and cable from IP.BIN | A game boots in a region and video mode it supports, with no manual setting. | Small. Check it does not clash with Matt's "no game presets" rule: it reads the disc header, not a list. | `core/emulator.cpp` `loadSpecialSettings()` |
+| 3j | Bump maps | Rayman 2 level surfaces show their textures again. Today its bump-map overlay covers them with plain vertex colour. No other test game uses bump maps. | Bump texels decode as raw 4444 (S, R) on the PPU and the SPU; the decoders keep the offset colour (K1, K2, K3, Q) per vertex (3b's work); a bump Cg fragment program. Shares the shader work of 3a and 3b. Medium. | `core/rend/dx9/d3d_shaders.cpp` `pp_BumpMap`, `core/rend/texconv.cpp` `texBMP_TW` |
 
 Status 2026-09-23 (all big-endian checked):
 - 3d `[x]` built. `draw_scene()` subtracts 1e-6 from the background 1/W, floor
@@ -1919,6 +2049,35 @@ Status 2026-09-23 (all big-endian checked):
     Crazy Taxi loading.
   - 2026-10-07: 3h is part of bundle 2 (section 7), with the other GD-ROM
     items and the parked 5.34 CD-DA misses.
+- 3j, added 2026-10-08 (Matt: "Sure, add the bump mapping to one of
+  them"), open. Full references: `OPTIMIZATION_POTENTIAL.md` P14.
+  - Evidence, logs only (no HW test yet): the 5.38 Rayman 2 runs
+    (`run538_rayman_fixed.txt`, `run538_rayman_old.txt`, scratchpad of
+    session 2b073cf1). Bump-map polygons (PixelFmt 4) start with the first
+    level; the intro and menus have none. 14-167 per frame, all in the TR
+    list, SRC_ALPHA / INV_SRC_ALPHA, modulate alpha, vertex alpha often
+    177-255; `[texfmt]` shows 2 bump textures. In the 152 saved HW logs no
+    other game loads a bump texture (Crazy Taxi, Sonic Adventure, Soul
+    Calibur, ChuChu Rocket, Looney Tunes, Power Stone 2, Space Channel 5,
+    CvS2, Border Down, Quake3).
+  - Today: `cvt16()` in `ps3/ps3_tex.cpp` and `planes16()` in
+    `ps3/spu/spe_pix_job.h` turn every bump texel into opaque white, and
+    the decoders drop the offset colour (`AppendPolyVertex3/4` keep only
+    `BaseCol`). So the TR overlay draws its vertex colour at near-full
+    alpha over the textured surface: the open Rayman 2 fault (section 0).
+  - DC rule (Reicast and Flycast agree): the texel holds S (high byte) and
+    R (low byte); texel alpha = clamp(offs.a + offs.r * sin(S) + offs.g *
+    cos(S) * cos(R - 2 pi * offs.b)), texel RGB = 1. A bump polygon does not
+    add its offset colour.
+  - Parts: (1) fmt 4 as raw 4444 in `cvt16()` and `planes16()` (Flycast
+    `texBMP_TW` = `tex4444_TW`). (2) The offset colour per vertex:
+    `DcVertex`, `SpeVtx` (`ps3/spu/spe_bell.h`, 24 -> 28 bytes), both
+    decoders, the SPE Build vertex words (`vtx_words()` in
+    `ps3/spu/spe_vb_build.h`), a second colour attribute in ps3gl. (3) A
+    bump Cg fragment program. (2) and (3) are 3b's work.
+  - Own toggle, default OFF until HW validated. Checks: PC first; the S2
+    compare stays bit-exact; `misc/spepix_check` for the fmt 4 decode. HW:
+    the Rayman 2 first level.
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
@@ -1930,6 +2089,8 @@ Merged 2026-10-06: the shader reference for 3a and 3b is
 shaders (the closest to Cg; the fog table is a 128x2 A8 texture). ps3gl
 already draws with precompiled Cg fragment programs, one per texture mode,
 so fog and offset colour mean more programs and a second colour attribute.
+3j (bump maps, 2026-10-08) needs the same: 3b's offset colour and one more
+program.
 
 RTT test discs (for `rtt=0/0`): Flycast `core/emulator.cpp:64-157` lists games
 that need RTT copy to VRAM - Tony Hawk 1/2, Shenmue, Jet Set Radio, Skies of
@@ -2009,6 +2170,7 @@ Tex Slot Hash (P16) defaults to ON since the package of 23:46 on 2026-10-06 (Mat
 Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt: "Yes, absolutely!").
 AICA Race Fix, ARM7 Reset Fix, CA Clamp, SPE AICA DSP and SPE DSP JIT ON default to ON since the package of 03:41 on 2026-10-07 (Matt: "mark this on by default").
 SPE Build (5.12 #2) defaults to ON since the package of 18:36 on 2026-10-07; SPE Tex Hash (5.12 #3) since the package of 22:35 on 2026-10-07 (Matt: "Yes, I want it by default.").
+YUV Conv Fast (P43, bundle 1) defaults to ON in source since 2026-10-08, not packaged yet (Matt: "Yes, thanks."); VRAM Direct, LMMODE and FB Write Watch stay OFF.
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -6351,7 +6513,7 @@ for the function.
 
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
-| 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[ ]` |
+| 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF |
 | 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34 | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[ ]` |
 | 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[ ]` |
 | 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[ ]` |
@@ -6372,7 +6534,7 @@ Main gains:
 - Most games fixed: bundle 2. Most visible: bundle 3 (mipmaps). Audible:
   bundle 5 (the crackle).
 
-### Bundle 1: VRAM and TA-area writes  `[ ]`
+### Bundle 1: VRAM and TA-area writes  `[x]` HW 2026-10-08, P43 default ON, the rest OFF (section 0)
 
 - Items: P43 (5.12: the YUV converter, PPU form), P55 and P7 (5.17), P26
   (the framebuffer write watch only; its reads are in bundle 11).
@@ -6657,8 +6819,8 @@ Main gains:
   since P16 (decode 0.2-1.0% of the render thread, no dropped renders),
   and its black textures are closed (2026-10-07). P1 steps 2-3 are in
   bundle 3.
-- P14 (3a, 3b): already one shared piece of work in section 3 (a PVR Cg
-  shader in ps3gl).
+- P14 (3a, 3b, and 3j bump maps since 2026-10-08): already one shared
+  piece of work in section 3 (a PVR Cg shader in ps3gl).
 - P42 (b)-(d): stay in 5.12 (active, section 0).
 - P35 (CUE/BIN, CHD) and P39 (reios): section 4 says "Do not take".
 - P15 (5.19): a pacing option, not a speedup.

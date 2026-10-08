@@ -272,3 +272,21 @@ Reference: Flycast `FullController` in `core/hw/maple/maple_devs.cpp` (commit 4d
    other games see no change. Value 1 is the light gun in `maple_cfg.cpp`, so the new type needs its own value. Give
    it the two VMU slots (Flycast does).
 5. HW test: the right stick works in Quake III Arena; a standard-pad game plays as before.
+
+## G13 - Release candidate settings  `[ ]` (added 2026-10-08 at Matt's request; release material, stays the last goal)
+An RC build shows only a few option rows. Every other setting runs its source default.
+Risk: each launch writes every `[ps3]` key to `nullDC.cfg` (`ps3_presets_save`; `cfgLoadInt` writes an absent key
+back), and an install keeps the file. A source default change never reaches an install that ran once, so hidden rows
+would lock in an old build's values where nobody can see them.
+1. Build flag: `./build.sh RC=1 pkg` (Makefile `RC=1` -> `-DNOTDC_RC`). Normal builds keep every row.
+2. RC: leave the hidden rows out of `s_opt_pages` in `ps3/ps3_menu.cpp`. The SELECT in-game menu uses the same pages.
+3. First RC boot: reset `[ps3]` to the source defaults one time (a version key in `nullDC.cfg`).
+4. After the reset, the hidden keys still load from `nullDC.cfg`, so a hand edit can turn off a feature that breaks
+   one game.
+5. Settle the defaults first. Open on 2026-10-08: YUV Block Decode is OFF in the source; SPE Tex Decode and SPE FB
+   Convert have one HW run.
+6. Visible rows (recommended 2026-10-08, Matt confirms at goal start): SH4 Clock, Speed Limiter, Frame Drop, CD Audio,
+   and CONTROLS > Players and Controller. G12 adds FULL (2 STICKS) to Controller; keep the G11 online row visible if
+   G11 adds one. On 2026-10-08 the menu has 83 option rows on 4 pages and 2 on CONTROLS.
+7. HW test: install the RC over a `nullDC.cfg` from an old build. `[jitcfg]` and `[sndcfg]` show the source defaults,
+   the menus show only the visible rows, and a game plays as on the last dev build.

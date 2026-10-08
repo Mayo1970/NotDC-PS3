@@ -6,6 +6,7 @@
 #include "dc/mem/sh4_mem.h"
 #include "dc/mem/sh4_internal_reg.h"
 #include "dc/pvr/pvr_if.h"
+#include "dc/pvr/pvr_vram.h"
 #include "dc/sh4/rec_v2/ccall_census.h"
 #include "ps3/ps3_tasplit.h"
 
@@ -32,6 +33,7 @@ INLINE void FASTCALL do_sqw_target(u32 Dest)
 	}
 	else
 	{
+		g_vram_split.sq_mem++;
 		WriteMemBlock_nommu_ptr(Address, sq, 32);  // 8 * 4 bytes
 	}
 }

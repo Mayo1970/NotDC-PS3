@@ -15,6 +15,7 @@
 #include "ps3_tasplit.h"
 #include "ps3_stall.h"
 #include "dc/pvr/pvr_if.h"
+#include "dc/pvr/pvr_vram.h"
 #include "dc/sh4/sh4_sqw.h"
 #include "dc/sh4/sys_gate.h"
 #include <algorithm>
@@ -222,6 +223,9 @@ static u32 s_stat_dropped;
 // TR5: a vblank present the render thread was too busy to take. Unlike a dropped
 // render this loses nothing - the framebuffer is unmarked, so the next vblank retries.
 static u32 s_stat_fb_defer;
+// P26 FB Write Watch: a StartRender since the last vblank (Flycast render_called); presents only the watch caused.
+static bool s_render_since_vbl;
+static u32 s_stat_fb_watch;
 // TR5: total time the SH4 spent waiting for the job slot, so the drop policy costs a number.
 static double s_stat_wait;
 static double s_stat_job_max;
@@ -2654,9 +2658,9 @@ static void rth_print_stats()
 		       th, td, tg, us[DT_TEX] - th - td - tg, hashes / r, (u32)(hash_bytes / r / 1024));
 	}
 	s_stat_t_dec = s_stat_t_draw = s_stat_t_end = 0.0;
-	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u fbw=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
-	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents,
+	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents, s_stat_fb_watch,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
 	       (u32)(s_stat_job_max * 1000.0), s_stat_vtx / r,
 	       s_stat_strips[ListType_Opaque] / r, s_stat_strips[ListType_Punch_Through] / r,
@@ -2680,7 +2684,7 @@ static void rth_print_stats()
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
 	memset(s_stat_mv, 0, sizeof(s_stat_mv));
-	s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_vtx = 0;
+	s_stat_renders = s_stat_rtt = s_stat_rtt_copies = s_stat_fb_presents = s_stat_fb_watch = s_stat_vtx = 0;
 	memset(s_stat_strips, 0, sizeof(s_stat_strips));
 	memset(s_stat_draws, 0, sizeof(s_stat_draws));
 	memset(s_stat_built, 0, sizeof(s_stat_built));
@@ -3182,9 +3186,14 @@ void VBlank()
 		rth_wait_idle();
 		ps3_menu_ingame();
 	}
+	// P26: a 32-bit write into the shown frame and no render since the last vblank also present it (Flycast).
+	const bool watched = g_fb_watch_preset && g_fb_dirty && !s_render_since_vbl;
+	s_render_since_vbl = false;
+	fb_watch_update();
 	if (!FB_R_CTRL.fb_enable)
 		return;
-	if (!fb_needs_present())
+	const bool marked = !fb_needs_present();
+	if (marked && !watched)
 		return; // the PVR render is still what the screen shows
 	if (rth_busy())
 	{
@@ -3199,6 +3208,9 @@ void VBlank()
 	{
 		// Mark what is now on screen; the next write by the game clears the mark.
 		vwi(s_snap.fb_r_sof1, FB_PRESENT_MAGIC);
+		g_fb_dirty = false;
+		if (marked)
+			s_stat_fb_watch++;
 		FrameCount++;
 	}
 	SH4_PHASE(PH_GUEST);
@@ -3226,6 +3238,9 @@ void StartRender()
 {
 	StallScope st_(ST_REND);
 	SH4_PHASE(PH_RENDER);
+	// P26: earlier writes into the shown frame are superseded by this render.
+	s_render_since_vbl = true;
+	g_fb_dirty = false;
 	spe_flush(s_ta);
 	snapshot_render_regs();
 	TaContext* rc = find_context(s_snap.param_base);
