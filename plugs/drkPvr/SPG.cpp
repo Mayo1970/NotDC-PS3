@@ -214,6 +214,12 @@ static void spg_PaceFrame()
     s_pace_deadline += period;         // next vblank's ideal time
 }
 
+// Plan 5.41 Frame Hold: os_GetSeconds() time the next emulated vblank is due at, 0 while the pacer sleeps for none.
+double spg_NextVblankTime()
+{
+    return (SPEED_LIMITER() && spg_PaceFrameSec > 0.0) ? s_pace_deadline : 0.0;
+}
+
 // Called from SH4 context each dispatch; updates PVR/TA state
 void FASTCALL libPvr_UpdatePvr(u32 cycles)
 {

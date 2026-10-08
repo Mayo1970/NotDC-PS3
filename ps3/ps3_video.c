@@ -4,11 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
+#include <unistd.h>
 #include <sysutil/video.h>
 
 #include "ps3gl.h"
 #include "ps3_phase.h"
 #include "ps3_log.h"
+#include "ps3_timebase.h"
+#include "ps3_framehold.h"
 #include "ps3_video.h"
 
 // 1 MB CB is HW-validated in both ports; the 64 KB rsx.h default failed on HW.
@@ -30,6 +33,26 @@ static int s_ready;
 // Flip handler, not gcmGetFlipStatus(): polling reported "done" at once on HW.
 static volatile u32 s_flip_queued;
 static volatile u32 s_flip_done;
+
+// Plan 5.41: refreshes each frame stayed on screen, from the time between flips (whatever order the
+// vblank and flip events come in); the vblank count cross-checks it.
+static volatile u32 s_held[4];       // 1, 2, 3, 4+ refreshes
+static volatile u32 s_held_bad;      // flips where the time and the vblank count disagree
+static volatile u32 s_refresh_tb;    // PS3 refresh period, timebase ticks
+static u64 s_flip_tb, s_flip_vbl, s_first_tb, s_first_vbl;
+static u32 s_held_seen[4], s_held_bad_seen;
+
+// Plan 5.41 (b) Frame Hold: the vsync each queued flip was held for (0 = not held), by flip number & 3;
+// at most 2 flips are ever pending.
+static volatile u64 s_flip_target[4];
+// The vblank handler's tick for each of the last 8 vblanks, by vblank count & 7.
+static volatile u64 s_vs_tb[8];
+static volatile u64 s_vs_last;
+static volatile u32 s_vs_seen;
+static volatile u32 s_hold_late, s_hold_early;
+static u32 s_hold_late_seen, s_hold_early_seen, s_hold_n;
+static double s_hold_wait;
+static u64 s_hold_k, s_hold_mark;    // the last held frame's vsync and mark
 
 static u32 s_presented, s_skipped;
 static double s_stats_t0;
@@ -72,7 +95,70 @@ void* PS3_RSX_GetColorBuffer(u32* pitch, u32* width, u32* height)
 static void flip_handler(const u32 head)
 {
 	(void)head;
+	const u64 tb = gettime();
+	const u64 vbl = gcmGetVBlankCount();
+	if (s_flip_done == 0)
+	{
+		s_first_tb = tb;
+		s_first_vbl = vbl;
+	}
+	else
+	{
+		// Flips land on vblanks, so over 600+ of them the handler's delay does not count.
+		if (vbl - s_first_vbl >= 600)
+			s_refresh_tb = (u32)((tb - s_first_tb) / (vbl - s_first_vbl));
+		const u64 n = (tb - s_flip_tb + s_refresh_tb / 2) / s_refresh_tb;
+		if (n > 0)
+			s_held[n < 4 ? n - 1 : 3]++;
+		if (n == 0 || n != vbl - s_flip_vbl)
+			s_held_bad++;
+	}
+	const u64 k = s_flip_target[s_flip_done & 3];
+	if (k && vbl > k)
+		s_hold_late++;
+	else if (k && vbl < k)
+		s_hold_early++;
+	s_flip_tb = tb;
+	s_flip_vbl = vbl;
 	s_flip_done++;
+}
+
+static void vblank_handler(const u32 head)
+{
+	(void)head;
+	const u64 tb = gettime();
+	const u64 n = gcmGetVBlankCount();
+	s_vs_tb[n & 7] = tb;
+	__asm__ volatile("lwsync" ::: "memory");
+	s_vs_last = n;
+	if (s_vs_seen < 8)
+		s_vs_seen++;
+}
+
+// One point of the PS3 vsync grid: the latest vblank count and the earliest of the last 8 handler ticks carried
+// to it, within half a refresh below their median (a missed vblank leaves an entry 8 refreshes old).
+static int vsync_ref(u64* tb, u64* n)
+{
+	if (s_vs_seen < 8)
+		return 0;
+	const u64 last = s_vs_last;
+	__asm__ volatile("lwsync" ::: "memory");
+	const u64 per = s_refresh_tb;
+	u64 t[8];
+	for (u32 j = 0; j < 8; j++)
+	{
+		u64 v = s_vs_tb[(last - j) & 7] + j * per;
+		u32 i = j;
+		for (; i > 0 && t[i - 1] > v; i--)
+			t[i] = t[i - 1];
+		t[i] = v;
+	}
+	u32 i = 0;
+	while (t[i] + per / 2 < t[3])
+		i++;
+	*tb = t[i];
+	*n = last;
+	return 1;
 }
 
 static void set_render_target(int index)
@@ -194,7 +280,13 @@ int ps3_video_init(void)
 	gcmSetFlipMode(GCM_FLIP_VSYNC);
 	s_flip_queued = 0;
 	s_flip_done = 0;
+	memset((void*)s_flip_target, 0, sizeof(s_flip_target));
+	s_hold_k = 0;
+	s_vs_seen = 0;
+	// 59.94 Hz until the flip handler has measured the real period.
+	s_refresh_tb = (u32)(ps3_timebase_hz * 1001 / 60000);
 	gcmSetFlipHandler(flip_handler);
+	gcmSetVBlankHandler(vblank_handler);
 
 	if (!ps3gl_init(s_ctx, s_width, s_height))
 	{
@@ -218,6 +310,7 @@ void ps3_video_term(void)
 		rsxFinish(s_ctx, 1);
 		// A flip IRQ after teardown would run on freed state.
 		gcmSetFlipHandler(NULL);
+		gcmSetVBlankHandler(NULL);
 		ps3gl_shutdown();
 		for (int i = 0; i < PS3_FB_COUNT; i++)
 		{
@@ -300,9 +393,10 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
 	return (const u32*)s_rb_addr;
 }
 
-void ps3_video_end_frame(void)
+// Queues the flip of the drawn buffer; k = the vsync it was held for, 0 = not held.
+static void queue_flip(u64 k)
 {
-	ps3gl_end_frame();
+	s_flip_target[s_flip_queued & 3] = k;
 	// WaitFlip before SetFlip: the rsx.h doc order gave a black screen on HW.
 	gcmSetWaitFlip(s_ctx);
 	gcmSetFlip(s_ctx, s_cur_fb);
@@ -311,12 +405,76 @@ void ps3_video_end_frame(void)
 	s_flip_queued++;
 	s_cur_fb = (s_cur_fb + 1) % PS3_FB_COUNT;
 	s_presented++;
+}
 
+static void vid_stats(void)
+{
 	double now = Platform_DoubleTime();
-	if (now - s_stats_t0 >= 5.0)
+	if (now - s_stats_t0 < 5.0)
+		return;
+	u32 held[4];
+	for (int i = 0; i < 4; i++)
 	{
-		printf("[vid] presented=%u skipped=%u flips queued=%u done=%u\n",
-		       (unsigned)s_presented, (unsigned)s_skipped, (unsigned)s_flip_queued, (unsigned)s_flip_done);
-		s_stats_t0 = now;
+		const u32 c = s_held[i];
+		held[i] = c - s_held_seen[i];
+		s_held_seen[i] = c;
 	}
+	const u32 bad = s_held_bad, late = s_hold_late, early = s_hold_early;
+	printf("[vid] presented=%u skipped=%u flips queued=%u done=%u | refresh %.3f Hz, held 1=%u 2=%u 3=%u 4+=%u bad=%u"
+	       " | hold=%u late=%u early=%u wait=%.1fms\n",
+	       (unsigned)s_presented, (unsigned)s_skipped, (unsigned)s_flip_queued, (unsigned)s_flip_done,
+	       (double)ps3_timebase_hz / s_refresh_tb, (unsigned)held[0], (unsigned)held[1], (unsigned)held[2],
+	       (unsigned)held[3], (unsigned)(bad - s_held_bad_seen), (unsigned)s_hold_n,
+	       (unsigned)(late - s_hold_late_seen), (unsigned)(early - s_hold_early_seen),
+	       s_hold_n ? s_hold_wait * 1000.0 / s_hold_n : 0.0);
+	s_held_bad_seen = bad;
+	s_hold_late_seen = late;
+	s_hold_early_seen = early;
+	s_hold_n = 0;
+	s_hold_wait = 0.0;
+	s_stats_t0 = now;
+}
+
+void ps3_video_end_frame(void)
+{
+	ps3gl_end_frame();
+	queue_flip(0);
+	vid_stats();
+}
+
+double ps3_video_end_frame_at(u64 target_tb)
+{
+	ps3gl_end_frame();
+	// The RSX draws while this thread waits for the flip's turn.
+	rsxFlushBuffer(s_ctx);
+	const u32 per = s_refresh_tb;
+	const u64 mark = target_tb + per / 2;
+	u64 tb0 = 0, n0 = 0;
+	u64 k = vsync_ref(&tb0, &n0) ? framehold_vsync(mark, tb0, n0, per, s_hold_k, s_hold_mark) : 0;
+	const u64 cur = gcmGetVBlankCount();
+	// Further than any paced vblank can be: flip now, not counted as held.
+	if (k > cur + 5)
+		k = 0;
+	double waited = 0.0;
+	if (k > cur + 1)
+	{
+		const u64 t0 = gettime();
+		// Wake 1/8 refresh after vsync k-1; the vblank count, not the grid, ends the wait.
+		const s64 dt = (s64)(tb0 + (k - 1 - n0) * per + per / 8 - t0);
+		if (dt > 0)
+			usleep((unsigned)(dt * 1000000 / (s64)ps3_timebase_hz));
+		for (int i = 0; i < 200 && gcmGetVBlankCount() < k - 1; i++)
+			usleep(200);
+		waited = (double)(gettime() - t0) / (double)ps3_timebase_hz;
+	}
+	if (k)
+	{
+		s_hold_n++;
+		s_hold_wait += waited;
+	}
+	s_hold_k = k;
+	s_hold_mark = mark;
+	queue_flip(k);
+	vid_stats();
+	return waited;
 }

@@ -46,7 +46,7 @@ SPU_CC     := $(PS3DEV)/spu/bin/spu-gcc
 SPU_CXX    := $(PS3DEV)/spu/bin/spu-g++
 BIN2S      := $(PS3DEV)/bin/bin2s
 SPU_CFLAGS := -O2 -Wall -ffunction-sections -fdata-sections -I$(PSL1GHT)/spu/include -Ips3/spu
-SPU_PROGS  := spe_bell spe_aica spe_arm7 spe_vb
+SPU_PROGS  := spe_bell spe_aica spe_arm7 spe_vb spe_tex spe_pix
 OBJS       += $(patsubst %,$(BUILD)/spu/%.bin.o,$(SPU_PROGS))
 
 ifeq ($(DEBUG),1)
@@ -130,6 +130,19 @@ $(BUILD)/spu/spe_vb.elf: ps3/spu/spe_vb.c ps3/spu/spe_vb_build.h ps3/spu/spe_vb.
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s ps3/spu/spe_vb.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+
+# 5.12 #3: the texture hashes of each scene's params, as ps3_tex.cpp's hash_texture().
+$(BUILD)/spu/spe_tex.elf: ps3/spu/spe_tex.c ps3/spu/spe_tex_hash.h ps3/spu/spe_tex.h ps3/spu/spe_bell.h
+	@mkdir -p $(dir $@)
+	@echo "SPU $@"
+	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s ps3/spu/spe_tex.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@
+
+# 5.12 #4/#5: texture decodes and framebuffer converts straight into RSX memory. -funroll-loops: the short pixel loops
+# cost more in mispredicted branches than in work (misc/spu_sim: palette 11 -> 5.5 cycles per texel).
+$(BUILD)/spu/spe_pix.elf: ps3/spu/spe_pix.c ps3/spu/spe_pix_job.h ps3/spu/spe_pix_simd.h ps3/spu/spe_pix.h ps3/spu/spe_bell.h
+	@mkdir -p $(dir $@)
+	@echo "SPU $@"
+	@$(SPU_CC) $(SPU_CFLAGS) -funroll-loops -Wl,--gc-sections -s ps3/spu/spe_pix.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 .PRECIOUS: $(BUILD)/spu/%.elf
 

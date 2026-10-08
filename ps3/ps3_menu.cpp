@@ -414,6 +414,8 @@ static Option s_video[] = {
 	  "The [rend] peak= stat is noted per frame, not per TA record. Set before boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
 	  "What a render does when the render thread is busy. DROP loses the frame." },
+	{ "Frame Hold",      &g_frame_hold_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A frame under 60 fps flips on the PS3 vsync of its DC vblank (5.41). Live." },
 	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Same-state strips share one draw call; inf vertices are dropped. Live." },
 	{ "Vertex Arrays",   &g_vertex_array_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -444,6 +446,12 @@ static Option s_video[] = {
 	  "The render thread's SPE wait leaves the core to the SH4. Set before boot." },
 	{ "SPE Build",       &g_spe_build_preset,     OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
 	  "An SPE builds the merged vertex runs; CHECK compares them. Set before boot." },
+	{ "SPE Tex Hash",    &g_spe_tex_preset,       OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
+	  "An SPE hashes each scene's textures; CHECK compares them. Set before boot." },
+	{ "SPE Tex Decode",  &g_spe_texdec_preset,    OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
+	  "An SPE decodes textures into RSX memory; CHECK compares them. Set before boot." },
+	{ "SPE FB Convert",  &g_spe_fbconv_preset,    OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
+	  "An SPE converts 2D framebuffer frames; CHECK compares them. Set before boot." },
 	{ "JIT FRCHG",       &g_jit_frchg_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "frchg swaps the FR banks inline, not through a C call. Set before boot." },
 	{ "JIT PREFETCH",    &g_jit_prefetch_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -943,7 +951,7 @@ static int* const k_live_opts[] = {
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
 	&g_aica_kyonb_preset, &g_ta_sq_direct_preset, &g_tex_slot_hash_preset, &g_depth_float_preset,
-	&g_yuv_block_preset,
+	&g_yuv_block_preset, &g_frame_hold_preset,
 };
 
 #define MAX_INGAME_OPTS 96

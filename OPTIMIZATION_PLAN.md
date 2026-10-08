@@ -11,7 +11,359 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-07)
+## 0. Resume here (updated 2026-10-08)
+
+**Active: 5.12 #4 and #5 (Matt 2026-10-08: "Let's go with 5.12 4 and 5"),
+built and PC tested, package of 01:57, HW run 1 done: no faults. Both
+default ON in source since 2026-10-08 (Matt), not packaged yet.** Matt's picks: the
+render thread waits for each decode (not an RSX label wait), an own SPU
+(the sixth and last free one) runs both jobs, and #5 writes straight into
+RSX textures (not into `s_fb_pix`).
+- HW run 1 2026-10-08 (package of 01:57, both ON from boot, no CHECK boot:
+  Matt asked, ON first; `ps3log_spepix_run1.txt`, scratchpad of session
+  d24c41ee): every boot `RSX DMA test: ok`, every window `fail=0`.
+  - Looney Tunes: intro FMV decode 0.93 ms per frame on the SPU (P42 on
+    the PPU 5.4 ms); race start render job 19 ms (was 364-426 ms; 85 VQ
+    textures, render-thread wait 6 ms in total), a 34 ms CD-DA read at the
+    start (49 ms SH4 frame). Matt: the race stutter is the same. It is the
+    SH4-bound item below: 50 race seconds at SPEED 99.4%, the game draws
+    25.2 frames/s (2- and 3-refresh frames), SH4 thread idle ~7%. Matt:
+    "The faster JIT in one of the plans sounds fine."
+  - Capcom vs. SNK 2 (JP), menus "basically unplayable", not this job: SPU
+    idle (0-4 decodes per 5 s, no framebuffer presents), SPEED 100% (PAL
+    50 Hz), SH4 thread asleep 55%, the game draws 5-6 frames/s. It spins
+    in a loop at 8C068808 (3 calls, then `mov.l @rN` + `tst`) with ~505K
+    area 7 reads/s (on-chip registers): it waits for an event that comes
+    late. Separate open goal (Matt 2026-10-08: "Look the CvS2 slowness
+    later on as a separated goal. We could use either Minicast or Flycast
+    as reference for that."), log cut as `cvs2.txt` in the same scratchpad.
+  - Sonic Adventure intro FMV: decode 0.46 ms per frame (P42 2.5 ms),
+    decode 1.1-1.4% of the render thread; SPEED 91-101% as with P42 (the
+    SH4 thread never sleeps there).
+  - Crazy Taxi (Matt: "No issues whatsoever."): 11 dense windows, decodes
+    7-10 us each on the SPU (max 150 us), decode 0.40% of the render thread
+    (`ct_on.txt` 0.69%, `run6_ct.txt` 0.81%), SPEED 100%.
+  - #5 only ran on boot screens (2-3 presents per boot, 0.2-0.3 ms each):
+    no tested game draws into the framebuffer in play.
+  - Border Down (JP), to look for framebuffer presents: no picture after
+    the BIOS animation for 60 s, not this job (SPU idle). Its store-queue
+    flushes land in boot ROM (area 0), not in the TA: 56 `Write to Boot
+    ROM` at 0x1FF3E0+ (a polygon list: PCW 828C0002, then vertices), then
+    0xF000-0xF07C with zeros (`[CC] sqw` 100/s = area 0 writes from:other
+    800/s). RPS 0. The game then loops at 8C035350-8C035460 with ~1.9M SR
+    writes/s (`[CC] sync_sr` + `interrupt`), SPEED 100% (PAL 50 Hz). Open,
+    not started; log cut as `borderdown.txt` in the same scratchpad.
+  - Defaults: both ON in source (Matt 2026-10-08: "Yes, place them as ON by
+    default."), not packaged yet. Matt's nullDC.cfg already has both ON.
+- VIDEO / DEBUG -> "SPE Tex Decode" (`SpeTexDecode`) and "SPE FB Convert"
+  (`SpeFbConvert`): OFF / ON / CHECK each, default ON, set before boot.
+  The PPU paths as now when the SPU is down, late (50 ms: `[spepix] SPU job
+  ... late`, the group stops, both PPU paths from then on) or a job does not
+  fit.
+- One SPU thread (`ps3/spu/spe_pix.c`, `spe_pix_job.h`, `spe_pix_simd.h`,
+  `spe_pix.h`; `ps3/ps3_spepix.cpp`). Its bell line has two halves: the
+  render thread's texture job and the SH4 thread's framebuffer job, each
+  with its own seq; the SPU serves the framebuffer first. Boot: `[spepix]
+  RSX DMA test: ok`, then `[spepix] SPU thread up, tex X, fb Y`.
+- #4: at a bind that decodes (a new texture or a changed hash), the render
+  thread allocates level 0 as glTexImage2D does (`ps3gl_tex_direct_level0`,
+  new: either layout) and sends describe()'s fields; the SPU writes the
+  final A8R8G8B8 words into the texture by DMA, in its RSX layout (swizzled,
+  or linear rows for YUV and mirrored textures), and returns decode()'s
+  black and alpha-0 checks; the render thread spins until then. Every
+  format: twiddled, planar, stride, VQ, 4- and 8-bit palette, YUV (also
+  VQ), bump, IgnoreTexA, mip offsets. A source that would cross the end of
+  VRAM stays on the PPU (`skip`). P42's YUV path is only the fallback.
+  - The SPU works in tiles of up to 32x32 texels (one get, or a DMA list of
+    rows for planar sources; one put, or a list of rows for linear output),
+    double-buffered. Swizzled 16-bit, VQ and 8-bit palette textures go
+    straight to the RSX order; the rest through a second pass in LS.
+- #5: at a vblank present, the SH4 thread sends the frame (FB_R_SOF1,
+  depth, size, line stride) and waits; the SPU reads each line's words from
+  the two VRAM banks (a line that crosses the 4 MB edge in two runs) and
+  writes A8R8G8B8 rows into one of 3 linear RSX textures (768x576, pitch
+  3072, allocated at boot with `ps3gl_tex_fixed`, new). The render thread
+  only binds it, sets the size the RSX samples, and draws. 3 buffers: the
+  RSX may still draw the last 2 frames (ps3gl's vring fence covers frame
+  N-2). The `[rend]` stats now also print after presents (2D titles).
+- CHECK: the SPU writes into a copy in main memory (4 MB for textures, one
+  frame for the framebuffer); the PPU decodes as before (decode() and the
+  ps3gl conversion into the copy's layout, `ps3gl_tex_convert_check`) and
+  compares every word and the black/alpha-0 result; the first 8 mismatches
+  print `[spepix] tex|fb check MISMATCH ...`. The PPU result is what shows.
+- Every 5 s: `[spepix] tex= fb= up= | tex jobs N (/s) spu avg max us, KB/s,
+  wait total ms max us, skip | fb jobs spu avg max us, wait total ms max |
+  spu busy % wakes/s | fail check tex ok bad fb ok bad`; `[texfmt]` ends in
+  `spudec=N`.
+- PC (WSL): `misc/spepix_check/run.sh` PASS: the real `spe_pix_job.h` on SPU
+  shims (big-endian lanes; an MFC model with lists, alignment rules, junk
+  until the tag wait, random completion) against the PPU code extracted
+  from `ps3_tex.cpp` (describe, decode, the job builder), `ps3gl_textures.c`
+  (convert_pixels and the swizzle tables) and `ps3_rend.cpp` (fb_geom,
+  fb_convert_ppu, fb_job): 7013 textures (80M texels: every kind, layout
+  and alignment at 8-64 texels, then random ones up to 1024, FMV-like YUV
+  strides, pure-red and black sources), 447 framebuffers (94M pixels, 146
+  with a line across the bank edge). `mutate.py`: 96 of 96 planted bugs
+  fail.
+- misc/spu_sim, the real image (`build_sim.sh`, `sim.sh`): every word the
+  same as the PPU code. SPU time at 3.2 GHz (the RSX put time at the 3.3
+  GB/s of the 5.12 #2 bench in brackets): VQ 256x256 0.04 ms (0.08), 565
+  twiddled 256x256 0.12 ms (0.08), 8-bit palette 256x256 0.11 ms (0.08),
+  Looney Tunes FMV 1024x512 YUV 0.78 ms (0.64), Sonic Adventure FMV 512x512
+  0.39 ms (0.32), framebuffer 640x480 565 0.59 ms (0.37), 0888 0.34 ms.
+  Before (PPU, HW): Looney Tunes race load, 75 VQ textures in one 364 ms
+  render job (~5 ms each); FMV decode 5.4 ms (P42) / 21.6 ms (old) per
+  frame; framebuffer convert not measured.
+- SPU: text 23.4 KB, data 0.8 KB, bss 50.7 KB, built with -funroll-loops.
+  Link: `.got` 0xCBC8, 0 `r2off`, no warning.
+- HW steps (package of 01:57):
+  1. Install. The install keeps `nullDC.cfg`. VIDEO / DEBUG -> SPE Tex
+     Decode CHECK, SPE FB Convert CHECK; the rest as now, SH4 Clock 200.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1 (CHECK): Looney Tunes intro FMV, menus, one race (the track
+     load); Sonic Adventure intro FMV; Crazy Taxi a short drive; any 2D
+     title that draws into the framebuffer (`fb=` in `[rend]`). Log:
+     `[spepix] RSX DMA test: ok`, `check tex ok=N bad=0 fb ok=N bad=0`,
+     `fail=0`, no MISMATCH line.
+  4. Boot 2 (ON, both): the same. Look at textures, FMVs and 2D screens.
+     Log: `job_max` and `render job stalled` at race start and end (was
+     364-426 ms), `[rend] tex split` decode %, FMV SPEED, `[spepix]` spu
+     avg and wait totals.
+  5. On a fault: that toggle OFF for the next boot.
+
+**Next goal (Matt 2026-10-07: "Can you set the Vblank pacing as next goal
+before resuming the 5.13 ones?"): 5.41 VBlank pacing.** Step 1 built
+2026-10-07 (Matt: "Let's go with the vblank pacing"), package of 22:56; HW
+run done 2026-10-07 (cause confirmed for Sonic Adventure, results below).
+Step 2: Matt picked (b) ("Let's go with b"); Frame Hold built + PC tested
+2026-10-07, package of 23:42, default OFF; HW run 2026-10-07: Sonic's
+judder gone in the log (results below). Matt 2026-10-08: "It seemed the
+same, actually. But It's fine." Done; Frame Hold stays OFF by default. Next
+goal: Matt's pick (the 5.13 items, or 5.12 #4/#5).
+- Why it felt the same: in the Sonic windows that feel choppy, the game
+  itself draws 20-25 fps (3-vblank frames: 3s with RPS under 30), while the
+  SH4 thread still sleeps 25-32% of each second (`[pace] slept=60`, `[stall]`
+  sleep 6.6-9.5 ms in the worst frame). The host has spare time there; the
+  emulated SH4's cycles per frame run out first.
+- Fault: Sonic Adventure plays "choppy, not really 'true' 100% speed" (Matt)
+  while the log reads SPEED 99.99% (play seconds at vt >= 6K, `sonic_on.txt`,
+  5.12 #3 below): 30 game frames per second (RPS median 29.9; 150 presents
+  per 5 s, 0 skipped), and the SH4 thread still sleeps ~9-10 ms in the
+  slowest frame of each second. The same in `run5_sonic.txt` (no SPE Tex
+  Hash). The Looney Tunes race judder (the SH4-bound item below, "frame
+  pacing") is mostly another kind (step 1 HW below).
+- Cause (from the code, not measured): the DC shows a frame at its own
+  vblank, so a 30 fps game holds each frame 2 refreshes. Here
+  `ps3_video_end_frame()` queues the flip (GCM_FLIP_VSYNC, 3 buffers) as soon
+  as the render thread finishes, and `spg_PaceFrame()` (`plugs/drkPvr/SPG.cpp`)
+  paces the emulated vblanks with `usleep`, not with the PS3 vsync. The finish
+  time moves a few ms from frame to frame (the SH4 work before STARTRENDER,
+  2-5 ms of render); near a vsync edge one frame stays 1 refresh and the next
+  3. The emulated 59.95 Hz (NTSC) and the PS3's 720p refresh drift against
+  each other, so the judder comes and goes.
+- Step 1, log only: `[vid]` counts, per 5 s, how many refreshes each
+  presented frame stayed on screen (1, 2, 3, 4+), from the vblank count at
+  each completed flip. A 30 fps game shows only 2s; judder shows as 1s and
+  3s.
+  - Built 2026-10-07, package of 22:56, no toggle. The flip handler
+    (`ps3/ps3_video.c`) reads the timebase and `gcmGetVBlankCount()` at each
+    completed flip. Refreshes held = time since the last flip / the PS3
+    refresh period, rounded; this does not depend on the order of the vblank
+    and flip events. The period is a run average from the first flip (after
+    600 vblanks; 59.94 Hz before). `bad=` counts flips where the vblank count
+    gives another number (0 expected).
+  - The `[vid]` line (every 5 s) now ends `| refresh 59.940 Hz, held 1=N 2=N
+    3=N 4+=N bad=N`. The held counts are for the 5 s window; the other
+    counts stay totals.
+  - Emulated vblank rate with the SH4 at 200 MHz (NTSC 480i and VGA): 200 MHz
+    / 3336375 cycles = 59.945 Hz. Against a 59.940 Hz PS3, the phase moves
+    one refresh in ~190 s, so a judder can come and go in a 3-minute cycle.
+  - HW: Sonic Adventure play for 5 minutes or more, a Looney Tunes race,
+    Crazy Taxi; no in-game menu during the play (its flips count too).
+  - HW 2026-10-07, package of 22:56 (`ps3log_vblank_run1.txt`, cut with
+    `vidheld.py` into `vidheld_run1.txt`, scratchpad of session fdcdfbab):
+    the three games, a clean XMB exit. `bad=0` in all 127 windows, refresh
+    59.940 Hz. Each game boots in PAL 50 Hz (the BIOS) and plays in NTSC
+    59.95 Hz.
+    - Sonic Adventure play (RPS ~30, 35 windows, ~3 minutes): in one phase of
+      ~85 s, 1s and 3s came in pairs (16 of 17 windows; 1=96 2=2309 3=114).
+      Before (25 s) and after (80 s) it, almost only 2s (1s in 2 of 18
+      windows, 6 in total); the 3s there come with RPS under 30 (the game's
+      own slow frames). This is the drift cycle of the cause above: the
+      finish time crosses the vsync edge for ~85 s of each ~190 s.
+    - Looney Tunes race (32 windows): 1=55 2=2974 3=1043 4+=45, RPS 19-30.
+      The game itself takes 2 or 3 vblanks per frame; few 1s, so a pacing
+      fix changes little there.
+    - Crazy Taxi play (60 fps, 11 windows): 1=3301, no 2s or 3s. The queued
+      flip of a 60 fps game absorbs the finish-time jitter.
+    - PAL 50 Hz (BIOS boot): ~4 1s to one 2, the 50-on-59.94 Hz cadence.
+- Step 2, the fix (options for Matt after step 1), behind a toggle, default
+  OFF: (a) the emulated vblank waits for the PS3 vsync instead of `usleep`;
+  (b) `usleep` pacing stays, and each finished frame is held and flipped on
+  the PS3 vsync that matches its emulated vblank. HW: Sonic Adventure play,
+  a Looney Tunes race, Crazy Taxi.
+  - From the step 1 data: (a) stops the drift but fixes the phase where it
+    falls. The finish time then sits at "vsync + SH4 work to STARTRENDER +
+    render", so a game whose finish time falls near the edge would judder all
+    the time. (a) only fits NTSC (59.95 -> 59.94 Hz, -0.009% speed); PAL 50 Hz
+    games keep `usleep`. (b) follows the game's vblanks whatever the finish
+    time, for up to ~1 refresh more latency; the drift still moves one frame
+    to 1 or 3 refreshes once per ~190 s (none with (a)'s rate lock added).
+  - (b) built 2026-10-07 (Matt: "Let's go with b"), package of 23:42. VIDEO /
+    DEBUG -> "Frame Hold" (`FrameHold`), OFF / ON, default OFF, live (the
+    in-game menu switches it).
+    - When: 4 frames in a row 2+ emulated vblanks apart (the game runs under
+      60 fps). A 60 fps game keeps the flip queue, also with dropped frames.
+    - StartRender (SH4 thread) takes the pacer's due time of the next emulated
+      vblank, where the DC shows the frame (`spg_NextVblankTime()`, 0 with the
+      Speed Limiter off), as a timebase tick. The render thread draws and
+      flushes, then `ps3_video_end_frame_at()` picks the PS3 vsync for "that
+      tick + half a refresh" and waits until the vsync before it, so the flip
+      lands on it. The wait is idle time: not in `busy=` or `job_max=`.
+    - `framehold_vsync()` (`ps3/ps3_framehold.h`): the first vsync at or
+      after the mark, or the last held frame's vsync plus the same number of
+      steps as the marks, while that vsync stays within T/8 of [mark, mark +
+      T). The drift then moves one frame per cycle (~190 s), and noise near a
+      vsync edge cannot move frames to and fro. A vsync 6+ ahead is not held.
+    - The vsync grid: a new vblank handler keeps each vblank's tick; the
+      reference is the earliest of the last 8 within half a refresh below
+      their median (a late handler run only adds; a missed run leaves an
+      entry 8 refreshes old).
+    - `[vid]` line: `| hold=N late=N early=N wait=X ms` per 5 s: held frames,
+      flips after or before their vsync, average wait.
+    - PC (WSL): `misc/framehold_check/run.sh` ALL PASS: the real
+      `framehold_vsync()` in a model of the pacer, the vblank handler (5-30%
+      runs late by 1-6 ms, 1% missed), the wait and the flips. Sonic 30 fps,
+      10 minutes: 1/3 = 1527/1524 -> 3/1 (the drift slips), late 0; Looney
+      2/3 vblanks: 1s 769 -> 0; Crazy Taxi 60 fps unchanged; 60 fps with 10%
+      dropped frames: 1 hold in 5 minutes. Cost: the frame reaches the screen
+      on average 18.8 ms after its emulated vblank (5.1 ms now).
+      `mutate.sh`: 6 of 6 planted bugs fail.
+    - HW: Frame Hold ON. Sonic Adventure play 5+ minutes (ON/OFF in the
+      in-game menu to compare the feel), a Looney Tunes race, Crazy Taxi
+      (must not change: `hold=0`). Pass: Sonic play windows with only 2s
+      (and RPS-30 3s), `late` near 0, no input lag Matt can feel.
+    - HW 2026-10-07, package of 23:42, ON (`ps3log_vblank_run2.txt`, cut
+      with `vidheld.py` into `vidheld_run2.txt`, scratchpad of session
+      fdcdfbab): the three games, a clean XMB exit after each. `bad=0` and
+      `early=0` in every window. Matt's verdict on the feel is open.
+      - Sonic Adventure play (32 windows, ~160 s): 1=6 2=4330 3=274; 5 of the
+        1s and all 13 late flips in the first window (60 -> 30 fps), 1 at
+        the drift slip. Every window at RPS 30 shows 2=150 and nothing else;
+        the 3s come with RPS under 30. Step 1 (OFF): 96 1s in an 85 s phase.
+        Hold wait 17.9 ms per frame (8-26 ms with the drift); the SH4 waited
+        for the render thread once (8 ms). Sonic's frames finish ~15 ms
+        before their vblank, so ON shows a frame ~23 ms later than OFF (the
+        model's +13.7 ms assumed later finishes).
+      - Looney Tunes race (20 windows): 1=21 2=1892 3=636 (OFF: 55 1s in 32
+        windows); 814 of 2550 held frames late (SH4-bound frames finish after
+        their vsync and flip at once, as OFF).
+      - Crazy Taxi play (12 windows): `hold=0`, 1=3598, unchanged.
+
+**Done: 5.12 #3 SPE Tex Hash, HW SUCCESS 2026-10-07 (Matt) (Matt: "Work on
+5.12 #3", then "Own SPU", not the TA decoder SPU at each FENCE).** Package
+of 20:42; default ON since the package of 22:35 (Matt: "Yes, I want it by
+default."). A `nullDC.cfg` with a `SpeTexHash` key keeps its value. VIDEO /
+DEBUG -> "SPE Tex Hash" (`SpeTexHash`): OFF / ON / CHECK, set before boot.
+- Sonic Adventure, ON (third boot of the same log, `sonic_on.txt`; Matt: "Sonic
+  ran worse?"), against `run5_sonic.txt` (same `[jitcfg]`, SPE Tex Hash off).
+  Play seconds at vt >= 6K: SPEED 99.99% (100.00%), RPS median 29.9 (29.9),
+  RPS p10 24.8 (26.0); SH4 worst frame median 23.5 ms (23.2), over 25 ms in
+  18% of seconds (14%), worst 66.4 ms (67.1), a JIT compile burst at an area
+  change in both; no SH4 wait on the render thread or an SPU. Render busy
+  5.5% (7.2%), hash 0.06% (1.62%). Menus and title screens: few params,
+  textures of up to ~700 KB, the first bind waits for the SPU (up to 47 ms
+  per 5 s, ~1% of the render thread; the SPU hashes ~1.9 GB/s, the PPU hash
+  ran ~2.3 GB/s). Not the same spot as run 5, so the small play differences
+  can be the scenes.
+- HW 2026-10-07 (package of 20:42, ON from boot, no CHECK boot (Matt: ON
+  first); `ps3log_spetex_run1.txt`, cut as `lt_on.txt` and `ct_on.txt`,
+  scratchpad of session 606210f7; `racewin.py`, `speedsum.py` there).
+  Against the SPE Build runs `run4_on.txt` and `run6_ct.txt` (the same
+  settings without SPE Tex Hash). Both boots: every first bind from the SPU
+  (`skip 0 none 0`), `fail=0`, clean XMB exit, flash saved.
+  - Looney Tunes, a whole race (Matt: "No texture errors"); 55 windows at vt
+    >= 10K: tex split hash 0.01% (1.95%), PPU hash 0 KB per render, render
+    busy 8.5% (9.3%); the SPU 967 KB per request in 0.57 ms average;
+    render-thread waits 0.23 ms per 5 s; texture decodes per render 0.12
+    (0.15; `lt_fix.txt` 0.10). SPEED at vt >= 10K 99.7%, 86% of seconds at
+    full speed (97.6%, 75%), not the same race.
+  - Crazy Taxi, a short run (11 windows at vt >= 6K, 48 in `run6_ct.txt`):
+    hash 0.15% (3.03%), render busy 17.3% (21.4%); vt >= 10K hash 0.20%
+    (3.29%), busy 21.5% (25.2%). The SPU 469 KB per request in 0.38 ms; no
+    waits in dense windows; decodes per render 0.24 (0.28). SPEED at vt >=
+    10K 100.0% over 18 s (99.7%).
+- Cost before (HW logs of the SPE Build runs, `[rend] tex split` hash):
+  dense Crazy Taxi 3.0% of the render thread (144 textures, 523 KB hashed per
+  render at 60 renders/s), Looney Tunes races 2.1% (54 textures, 967 KB at
+  25/s), 2.4% at 25K+ vertices; Sonic Adventure 1.7% (84, 761 KB).
+- ON: a fifth SPU thread (`ps3/spu/spe_tex.c`, `spe_tex_hash.h`;
+  `ps3/ps3_spetex.cpp`). At the start of each draw (`ps3tex_frame_begin`) the
+  render thread rings its bell with the scene's param list, the background
+  param, TEXT_CONTROL and PAL_RAM_CTRL. The SPU hashes the background's
+  texture, then each param's in list order: `describe()` and `hash_texture()`
+  of `ps3_tex.cpp`, bit for bit (the PPU's four u64 lanes as two vectors of
+  two lanes; 64-bit adds and shifts from 32-bit ops). A texture already hashed
+  in the request (same TCW and size) takes the same hash. Results go to a slot
+  per param (`SpeTexRes`: hash and request tag in one doubleword), in fenced
+  128-byte line puts: after each fresh hash and at each full line.
+- `ps3tex_bind` gets the param's slot (`spetex_slot()` in `ps3_rend.cpp`).
+  At its first bind of a texture in a frame (hash check or cache fill) it
+  reads the slot, spinning until the tag is this request's; no other change.
+  The SPU leaves YUV (PixelFmt 3) and untextured params to the PPU (YUV keeps
+  the converter's frame counter). The PPU hashes as before with no slot, a
+  skipped slot, or the SPU down. 50 ms after the request with no result:
+  `[spetex] SPU hash late`, the SPU group stops, PPU hash from then on.
+- CHECK: the PPU hashes at each first bind as before and compares with the
+  SPU's slot; the first 8 mismatches print `[spetex] check MISMATCH req slot
+  tsp tcw spu/ppu`. A texture the game rewrites between the request and the
+  bind can differ for one request; a bug differs in every request.
+- Timing change with ON: the hash moves from the bind to the start of the
+  draw (a few ms earlier at most). A texture rewritten in between is decoded
+  at the bind as now and found changed again next frame (one more decode), or
+  shows its old texels for one frame.
+- Every 5 s: `[spetex] mode= up= reqs/s | spu busy % req avg max us | per
+  req: params hashed dups skips KB wraps | binds: spu skip none | wait N avg
+  max us, total ms | fail check ok bad`. `[rend] tex split` hash now holds the
+  slot reads and waits (and the PPU's own hashes).
+- PC (WSL): `misc/spetex_check/run.sh` PASS. The real `spe_tex_hash.h` on SPU
+  shims (128-bit quadword shifts, cg, shufb byte model) and an MFC model (size
+  and alignment rules, LS and EA regions, random or newest-first completion,
+  fences; puts read LS when they complete), against `ps3_tex.cpp`'s code
+  between two markers (its u64 VRAM load read big-endian): 12000 hash_range
+  spans (every start alignment, chunk edges, the masked word loop past the
+  end of VRAM), then 600 requests (294 of them next frames with re-uploaded
+  textures), 824K params, every slot checked at the end and each of 242K
+  result puts as it lands (a slot with this request's tag must be final).
+  `mutate.py`: 68 of 68 planted bugs fail. Left out: unfenced line puts, and
+  no wait for chunk c - 2's puts (the model's puts read LS as they complete,
+  and its fenced 16-entry queue lands old puts first; the MFC promises
+  neither).
+- misc/spu_sim, the real image (`build_sim.sh`, `sim.sh`): every slot the
+  same as `hash_texture()`. Crazy Taxi-like request (2000 params, 150
+  textures, 354 KB): 0.46 ms; Looney Tunes-like (1500, 54, 578 KB): 0.41 ms;
+  large textures 1.70 cycles per byte in the hash loop. Per-param lookups
+  ~210 cycles; an 8-bit palette's FNV ~25 cycles per entry.
+- SPU: text 9.9 KB, data 0.8 KB, bss 66.6 KB. Link: `.got` 0xC838 (was
+  0xC638), 0 `r2off`, no warning.
+- Expected (estimate, not measured): render-thread hash 3.0% -> ~0.2-0.3% in
+  dense Crazy Taxi (~150 slot reads per frame), ~2% -> ~0.2% in Looney Tunes
+  races. SH4 thread: only through SMT (5.16: busy 56 -> 32%, same load
+  +0.5%), plus 0.5-1 MB of VRAM per frame no longer read through the PPE's
+  shared L2.
+- HW steps (package of 20:42):
+  1. Install. The install keeps `nullDC.cfg`. VIDEO / DEBUG -> SPE Tex Hash
+     CHECK; SPE Draw ON, SPE Build ON, Strip Merge ON, Vertex Arrays ON (the
+     defaults); SPE Wait Yield OFF; SH4 Clock 200.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1 (CHECK): Crazy Taxi ~2 min of dense traffic, then Looney Tunes,
+     one race. Log: `[spetex] SPU thread up, mode CHECK`, `check ok=N
+     bad=0`, `fail=0`; MISMATCH lines only if some (note their req numbers).
+  4. Boot 2 (ON): Crazy Taxi dense, then a Looney Tunes race. Look for
+     textures that do not update (menus, the arrow and the map in Crazy Taxi,
+     FMVs). Log: `[rend] tex split %` hash against 3.0% (Crazy Taxi) and 2.1%
+     (Looney Tunes), `[spetex]` wait total, `[rend] busy`, SPEED.
+  5. On a fault: SPE Tex Hash OFF for the next boot.
 
 **Done: 5.12 #2 SPE Build, the SPU rewrite (Matt 2026-10-07: "SPU rewrite
 now", after HW runs 1 and 2 below), HW tested: correct and fast.** Package
@@ -238,10 +590,14 @@ at vt >= 10K; both from `ps3log_ltfix_run1.txt`, scratchpad of session
   into the vring in RSX local memory (cache-inhibited). ps3gl already has
   a host ring in XDR mapped for the RSX (`ps3gl_hring_*`, 2 x 1 MB) and a
   draw path from XDR (`GCM_LOCATION_CELL`).
-- #3 texture hash: 3.1% (Crazy Taxi), 2.1-2.6% (Looney Tunes races).
+- #3 texture hash: 3.1% (Crazy Taxi), 2.1-2.6% (Looney Tunes races). Done
+  as "SPE Tex Hash", HW SUCCESS 2026-10-07 (top of this section).
 - #4 texture decode: 0.8% in play; Sonic Adventure FMV 7% with P42 ON.
+  Built as "SPE Tex Decode" (top of this section), HW run 1 no faults,
+  default ON.
 - #5 `present_fb_convert`: no cost in the test games (1-2 presents per
-  boot).
+  boot). Built as "SPE FB Convert" (top of this section), HW run 1 no
+  faults (boot screens only), default ON.
 - P43 YUV converter (SH4 thread): Sonic Adventure FMV (`ps3log_p42_run1.txt`,
   P42 ON): `[stall] dma` 34-45 ms/s (3.4-4.5% of the SH4 thread), SPEED
   92-102%; the SH4 thread is the limit there.
@@ -341,6 +697,11 @@ work, and the game draws 22-27 frames/s there (26-30 elsewhere). The same in
 the DSP OFF boots before the fixes (57-59% at full speed). Not the disc (no
 reads or waits in the race), not the render thread, not the sound SPUs.
 `ps3log_ltfix_run1.txt` (cut as `lt_fix.txt`), scratchpad of session 7b7c1c88.
+- 2026-10-08, with 5.12 #4 ON: the race start freeze is gone (render job 19
+  ms), the in-race stutter stays (Matt: "Stutter during the race."): 25.2
+  frames/s, 2- and 3-refresh frames, SH4 thread idle ~7%. Matt: "The faster
+  JIT in one of the plans sounds fine." (JIT work on the race code, then an
+  SH4 Clock above 200 MHz; the menu stops at 200.)
 - Stutters (Matt 2026-10-07, with SPE Build ON: "very smooth. But there are
   some micro-stutters sometimes"; "add the stutter ... with a possible fix
   later on"). Race seconds (vt >= 10K) whose worst frame is over 25 ms, by
@@ -1606,7 +1967,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.9 | `collect_diag()` once per stats window | `[x]` HW, busy 57 -> 47%, VPS unchanged |
 | 5.10 | `ps3tex_bind` cost (~12% of wall) | `[x]` HW, faster hash: hash 8.2 -> 1.9%, busy 47 -> 40%, no stale textures |
 | 5.11 | TA decode writes the final vertex format | REVERTED 2026-10-03 (Matt): no net gain, felt worse |
-| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form); P43 in bundle 1 (section 7); #2 SPE Build (vertex buffer + runs on an SPU, Matt 2026-10-07), VIDEO / DEBUG "SPE Build" OFF / ON / CHECK, HW runs 1-2 correct but too slow (8-12 ms per build); SPU rewrite (Matt) package of 17:41, HW tested: correct, builds 1.2-2.5 ms, render thread -13 to -15 points; default ON since package 18:36 (Matt) (section 0) |
+| 5.12 | SPE offload: TA decode at submit time, then vertex build, texture hash | SHELVED 2026-10-03 (Matt) after S0 `[x]` HW; resume at S1 after 5.9-5.11; merged 2026-10-06: P42 (list #4, YUV decode), P43 (converter, PPU form); P43 in bundle 1 (section 7); #2 SPE Build (vertex buffer + runs on an SPU, Matt 2026-10-07), VIDEO / DEBUG "SPE Build" OFF / ON / CHECK, HW runs 1-2 correct but too slow (8-12 ms per build); SPU rewrite (Matt) package of 17:41, HW tested: correct, builds 1.2-2.5 ms, render thread -13 to -15 points; default ON since package 18:36 (Matt) (section 0); #3 SPE Tex Hash (texture hashes on a fifth SPU, Matt 2026-10-07: "Own SPU"), VIDEO / DEBUG "SPE Tex Hash" OFF / ON / CHECK; built + PC tested, package of 20:42; HW SUCCESS 2026-10-07 (Matt): render-thread hash 3.0 -> 0.15% (Crazy Taxi dense), 1.95 -> 0.01% (Looney Tunes races), no texture errors; default ON since the package of 22:35 (Matt) (section 0) |
 | 5.13 | AICA on an SPE: control pass on the PPU, sample work + DSP on the SPE (caique model) | A0 `[x]` PC; A1 HW tested (bad=0, SPU DSP too slow); A1b DSP recompiler `[x]` HW (0 mismatches, DSP 90% -> 4-6% of the SPU); A1c cheaper PPU control pass `[x]` HW (ppu ctl 11.2 -> 5.8% in game, dense VPS 45.5 -> 48.8); A2 SPU sound `[~]` HW tested: Crazy Taxi OK; ChuChu SPU overload at 22-25 voices; Looney Tunes no sound (fixed 2026-10-07: A3 with 6.5, P44, P31); A2 high voices `[x]` HW 2026-10-04 (ChuChu stage SPU 95-101% -> 29%, ppu ctl 21% -> 8.9%, SPEED ~99%; Crazy Taxi dense VPS 49.3 -> 52.5); open: small crackle at full speed with SPE AICA Sound (cause found 2026-10-04, fix is 6.6); A3 DSP in the SPU sound `[x]` HW SUCCESS 2026-10-07 (Matt), default ON with SPE DSP JIT ON since the package of 03:41 (P20 G1; Looney Tunes' voices go through the DSP only); merged 2026-10-06: P20 (gaps G2-G4 open); G2-G4 in bundle 5 (section 7) |
 
 | 5.14 | Sound thread: ARM7 + AICA on a second PPU thread (AUDIO "Sound Thread", `SoundThread`) | `[!]` HW 2026-10-04: works, but dense VPS 52.9 -> 51.6 (SMT slows the SH4 ~10%); Matt chose 5.15 |
@@ -1636,6 +1997,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
 | 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]`; bundle 8 (section 7) |
 | 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first; bundle 8 (section 7) |
+| 5.41 | VBlank pacing: a 30 fps game's frames reach the screen 1 or 3 refreshes apart (Sonic Adventure "choppy" at SPEED 100%) | `[x]` done 2026-10-08, no felt change (Matt: "It seemed the same, actually. But It's fine."), Frame Hold default OFF; step 1 a `[vid]` refresh count, built 2026-10-07, package of 22:56; HW 2026-10-07: Sonic judder confirmed (1/3 pairs for ~85 s of each ~190 s drift cycle), Looney Tunes mostly the game's own 2/3 cadence, Crazy Taxi clean; step 2 (b) Frame Hold (Matt's pick) built + PC tested 2026-10-07, package of 23:42; HW 2026-10-07: Sonic only 2s at RPS 30 (1 drift slip), Crazy Taxi unchanged, ~23 ms more delay (section 0) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
@@ -1646,6 +2008,7 @@ JIT SYS GATE defaults to + RESUME since the package of 22:52 on 2026-10-06 (Matt
 Tex Slot Hash (P16) defaults to ON since the package of 23:46 on 2026-10-06 (Matt: "Tex Slot Hash should become the default ON").
 Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt: "Yes, absolutely!").
 AICA Race Fix, ARM7 Reset Fix, CA Clamp, SPE AICA DSP and SPE DSP JIT ON default to ON since the package of 03:41 on 2026-10-07 (Matt: "mark this on by default").
+SPE Build (5.12 #2) defaults to ON since the package of 18:36 on 2026-10-07; SPE Tex Hash (5.12 #3) since the package of 22:35 on 2026-10-07 (Matt: "Yes, I want it by default.").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -1993,8 +2356,8 @@ clock by VPS.
     | 1 | TA decode (S0-S3) | 19% of wall, render thread | good |
     | 2 | Strip merge + final vertex build (`run_emit`, = 5.11 on the SPE) | most of vtx+other ~20%, render thread | good; RSX vring by SPE DMA unproven, else main memory. `collect_diag` does not move (5.9) |
     | 3 | Texture hash (`hash_texture`, serial FNV over each texture on its first bind per frame) | part of `ps3tex_bind` ~12% | good; the SPE sees every TCW/TSP and can SIMD-hash at FENCE. Split the 12% first (hash / decode / `glTexParameteri`) |
-    | 4 | Texture decode on a miss (twiddle, VQ, palette) | FMV / loading spikes | good; could write the swizzled layout directly |
-    | 5 | `present_fb_convert` | SH4 thread, each vblank, direct-FB games only | good |
+    | 4 | Texture decode on a miss (twiddle, VQ, palette) | FMV / loading spikes | good; could write the swizzled layout directly. Built 2026-10-08 as "SPE Tex Decode" (section 0), HW no faults, default ON |
+    | 5 | `present_fb_convert` | SH4 thread, each vblank, direct-FB games only | good. Built 2026-10-08 as "SPE FB Convert" (section 0), HW no faults, default ON |
     | 6 | AICA DSP | not emulated (2.3 parked) | moved to 5.13 |
     | 7 | AICA channel mix (`GenerateAllFast`) | 4-4.5%, SH4 thread | moved to 5.13 (control/render split solves the readback) |
 

@@ -6,9 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
-/* PSL1GHT's rsx/mm.h and rsx/gcm_sys.h declare several functions as foo()
- * instead of foo(void); same vendor-header wrap already used by this project's
- * in_ps3.c (io/pad.h), sys_ps3.c (net/net.h) and s_ps3.c (sys/thread.h). */
+/* PSL1GHT's rsx/mm.h and rsx/gcm_sys.h declare functions as foo() instead of foo(void): vendor-header wrap. */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-prototypes"
 #pragma GCC diagnostic ignored "-Wold-style-definition"
@@ -29,15 +27,8 @@
 #define PS3GL_MAX_BUFFERS       128     /* static-world VBOs plus dynamic dlight/decal buffers */
 #define PS3GL_STREAM_BUFFER_SLOTS 3     /* never overwrite a stream buffer still used by RSX */
 
-/* Vertex ring buffer size (RSX memory), split across PS3GL_VRING_SEGMENTS.
- * Each segment must hold ONE ENTIRE FRAME's vertex data -- ps3gl_vring_alloc
- * deliberately refuses to wrap mid-frame (it would stomp data the GPU has not
- * fetched yet), so an undersized segment silently drops draws and geometry
- * goes missing. The inherited ioQuake3 value was 2 MB total = 1 MB/segment
- * = ~29k verts at 36 B each, which Half-Life exceeds at 1080p (hardware-
- * confirmed: "vertex ring segment exhausted ... need 35676, have 25168").
- * 32 MB total = 16 MB/segment = ~466k verts/frame, against 256 MB of GDDR3 of
- * which the 1080p framebuffers and depth take ~25 MB. */
+/* RSX vertex ring in PS3GL_VRING_SEGMENTS: a segment holds a whole frame (no mid-frame wrap; too small drops draws).
+ * 16 MB/segment (~466k verts): 1 MB overflowed in Half-Life at 1080p (HW: need 35676, have 25168). */
 #define PS3GL_VRING_SIZE        (32 * 1024 * 1024)
 
 /* Identity ARGB remap. Fallback for varying PSL1GHT macro definitions. */
@@ -95,14 +86,12 @@ typedef struct {
     uint8_t         num_levels; /* contiguous mip levels uploaded so far, >=1 */
     uint8_t         swizzled;   /* Morton-ordered, tightly packed levels, no pitch. */
     uint8_t         alloc_levels; /* mip levels `data` was actually sized for, >=1 */
-                                /* swizzled/alloc_levels are both decided ONCE, when
-                                 * `data` is allocated, and fixed for its lifetime --
-                                 * the buffer size depends on both, and the cvars
-                                 * behind them (gl_ps3_swizzle/gl_ps3_mipmap) can be
-                                 * toggled between two uploads of the same texture. */
+                                /* swizzled/alloc_levels: fixed when `data` is allocated (its size depends on both);
+                                 * their cvars (gl_ps3_swizzle/gl_ps3_mipmap) can change between two uploads. */
     uint8_t         wrap_s, wrap_t;
     uint8_t         min_filter, mag_filter;
     uint8_t         no_swizzle_hint; /* set by ps3gl_texture_hint_no_swizzle() before alloc */
+    uint32_t        fixed_pitch; /* ps3gl_tex_fixed(): pitch of the max size, kept while width/height change */
     gcmTexture      gcm_tex;
     int             dirty;
     int             content_dirty; /* RSX-local texels changed; cache invalidate pending */
@@ -132,19 +121,8 @@ typedef struct {
 	GLuint      buffer; /* GL_ARRAY_BUFFER_ARB bound when ptr was specified */
 } ps3gl_array_ptr_t;
 
-/* RSX-local backing for the small ARB VBO subset ref_gl uses.
- *
- * GL_STATIC_DRAW and GL_DYNAMIC_DRAW get ONE allocation: both are re-specified
- * rarely (static world geometry once per map) or updated in place with
- * glBufferSubDataARB (ref_gl's decal buffer), and glBufferSubDataARB only ever
- * writes the current slot -- rotating a sub-data buffer would leave the other
- * slots holding stale geometry.
- *
- * GL_STREAM_DRAW rotates through PS3GL_STREAM_BUFFER_SLOTS allocations, one
- * step per glBufferDataARB (the GL orphan point), so a re-specify never stomps
- * memory the RSX is still fetching from a draw submitted earlier this frame.
- * ref_gl only uses STREAM for the two r_vbo_dlightmode buffers, and always
- * re-specifies them whole. */
+/* RSX-local backing for ref_gl's ARB VBOs. STATIC/DYNAMIC: one allocation (glBufferSubDataARB writes the current slot);
+ * STREAM rotates PS3GL_STREAM_BUFFER_SLOTS per glBufferDataARB, so a re-specify never hits memory the RSX reads. */
 typedef struct {
 	void       *data[PS3GL_STREAM_BUFFER_SLOTS];
 	uint32_t    offset[PS3GL_STREAM_BUFFER_SLOTS];
@@ -173,36 +151,17 @@ typedef struct {
     volatile uint32_t *fence_label[PS3GL_VRING_SEGMENTS]; /* GCM label addr; RSX writes here when pipeline drains */
     uint32_t    fence_val[PS3GL_VRING_SEGMENTS];           /* last value written to each label */
 
-    /* Sizing telemetry. peak_head is the high-water mark across all frames, so
-     * PS3GL_VRING_SIZE can be set from measurement instead of guesswork;
-     * frame_drops counts draws lost to exhaustion in the current frame. */
+    /* Sizing telemetry: peak_head is the high-water mark over all frames (to size PS3GL_VRING_SIZE from measurement);
+     * frame_drops counts draws lost to exhaustion this frame. */
     uint32_t    peak_head;
     uint32_t    frame_drops;
     uint32_t    total_drops;
 } ps3gl_vring_t;
 
-/* Host-memory (XDR) ring, IO-mapped so the RSX can fetch vertex data straight
- * out of it over FlexIO. This exists for exactly one reason: glDrawElements
- * below direct-binds client arrays when rsxAddressToOffset resolves them and
- * otherwise falls back to a scalar per-vertex interleave-copy into the vring.
- * ref_gl's studio arrays live in BSS, which is not IO-mapped, so every studio
- * mesh took the copy -- measured at 2.66ms/frame (`submit`) on c4a2.
- *
- * Segments and fencing are NOT independent of the vring: it rotates on
- * ps3gl.vring.cur_seg and is covered by the same per-segment fence, because
- * both hold data for the same frame's commands and are retired together.
- *
- * reserve/commit rather than a plain alloc: a caller filling a variable-length
- * run (a studio submodel) knows only an upper bound up front, and permanently
- * consuming that bound would exhaust the ring in a handful of models. */
-/* 2 x 1 MB. Do NOT size this from the measured peak alone: ps3gl_hring_reserve
- * bound-checks against the WORST CASE a caller might write, and the studio
- * reserve is MAXSTUDIOVERTS * 24 = 384 KB. So a segment must hold
- * peak + 384 KB, not peak -- at 512 KB/segment (sized off the 291 KB measured
- * peak) every reserve past head=128 KB fails and silently falls back to BSS,
- * which reads as "the feature does nothing" with no drop counted, because a
- * caller with a fallback is not a dropped draw.
- * 291 KB peak + 384 KB reserve = 675 KB, so 1 MB/segment clears it. */
+/* Host (XDR) ring, IO-mapped so the RSX fetches vertices from it: studio arrays in BSS took a per-vertex copy (2.66
+ * ms/frame on c4a2). It rotates and fences with the vring; reserve/commit: a caller knows only an upper bound. */
+/* 2 x 1 MB: a segment must hold the 291 KB peak plus the 384 KB worst-case studio reserve, or reserves past the head
+ * fall back to BSS silently (no drop counted). */
 #define PS3GL_HRING_SIZE        (2 * 1024 * 1024)
 
 typedef struct {
@@ -272,9 +231,8 @@ typedef struct {
     int                 clip_plane_enabled;
     float               clip_plane[4];     /* (nx,ny,nz,dist): dot(n,v)>=dist keeps */
 
-    /* Fog: state is tracked faithfully so glIsEnabled(GL_FOG)/glGetFloatv(GL_FOG_COLOR)
-     * answer correctly (xash's gl_rmain.c branches on both), but NOT yet applied to
-     * any draw -- see ps3gl_glapi.c. */
+    /* Fog: tracked so glIsEnabled(GL_FOG)/glGetFloatv(GL_FOG_COLOR) answer (xash's gl_rmain.c branches on both), but
+     * NOT yet applied to any draw -- see ps3gl_glapi.c. */
     struct {
         int     enabled;
         GLenum  mode;              /* GL_EXP / GL_EXP2 / GL_LINEAR */
@@ -306,14 +264,8 @@ typedef struct {
         float           u1, v1;
         uint32_t        color;
 
-        /* Deferred GL_POLYGON batch: consecutive same-state polygons (one
-         * BSP surface each, from ref/gl/gl_rsurf.c's DrawGLPoly) accumulate
-         * into buf[] across multiple glBegin/glEnd pairs instead of each
-         * paying its own vring_alloc+bind+draw. Each range below is one
-         * polygon's still-intact triangle fan -- multiple rsxDrawVertexArray
-         * calls against a single unchanged attribute binding are legal (the
-         * binding is persistent GCM register state), so no vertex expansion
-         * is needed, just one bind followed by N draws. See ps3gl_vertices.c. */
+        /* Deferred GL_POLYGON batch: same-state polygons (DrawGLPoly) gather in buf[] across glBegin/glEnd; each
+         * range is one polygon's fan, so one bind then N rsxDrawVertexArray calls. See ps3gl_vertices.c. */
         int             batch_active;
         int             batch_nranges;
         int             batch_first[PS3GL_MAX_BATCH_RANGES];
@@ -338,13 +290,8 @@ typedef struct {
     ps3gl_texture_t     textures[PS3GL_MAX_TEXTURES];
     GLuint              tex_next_name;
 
-    /* Textures unbound this frame can still be sampled by draws the RSX has
-     * queued but not yet executed (submission runs up to one frame ahead --
-     * same slack PS3GL_VRING_SEGMENTS relies on). rsxFree()'ing them
-     * immediately races the GPU and can wedge/blank the display with no CPU
-     * exception (see ps3gl_defer_texture_free()). Deferred frees are flushed
-     * from ps3gl_begin_frame() right after the vring fence wait proves the
-     * GPU has drained the frame(s) that could still reference them. */
+    /* Unbound textures can still be sampled by queued draws (submission runs up to a frame ahead): an rsxFree() at once
+     * can wedge the display, so ps3gl_begin_frame() frees them after the vring fence wait. */
     void               *pending_tex_free[PS3GL_MAX_TEXTURES];
     int                 pending_tex_free_count;
 
@@ -371,16 +318,12 @@ void ps3gl_shutdown(void);
 void ps3gl_begin_frame(void);
 void ps3gl_end_frame(void);
 
-/* Called once per frame from ref/gl/gl_rsurf.c (declared there via a local
- * extern, since that file can't include this header across the ref_gl/ps3gl
- * module boundary -- see the call site's comment). Feeds the dlight-cost
- * telemetry in ps3gl_end_frame's window report. */
+/* Once per frame from ref/gl/gl_rsurf.c (a local extern there: it cannot include this header across the module
+ * boundary). Feeds the dlight-cost telemetry of ps3gl_end_frame's window report. */
 void ps3gl_report_dlight_cost(uint32_t surface_count, uint32_t luxel_count);
 
-/* Called from vid_ps3.c's PS3_RSX_WaitForFreeBuffer. Accumulated per frame and
- * reported in the same 5s window -- this is the CPU-vs-GPU split that the
- * vring fence wait alone cannot give (that fence is waited on AFTER this one,
- * so it reads ~0% whenever the GPU is the real bottleneck). */
+/* From vid_ps3.c's PS3_RSX_WaitForFreeBuffer, per 5 s window: the CPU-vs-GPU split the vring fence wait cannot give
+ * (that fence is waited after this one, so it reads ~0% when the GPU is the bottleneck). */
 void ps3gl_report_flip_wait(double seconds, uint32_t sleeps);
 
 /* Coarse CPU phase split, fed once per frame from engine/common/host.c.
@@ -393,54 +336,36 @@ void ps3gl_report_frame_phases(double input, double server, double client,
 void ps3gl_report_scene_phases(double setup, double world, double entities,
                                double water);
 
-/* PPE time-base clock for the fine-grained phase timers in ref_gl. Deliberately
- * NOT Platform_DoubleTime(): that is gettimeofday() on this platform (an LV2
- * syscall at 1us granularity, see engine/platform/posix/sys_posix.c), which is
- * fine for the ~8 coarse seams per frame above but would both quantize and
- * inflate the entity/studio seams below, which fire hundreds of times a frame.
- * ps3gl_ticks() is a single mftb instruction. */
+/* PPE timebase (one mftb) for ref_gl's fine phase timers. Not Platform_DoubleTime(): gettimeofday() is an LV2 syscall
+ * at 1 us granularity, which would quantize and inflate seams that fire hundreds of times a frame. */
 uint64_t ps3gl_ticks(void);
 double ps3gl_ticks_to_sec(uint64_t ticks);
 
-/* Split of the `entities` figure above by what is actually being drawn, fed
- * from ref_gl's R_DrawEntitiesOnList. That phase is NOT just studio models --
- * it also runs brush/sprite entities, CL_DrawEFX twice, the client DLL's two
- * triangle callbacks and the viewmodel, and no counter distinguished them. */
+/* Split of `entities` above by what is drawn (R_DrawEntitiesOnList): not just studio models but also brush/sprite
+ * entities, CL_DrawEFX twice, the client DLL's two triangle callbacks and the viewmodel. */
 void ps3gl_report_entity_phases(uint64_t studio, uint64_t brush, uint64_t sprite,
                                 uint64_t efx, uint64_t clienttri, uint64_t viewmodel);
 
-/* Split of the studio-model cost itself, fed from ref_gl's gl_studio.c.
- * `client` is the client DLL's own studio work (bone setup, gait, state churn),
- * derived by subtraction at the R_StudioDrawModelInternal funnel because that
- * code lives in the game DLL, not here. `fill`/`submit` are sub-items OF
- * `build`, not additional to it. `models` replaces r_stats.c_studio_models_drawn,
- * which is only zeroed inside GL_BackendEndFrame's `r_speeds > 0` early-return
- * guard and therefore prints a running total in a default build. */
+/* Split of the studio-model cost (gl_studio.c): `client` is the game DLL's work, by subtraction; `fill`/`submit` are
+ * parts of `build`; `models` replaces r_stats.c_studio_models_drawn, which only resets when r_speeds > 0. */
 void ps3gl_report_studio_phases(uint64_t client, uint64_t entlight, uint64_t skin,
                                 uint64_t light, uint64_t build, uint64_t fill,
                                 uint64_t submit, uint32_t models);
 
-/* Sub-split of `client` above, fed from the game DLL's own studio renderer
- * (hlsdk-portable/cl_dll/StudioModelRenderer.cpp). Sub-items OF client, not
- * additional to it. Needed because `client` is derived by subtraction in ref_gl
- * and is therefore one opaque number -- the code it measures lives in a
- * different module entirely. */
+/* Sub-split of `client` above (parts of it), from the game DLL's StudioModelRenderer.cpp: ref_gl only gets `client` as
+ * one number by subtraction, since that code lives in another module. */
 void ps3gl_report_studio_client(uint64_t xform, uint64_t bones, uint64_t events);
 
-/* Renderer cvars pushed down from ref_gl once per frame (ps3gl cannot reach
- * the cvar system itself). Both are read at texture-upload time, so a change
- * takes effect on the next map load / vid_restart -- which is what makes a
- * same-session A/B on real hardware possible without a rebuild. */
+/* Renderer cvars from ref_gl once per frame (ps3gl cannot reach cvars), read at texture upload: a change acts at the
+ * next map load / vid_restart, so a same-session A/B on HW needs no rebuild. */
 void ps3gl_set_texture_options(int swizzle_enabled, int mipmap_enabled);
 
 /* One-shot diagnostic used by ref_gl's dynamic-light atlas dump. The next
  * TexSubImage upload verifies the RSX-memory byte layout after conversion. */
 void ps3gl_arm_texture_upload_probe(void);
 
-/* Logs the GL-to-RSX state the NEXT draw would be submitted under: which
- * fragment program the texenv/TMU combination selects, the immediate-mode
- * vertex color that program multiplies by, and the ROP blend/depth state.
- * Call sites decide when to fire it -- it prints unconditionally. */
+/* Logs the state the NEXT draw would use (fragment program from texenv/TMUs, immediate color, ROP blend/depth); it
+ * prints unconditionally, so call sites decide when. */
 void ps3gl_log_draw_state(const char *tag);
 
 /* Subsystem init */
@@ -469,18 +394,12 @@ void ps3gl_apply_shader(void);
 /* Vertex ring buffer */
 ps3gl_vertex_t *ps3gl_vring_alloc(int count, uint32_t *out_offset);
 
-/* Raw carve out of the same ring, for data that is not a ps3gl_vertex_t:
- * client-side vertex arrays staged into RSX memory so they can be bound
- * alongside a real VBO (glDrawElements' mixed path), and index arrays. Same
- * per-frame fencing and same refuse-to-wrap policy as ps3gl_vring_alloc. */
+/* Raw carve from the same ring for data that is not ps3gl_vertex_t (client arrays staged for glDrawElements' mixed
+ * path, index arrays); same per-frame fencing and refuse-to-wrap policy as ps3gl_vring_alloc. */
 void *ps3gl_vring_alloc_raw(uint32_t bytes, uint32_t *out_offset);
 
-/* Host (XDR) ring -- see ps3gl_hring_t. reserve() bound-checks and returns a
- * CPU pointer WITHOUT consuming; commit() consumes what was actually written.
- * Callers get a plain pointer and nothing else: the whole point is that it
- * looks like an ordinary client array to ref_gl, and glDrawElements then
- * resolves it with rsxAddressToOffset like any other. Returns NULL if the
- * mapping failed or the segment is full -- callers MUST have a BSS fallback. */
+/* Host ring (ps3gl_hring_t): reserve() bound-checks and returns a plain pointer (a client array to glDrawElements)
+ * without consuming; commit() consumes what was written. NULL when unmapped or full: callers need a BSS fallback. */
 void ps3gl_hring_init(void);
 void ps3gl_hring_shutdown(void);
 void *ps3gl_hring_reserve(uint32_t bytes);
@@ -492,10 +411,8 @@ uint32_t ps3gl_frame_index(void);
 
 uint32_t ps3gl_gl_to_gcm_prim(GLenum mode);
 
-/* Force-submits a pending deferred GL_POLYGON batch (see the imm struct's
- * comment above), if one exists. Must be called before anything else writes
- * to the GCM FIFO or ends the frame -- glClear, glDrawElements, and
- * ps3gl_end_frame (before its fence-label write) all call this first. */
+/* Submits a pending deferred GL_POLYGON batch; must run before anything else writes the GCM FIFO or ends the frame
+ * (glClear, glDrawElements and ps3gl_end_frame, before its fence label, call it first). */
 void ps3gl_flush_polygon_batch(void);
 
 /* Draws a range of a caller-filled vring block (ps3gl_vring_alloc) under the current GL
@@ -514,9 +431,8 @@ void ps3gl_flush_deferred_texture_frees(void);
 int ps3gl_shader_key(void);
 void ps3gl_shader_select(int key);
 
-/* Cross-module internals. Previously re-declared by hand in each consumer
- * (ps3gl_draw.c, ps3gl_shaders.c, ps3gl_vertices.c); centralized here so the
- * definitions in ps3gl_matrices.c/ps3gl_vertices.c see a prototype. */
+/* Cross-module internals, declared once here so the definitions in ps3gl_matrices.c/ps3gl_vertices.c see a
+ * prototype. */
 const float *ps3gl_get_mvp(void);
 uint32_t ps3gl_get_mvp_generation(void);
 void ps3gl_inc_draw_count(void);
@@ -590,11 +506,8 @@ void glColor3ubv(const GLubyte *v);
 void glBindTexture(GLenum target, GLuint texture);
 void glGenTextures(GLsizei n, GLuint *textures);
 void glDeleteTextures(GLsizei n, const GLuint *textures);
-/* PS3-only hint: force the linear (non-swizzled) layout for the bound
- * texture's next glTexImage2D. Same rule as wrap_s/wrap_t -- call BEFORE
- * that call, since layout is fixed at allocation. For a full-screen video
- * quad the swizzle Morton lookup buys nothing and its mandatory staging
- * copy plus memcpy to VRAM doubles the upload cost every changed frame. */
+/* PS3-only: the linear layout for the bound texture's next glTexImage2D; call before it (the layout is fixed at
+ * allocation). A video quad gains nothing from swizzle and pays its staging copy every frame. */
 void ps3gl_texture_hint_no_swizzle(void);
 void glTexImage2D(GLenum target, GLint level, GLint internalformat,
                       GLsizei width, GLsizei height, GLint border,

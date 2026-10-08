@@ -8,6 +8,8 @@
 #include "ps3_depth.h"
 #include "ps3_spe.h"
 #include "ps3_spevb.h"
+#include "ps3_spetex.h"
+#include "ps3_spepix.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_tasplit.h"
@@ -42,6 +44,7 @@ extern "C" int get_drop_policy_preset();
 extern "C" int get_strip_merge_preset();
 extern "C" int get_vertex_array_preset();
 extern "C" int get_depth_float_preset();
+extern "C" uint8_t* ps3gl_tex_fixed(GLsizei max_w, GLsizei max_h, GLsizei w, GLsizei h, uint32_t* pitch);
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -212,6 +215,9 @@ static bool s_job_decoded;     // this job's TA replay has finished
 static TaContext* s_job_ctx;
 static TaContext* s_busy_ctx;  // context the render thread owns right now
 static u32 s_job_raw_end, s_job_cont_end, s_job_fence;
+// Plan 5.41 Frame Hold: the timebase tick of the emulated vblank a render's flip waits for, 0 = none.
+static u64 s_snap_hold, s_job_hold;
+static u32 s_hold_last_vbl, s_hold_run;
 static u32 s_stat_dropped;
 // TR5: a vblank present the render thread was too busy to take. Unlike a dropped
 // render this loses nothing - the framebuffer is unmarked, so the next vblank retries.
@@ -1087,6 +1093,7 @@ void SetFbScale(float x, float y)
 	s_fb_scale_y = y;
 }
 
+// spepix_check: begin vram (misc/spepix_check compiles the spepix_check regions as the SPU convert's reference)
 // VRAM is stored as two interleaved 32-bit banks.
 static u32 vri_off(u32 addr)
 {
@@ -1110,6 +1117,7 @@ static u32 vri16(u32 addr)
 	u32 w = *(u32*)&PVRPARAMS.vram[vri_off(addr & ~3u)];
 	return (addr & 2) ? (w >> 16) : (w & 0xFFFF);
 }
+// spepix_check: end vram
 
 // nullDC-v1 UsingAutoSort(): with FPU_PARAM_CFG bit 21 set, the region array header picks the mode.
 static bool using_autosort()
@@ -1286,6 +1294,15 @@ static void reset_param_cache()
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
 static u32 apply_param_body(const DcParam& p, u32 list);
 
+// 5.12 #3: p's slot in this scene's SPU texture hashes: its list index, or the background's slot.
+static inline u32 spetex_slot(const DcParam& p)
+{
+	if (&p == &g_rr.bg_param)
+		return SPETEX_BG;
+	const uintptr_t off = (uintptr_t)&p - (uintptr_t)s_rl.param;
+	return off < (uintptr_t)s_rl.nparam * sizeof(DcParam) ? (u32)(off / sizeof(DcParam)) : SPETEX_NONE;
+}
+
 static u32 apply_param(const DcParam& p, u32 list)
 {
 	if (s_cache_valid && s_cache_list == list && s_cache_isp == p.isp.full &&
@@ -1325,7 +1342,7 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 	glStencilFunc(GL_ALWAYS, p.pcw.Shadow ? 0x80 : 0, 0xFF);
 
 	const u64 t_tex = PERF_TICKS();
-	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw);
+	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw, spetex_slot(p));
 	s_dt[DT_TEX] += PERF_TICKS() - t_tex;
 	if (textured)
 	{
@@ -2220,7 +2237,8 @@ static void draw_frame()
 		vp_w = sw;
 	u32 vp_x = (sw - vp_w) / 2;
 
-	ps3tex_frame_begin();
+	// draw_scene binds no list param without strips.
+	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
 
 	glDisable(GL_SCISSOR_TEST);
@@ -2278,7 +2296,7 @@ static void rtt_render()
 
 	if (!ps3_video_begin_frame())
 		return;
-	ps3tex_frame_begin();
+	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
 	glDisable(GL_SCISSOR_TEST);
 	glViewport(0, 0, w, h);
@@ -2348,14 +2366,30 @@ static bool fb_needs_present()
 	return vri(FB_R_SOF1 & ~3u) != FB_PRESENT_MAGIC;
 }
 
-static inline u32 e5(u32 v) { return (v << 3) | (v >> 2); }
-static inline u32 e6(u32 v) { return (v << 2) | (v >> 4); }
-
 // TR3: the VRAM read stays on the SH4 thread, so the pixels are the ones the
 // guest had written at this vblank; only the quad goes to the render thread.
 static u32 s_fb_cpy_w, s_fb_cpy_h;
 
-static bool present_fb_convert()
+// 5.12 #5: 3 RSX textures the SPU converts frames into; the RSX may still draw the last 2 frames (ps3gl's vring fence
+// covers frame N-2). s_fb_buf is this present's texture, -1 for s_fb_pix.
+#define FB_SPU_BUFS 3
+static GLuint s_fb_rtex[FB_SPU_BUFS];
+static u8* s_fb_rmem[FB_SPU_BUFS];
+static bool s_fb_spu_ok;
+static u32 s_fb_rnext;
+static int s_fb_buf = -1;
+
+// spepix_check: begin fb
+static inline u32 e5(u32 v) { return (v << 3) | (v >> 2); }
+static inline u32 e6(u32 v) { return (v << 2) | (v >> 4); }
+
+struct FbGeom
+{
+	u32 sof1, depth, cpy_w, cpy_h, line_bytes;
+};
+
+// The framebuffer of the snapped registers; false when there is none or its format is not handled.
+static bool fb_geom(FbGeom* fg)
 {
 	u32 fb_x_size = s_snap.fb_r_size & 0x3FF;
 	u32 fb_y_size = (s_snap.fb_r_size >> 10) & 0x3FF;
@@ -2377,15 +2411,25 @@ static bool present_fb_convert()
 	u32 src_h = fb_y_size + 1;
 	u32 mod_px = (fb_modulus > 0 ? fb_modulus - 1 : 0) << (wide ? 0 : 1);
 	u32 bpp = wide ? 4 : 2;
-	u32 cpy_w = src_w > FB2D_W ? FB2D_W : src_w;
-	u32 cpy_h = src_h > FB2D_H ? FB2D_H : src_h;
+	fg->sof1 = s_snap.fb_r_sof1;
+	fg->depth = fb_depth;
+	fg->cpy_w = src_w > FB2D_W ? FB2D_W : src_w;
+	fg->cpy_h = src_h > FB2D_H ? FB2D_H : src_h;
+	fg->line_bytes = (src_w + mod_px) * bpp;
+	return true;
+}
 
-	u32 addr = s_snap.fb_r_sof1;
-	for (u32 y = 0; y < cpy_h; y++)
+// The PPU convert, into s_fb_pix as RGBA.
+static void fb_convert_ppu(const FbGeom& fg)
+{
+	const bool wide = fg.depth == 3;
+	const u32 bpp = wide ? 4 : 2;
+	u32 addr = fg.sof1;
+	for (u32 y = 0; y < fg.cpy_h; y++)
 	{
 		u32 line = addr;
-		u32* out = &s_fb_pix[(size_t)y * cpy_w];
-		for (u32 x = 0; x < cpy_w; x++, line += bpp)
+		u32* out = &s_fb_pix[(size_t)y * fg.cpy_w];
+		for (u32 x = 0; x < fg.cpy_w; x++, line += bpp)
 		{
 			u32 r, g, b;
 			if (wide)
@@ -2396,16 +2440,99 @@ static bool present_fb_convert()
 			else
 			{
 				u32 c = vri16(line);
-				if (fb_depth == 1) { r = e5(c >> 11); g = e6((c >> 5) & 0x3F); b = e5(c & 0x1F); }
+				if (fg.depth == 1) { r = e5(c >> 11); g = e6((c >> 5) & 0x3F); b = e5(c & 0x1F); }
 				else               { r = e5((c >> 10) & 0x1F); g = e5((c >> 5) & 0x1F); b = e5(c & 0x1F); }
 			}
 			out[x] = (r << 24) | (g << 16) | (b << 8) | 0xFF;
 		}
-		addr += (src_w + mod_px) * bpp;
+		addr += fg.line_bytes;
 	}
-	s_fb_cpy_w = cpy_w;
-	s_fb_cpy_h = cpy_h;
+}
+
+// The SPU job for the same frame, into rows of FB2D_W words at dst.
+static void fb_job(const FbGeom& fg, u32 dst, SpePixFb* j)
+{
+	j->sof1 = fg.sof1;
+	j->depth = fg.depth;
+	j->w = fg.cpy_w;
+	j->h = fg.cpy_h;
+	j->line_bytes = fg.line_bytes;
+	j->dst_ea = dst;
+	j->dst_pitch = FB2D_W * 4;
+}
+// spepix_check: end fb
+
+// 5.12 #5 CHECK: the SPU's copy (A8R8G8B8 rows of FB2D_W words) against s_fb_pix (RGBA).
+static void fb_check(const FbGeom& fg)
+{
+	u32* const c = ps3spepix_fb_check_buf();
+	if (!c)
+		return;
+	SpePixFb j;
+	fb_job(fg, (u32)(uintptr_t)c, &j);
+	if (!ps3spepix_fb(&j))
+		return;
+	for (u32 y = 0; y < fg.cpy_h; y++)
+		for (u32 x = 0; x < fg.cpy_w; x++)
+		{
+			const u32 p = s_fb_pix[y * fg.cpy_w + x], want = (p >> 8) | (p << 24);
+			if (c[y * FB2D_W + x] != want)
+			{
+				char what[128];
+				snprintf(what, sizeof(what), "depth %u %ux%u sof1 %06X line %u: pixel %u of row %u spu/ppu %08X/%08X",
+				         fg.depth, fg.cpy_w, fg.cpy_h, fg.sof1, fg.line_bytes, x, y, c[y * FB2D_W + x], want);
+				ps3spepix_fb_check(false, what);
+				return;
+			}
+		}
+	ps3spepix_fb_check(true, 0);
+}
+
+static bool present_fb_convert()
+{
+	FbGeom fg;
+	if (!fb_geom(&fg))
+		return false;
+	s_fb_cpy_w = fg.cpy_w;
+	s_fb_cpy_h = fg.cpy_h;
+	s_fb_buf = -1;
+	const int mode = ps3spepix_fb_mode();
+	if (mode == SPEPIX_ON && s_fb_spu_ok)
+	{
+		SpePixFb j;
+		fb_job(fg, (u32)(uintptr_t)s_fb_rmem[s_fb_rnext], &j);
+		if (ps3spepix_fb(&j))
+		{
+			s_fb_buf = (int)s_fb_rnext;
+			s_fb_rnext = (s_fb_rnext + 1) % FB_SPU_BUFS;
+			return true;
+		}
+	}
+	fb_convert_ppu(fg);
+	if (mode == SPEPIX_CHECK)
+		fb_check(fg);
 	return true;
+}
+
+// 5.12 #5: the 3 framebuffer textures, before the render thread starts (ps3gl is not thread-safe).
+static void fb_spu_alloc()
+{
+	if (!ps3spepix_fb_preset() || s_fb_spu_ok)
+		return;
+	u32 i = 0;
+	for (; i < FB_SPU_BUFS; i++)
+	{
+		u32 pitch;
+		glGenTextures(1, &s_fb_rtex[i]);
+		glBindTexture(GL_TEXTURE_2D, s_fb_rtex[i]);
+		s_fb_rmem[i] = ps3gl_tex_fixed(FB2D_W, FB2D_H, FB2D_W, FB2D_H, &pitch);
+		if (!s_fb_rmem[i] || pitch != FB2D_W * 4)
+			break;
+	}
+	glBindTexture(GL_TEXTURE_2D, 0);
+	s_fb_spu_ok = i == FB_SPU_BUFS;
+	if (!s_fb_spu_ok)
+		printf("[spepix] framebuffer texture %u alloc failed; the PPU converts\n", i);
 }
 
 static void present_fb_draw()
@@ -2432,11 +2559,21 @@ static void present_fb_draw()
 	glViewport(vp_x, 0, vp_w, sh);
 	ps3gl_apply_states();
 
-	if (!s_fb_tex)
-		glGenTextures(1, &s_fb_tex);
 	glEnable(GL_TEXTURE_2D);
-	glBindTexture(GL_TEXTURE_2D, s_fb_tex);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, cpy_w, cpy_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fb_pix);
+	if (s_fb_buf >= 0)
+	{
+		// The SPU already wrote the texels; only the size the RSX samples changes.
+		u32 pitch;
+		glBindTexture(GL_TEXTURE_2D, s_fb_rtex[s_fb_buf]);
+		ps3gl_tex_fixed(FB2D_W, FB2D_H, cpy_w, cpy_h, &pitch);
+	}
+	else
+	{
+		if (!s_fb_tex)
+			glGenTextures(1, &s_fb_tex);
+		glBindTexture(GL_TEXTURE_2D, s_fb_tex);
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, cpy_w, cpy_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fb_pix);
+	}
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -2537,6 +2674,8 @@ static void rth_print_stats()
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
+	ps3spetex_stats(now - s_stat_t0);
+	ps3spepix_stats(now - s_stat_t0);
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
@@ -2731,11 +2870,11 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	rth_mark_decoded();
 }
 
-// Stage 2: every RSX call of the job.
-static void rth_job_draw(int type)
+// Stage 2: every RSX call of the job. hold: Frame Hold's emulated vblank tick for the flip, 0 = flip at once.
+static void rth_job_draw(int type, u64 hold)
 {
 	double t0 = os_GetSeconds();
-	double end_dt = 0.0;
+	double end_dt = 0.0, held = 0.0;
 	if (type == JOB_PRESENT)
 	{
 		REND_PHASE(PH_PRESENT);
@@ -2761,18 +2900,23 @@ static void rth_job_draw(int type)
 			draw_frame();
 			REND_PHASE(PH_ENDFRAME);
 			double t_end = os_GetSeconds();
-			ps3_video_end_frame();
-			end_dt = os_GetSeconds() - t_end;
+			if (hold)
+				held = ps3_video_end_frame_at(hold);
+			else
+				ps3_video_end_frame();
+			// The hold is idle time, kept out of busy= and job_max=.
+			end_dt = os_GetSeconds() - t_end - held;
 		}
 	}
 	REND_PHASE(PH_IDLE);
 
-	double dt = os_GetSeconds() - t0;
+	double dt = os_GetSeconds() - t0 - held;
 	s_stat_t_end  += end_dt;
 	s_stat_t_draw += dt - end_dt;
 	if (dt > s_stat_job_max)
 		s_stat_job_max = dt;
-	if (type == JOB_RENDER)
+	// Presents too: a 2D title that never renders still logs its SPE FB Convert window.
+	if (type == JOB_RENDER || type == JOB_PRESENT)
 		rth_print_stats();
 }
 
@@ -2794,13 +2938,14 @@ static void rth_thread(void* arg)
 		int type = s_job_type;
 		TaContext* c = s_job_ctx;
 		u32 raw_end = s_job_raw_end, cont_end = s_job_cont_end, fence = s_job_fence;
+		u64 hold = s_job_hold;
 		memcpy(&g_rr, &s_job_rr, sizeof(g_rr));
 		s_job_pending = false;
 		sysMutexUnlock(s_rmx);
 
 		if (type != JOB_PRESENT)
 			rth_job_decode(c, raw_end, cont_end, fence);
-		rth_job_draw(type);
+		rth_job_draw(type, hold);
 		// Before the job slot frees: the next fence's RESET may wait on this one (5.12 S3).
 		ps3spe_release(fence);
 
@@ -2932,6 +3077,7 @@ static bool rth_run(int type, TaContext* c)
 		s_job_raw_end = c ? c->raw_used : 0;
 		s_job_cont_end = c ? c->n_cont : 0;
 		s_job_fence = (type == JOB_PRESENT) ? 0 : spe_fence(c);
+		s_job_hold = (type == JOB_RENDER) ? s_snap_hold : 0;
 		s_job_decoded = (type == JOB_PRESENT);
 		memcpy(&s_job_rr, &s_snap, sizeof(s_job_rr));
 		s_job_pending = true;
@@ -2951,7 +3097,7 @@ static bool rth_run(int type, TaContext* c)
 	double host_fpscr;
 	__asm__ volatile("mffs %0" : "=f"(host_fpscr) :: "memory");
 	__asm__ volatile("mtfsfi 7,0" ::: "memory");
-	rth_job_draw(type);
+	rth_job_draw(type, 0);
 	__asm__ volatile("mtfsf 0xff,%0" :: "f"(host_fpscr) : "memory");
 	ps3spe_release(fence);
 	return true;
@@ -2972,6 +3118,8 @@ bool InitRenderer()
 	// Keep running headless if the RSX fails: the UDP log still shows why.
 	if (!ps3_video_init())
 		printf("[ps3rend] RSX init failed, running headless\n");
+	else
+		fb_spu_alloc();
 	if (!TileAccel.Init() || !TaStore.Init())
 		return false;
 	s_ta_fast = get_ta_fast_preset() != 0;
@@ -2981,14 +3129,19 @@ bool InitRenderer()
 	rth_start();
 	ps3spe_init();
 	ps3spevb_init();
+	ps3spetex_init();
+	ps3spepix_init();
 	return true;
 }
 
 void TermRenderer()
 {
+	ps3spetex_term();
 	ps3spevb_term();
 	ps3spe_term();
 	rth_stop();
+	// After the render thread: it may be waiting on a texture decode.
+	ps3spepix_term();
 	TileAccel.Term();
 	TaStore.Term();
 	for (u32 i = 0; i < TA_CONTEXTS; i++)
@@ -2998,6 +3151,9 @@ void TermRenderer()
 	}
 	ps3tex_reset();
 	s_fb_tex = 0;
+	memset(s_fb_rtex, 0, sizeof(s_fb_rtex));
+	memset(s_fb_rmem, 0, sizeof(s_fb_rmem));
+	s_fb_spu_ok = false;
 	ps3_video_term();
 }
 
@@ -3048,6 +3204,24 @@ void VBlank()
 	SH4_PHASE(PH_GUEST);
 }
 
+double spg_NextVblankTime();
+
+// Plan 5.41 Frame Hold: under 60 fps (4 frames in a row 2+ vblanks apart) a frame flips on the PS3 vsync matched
+// to the next emulated vblank, where the DC shows it. A 60 fps game keeps the flip queue, also with dropped frames.
+static u64 frame_hold_target()
+{
+	const u32 e = spg_VblankCountTotal + 1;
+	const u32 gap = e - s_hold_last_vbl;
+	s_hold_last_vbl = e;
+	s_hold_run = gap < 2 ? 0 : s_hold_run < 4 ? s_hold_run + 1 : 4;
+	if (!g_frame_hold_preset || !s_rend_running || s_hold_run < 4)
+		return 0;
+	const double at = spg_NextVblankTime();
+	if (at <= 0.0)
+		return 0;
+	return (u64)((s64)gettime() + (s64)((at - os_GetSeconds()) * (double)ps3_timebase_hz));
+}
+
 void StartRender()
 {
 	StallScope st_(ST_REND);
@@ -3093,6 +3267,7 @@ void StartRender()
 		return;
 	}
 
+	s_snap_hold = frame_hold_target();
 	if (rth_run(JOB_RENDER, rc))
 		FrameCount++;
 	// Mark the framebuffer the PVR just produced, so VBlank knows it is on

@@ -9,6 +9,8 @@
 #include "dc/pvr/pvr_if.h"
 #include "ps3_tex_slot.h"
 #include "ps3_tex_yuv.h"
+#include "ps3_spetex.h"
+#include "ps3_spepix.h"
 
 
 
@@ -23,6 +25,8 @@ extern "C" int get_tex_slot_hash_preset();
 extern "C" int get_yuv_block_preset();
 extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint32_t* pitch);
 extern "C" void ps3gl_tex_direct_end(void);
+extern "C" uint8_t* ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t* pitch, int* swizzled);
+extern "C" void ps3gl_tex_convert_check(void* dst, GLsizei width, GLsizei height, const void* rgba);
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -48,6 +52,9 @@ static u32 s_live;
 static int s_slot_hash = -1;
 static u32 s_evict, s_evict_hot;
 
+// 5.12 #3 SPE Tex Hash mode of this frame's request (OFF with the SPU down).
+static int s_spetex;
+
 static YuvTables s_yuvt;
 static int s_yuv_block = -1;
 // [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
@@ -67,7 +74,11 @@ static u32 s_bind_total, s_bind_mirror;
 static u64 s_t_hash, s_t_decode, s_t_gl;
 static u32 s_hashes;
 static u64 s_hash_bytes;
+// 5.12 #4: decodes the SPU did this window.
+static u32 s_spu_dec;
 
+// misc/spepix_check compiles the "spepix_check" regions of this file as the reference for the SPU decode.
+// spepix_check: begin twiddle
 static u32 s_out[1024 * 1024];
 static u32 s_tx[1024], s_ty[1024];
 
@@ -90,7 +101,9 @@ static void build_twiddle(u32 w, u32 h)
 	for (u32 x = 0; x < w; x++) s_tx[x] = twop(x, 0, w, h);
 	for (u32 y = 0; y < h; y++) s_ty[y] = twop(0, y, w, h);
 }
+// spepix_check: end twiddle
 
+// misc/spetex_check compiles the code from here to "spetex_check: end" as the reference for the SPU hash.
 // VRAM holds DC little-endian u32 words as host values, so sub-word reads index into the word.
 static inline u32 vram32(u32 a)
 {
@@ -308,7 +321,22 @@ static u32 hash_texture(const TexDesc& d)
 	}
 	return h;
 }
+// spetex_check: end
 
+// 5.12 #3: the SPU's hash of this scene's param pidx when it has one; CHECK hashes on the PPU and compares.
+static u32 tex_hash(const TexDesc& d, TSP tsp, TCW tcw, u32 pidx)
+{
+	u32 h;
+	if (s_spetex == SPETEX_ON && ps3spetex_hash(pidx, &h))
+		return h;
+	h = hash_texture(d);
+	u32 spu;
+	if (s_spetex == SPETEX_CHECK && ps3spetex_hash(pidx, &spu))
+		ps3spetex_check(pidx, tsp.full, tcw.full, spu, h);
+	return h;
+}
+
+// spepix_check: begin decode
 static void decode(const TexDesc& d, bool ignore_alpha)
 {
 	u32 w = d.w, h = d.h;
@@ -402,6 +430,108 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 	if (!opaque) s_alpha0_tex++;
 }
 
+// 5.12 #4: the SPU reads whole quadwords and does not wrap at the end of VRAM as vram32() does.
+static bool spu_fits(const TexDesc& d)
+{
+	u32 end = d.addr + d.src_bytes;
+	if (d.vq && d.vq_cb + 2048 > VRAM_SIZE)
+		return false;
+	if (!d.twiddled)
+		end = d.addr + ((d.h - 1) * d.pitch + (d.pitch < d.w ? d.pitch : d.w)) * 2;
+	return d.addr < VRAM_SIZE && ((end + 15) & ~15u) <= VRAM_SIZE;
+}
+
+// The SPU job for d into dst, in the bound texture's layout.
+static void spu_job(const TexDesc& d, bool ignore_alpha, u32 dst, u32 pitch, bool swizzled, u32 pal_ram_ctrl,
+                    SpePixTex* j)
+{
+	j->fmt = d.fmt;
+	j->w = d.w;
+	j->h = d.h;
+	j->addr = d.addr;
+	j->pitch = d.pitch;
+	j->flags = (d.twiddled ? SPEPIX_TW : 0) | (d.vq ? SPEPIX_VQ : 0) | (d.pal4 ? SPEPIX_PAL4 : 0) |
+	           (d.pal8 ? SPEPIX_PAL8 : 0) | (ignore_alpha && d.fmt != 3 ? SPEPIX_IGNA : 0) | (swizzled ? SPEPIX_SWZ : 0);
+	j->pal_base = d.pal_base;
+	j->vq_cb = d.vq_cb;
+	j->pal_ctrl = pal_ram_ctrl & 3;
+	j->dst_ea = dst;
+	j->dst_pitch = pitch;
+}
+// spepix_check: end decode
+
+// 5.12 #4: the SPU decodes d into the bound texture's RSX memory; false leaves it to the PPU paths.
+static bool upload_spu(const TexDesc& d, bool ignore_alpha)
+{
+	if (!spu_fits(d))
+	{
+		ps3spepix_tex_skip();
+		return false;
+	}
+	u32 pitch;
+	int swz;
+	u8* const dst = ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz);
+	if (!dst)
+		return false;
+	SpePixTex j;
+	spu_job(d, ignore_alpha, (u32)(uintptr_t)dst, pitch, swz != 0, g_rr.pal_ram_ctrl, &j);
+	u32 res;
+	// A late SPU is down now; the PPU path rewrites the whole level.
+	if (!ps3spepix_tex(&j, &res))
+		return false;
+	ps3gl_tex_direct_end();
+	if (!(res & SPEPIX_LIT))
+		s_black_tex++;
+	if (!(res & SPEPIX_OPAQUE))
+		s_alpha0_tex++;
+	s_spu_dec++;
+	return true;
+}
+
+// 5.12 #4 CHECK: the SPU decodes into a copy in the bound texture's layout, decode() runs as before, and its words as
+// glTexImage2D stores them must equal the copy, with the same black and alpha-0 counts.
+static void check_spu(const TexDesc& d, bool ignore_alpha)
+{
+	u32* const spu = ps3spepix_tex_check_buf(0);
+	u32* const ppu = ps3spepix_tex_check_buf(1);
+	u32 pitch = 0, res = 0;
+	int swz = 0;
+	bool ran = false;
+	SpePixTex j;
+	if (!spu_fits(d))
+		ps3spepix_tex_skip();
+	else if (spu && ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz))
+	{
+		spu_job(d, ignore_alpha, (u32)(uintptr_t)spu, pitch, swz != 0, g_rr.pal_ram_ctrl, &j);
+		ran = ps3spepix_tex(&j, &res);
+	}
+	const u32 black = s_black_tex, alpha0 = s_alpha0_tex;
+	decode(d, ignore_alpha);
+	if (!ran)
+		return;
+	ps3gl_tex_convert_check(ppu, d.w, d.h, s_out);
+	const u32 rows = swz ? 1 : d.h, cols = swz ? d.w * d.h : d.w, stride = swz ? 0 : pitch / 4;
+	for (u32 y = 0; y < rows; y++)
+		for (u32 x = 0; x < cols; x++)
+			if (spu[y * stride + x] != ppu[y * stride + x])
+			{
+				char what[160];
+				snprintf(what, sizeof(what), "fmt %u %ux%u flags %02X pitch %u addr %06X: word %u of row %u spu/ppu %08X/%08X",
+				         d.fmt, d.w, d.h, j.flags, d.pitch, d.addr, x, y, spu[y * stride + x], ppu[y * stride + x]);
+				ps3spepix_tex_check(false, what);
+				return;
+			}
+	const u32 want = (s_black_tex == black ? SPEPIX_LIT : 0) | (s_alpha0_tex == alpha0 ? SPEPIX_OPAQUE : 0);
+	if (res != want)
+	{
+		char what[96];
+		snprintf(what, sizeof(what), "fmt %u %ux%u: lit/opaque bits spu/ppu %u/%u", d.fmt, d.w, d.h, res, want);
+		ps3spepix_tex_check(false, what);
+		return;
+	}
+	ps3spepix_tex_check(true, 0);
+}
+
 // P42: a YUV texture straight into the bound texture's RSX rows; false leaves it to decode() + glTexImage2D.
 static bool upload_yuv_block(const TexDesc& d)
 {
@@ -432,10 +562,16 @@ static void upload(const TexDesc& d, bool ignore_alpha)
 		s_yuv_last_h = d.h;
 		s_yuv_last_pitch = d.pitch;
 		s_yuv_last_kind = d.vq ? 'v' : d.twiddled ? 't' : 'p';
-		if (upload_yuv_block(d))
-			return;
 	}
-	decode(d, ignore_alpha);
+	const int pix = ps3spepix_tex_mode();
+	if (pix == SPEPIX_ON && upload_spu(d, ignore_alpha))
+		return;
+	if (pix == SPEPIX_CHECK)
+		check_spu(d, ignore_alpha);
+	else if (d.fmt == 3 && upload_yuv_block(d))
+		return;
+	else
+		decode(d, ignore_alpha);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
 }
 
@@ -449,8 +585,14 @@ static void free_entry(TexEntry& e)
 	memset(&e, 0, sizeof(e));
 }
 
-void ps3tex_frame_begin()
+void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 {
+	// 5.12 #3: the SPU starts on this scene's textures before the rest of the frame.
+	s_spetex = ps3spetex_mode();
+	if (s_spetex != SPETEX_OFF)
+		ps3spetex_request(params, nparam, g_rr.bg_param.pcw.full, g_rr.bg_param.tsp.full, g_rr.bg_param.tcw.full,
+		                  g_rr.text_control, g_rr.pal_ram_ctrl);
+
 	// Entries sit where the other slot function put them, so a switch starts from an empty cache.
 	const int slot_hash = get_tex_slot_hash_preset() != 0;
 	if (slot_hash != s_slot_hash)
@@ -493,7 +635,7 @@ static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 }
 
-bool ps3tex_bind(TSP tsp, TCW tcw)
+bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
 {
 	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
 	bool mirror_u = !tsp.ClampU && tsp.FlipU;
@@ -532,7 +674,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 	if (hit && hit->checked_frame != s_frame)
 	{
 		const u64 t_h = PERF_TICKS();
-		u32 hsh = hash_texture(d);
+		u32 hsh = tex_hash(d, tsp, tcw, pidx);
 		s_t_hash += PERF_TICKS() - t_h;
 		s_hashes++;
 		if (hsh != hit->hash)
@@ -566,7 +708,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw)
 		hit->w = d.w;
 		hit->h = d.h;
 		const u64 t_h = PERF_TICKS();
-		hit->hash = hash_texture(d);
+		hit->hash = tex_hash(d, tsp, tcw, pidx);
 		s_t_hash += PERF_TICKS() - t_h;
 		s_hashes++;
 		hit->checked_frame = s_frame;
@@ -632,13 +774,13 @@ void ps3tex_stats(u32* decodes, u32* live)
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
 	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u"
-	       " | yuvblk=%u yuvlast=%ux%u%c%u\n",
+	       " | yuvblk=%u yuvlast=%ux%u%c%u spudec=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
 	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
-	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch);
+	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
@@ -646,4 +788,5 @@ void ps3tex_stats(u32* decodes, u32* live)
 	s_black_tex = s_alpha0_tex = 0;
 	s_evict = s_evict_hot = 0;
 	s_yuv_blk = 0;
+	s_spu_dec = 0;
 }

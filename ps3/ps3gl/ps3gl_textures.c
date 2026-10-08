@@ -214,6 +214,7 @@ static int gl_format_bpp(GLenum format)
     }
 }
 
+/* misc/spepix_check compiles the code from here to "spepix_check: end" as the reference for the SPU decode. */
 /* Do the source bytes arrive as B,G,R[,A] rather than R,G,B[,A]? */
 static int gl_format_is_bgr(GLenum format)
 {
@@ -403,6 +404,7 @@ static void swz_ensure_tables(uint32_t w, uint32_t h)
     g_swz_tbl_w = w;
     g_swz_tbl_h = h;
 }
+/* spepix_check: end */
 
 static uint8_t *swz_staging_get(uint32_t size)
 {
@@ -432,7 +434,7 @@ static void build_gcm_texture(ps3gl_texture_t *t)
     t->gcm_tex.location  = GCM_LOCATION_RSX;
     /* Swizzled textures ignore pitch, so the linear value stays. On scrambled swizzled texels, try 0 here
      * before touching swz_ensure_tables. */
-    t->gcm_tex.pitch     = tex_linear_pitch(t->width);
+    t->gcm_tex.pitch     = t->fixed_pitch ? t->fixed_pitch : tex_linear_pitch(t->width);
     t->gcm_tex.offset    = t->offset;
 }
 
@@ -460,6 +462,7 @@ static int tex_alloc_level0(ps3gl_texture_t *t, GLsizei width, GLsizei height)
     if (t->data && (t->width != (uint16_t)width || t->height != (uint16_t)height)) {
         ps3gl_defer_texture_free(t->data);
         t->data = NULL;
+        t->fixed_pitch = 0;
     }
 
     t->width      = (uint16_t)width;
@@ -598,6 +601,54 @@ void ps3gl_tex_direct_end(void)
     build_gcm_texture(t);
     t->dirty = 1;
     t->content_dirty = 1;
+}
+
+/* 5.12 #4: level 0 of the bound texture for an SPU to write, allocated as glTexImage2D does, in its own layout
+ * (*swizzled, else rows *pitch bytes apart). NULL if out of memory; else ps3gl_tex_direct_end() after the write. */
+uint8_t *ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t *pitch, int *swizzled)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t || !tex_alloc_level0(t, width, height))
+        return NULL;
+    *pitch = tex_linear_pitch(t->width);
+    *swizzled = t->swizzled;
+    return t->data;
+}
+
+/* 5.12 #4 CHECK: RGBA words as decode() writes them, converted into main memory as glTexImage2D would store them in
+ * the bound texture's layout. */
+void ps3gl_tex_convert_check(void *dst, GLsizei width, GLsizei height, const void *rgba)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t)
+        return;
+    if (t->swizzled)
+        swz_ensure_tables((uint32_t)width, (uint32_t)height);
+    convert_pixels((uint8_t *)dst, tex_linear_pitch((uint32_t)width), (const uint8_t *)rgba, width, height, 4,
+                   GL_RGBA, t->swizzled);
+}
+
+/* 5.12 #5: the bound texture as linear A8R8G8B8 of max_w x max_h, allocated once; each call sets the size the RSX
+ * samples (w x h) without moving its memory. Returns level 0 and its pitch; NULL if out of memory. */
+uint8_t *ps3gl_tex_fixed(GLsizei max_w, GLsizei max_h, GLsizei w, GLsizei h, uint32_t *pitch)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t)
+        return NULL;
+    if (!t->data || !t->fixed_pitch) {
+        t->no_swizzle_hint = 1;
+        if (!tex_alloc_level0(t, max_w, max_h))
+            return NULL;
+        t->fixed_pitch = tex_linear_pitch((uint32_t)max_w);
+    }
+    t->width = (uint16_t)w;
+    t->height = (uint16_t)h;
+    t->num_levels = 1;
+    build_gcm_texture(t);
+    t->dirty = 1;
+    t->content_dirty = 1;
+    *pitch = t->fixed_pitch;
+    return t->data;
 }
 
 void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,

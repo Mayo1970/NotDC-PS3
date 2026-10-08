@@ -1,0 +1,3529 @@
+
+misc/spetex_check/out/spe_tex_sim.elf:     file format elf32-spu
+
+
+Disassembly of section .interrupt:
+
+00000000 <.interrupt>:
+   0:	7b 00 00 00 	heq	$0,$0,$0
+
+Disassembly of section .init:
+
+00000004 <_init>:
+_init():
+   4:	24 00 40 80 	stqd	$0,16($1)
+   8:	24 ff 80 81 	stqd	$1,-32($1)
+   c:	1c f8 00 81 	ai	$1,$1,-32
+  10:	33 01 76 00 	brsl	$0,bc0 <frame_dummy>	# bc0
+  14:	33 04 a5 80 	brsl	$0,2540 <__do_global_ctors_aux>	# 2540
+  18:	1c 08 00 81 	ai	$1,$1,32	# 20
+  1c:	34 00 40 80 	lqd	$0,16($1)
+  20:	35 00 00 00 	bi	$0
+
+Disassembly of section .text:
+
+00000028 <exit>:
+exit():
+      28:	40 20 00 7f 	nop	$127
+      2c:	12 04 53 8a 	hbrr	54 <exit+0x2c>,22c8 <__call_exitprocs>	# 22c8
+      30:	40 80 00 04 	il	$4,0
+      34:	24 ff c0 d0 	stqd	$80,-16($1)
+      38:	04 00 01 d0 	ori	$80,$3,0
+      3c:	24 00 40 80 	stqd	$0,16($1)
+      40:	40 20 00 7f 	nop	$127
+      44:	24 ff 00 81 	stqd	$1,-64($1)
+      48:	1c f0 00 81 	ai	$1,$1,-64
+      4c:	40 20 00 7f 	nop	$127
+      50:	40 20 00 7f 	nop	$127
+      54:	33 04 4e 80 	brsl	$0,22c8 <__call_exitprocs>	# 22c8
+      58:	40 80 1e 02 	il	$2,60	# 3c
+      5c:	33 84 d6 83 	lqr	$3,2710 <_global_impure_ptr>	# 2710
+      60:	1c 0f 01 84 	ai	$4,$3,60	# 3c
+      64:	38 80 81 85 	lqx	$5,$3,$2
+      68:	3b 81 02 86 	rotqby	$6,$5,$4
+      6c:	20 00 01 86 	brz	$6,78 <exit+0x50>	# 78
+      70:	40 20 00 7f 	nop	$127
+      74:	35 20 03 00 	bisl	$0,$6
+      78:	04 00 28 03 	ori	$3,$80,0
+      7c:	33 04 92 80 	brsl	$0,2510 <_exit>	# 2510
+
+00000080 <main>:
+main():
+/src/ps3/spu/spe_tex.c:24
+      80:	40 fd c8 4b 	il	$75,-1136
+/src/ps3/spu/spe_tex.c:29
+      84:	35 90 00 00 	hbrp	84 <main+0x4>,$0
+      88:	00 20 00 00 	lnop
+      8c:	12 01 79 e3 	hbrr	218 <main+0x198>,c58 <echo_put>	# c58
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+      90:	42 96 80 02 	ila	$2,77056	# 12d00
+main():
+/src/ps3/spu/spe_tex.c:24
+      94:	24 fe c0 d4 	stqd	$84,-80($1)
+      98:	40 20 00 7f 	nop	$127
+      9c:	24 f8 c0 ec 	stqd	$108,-464($1)
+      a0:	04 00 01 ec 	ori	$108,$3,0
+      a4:	24 f5 40 fa 	stqd	$122,-688($1)
+      a8:	04 00 02 7a 	ori	$122,$4,0
+      ac:	24 00 40 80 	stqd	$0,16($1)
+      b0:	24 ff c0 d0 	stqd	$80,-16($1)
+      b4:	24 ff 80 d1 	stqd	$81,-32($1)
+      b8:	24 ff 40 d2 	stqd	$82,-48($1)
+      bc:	24 ff 00 d3 	stqd	$83,-64($1)
+      c0:	35 90 00 00 	hbrp	c0 <main+0x40>,$0
+      c4:	24 fe 80 d5 	stqd	$85,-96($1)
+      c8:	24 fe 40 d6 	stqd	$86,-112($1)
+      cc:	24 fe 00 d7 	stqd	$87,-128($1)
+      d0:	24 fd c0 d8 	stqd	$88,-144($1)
+      d4:	24 fd 80 d9 	stqd	$89,-160($1)
+      d8:	35 90 00 00 	hbrp	d8 <main+0x58>,$0
+      dc:	24 fd 40 da 	stqd	$90,-176($1)
+      e0:	24 fd 00 db 	stqd	$91,-192($1)
+      e4:	24 fc c0 dc 	stqd	$92,-208($1)
+      e8:	24 fc 80 dd 	stqd	$93,-224($1)
+      ec:	24 fc 40 de 	stqd	$94,-240($1)
+      f0:	24 fc 00 df 	stqd	$95,-256($1)
+      f4:	24 fb c0 e0 	stqd	$96,-272($1)
+      f8:	24 fb 80 e1 	stqd	$97,-288($1)
+      fc:	24 fb 40 e2 	stqd	$98,-304($1)
+     100:	24 fb 00 e3 	stqd	$99,-320($1)
+     104:	24 fa c0 e4 	stqd	$100,-336($1)
+     108:	24 fa 80 e5 	stqd	$101,-352($1)
+     10c:	24 fa 40 e6 	stqd	$102,-368($1)
+     110:	24 fa 00 e7 	stqd	$103,-384($1)
+     114:	24 f9 c0 e8 	stqd	$104,-400($1)
+     118:	24 f9 80 e9 	stqd	$105,-416($1)
+     11c:	35 90 00 00 	hbrp	11c <main+0x9c>,$0
+     120:	24 f9 40 ea 	stqd	$106,-432($1)
+     124:	24 f9 00 eb 	stqd	$107,-448($1)
+     128:	24 f8 80 ed 	stqd	$109,-480($1)
+     12c:	24 f8 40 ee 	stqd	$110,-496($1)
+     130:	24 f8 00 ef 	stqd	$111,-512($1)
+     134:	24 f7 c0 f0 	stqd	$112,-528($1)
+     138:	24 f7 80 f1 	stqd	$113,-544($1)
+     13c:	24 f7 40 f2 	stqd	$114,-560($1)
+     140:	24 f7 00 f3 	stqd	$115,-576($1)
+     144:	24 f6 c0 f4 	stqd	$116,-592($1)
+     148:	24 f6 80 f5 	stqd	$117,-608($1)
+     14c:	24 f6 40 f6 	stqd	$118,-624($1)
+     150:	24 f6 00 f7 	stqd	$119,-640($1)
+     154:	24 f5 c0 f8 	stqd	$120,-656($1)
+     158:	24 f5 80 f9 	stqd	$121,-672($1)
+     15c:	24 f5 00 fb 	stqd	$123,-704($1)
+     160:	35 90 00 00 	hbrp	160 <main+0xe0>,$0
+     164:	24 f4 c0 fc 	stqd	$124,-720($1)
+     168:	24 f4 80 fd 	stqd	$125,-736($1)
+     16c:	24 f4 40 fe 	stqd	$126,-752($1)
+     170:	24 f4 00 ff 	stqd	$127,-768($1)
+     174:	24 ee 40 81 	stqd	$1,-1136($1)
+     178:	18 12 c0 81 	a	$1,$1,$75
+     17c:	1c 3b c0 d4 	ai	$84,$1,239	# ef
+     180:	14 e0 2a 54 	andi	$84,$84,-128
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     184:	21 a0 08 02 	wrch	$ch16,$2
+main():
+/src/ps3/spu/spe_tex.c:25
+     188:	3f bf 02 83 	rotqmbyi	$3,$5,-4
+     18c:	3f e1 01 84 	shlqbyi	$4,$3,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     190:	21 a0 08 84 	wrch	$ch17,$4
+main():
+/src/ps3/spu/spe_tex.c:25
+     194:	3f e1 02 85 	shlqbyi	$5,$5,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     198:	21 a0 09 05 	wrch	$ch18,$5
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     19c:	40 80 40 5b 	il	$91,128	# 80
+     1a0:	21 a0 09 db 	wrch	$ch19,$91
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     1a4:	40 80 00 89 	il	$9,1
+     1a8:	04 00 04 86 	ori	$6,$9,0
+     1ac:	21 a0 0a 06 	wrch	$ch20,$6
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     1b0:	40 80 20 07 	il	$7,64	# 40
+     1b4:	21 a0 0a 87 	wrch	$ch21,$7
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     1b8:	42 97 00 50 	ila	$80,77312	# 12e00
+     1bc:	40 80 1a 0a 	il	$10,52	# 34
+/src/ps3/spu/spe_tex_hash.h:41
+     1c0:	40 80 01 08 	il	$8,2
+/src/ps3/spu/spe_tex_hash.h:40
+     1c4:	3e c1 28 60 	cwd	$96,4($80)
+     1c8:	38 82 a8 0b 	lqx	$11,$80,$10
+     1cc:	b1 82 c4 e0 	shufb	$12,$9,$11,$96
+     1d0:	28 82 a8 0c 	stqx	$12,$80,$10
+/src/ps3/spu/spe_tex_hash.h:41
+     1d4:	21 a0 0b 08 	wrch	$ch22,$8
+/src/ps3/spu/spe_tex_hash.h:42
+     1d8:	21 a0 0b 88 	wrch	$ch23,$8
+     1dc:	01 a0 0c 03 	rdch	$3,$ch24
+/src/ps3/spu/spe_tex_hash.h:43
+     1e0:	40 80 00 10 	il	$16,0
+main():
+/src/ps3/spu/spe_tex.c:27
+     1e4:	40 80 02 0d 	il	$13,4
+/src/ps3/spu/spe_tex.c:28
+     1e8:	40 80 1c 0f 	il	$15,56	# 38
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     1ec:	38 82 a8 0e 	lqx	$14,$80,$10
+main():
+/src/ps3/spu/spe_tex.c:29
+     1f0:	04 00 3d 03 	ori	$3,$122,0
+/src/ps3/spu/spe_tex.c:28
+     1f4:	3e c2 28 6d 	cwd	$109,8($80)
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     1f8:	b2 23 88 60 	shufb	$17,$16,$14,$96
+     1fc:	28 82 a8 11 	stqx	$17,$80,$10
+main():
+/src/ps3/spu/spe_tex.c:27
+     200:	38 83 68 12 	lqx	$18,$80,$13
+     204:	b2 64 84 e0 	shufb	$19,$9,$18,$96
+     208:	28 83 68 13 	stqx	$19,$80,$13
+/src/ps3/spu/spe_tex.c:28
+     20c:	38 83 e8 14 	lqx	$20,$80,$15
+     210:	b2 a5 28 6d 	shufb	$21,$80,$20,$109
+     214:	28 83 e8 15 	stqx	$21,$80,$15
+/src/ps3/spu/spe_tex.c:29
+     218:	33 01 48 00 	brsl	$0,c58 <echo_put>	# c58
+/src/ps3/spu/spe_tex.c:31
+     21c:	40 82 10 16 	il	$22,1056	# 420
+     220:	21 a0 00 96 	wrch	$ch1,$22
+/src/ps3/spu/spe_tex.c:32
+     224:	21 a0 01 16 	wrch	$ch2,$22
+/src/ps3/spu/spe_tex.c:33
+     228:	35 90 00 00 	hbrp	228 <main+0x1a8>,$0
+     22c:	42 9b dc 77 	ila	$119,79800	# 137b8
+     230:	21 a0 03 f7 	wrch	$ch7,$119
+run():
+/src/ps3/spu/spe_tex_hash.h:360
+     234:	42 3e 00 7e 	ila	$126,31744	# 7c00
+main():
+/src/ps3/spu/spe_tex.c:34
+     238:	40 80 00 64 	il	$100,0
+     23c:	00 20 00 00 	lnop
+     240:	42 96 c0 68 	ila	$104,77184	# 12d80
+/src/ps3/spu/spe_tex.c:38
+     244:	3f bf 36 6f 	rotqmbyi	$111,$108,-4
+/src/ps3/spu/spe_tex.c:58
+     248:	40 80 01 79 	il	$121,2
+run():
+/src/ps3/spu/spe_tex_hash.h:360
+     24c:	3e e0 3f 17 	cdd	$23,0($126)
+/src/ps3/spu/spe_tex_hash.h:358
+     250:	40 ff ff fd 	il	$125,-1
+     254:	3f e1 36 6c 	shlqbyi	$108,$108,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     258:	40 20 00 7f 	nop	$127
+     25c:	35 90 00 00 	hbrp	25c <main+0x1dc>,$0
+     260:	40 80 04 fc 	il	$124,9
+main():
+/src/ps3/spu/spe_tex.c:66
+     264:	3e c0 28 76 	cwd	$118,0($80)
+run():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     268:	40 80 10 7b 	il	$123,32	# 20
+main():
+/src/ps3/spu/spe_tex.c:63
+     26c:	3e c3 28 75 	cwd	$117,12($80)
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     270:	04 00 32 5c 	ori	$92,$100,0
+main():
+/src/ps3/spu/spe_tex.c:38
+     274:	3f e1 37 ef 	shlqbyi	$111,$111,4
+run():
+/src/ps3/spu/spe_tex_hash.h:400
+     278:	04 00 32 69 	ori	$105,$100,0
+/src/ps3/spu/spe_tex_hash.h:358
+     27c:	24 00 80 fd 	stqd	$125,32($1)	# 20
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     280:	40 80 68 74 	il	$116,208	# d0
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     284:	24 01 00 fc 	stqd	$124,64($1)	# 40
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:42
+     288:	04 00 3c eb 	ori	$107,$121,0
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     28c:	24 01 40 fb 	stqd	$123,80($1)	# 50
+     290:	40 80 11 5f 	il	$95,34	# 22
+run():
+/src/ps3/spu/spe_tex_hash.h:360
+     294:	24 00 c0 97 	stqd	$23,48($1)	# 30
+     298:	1c 01 34 78 	ai	$120,$104,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     29c:	40 80 00 6a 	il	$106,0
+main():
+/src/ps3/spu/spe_tex.c:40
+     2a0:	40 80 02 51 	il	$81,4
+run():
+/src/ps3/spu/spe_tex_hash.h:361
+     2a4:	40 80 04 59 	il	$89,8
+/src/ps3/spu/spe_tex_hash.h:363
+     2a8:	40 80 06 57 	il	$87,12
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     2ac:	04 00 34 18 	ori	$24,$104,0
+     2b0:	21 a0 08 18 	wrch	$ch16,$24
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     2b4:	21 a0 08 ef 	wrch	$ch17,$111
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     2b8:	35 90 00 00 	hbrp	2b8 <main+0x238>,$0
+     2bc:	21 a0 09 6c 	wrch	$ch18,$108
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     2c0:	21 a0 09 db 	wrch	$ch19,$91
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     2c4:	21 a0 0a 5c 	wrch	$ch20,$92
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     2c8:	21 a0 0a f4 	wrch	$ch21,$116
+main():
+/src/ps3/spu/spe_tex.c:39
+     2cc:	01 a0 0d 82 	rdch	$2,$ch27
+/src/ps3/spu/spe_tex.c:40
+     2d0:	38 94 74 19 	lqx	$25,$104,$81
+     2d4:	3b 9e 0c d2 	rotqby	$82,$25,$120
+     2d8:	04 00 29 53 	ori	$83,$82,0
+     2dc:	00 20 00 00 	lnop
+     2e0:	21 00 6c d3 	brnz	$83,644 <main+0x5c4>	# 644
+/src/ps3/spu/spe_tex.c:42
+     2e4:	33 a5 53 9a 	lqr	$26,12d80 <bell>	# 12d80
+     2e8:	35 90 00 00 	hbrp	2e8 <main+0x268>,$0
+     2ec:	78 19 0d 64 	ceq	$100,$26,$100
+     2f0:	20 00 11 e4 	brz	$100,37c <main+0x2fc>	# 37c
+/src/ps3/spu/spe_tex.c:58
+     2f4:	40 80 1a 1b 	il	$27,52	# 34
+     2f8:	38 86 e8 1c 	lqx	$28,$80,$27
+     2fc:	b3 a7 3c e0 	shufb	$29,$121,$28,$96
+     300:	28 86 e8 1d 	stqx	$29,$80,$27
+/src/ps3/spu/spe_tex.c:59
+     304:	01 a0 00 1e 	rdch	$30,$ch0
+/src/ps3/spu/spe_tex.c:61
+     308:	04 00 0f 1f 	ori	$31,$30,0
+/src/ps3/spu/spe_tex.c:60
+     30c:	38 86 e8 20 	lqx	$32,$80,$27
+     310:	b4 28 29 e0 	shufb	$33,$83,$32,$96
+     314:	28 86 e8 21 	stqx	$33,$80,$27
+/src/ps3/spu/spe_tex.c:61
+     318:	21 a0 01 1f 	wrch	$ch2,$31
+/src/ps3/spu/spe_tex.c:62
+     31c:	40 82 00 22 	il	$34,1024	# 400
+     320:	18 28 8f 23 	and	$35,$30,$34
+     324:	00 20 00 00 	lnop
+     328:	20 00 05 a3 	brz	$35,354 <main+0x2d4>	# 354
+     32c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex.c:63
+     330:	40 80 16 24 	il	$36,44	# 2c
+     334:	12 7f ef 11 	hbrr	378 <main+0x2f8>,2ac <main+0x22c>	# 2ac
+     338:	42 97 16 27 	ila	$39,77356	# 12e2c
+     33c:	38 89 28 25 	lqx	$37,$80,$36
+     340:	38 89 28 26 	lqx	$38,$80,$36
+     344:	3b 89 d2 a8 	rotqby	$40,$37,$39
+     348:	1c 00 54 29 	ai	$41,$40,1
+     34c:	b5 49 94 f5 	shufb	$42,$41,$38,$117
+     350:	28 89 28 2a 	stqx	$42,$80,$36
+/src/ps3/spu/spe_tex.c:64
+     354:	14 08 0f 2b 	andi	$43,$30,32	# 20
+     358:	04 00 0d 64 	ori	$100,$26,0
+     35c:	20 7f ea 2b 	brz	$43,2ac <main+0x22c>	# 2ac
+/src/ps3/spu/spe_tex.c:66
+     360:	33 a5 5a 2c 	lqr	$44,12e30 <echo+0x30>	# 12e30
+     364:	33 a5 59 ad 	lqr	$45,12e30 <echo+0x30>	# 12e30
+     368:	1c 00 56 2e 	ai	$46,$44,1
+     36c:	b5 eb 57 76 	shufb	$47,$46,$45,$118
+     370:	23 a5 58 2f 	stqr	$47,12e30 <echo+0x30>	# 12e30
+/src/ps3/spu/spe_tex.c:67
+     374:	21 a0 03 f7 	wrch	$ch7,$119
+     378:	32 7f e6 80 	br	2ac <main+0x22c>	# 2ac
+run():
+/src/ps3/spu/spe_tex_hash.h:360
+     37c:	12 02 a9 a6 	hbrr	414 <main+0x394>,18c8 <tex_result>	# 18c8
+main():
+/src/ps3/spu/spe_tex.c:44
+     380:	33 a5 40 30 	lqr	$48,12d80 <bell>	# 12d80
+     384:	33 a5 41 b1 	lqr	$49,12d90 <bell+0x10>	# 12d90
+     388:	33 a5 43 32 	lqr	$50,12da0 <bell+0x20>	# 12da0
+     38c:	33 a5 44 b3 	lqr	$51,12db0 <bell+0x30>	# 12db0
+     390:	33 a5 46 34 	lqr	$52,12dc0 <bell+0x40>	# 12dc0
+     394:	33 a5 47 b5 	lqr	$53,12dd0 <bell+0x50>	# 12dd0
+     398:	24 00 2a 30 	stqd	$48,0($84)
+     39c:	33 a5 48 b6 	lqr	$54,12de0 <bell+0x60>	# 12de0
+     3a0:	33 a5 4a 37 	lqr	$55,12df0 <bell+0x70>	# 12df0
+/src/ps3/spu/spe_tex.c:45
+     3a4:	34 00 2a 64 	lqd	$100,0($84)
+/src/ps3/spu/spe_tex.c:44
+     3a8:	24 00 6a 31 	stqd	$49,16($84)
+     3ac:	24 00 aa 32 	stqd	$50,32($84)	# 20
+     3b0:	24 00 ea 33 	stqd	$51,48($84)	# 30
+     3b4:	24 01 2a 34 	stqd	$52,64($84)	# 40
+     3b8:	24 01 6a 35 	stqd	$53,80($84)	# 50
+     3bc:	24 01 aa 36 	stqd	$54,96($84)	# 60
+     3c0:	35 90 00 00 	hbrp	3c0 <main+0x340>,$0
+     3c4:	24 01 ea 37 	stqd	$55,112($84)	# 70
+/src/ps3/spu/spe_tex.c:46
+     3c8:	01 a0 04 67 	rdch	$103,$ch8
+run():
+/src/ps3/spu/spe_tex_hash.h:357
+     3cc:	41 3f ff bb 	ilhu	$59,32767	# 7fff
+/src/ps3/spu/spe_tex_hash.h:361
+     3d0:	42 96 84 5d 	ila	$93,77064	# 12d08
+     3d4:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:357
+     3d8:	60 ff ff bb 	iohl	$59,65535	# ffff
+/src/ps3/spu/spe_tex_hash.h:360
+     3dc:	34 00 6a 38 	lqd	$56,16($84)
+     3e0:	1c 06 2a 3c 	ai	$60,$84,24	# 18
+/src/ps3/spu/spe_tex_hash.h:357
+     3e4:	34 00 2a 58 	lqd	$88,0($84)
+/src/ps3/spu/spe_tex_hash.h:360
+     3e8:	1c 05 2a 3d 	ai	$61,$84,20	# 14
+/src/ps3/spu/spe_tex_hash.h:358
+     3ec:	34 00 80 ba 	lqd	$58,32($1)	# 20
+/src/ps3/spu/spe_tex_hash.h:360
+     3f0:	1c 18 00 88 	ai	$8,$1,96	# 60
+     3f4:	34 00 6a 03 	lqd	$3,16($84)
+     3f8:	04 00 2a 06 	ori	$6,$84,0
+     3fc:	3b 8f 1c 05 	rotqby	$5,$56,$60
+/src/ps3/spu/spe_tex_hash.h:357
+     400:	18 2e ec 58 	and	$88,$88,$59
+/src/ps3/spu/spe_tex_hash.h:360
+     404:	3b 8f 5c 04 	rotqby	$4,$56,$61
+/src/ps3/spu/spe_tex_hash.h:358
+     408:	23 8c df 3a 	stqr	$58,6b00 <pal_off>	# 6b00
+/src/ps3/spu/spe_tex_hash.h:360
+     40c:	04 00 2c 07 	ori	$7,$88,0
+     410:	40 20 00 7f 	nop	$127
+     414:	33 02 96 80 	brsl	$0,18c8 <tex_result>	# 18c8
+/src/ps3/spu/spe_tex_hash.h:361
+     418:	42 80 00 43 	ila	$67,65536	# 10000
+     41c:	33 a5 1d bf 	lqr	$63,12d08 <setup+0x8>	# 12d08
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     420:	04 00 3f 45 	ori	$69,$126,0
+run():
+/src/ps3/spu/spe_tex_hash.h:360
+     424:	35 90 00 00 	hbrp	424 <main+0x3a4>,$0
+     428:	33 8e fb 3e 	lqr	$62,7c00 <bgline>	# 7c00
+     42c:	34 00 c0 c0 	lqd	$64,48($1)	# 30
+/src/ps3/spu/spe_tex_hash.h:361
+     430:	3b 97 5f c2 	rotqby	$66,$63,$93
+/src/ps3/spu/spe_tex_hash.h:360
+     434:	b8 2f 81 c0 	shufb	$65,$3,$62,$64
+/src/ps3/spu/spe_tex_hash.h:361
+     438:	18 10 e1 44 	a	$68,$66,$67
+/src/ps3/spu/spe_tex_hash.h:360
+     43c:	23 8e f8 c1 	stqr	$65,7c00 <bgline>	# 7c00
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     440:	21 a0 08 45 	wrch	$ch16,$69
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     444:	04 00 29 d2 	ori	$82,$83,0
+     448:	21 a0 08 d2 	wrch	$ch17,$82
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     44c:	04 00 22 46 	ori	$70,$68,0
+     450:	35 90 00 00 	hbrp	450 <main+0x3d0>,$0
+     454:	21 a0 09 46 	wrch	$ch18,$70
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     458:	21 a0 09 db 	wrch	$ch19,$91
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     45c:	34 01 00 c7 	lqd	$71,64($1)	# 40
+     460:	21 a0 0a 47 	wrch	$ch20,$71
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     464:	34 01 40 c8 	lqd	$72,80($1)	# 50
+     468:	21 a0 0a c8 	wrch	$ch21,$72
+run():
+/src/ps3/spu/spe_tex_hash.h:363
+     46c:	40 90 00 49 	il	$73,8192	# 2000
+     470:	1c 03 2a 4c 	ai	$76,$84,12
+     474:	38 95 ea 4a 	lqx	$74,$84,$87
+     478:	3b 93 25 4d 	rotqby	$77,$74,$76
+     47c:	3b 93 25 4f 	rotqby	$79,$74,$76
+     480:	58 12 66 ce 	clgt	$78,$77,$73
+     484:	8b d2 67 ce 	selb	$94,$79,$73,$78
+/src/ps3/spu/spe_tex_hash.h:365
+     488:	1c 3f ef 66 	ai	$102,$94,255	# ff
+     48c:	0f 3e 33 66 	rotmi	$102,$102,-8
+/src/ps3/spu/spe_tex_hash.h:366
+     490:	21 00 5a 66 	brnz	$102,760 <main+0x6e0>	# 760
+     494:	00 20 00 00 	lnop
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     498:	40 80 1a 2d 	il	$45,52	# 34
+main():
+/src/ps3/spu/spe_tex.c:54
+     49c:	12 00 f7 e8 	hbrr	63c <main+0x5bc>,c58 <echo_put>	# c58
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     4a0:	40 80 00 af 	il	$47,1
+     4a4:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:41
+     4a8:	40 81 60 31 	il	$49,704	# 2c0
+/src/ps3/spu/spe_tex_hash.h:40
+     4ac:	38 8b 68 2e 	lqx	$46,$80,$45
+     4b0:	b6 0b 97 e0 	shufb	$48,$47,$46,$96
+     4b4:	28 8b 68 30 	stqx	$48,$80,$45
+/src/ps3/spu/spe_tex_hash.h:41
+     4b8:	21 a0 0b 31 	wrch	$ch22,$49
+/src/ps3/spu/spe_tex_hash.h:42
+     4bc:	21 a0 0b eb 	wrch	$ch23,$107
+     4c0:	01 a0 0c 02 	rdch	$2,$ch24
+run():
+/src/ps3/spu/spe_tex_hash.h:395
+     4c4:	33 84 c3 8d 	lqr	$13,2ae0 <n_hashed>	# 2ae0
+/src/ps3/spu/spe_tex_hash.h:394
+     4c8:	40 80 0a 5d 	il	$93,20	# 14
+/src/ps3/spu/spe_tex_hash.h:396
+     4cc:	33 84 c0 8c 	lqr	$12,2ad0 <n_dups>	# 2ad0
+/src/ps3/spu/spe_tex_hash.h:394
+     4d0:	42 97 0a 39 	ila	$57,77332	# 12e14
+/src/ps3/spu/spe_tex_hash.h:397
+     4d4:	33 84 bd 8b 	lqr	$11,2ac0 <n_skips>	# 2ac0
+/src/ps3/spu/spe_tex_hash.h:395
+     4d8:	40 80 0c 3a 	il	$58,24	# 18
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     4dc:	38 8b 68 35 	lqx	$53,$80,$45
+run():
+/src/ps3/spu/spe_tex_hash.h:395
+     4e0:	1c 01 1c bb 	ai	$59,$57,4
+/src/ps3/spu/spe_tex_hash.h:398
+     4e4:	33 84 b9 8a 	lqr	$10,2ab0 <n_bytes>	# 2ab0
+/src/ps3/spu/spe_tex_hash.h:396
+     4e8:	40 80 0e 3d 	il	$61,28	# 1c
+/src/ps3/spu/spe_tex_hash.h:399
+     4ec:	33 84 b6 88 	lqr	$8,2aa0 <n_wraps>	# 2aa0
+/src/ps3/spu/spe_tex_hash.h:395
+     4f0:	04 00 06 b2 	ori	$50,$13,0
+/src/ps3/spu/spe_tex_hash.h:400
+     4f4:	23 84 b5 e9 	stqr	$105,2aa0 <n_wraps>	# 2aa0
+/src/ps3/spu/spe_tex_hash.h:396
+     4f8:	1c 02 1c be 	ai	$62,$57,8
+/src/ps3/spu/spe_tex_hash.h:400
+     4fc:	23 84 b6 e9 	stqr	$105,2ab0 <n_bytes>	# 2ab0
+/src/ps3/spu/spe_tex_hash.h:396
+     500:	04 00 06 33 	ori	$51,$12,0
+/src/ps3/spu/spe_tex_hash.h:400
+     504:	35 90 00 00 	hbrp	504 <main+0x484>,$0
+/src/ps3/spu/spe_tex_hash.h:397
+     508:	04 00 05 b4 	ori	$52,$11,0
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     50c:	b7 0d 75 60 	shufb	$56,$106,$53,$96
+run():
+/src/ps3/spu/spe_tex_hash.h:398
+     510:	40 80 12 3f 	il	$63,36	# 24
+/src/ps3/spu/spe_tex_hash.h:400
+     514:	23 84 b5 e9 	stqr	$105,2ac0 <n_skips>	# 2ac0
+/src/ps3/spu/spe_tex_hash.h:398
+     518:	1c 04 1c c0 	ai	$64,$57,16
+/src/ps3/spu/spe_tex_hash.h:400
+     51c:	23 84 b6 e9 	stqr	$105,2ad0 <n_dups>	# 2ad0
+/src/ps3/spu/spe_tex_hash.h:398
+     520:	04 00 05 36 	ori	$54,$10,0
+/src/ps3/spu/spe_tex_hash.h:400
+     524:	23 84 b7 e9 	stqr	$105,2ae0 <n_hashed>	# 2ae0
+/src/ps3/spu/spe_tex_hash.h:399
+     528:	40 80 14 41 	il	$65,40	# 28
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     52c:	28 8b 68 38 	stqx	$56,$80,$45
+run():
+/src/ps3/spu/spe_tex_hash.h:399
+     530:	1c 05 1c c4 	ai	$68,$57,20	# 14
+/src/ps3/spu/spe_tex_hash.h:394
+     534:	38 97 68 58 	lqx	$88,$80,$93
+/src/ps3/spu/spe_tex_hash.h:399
+     538:	04 00 04 37 	ori	$55,$8,0
+/src/ps3/spu/spe_tex_hash.h:394
+     53c:	38 97 68 3c 	lqx	$60,$80,$93
+     540:	3b 8e 6c 42 	rotqby	$66,$88,$57
+     544:	1c 00 61 43 	ai	$67,$66,1
+     548:	18 17 a1 c5 	a	$69,$67,$94
+     54c:	b8 cf 22 e0 	shufb	$70,$69,$60,$96
+     550:	28 97 68 46 	stqx	$70,$80,$93
+/src/ps3/spu/spe_tex_hash.h:395
+     554:	38 8e a8 47 	lqx	$71,$80,$58
+     558:	38 8e a8 48 	lqx	$72,$80,$58
+     55c:	3b 8e e3 c9 	rotqby	$73,$71,$59
+     560:	18 0c a4 ca 	a	$74,$73,$50
+     564:	b9 92 25 6d 	shufb	$76,$74,$72,$109
+     568:	28 8e a8 4c 	stqx	$76,$80,$58
+/src/ps3/spu/spe_tex_hash.h:396
+     56c:	38 8f 68 4d 	lqx	$77,$80,$61
+     570:	38 8f 68 4e 	lqx	$78,$80,$61
+     574:	3b 8f a6 cf 	rotqby	$79,$77,$62
+     578:	18 0c e7 e6 	a	$102,$79,$51
+     57c:	bd d3 b3 75 	shufb	$110,$102,$78,$117
+     580:	28 8f 68 6e 	stqx	$110,$80,$61
+/src/ps3/spu/spe_tex_hash.h:397
+     584:	33 a5 13 e5 	lqr	$101,12e20 <echo+0x20>	# 12e20
+     588:	33 a5 13 73 	lqr	$115,12e20 <echo+0x20>	# 12e20
+     58c:	18 0d 32 da 	a	$90,$101,$52
+     590:	ba 7c ed 76 	shufb	$83,$90,$115,$118
+     594:	23 a5 11 d3 	stqr	$83,12e20 <echo+0x20>	# 12e20
+/src/ps3/spu/spe_tex_hash.h:398
+     598:	38 8f e8 72 	lqx	$114,$80,$63
+     59c:	38 8f e8 71 	lqx	$113,$80,$63
+     5a0:	3b 90 39 63 	rotqby	$99,$114,$64
+     5a4:	18 0d b1 e1 	a	$97,$99,$54
+     5a8:	be 1c 70 e0 	shufb	$112,$97,$113,$96
+     5ac:	28 8f e8 70 	stqx	$112,$80,$63
+/src/ps3/spu/spe_tex_hash.h:399
+     5b0:	38 90 68 5e 	lqx	$94,$80,$65
+     5b4:	38 90 68 56 	lqx	$86,$80,$65
+     5b8:	3b 91 2f 4b 	rotqby	$75,$94,$68
+     5bc:	18 0d e5 83 	a	$3,$75,$55
+     5c0:	b0 55 81 ed 	shufb	$2,$3,$86,$109
+     5c4:	28 90 68 02 	stqx	$2,$80,$65
+main():
+/src/ps3/spu/spe_tex.c:48
+     5c8:	01 a0 04 05 	rdch	$5,$ch8
+     5cc:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex.c:49
+     5d0:	1c fd 1c 86 	ai	$6,$57,-12
+     5d4:	38 96 68 09 	lqx	$9,$80,$89
+/src/ps3/spu/spe_tex.c:50
+     5d8:	1c fe 1c 87 	ai	$7,$57,-8
+/src/ps3/spu/spe_tex.c:49
+     5dc:	38 96 68 04 	lqx	$4,$80,$89
+/src/ps3/spu/spe_tex.c:48
+     5e0:	08 19 c2 e7 	sf	$103,$5,$103
+/src/ps3/spu/spe_tex.c:49
+     5e4:	3b 81 84 8e 	rotqby	$14,$9,$6
+     5e8:	1c 00 47 52 	ai	$82,$14,1
+     5ec:	ba a1 29 6d 	shufb	$85,$82,$4,$109
+     5f0:	28 96 68 55 	stqx	$85,$80,$89
+/src/ps3/spu/spe_tex.c:50
+     5f4:	38 95 e8 0f 	lqx	$15,$80,$87
+     5f8:	38 95 e8 62 	lqx	$98,$80,$87
+     5fc:	3b 81 c7 fd 	rotqby	$125,$15,$7
+     600:	18 19 fe 90 	a	$16,$125,$103
+     604:	b2 38 88 75 	shufb	$17,$16,$98,$117
+     608:	28 95 e8 11 	stqx	$17,$80,$87
+/src/ps3/spu/spe_tex.c:51
+     60c:	33 a5 00 92 	lqr	$18,12e10 <echo+0x10>	# 12e10
+     610:	58 04 b3 93 	clgt	$19,$103,$18
+     614:	20 00 02 93 	brz	$19,628 <main+0x5a8>	# 628
+/src/ps3/spu/spe_tex.c:52
+     618:	33 a4 ff 14 	lqr	$20,12e10 <echo+0x10>	# 12e10
+     61c:	b2 a5 33 f6 	shufb	$21,$103,$20,$118
+     620:	40 20 00 7f 	nop	$127
+     624:	23 a4 fd 95 	stqr	$21,12e10 <echo+0x10>	# 12e10
+/src/ps3/spu/spe_tex.c:54
+     628:	04 00 3d 03 	ori	$3,$122,0
+/src/ps3/spu/spe_tex.c:53
+     62c:	34 00 2a 16 	lqd	$22,0($84)
+     630:	33 a4 fa 17 	lqr	$23,12e00 <echo>	# 12e00
+     634:	b3 05 cb 76 	shufb	$24,$22,$23,$118
+     638:	23 a4 f9 18 	stqr	$24,12e00 <echo>	# 12e00
+/src/ps3/spu/spe_tex.c:54
+     63c:	33 00 c3 80 	brsl	$0,c58 <echo_put>	# c58
+     640:	32 7f 8d 80 	br	2ac <main+0x22c>	# 2ac
+/src/ps3/spu/spe_tex.c:72
+     644:	12 00 c2 8a 	hbrr	66c <main+0x5ec>,c58 <echo_put>	# c58
+/src/ps3/spu/spe_tex.c:71
+     648:	40 80 01 57 	il	$87,2
+     64c:	38 94 68 64 	lqx	$100,$80,$81
+/src/ps3/spu/spe_tex.c:72
+     650:	04 00 3d 03 	ori	$3,$122,0
+/src/ps3/spu/spe_tex.c:71
+     654:	3e c1 28 54 	cwd	$84,4($80)
+/src/ps3/spu/spe_tex.c:72
+     658:	40 20 00 7f 	nop	$127
+/src/ps3/spu/spe_tex.c:71
+     65c:	bb 39 2b d4 	shufb	$89,$87,$100,$84
+     660:	28 94 68 59 	stqx	$89,$80,$81
+/src/ps3/spu/spe_tex.c:75
+     664:	40 82 38 50 	il	$80,1136	# 470
+/src/ps3/spu/spe_tex.c:72
+     668:	40 20 00 7f 	nop	$127
+     66c:	33 00 bd 80 	brsl	$0,c58 <echo_put>	# c58
+/src/ps3/spu/spe_tex.c:73
+     670:	40 80 00 03 	il	$3,0
+     674:	33 03 15 80 	brsl	$0,1f20 <spu_thread_exit>	# 1f20
+/src/ps3/spu/spe_tex.c:75
+     678:	18 14 00 81 	a	$1,$1,$80
+     67c:	40 80 00 03 	il	$3,0
+     680:	34 00 40 80 	lqd	$0,16($1)
+     684:	35 90 00 00 	hbrp	684 <main+0x604>,$0
+     688:	34 ff c0 d0 	lqd	$80,-16($1)
+     68c:	34 ff 80 d1 	lqd	$81,-32($1)
+     690:	34 ff 40 d2 	lqd	$82,-48($1)
+     694:	34 ff 00 d3 	lqd	$83,-64($1)
+     698:	34 fe c0 d4 	lqd	$84,-80($1)
+     69c:	35 80 00 30 	hbr	75c <main+0x6dc>,$0
+     6a0:	34 fe 80 d5 	lqd	$85,-96($1)
+     6a4:	34 fe 40 d6 	lqd	$86,-112($1)
+     6a8:	34 fe 00 d7 	lqd	$87,-128($1)
+     6ac:	34 fd c0 d8 	lqd	$88,-144($1)
+     6b0:	35 90 00 00 	hbrp	6b0 <main+0x630>,$0
+     6b4:	34 fd 80 d9 	lqd	$89,-160($1)
+     6b8:	34 fd 40 da 	lqd	$90,-176($1)
+     6bc:	34 fd 00 db 	lqd	$91,-192($1)
+     6c0:	34 fc c0 dc 	lqd	$92,-208($1)
+     6c4:	34 fc 80 dd 	lqd	$93,-224($1)
+     6c8:	34 fc 40 de 	lqd	$94,-240($1)
+     6cc:	34 fc 00 df 	lqd	$95,-256($1)
+     6d0:	34 fb c0 e0 	lqd	$96,-272($1)
+     6d4:	34 fb 80 e1 	lqd	$97,-288($1)
+     6d8:	34 fb 40 e2 	lqd	$98,-304($1)
+     6dc:	34 fb 00 e3 	lqd	$99,-320($1)
+     6e0:	34 fa c0 e4 	lqd	$100,-336($1)
+     6e4:	35 90 00 00 	hbrp	6e4 <main+0x664>,$0
+     6e8:	34 fa 80 e5 	lqd	$101,-352($1)
+     6ec:	34 fa 40 e6 	lqd	$102,-368($1)
+     6f0:	34 fa 00 e7 	lqd	$103,-384($1)
+     6f4:	34 f9 c0 e8 	lqd	$104,-400($1)
+     6f8:	34 f9 80 e9 	lqd	$105,-416($1)
+     6fc:	34 f9 40 ea 	lqd	$106,-432($1)
+     700:	34 f9 00 eb 	lqd	$107,-448($1)
+     704:	34 f8 c0 ec 	lqd	$108,-464($1)
+     708:	34 f8 80 ed 	lqd	$109,-480($1)
+     70c:	34 f8 40 ee 	lqd	$110,-496($1)
+     710:	34 f8 00 ef 	lqd	$111,-512($1)
+     714:	34 f7 c0 f0 	lqd	$112,-528($1)
+     718:	34 f7 80 f1 	lqd	$113,-544($1)
+     71c:	34 f7 40 f2 	lqd	$114,-560($1)
+     720:	34 f7 00 f3 	lqd	$115,-576($1)
+     724:	34 f6 c0 f4 	lqd	$116,-592($1)
+     728:	35 90 00 00 	hbrp	728 <main+0x6a8>,$0
+     72c:	34 f6 80 f5 	lqd	$117,-608($1)
+     730:	34 f6 40 f6 	lqd	$118,-624($1)
+     734:	34 f6 00 f7 	lqd	$119,-640($1)
+     738:	34 f5 c0 f8 	lqd	$120,-656($1)
+     73c:	34 f5 80 f9 	lqd	$121,-672($1)
+     740:	34 f5 40 fa 	lqd	$122,-688($1)
+     744:	34 f5 00 fb 	lqd	$123,-704($1)
+     748:	34 f4 c0 fc 	lqd	$124,-720($1)
+     74c:	34 f4 80 fd 	lqd	$125,-736($1)
+     750:	34 f4 40 fe 	lqd	$126,-752($1)
+     754:	34 f4 00 ff 	lqd	$127,-768($1)
+     758:	40 20 00 7f 	nop	$127
+     75c:	35 00 00 00 	bi	$0
+run():
+/src/ps3/spu/spe_tex_hash.h:364
+     760:	1c 02 2a 55 	ai	$85,$84,8
+/src/ps3/spu/spe_tex_hash.h:367
+     764:	12 00 90 8a 	hbrr	78c <main+0x70c>,be8 <pget>	# be8
+/src/ps3/spu/spe_tex_hash.h:368
+     768:	7c 00 73 5a 	ceqi	$90,$102,1
+/src/ps3/spu/spe_tex_hash.h:364
+     76c:	38 96 6a 65 	lqx	$101,$84,$89
+/src/ps3/spu/spe_tex_hash.h:367
+     770:	04 00 2f 06 	ori	$6,$94,0
+     774:	40 80 00 03 	il	$3,0
+/src/ps3/spu/spe_tex_hash.h:364
+     778:	3b 95 72 d6 	rotqby	$86,$101,$85
+     77c:	14 fc 2b 6e 	andi	$110,$86,-16
+     780:	14 03 eb 65 	andi	$101,$86,15
+/src/ps3/spu/spe_tex_hash.h:367
+     784:	04 00 37 04 	ori	$4,$110,0
+     788:	04 00 32 85 	ori	$5,$101,0
+     78c:	33 00 8b 80 	brsl	$0,be8 <pget>	# be8
+/src/ps3/spu/spe_tex_hash.h:368
+     790:	21 00 03 5a 	brnz	$90,7a8 <main+0x728>	# 7a8
+/src/ps3/spu/spe_tex_hash.h:369
+     794:	04 00 2f 06 	ori	$6,$94,0
+     798:	04 00 32 85 	ori	$5,$101,0
+     79c:	04 00 37 04 	ori	$4,$110,0
+     7a0:	40 80 00 83 	il	$3,1
+     7a4:	33 00 88 80 	brsl	$0,be8 <pget>	# be8
+     7a8:	1c 00 b3 73 	ai	$115,$102,2
+main():
+/src/ps3/spu/spe_tex.c:34
+     7ac:	40 80 01 5a 	il	$90,2
+     7b0:	40 80 00 53 	il	$83,0
+     7b4:	35 90 00 00 	hbrp	7b4 <main+0x734>,$0
+     7b8:	42 46 40 72 	ila	$114,35968	# 8c80
+     7bc:	42 3e 40 71 	ila	$113,31872	# 7c80
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     7c0:	40 80 00 e3 	il	$99,1
+     7c4:	40 80 1a 61 	il	$97,52	# 34
+     7c8:	40 80 80 70 	il	$112,256	# 100
+     7cc:	00 20 00 00 	lnop
+run():
+/src/ps3/spu/spe_tex_hash.h:373
+     7d0:	14 00 6d 7f 	andi	$127,$90,1
+     7d4:	12 00 14 a0 	hbrr	854 <main+0x7d4>,878 <main+0x7f8>	# 878
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     7d8:	38 98 68 62 	lqx	$98,$80,$97
+run():
+/src/ps3/spu/spe_tex_hash.h:373
+     7dc:	1c 01 bf d6 	ai	$86,$127,6
+     7e0:	1c 01 3f cb 	ai	$75,$127,4
+     7e4:	35 90 00 00 	hbrp	7e4 <main+0x764>,$0
+     7e8:	0b 75 b1 83 	shl	$3,$99,$86
+     7ec:	0b 72 f1 82 	shl	$2,$99,$75
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     7f0:	b0 98 b1 e0 	shufb	$4,$99,$98,$96
+run():
+/src/ps3/spu/spe_tex_hash.h:373
+     7f4:	08 20 c1 05 	or	$5,$2,$3
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     7f8:	28 98 68 04 	stqx	$4,$80,$97
+/src/ps3/spu/spe_tex_hash.h:41
+     7fc:	21 a0 0b 05 	wrch	$ch22,$5
+/src/ps3/spu/spe_tex_hash.h:42
+     800:	21 a0 0b eb 	wrch	$ch23,$107
+     804:	01 a0 0c 02 	rdch	$2,$ch24
+run():
+/src/ps3/spu/spe_tex_hash.h:377
+     808:	0f 62 3f 89 	shli	$9,$127,8
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     80c:	38 98 68 06 	lqx	$6,$80,$97
+     810:	08 17 a9 87 	sf	$7,$83,$94
+run():
+/src/ps3/spu/spe_tex_hash.h:378
+     814:	0f 62 ff 8a 	shli	$10,$127,11
+     818:	5c 40 03 88 	clgti	$8,$7,256	# 100
+/src/ps3/spu/spe_tex_hash.h:377
+     81c:	18 1f c4 8b 	a	$11,$9,$127
+/src/ps3/spu/spe_tex_hash.h:380
+     820:	78 14 ef 0c 	ceq	$12,$94,$83
+     824:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:377
+     828:	0f 61 05 8e 	shli	$14,$11,4
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     82c:	b1 a1 b5 60 	shufb	$13,$106,$6,$96
+     830:	8a 5c 03 88 	selb	$82,$7,$112,$8
+run():
+/src/ps3/spu/spe_tex_hash.h:378
+     834:	18 02 b8 d5 	a	$85,$113,$10
+/src/ps3/spu/spe_tex_hash.h:377
+     838:	18 19 47 0f 	a	$15,$14,$101
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     83c:	28 98 68 0d 	stqx	$13,$80,$97
+run():
+/src/ps3/spu/spe_tex_hash.h:377
+     840:	18 03 f9 7c 	a	$124,$114,$15
+/src/ps3/spu/spe_tex_hash.h:380
+     844:	21 00 22 0c 	brnz	$12,954 <main+0x8d4>	# 954
+     848:	04 00 2a fb 	ori	$123,$85,0
+     84c:	40 80 00 7f 	il	$127,0
+/src/ps3/spu/spe_tex_hash.h:387
+     850:	1c ff e9 62 	ai	$98,$82,-1
+     854:	32 00 04 80 	br	878 <main+0x7f8>	# 878
+     858:	78 1f f1 26 	ceq	$38,$98,$127
+     85c:	21 00 18 22 	brnz	$34,91c <main+0x89c>	# 91c
+     860:	21 00 17 a6 	brnz	$38,91c <main+0x89c>	# 91c
+/src/ps3/spu/spe_tex_hash.h:380
+     864:	1c 00 7f ff 	ai	$127,$127,1
+     868:	1c 04 3e 7c 	ai	$124,$124,16
+     86c:	58 1f e9 2a 	clgt	$42,$82,$127
+     870:	1c 02 3d fb 	ai	$123,$123,8
+     874:	20 00 1c 2a 	brz	$42,954 <main+0x8d4>	# 954
+/src/ps3/spu/spe_tex_hash.h:382
+     878:	14 fc 3f fd 	andi	$125,$127,-16
+/src/ps3/spu/spe_tex_hash.h:384
+     87c:	78 1f fe 90 	ceq	$16,$125,$127
+     880:	40 20 00 7f 	nop	$127
+     884:	21 00 21 90 	brnz	$16,990 <main+0x910>	# 990
+/src/ps3/spu/spe_tex_hash.h:386
+     888:	1c 03 3e 14 	ai	$20,$124,12
+     88c:	12 02 07 8c 	hbrr	8bc <main+0x83c>,18c8 <tex_result>	# 18c8
+     890:	1c 02 3e 15 	ai	$21,$124,8
+     894:	38 95 fe 11 	lqx	$17,$124,$87
+     898:	1c 18 00 88 	ai	$8,$1,96	# 60
+     89c:	38 96 7e 12 	lqx	$18,$124,$89
+     8a0:	04 00 2c 07 	ori	$7,$88,0
+     8a4:	34 00 3e 13 	lqd	$19,0($124)
+     8a8:	04 00 2a 06 	ori	$6,$84,0
+     8ac:	3b 85 08 85 	rotqby	$5,$17,$20
+     8b0:	3b 85 49 04 	rotqby	$4,$18,$21
+     8b4:	3b 9f 09 83 	rotqby	$3,$19,$124
+     8b8:	40 20 00 7f 	nop	$127
+     8bc:	33 02 01 80 	brsl	$0,18c8 <tex_result>	# 18c8
+/src/ps3/spu/spe_tex_hash.h:388
+     8c0:	0f 60 fe 9a 	shli	$26,$125,3
+/src/ps3/spu/spe_tex_hash.h:386
+     8c4:	34 00 3d 96 	lqd	$22,0($123)
+/src/ps3/spu/spe_tex_hash.h:388
+     8c8:	18 14 fe 98 	a	$24,$125,$83
+/src/ps3/spu/spe_tex_hash.h:386
+     8cc:	35 90 00 00 	hbrp	8cc <main+0x84c>,$0
+     8d0:	40 20 00 7f 	nop	$127
+     8d4:	3f bf 01 99 	rotqmbyi	$25,$3,-4
+/src/ps3/spu/spe_tex_hash.h:387
+     8d8:	14 03 ff 9e 	andi	$30,$127,15
+/src/ps3/spu/spe_tex_hash.h:386
+     8dc:	3e c0 3d 9b 	cwd	$27,0($123)
+/src/ps3/spu/spe_tex_hash.h:388
+     8e0:	0f 60 cc 1c 	shli	$28,$24,3
+/src/ps3/spu/spe_tex_hash.h:380
+     8e4:	12 7f f2 9b 	hbrr	950 <main+0x8d0>,878 <main+0x7f8>	# 878
+/src/ps3/spu/spe_tex_hash.h:388
+     8e8:	18 06 aa a1 	a	$33,$85,$26
+/src/ps3/spu/spe_tex_hash.h:387
+     8ec:	34 01 80 97 	lqd	$23,96($1)	# 60
+     8f0:	7c 03 cf 22 	ceqi	$34,$30,15
+/src/ps3/spu/spe_tex_hash.h:386
+     8f4:	3f e1 0c a0 	shlqbyi	$32,$25,4
+     8f8:	3e c1 3d 9d 	cwd	$29,4($123)
+     8fc:	35 90 00 00 	hbrp	8fc <main+0x87c>,$0
+     900:	3f e1 01 9f 	shlqbyi	$31,$3,4
+     904:	b4 65 90 1b 	shufb	$35,$32,$22,$27
+     908:	24 00 3d a3 	stqd	$35,0($123)
+     90c:	38 94 7d a4 	lqx	$36,$123,$81
+     910:	b4 a9 0f 9d 	shufb	$37,$31,$36,$29
+     914:	28 94 7d a5 	stqx	$37,$123,$81
+/src/ps3/spu/spe_tex_hash.h:387
+     918:	20 7f e8 17 	brz	$23,858 <main+0x7d8>	# 858
+/src/ps3/spu/spe_tex_hash.h:388
+     91c:	33 a4 7d a7 	lqr	$39,12d08 <setup+0x8>	# 12d08
+     920:	3b 97 53 a8 	rotqby	$40,$39,$93
+     924:	18 0a 0e 29 	a	$41,$28,$40
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     928:	21 a0 08 21 	wrch	$ch16,$33
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     92c:	21 a0 08 dc 	wrch	$ch17,$92
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     930:	21 a0 09 29 	wrch	$ch18,$41
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     934:	21 a0 09 db 	wrch	$ch19,$91
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     938:	21 a0 0a 56 	wrch	$ch20,$86
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     93c:	21 a0 0a df 	wrch	$ch21,$95
+run():
+/src/ps3/spu/spe_tex_hash.h:380
+     940:	1c 00 7f ff 	ai	$127,$127,1
+     944:	1c 04 3e 7c 	ai	$124,$124,16
+     948:	58 1f e9 2a 	clgt	$42,$82,$127
+     94c:	1c 02 3d fb 	ai	$123,$123,8
+     950:	21 7f e5 2a 	brnz	$42,878 <main+0x7f8>	# 878
+/src/ps3/spu/spe_tex_hash.h:391
+     954:	12 00 52 89 	hbrr	978 <main+0x8f8>,be8 <pget>	# be8
+/src/ps3/spu/spe_tex_hash.h:390
+     958:	58 16 b3 2b 	clgt	$43,$102,$90
+/src/ps3/spu/spe_tex_hash.h:391
+     95c:	40 20 00 7f 	nop	$127
+     960:	40 20 00 7f 	nop	$127
+/src/ps3/spu/spe_tex_hash.h:390
+     964:	20 00 03 2b 	brz	$43,97c <main+0x8fc>	# 97c
+/src/ps3/spu/spe_tex_hash.h:391
+     968:	04 00 2f 06 	ori	$6,$94,0
+     96c:	04 00 32 85 	ori	$5,$101,0
+     970:	04 00 37 04 	ori	$4,$110,0
+     974:	04 00 2d 03 	ori	$3,$90,0
+     978:	33 00 4e 00 	brsl	$0,be8 <pget>	# be8
+     97c:	1c 00 6d 5a 	ai	$90,$90,1
+     980:	1c 40 29 d3 	ai	$83,$83,256	# 100
+/src/ps3/spu/spe_tex_hash.h:370
+     984:	78 16 b9 ac 	ceq	$44,$115,$90
+     988:	20 7f c9 2c 	brz	$44,7d0 <main+0x750>	# 7d0
+     98c:	32 7f 61 80 	br	498 <main+0x418>	# 498
+/src/ps3/spu/spe_tex_hash.h:385
+     990:	04 00 3d 83 	ori	$3,$123,0
+     994:	40 80 40 05 	il	$5,128	# 80
+     998:	40 80 00 04 	il	$4,0
+     99c:	33 02 e1 80 	brsl	$0,20a8 <memset>	# 20a8
+     9a0:	32 7f dd 00 	br	888 <main+0x808>	# 888
+main():
+     9a4:	00 20 00 00 	lnop
+
+000009a8 <_start>:
+_start():
+     9a8:	23 a4 9b 06 	stqr	$6,12e80 <__ea_local_store>	# 12e80
+     9ac:	04 00 01 d0 	ori	$80,$3,0
+     9b0:	04 00 02 51 	ori	$81,$4,0
+     9b4:	04 00 02 d2 	ori	$82,$5,0
+     9b8:	40 80 00 00 	il	$0,0
+     9bc:	43 ff f8 01 	ila	$1,262128	# 3fff0
+     9c0:	24 00 00 80 	stqd	$0,0($1)
+     9c4:	24 ff 80 81 	stqd	$1,-32($1)
+     9c8:	1c f8 00 81 	ai	$1,$1,-32
+     9cc:	24 00 40 80 	stqd	$0,16($1)
+     9d0:	42 97 48 03 	ila	$3,77456	# 12e90
+     9d4:	08 00 41 83 	sf	$3,$3,$1
+     9d8:	3f 83 01 83 	rotqbyi	$3,$3,12
+     9dc:	3f 83 01 04 	rotqbyi	$4,$2,12
+     9e0:	7c 00 02 05 	ceqi	$5,$4,0
+     9e4:	80 60 c2 05 	selb	$3,$4,$3,$5
+     9e8:	32 87 80 04 	fsmbi	$4,3840	# f00
+     9ec:	80 20 c0 84 	selb	$1,$1,$3,$4
+     9f0:	33 7e c2 80 	brsl	$0,4 <_init>
+     9f4:	42 12 e0 03 	ila	$3,9664	# 25c0
+     9f8:	33 02 d0 00 	brsl	$0,2078 <atexit>	# 2078
+     9fc:	04 00 28 03 	ori	$3,$80,0
+     a00:	04 00 28 84 	ori	$4,$81,0
+     a04:	04 00 29 05 	ori	$5,$82,0
+     a08:	33 7e cf 00 	brsl	$0,80 <main>	# 80
+     a0c:	33 7e c3 80 	brsl	$0,28 <exit>	# 28
+
+00000a10 <deregister_tm_clones>:
+deregister_tm_clones():
+     a10:	42 15 10 03 	ila	$3,10784	# 2a20
+     a14:	24 ff c0 fe 	stqd	$126,-16($1)
+     a18:	42 05 10 4b 	ila	$75,2592	# a20
+     a1c:	33 00 00 fe 	brsl	$126,a20 <deregister_tm_clones+0x10>	# a20
+     a20:	42 15 10 02 	ila	$2,10784	# 2a20
+     a24:	24 00 40 80 	stqd	$0,16($1)
+     a28:	24 ff 40 81 	stqd	$1,-48($1)
+     a2c:	1c f4 00 81 	ai	$1,$1,-48
+     a30:	08 1f a5 fe 	sf	$126,$75,$126
+     a34:	18 1f 81 83 	a	$3,$3,$126
+     a38:	18 1f 81 04 	a	$4,$2,$126
+     a3c:	78 00 c2 05 	ceq	$5,$4,$3
+     a40:	21 00 04 05 	brnz	$5,a60 <deregister_tm_clones+0x50>	# a60
+     a44:	42 00 00 06 	ila	$6,0
+     a48:	18 1f 83 07 	a	$7,$6,$126
+     a4c:	00 20 00 00 	lnop
+     a50:	20 00 02 07 	brz	$7,a60 <deregister_tm_clones+0x50>	# a60
+     a54:	00 20 00 00 	lnop
+     a58:	35 20 03 80 	bisl	$0,$7
+     a5c:	00 20 00 00 	lnop
+     a60:	1c 0c 00 81 	ai	$1,$1,48	# 30
+     a64:	34 00 40 80 	lqd	$0,16($1)
+     a68:	34 ff c0 fe 	lqd	$126,-16($1)
+     a6c:	35 00 00 00 	bi	$0
+
+00000a70 <register_tm_clones>:
+register_tm_clones():
+     a70:	42 15 10 02 	ila	$2,10784	# 2a20
+     a74:	24 ff c0 fe 	stqd	$126,-16($1)
+     a78:	42 05 40 4b 	ila	$75,2688	# a80
+     a7c:	33 00 00 fe 	brsl	$126,a80 <register_tm_clones+0x10>	# a80
+     a80:	42 15 10 04 	ila	$4,10784	# 2a20
+     a84:	24 00 40 80 	stqd	$0,16($1)
+     a88:	24 ff 40 81 	stqd	$1,-48($1)
+     a8c:	1c f4 00 81 	ai	$1,$1,-48
+     a90:	08 1f a5 fe 	sf	$126,$75,$126
+     a94:	18 1f 81 03 	a	$3,$2,$126
+     a98:	18 1f 82 05 	a	$5,$4,$126
+     a9c:	08 01 41 86 	sf	$6,$3,$5
+     aa0:	0f 5f 83 07 	rotmai	$7,$6,-2
+     aa4:	0f 38 43 88 	rotmi	$8,$7,-31
+     aa8:	18 01 c4 09 	a	$9,$8,$7
+     aac:	0f 5f c4 84 	rotmai	$4,$9,-1
+     ab0:	20 00 05 04 	brz	$4,ad8 <register_tm_clones+0x68>	# ad8
+     ab4:	42 00 00 0a 	ila	$10,0
+     ab8:	18 1f 85 0b 	a	$11,$10,$126
+     abc:	00 20 00 00 	lnop
+     ac0:	20 00 03 0b 	brz	$11,ad8 <register_tm_clones+0x68>	# ad8
+     ac4:	42 15 10 0c 	ila	$12,10784	# 2a20
+     ac8:	18 1f 86 03 	a	$3,$12,$126
+     acc:	00 20 00 00 	lnop
+     ad0:	35 20 05 80 	bisl	$0,$11
+     ad4:	00 20 00 00 	lnop
+     ad8:	1c 0c 00 81 	ai	$1,$1,48	# 30
+     adc:	34 00 40 80 	lqd	$0,16($1)
+     ae0:	34 ff c0 fe 	lqd	$126,-16($1)
+     ae4:	35 00 00 00 	bi	$0
+
+00000ae8 <__do_global_dtors_aux>:
+__do_global_dtors_aux():
+     ae8:	12 00 15 1f 	hbrr	b64 <__do_global_dtors_aux+0x7c>,b90 <__do_global_dtors_aux+0xa8>	# b90
+     aec:	33 83 f2 83 	lqr	$3,2a80 <completed.3879>	# 2a80
+     af0:	40 20 00 7f 	nop	$127
+     af4:	24 ff 40 fe 	stqd	$126,-48($1)
+     af8:	42 05 80 4b 	ila	$75,2816	# b00
+     afc:	33 00 00 fe 	brsl	$126,b00 <__do_global_dtors_aux+0x18>	# b00
+     b00:	24 00 40 80 	stqd	$0,16($1)
+     b04:	24 ff c0 d0 	stqd	$80,-16($1)
+     b08:	40 20 00 7f 	nop	$127
+     b0c:	24 ff 80 d1 	stqd	$81,-32($1)
+     b10:	08 1f a5 fe 	sf	$126,$75,$126
+     b14:	3f 83 41 82 	rotqbyi	$2,$3,13
+     b18:	24 fe c0 81 	stqd	$1,-80($1)
+     b1c:	1c ec 00 81 	ai	$1,$1,-80
+     b20:	56 c0 01 04 	xsbh	$4,$2
+     b24:	00 20 00 00 	lnop
+     b28:	23 00 0a 04 	brhnz	$4,b78 <__do_global_dtors_aux+0x90>	# b78
+     b2c:	42 13 86 50 	ila	$80,9996	# 270c
+     b30:	42 13 84 06 	ila	$6,9992	# 2708
+     b34:	18 1f a8 05 	a	$5,$80,$126
+     b38:	18 1f 83 07 	a	$7,$6,$126
+     b3c:	42 13 84 51 	ila	$81,9992	# 2708
+     b40:	08 01 43 88 	sf	$8,$7,$5
+     b44:	18 1f a8 d1 	a	$81,$81,$126
+     b48:	0f 5f 84 09 	rotmai	$9,$8,-2
+     b4c:	1c ff c4 d0 	ai	$80,$9,-1
+     b50:	33 83 e8 0a 	lqr	$10,2a90 <dtor_idx.3881>	# 2a90
+     b54:	1c 00 45 0b 	ai	$11,$10,1
+     b58:	58 02 a8 0d 	clgt	$13,$80,$10
+     b5c:	0f 60 85 8e 	shli	$14,$11,2
+     b60:	04 00 05 8c 	ori	$12,$11,0
+     b64:	21 00 05 8d 	brnz	$13,b90 <__do_global_dtors_aux+0xa8>	# b90
+     b68:	33 7f d5 00 	brsl	$0,a10 <deregister_tm_clones>	# a10
+     b6c:	40 80 00 8f 	il	$15,1
+     b70:	3f e0 c7 90 	shlqbyi	$16,$15,3
+     b74:	23 83 e1 90 	stqr	$16,2a80 <completed.3879>	# 2a80
+     b78:	1c 14 00 81 	ai	$1,$1,80	# 50
+     b7c:	34 00 40 80 	lqd	$0,16($1)
+     b80:	34 ff c0 d0 	lqd	$80,-16($1)
+     b84:	34 ff 80 d1 	lqd	$81,-32($1)
+     b88:	34 ff 40 fe 	lqd	$126,-48($1)
+     b8c:	35 00 00 00 	bi	$0
+     b90:	18 14 47 12 	a	$18,$14,$81
+     b94:	38 94 47 11 	lqx	$17,$14,$81
+     b98:	23 83 df 0c 	stqr	$12,2a90 <dtor_idx.3881>	# 2a90
+     b9c:	3b 84 88 93 	rotqby	$19,$17,$18
+     ba0:	35 20 09 80 	bisl	$0,$19
+     ba4:	32 7f f5 80 	br	b50 <__do_global_dtors_aux+0x68>	# b50
+
+00000ba8 <call___do_global_dtors_aux>:
+call___do_global_dtors_aux():
+     ba8:	24 00 40 80 	stqd	$0,16($1)
+     bac:	24 ff 40 81 	stqd	$1,-48($1)
+     bb0:	1c f4 00 81 	ai	$1,$1,-48
+     bb4:	1c 0c 00 81 	ai	$1,$1,48	# 30
+     bb8:	34 00 40 80 	lqd	$0,16($1)
+     bbc:	35 00 00 00 	bi	$0
+
+00000bc0 <frame_dummy>:
+frame_dummy():
+     bc0:	24 ff 40 81 	stqd	$1,-48($1)
+     bc4:	1c f4 00 81 	ai	$1,$1,-48
+     bc8:	1c 0c 00 81 	ai	$1,$1,48	# 30
+     bcc:	32 7f d4 80 	br	a70 <register_tm_clones>	# a70
+
+00000bd0 <call_frame_dummy>:
+call_frame_dummy():
+     bd0:	24 00 40 80 	stqd	$0,16($1)
+     bd4:	24 ff 40 81 	stqd	$1,-48($1)
+     bd8:	1c f4 00 81 	ai	$1,$1,-48
+     bdc:	1c 0c 00 81 	ai	$1,$1,48	# 30
+     be0:	34 00 40 80 	lqd	$0,16($1)
+     be4:	35 00 00 00 	bi	$0
+
+00000be8 <pget>:
+pget():
+/src/ps3/spu/spe_tex_hash.h:350
+     be8:	14 00 41 88 	andi	$8,$3,1
+/src/ps3/spu/spe_tex_hash.h:351
+     bec:	35 80 00 1a 	hbr	c54 <pget+0x6c>,$0
+/src/ps3/spu/spe_tex_hash.h:347
+     bf0:	0f 62 01 82 	shli	$2,$3,8
+/src/ps3/spu/spe_tex_hash.h:350
+     bf4:	0f 62 04 07 	shli	$7,$8,8
+     bf8:	42 46 40 0b 	ila	$11,35968	# 8c80
+/src/ps3/spu/spe_tex_hash.h:347
+     bfc:	08 01 81 06 	sf	$6,$2,$6
+/src/ps3/spu/spe_tex_hash.h:350
+     c00:	18 02 03 89 	a	$9,$7,$8
+     c04:	0f 61 04 8a 	shli	$10,$9,4
+     c08:	18 02 c5 0c 	a	$12,$10,$11
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     c0c:	21 a0 08 0c 	wrch	$ch16,$12
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     c10:	40 80 00 0d 	il	$13,0
+     c14:	21 a0 08 8d 	wrch	$ch17,$13
+pget():
+/src/ps3/spu/spe_tex_hash.h:350
+     c18:	0f 63 01 83 	shli	$3,$3,12
+     c1c:	18 01 01 84 	a	$4,$3,$4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     c20:	21 a0 09 04 	wrch	$ch18,$4
+pget():
+/src/ps3/spu/spe_tex_hash.h:350
+     c24:	1c 03 c2 8f 	ai	$15,$5,15
+     c28:	5c 40 03 0e 	clgti	$14,$6,256	# 100
+     c2c:	40 80 80 05 	il	$5,256	# 100
+     c30:	82 01 43 0e 	selb	$16,$6,$5,$14
+     c34:	0f 61 08 11 	shli	$17,$16,4
+     c38:	18 03 c8 92 	a	$18,$17,$15
+     c3c:	14 fc 09 13 	andi	$19,$18,-16
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     c40:	21 a0 09 93 	wrch	$ch19,$19
+pget():
+/src/ps3/spu/spe_tex_hash.h:350
+     c44:	1c 01 04 14 	ai	$20,$8,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     c48:	21 a0 0a 14 	wrch	$ch20,$20
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     c4c:	40 80 20 15 	il	$21,64	# 40
+     c50:	21 a0 0a 95 	wrch	$ch21,$21
+pget():
+/src/ps3/spu/spe_tex_hash.h:351
+     c54:	35 00 00 00 	bi	$0
+
+00000c58 <echo_put>:
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     c58:	42 97 00 02 	ila	$2,77312	# 12e00
+echo_put():
+/src/ps3/spu/spe_tex.c:21
+     c5c:	35 80 00 1e 	hbr	cd4 <echo_put+0x7c>,$0
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     c60:	04 00 01 04 	ori	$4,$2,0
+     c64:	21 a0 08 04 	wrch	$ch16,$4
+echo_put():
+/src/ps3/spu/spe_tex.c:19
+     c68:	3f bf 01 85 	rotqmbyi	$5,$3,-4
+     c6c:	3f e1 02 86 	shlqbyi	$6,$5,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     c70:	21 a0 08 86 	wrch	$ch17,$6
+echo_put():
+/src/ps3/spu/spe_tex.c:19
+     c74:	3f e1 01 83 	shlqbyi	$3,$3,4
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     c78:	21 a0 09 03 	wrch	$ch18,$3
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     c7c:	40 80 40 07 	il	$7,128	# 80
+     c80:	21 a0 09 87 	wrch	$ch19,$7
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     c84:	40 80 00 89 	il	$9,1
+     c88:	04 00 04 88 	ori	$8,$9,0
+     c8c:	21 a0 0a 08 	wrch	$ch20,$8
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     c90:	40 80 11 0a 	il	$10,34	# 22
+     c94:	21 a0 0a 8a 	wrch	$ch21,$10
+echo_put():
+/src/ps3/spu/spe_tex_hash.h:40
+     c98:	40 80 1a 0b 	il	$11,52	# 34
+/src/ps3/spu/spe_tex_hash.h:41
+     c9c:	40 80 01 0c 	il	$12,2
+/src/ps3/spu/spe_tex_hash.h:40
+     ca0:	40 20 00 7f 	nop	$127
+     ca4:	38 82 c1 0e 	lqx	$14,$2,$11
+/src/ps3/spu/spe_tex_hash.h:41
+     ca8:	04 00 06 0d 	ori	$13,$12,0
+/src/ps3/spu/spe_tex_hash.h:40
+     cac:	3e c1 01 0f 	cwd	$15,4($2)
+     cb0:	b2 03 84 8f 	shufb	$16,$9,$14,$15
+     cb4:	28 82 c1 10 	stqx	$16,$2,$11
+/src/ps3/spu/spe_tex_hash.h:41
+     cb8:	21 a0 0b 0d 	wrch	$ch22,$13
+/src/ps3/spu/spe_tex_hash.h:42
+     cbc:	21 a0 0b 8c 	wrch	$ch23,$12
+     cc0:	01 a0 0c 04 	rdch	$4,$ch24
+/src/ps3/spu/spe_tex_hash.h:43
+     cc4:	40 80 00 12 	il	$18,0
+     cc8:	38 82 c1 11 	lqx	$17,$2,$11
+     ccc:	b2 64 49 0f 	shufb	$19,$18,$17,$15
+     cd0:	28 82 c1 13 	stqx	$19,$2,$11
+/src/ps3/spu/spe_tex.c:21
+     cd4:	35 00 00 00 	bi	$0
+
+00000cd8 <hash_range>:
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:181
+     cd8:	1c 00 c2 12 	ai	$18,$4,3
+/src/ps3/spu/spe_tex_hash.h:184
+     cdc:	33 83 22 82 	lqr	$2,25f0 <_fini+0x30>	# 25f0
+     ce0:	09 21 42 84 	nor	$4,$5,$5
+/src/ps3/spu/spe_tex_hash.h:183
+     ce4:	35 90 00 00 	hbrp	ce4 <hash_range+0xc>,$0
+     ce8:	40 20 00 7f 	nop	$127
+     cec:	33 83 1e 88 	lqr	$8,25e0 <_fini+0x20>	# 25e0
+     cf0:	41 3f a5 0a 	ilhu	$10,32586	# 7f4a
+/src/ps3/spu/spe_tex_hash.h:182
+     cf4:	33 83 b7 8d 	lqr	$13,2ab0 <n_bytes>	# 2ab0
+/src/ps3/spu/spe_tex_hash.h:184
+     cf8:	41 13 ea 06 	ilhu	$6,10196	# 27d4
+/src/ps3/spu/spe_tex_hash.h:183
+     cfc:	3e c1 00 8e 	cwd	$14,4($1)
+/src/ps3/spu/spe_tex_hash.h:181
+     d00:	14 ff 09 0b 	andi	$11,$18,-4
+/src/ps3/spu/spe_tex_hash.h:183
+     d04:	3e c3 00 89 	cwd	$9,12($1)
+/src/ps3/spu/spe_tex_hash.h:180
+     d08:	14 ff 01 b8 	andi	$56,$3,-4
+/src/ps3/spu/spe_tex_hash.h:179
+     d0c:	24 00 40 80 	stqd	$0,16($1)
+/src/ps3/spu/spe_tex_hash.h:183
+     d10:	60 be 0a 8a 	iohl	$10,31765	# 7c15
+/src/ps3/spu/spe_tex_hash.h:179
+     d14:	35 90 00 00 	hbrp	d14 <hash_range+0x3c>,$0
+     d18:	40 20 00 7f 	nop	$127
+     d1c:	24 ff 80 81 	stqd	$1,-32($1)
+/src/ps3/spu/spe_tex_hash.h:184
+     d20:	60 f5 a7 86 	iohl	$6,60239	# eb4f
+/src/ps3/spu/spe_tex_hash.h:183
+     d24:	b0 e2 02 8e 	shufb	$7,$5,$8,$14
+/src/ps3/spu/spe_tex_hash.h:186
+     d28:	18 02 dc 0f 	a	$15,$56,$11
+/src/ps3/spu/spe_tex_hash.h:184
+     d2c:	b2 00 82 0e 	shufb	$16,$4,$2,$14
+/src/ps3/spu/spe_tex_hash.h:186
+     d30:	41 00 40 11 	ilhu	$17,128	# 80
+/src/ps3/spu/spe_tex_hash.h:183
+     d34:	48 22 82 93 	xor	$19,$5,$10
+/src/ps3/spu/spe_tex_hash.h:182
+     d38:	18 02 c6 95 	a	$21,$13,$11
+     d3c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:184
+     d40:	48 21 82 85 	xor	$5,$5,$6
+/src/ps3/spu/spe_tex_hash.h:183
+     d44:	b1 41 c9 89 	shufb	$10,$19,$7,$9
+/src/ps3/spu/spe_tex_hash.h:186
+     d48:	58 04 47 94 	clgt	$20,$15,$17
+/src/ps3/spu/spe_tex_hash.h:182
+     d4c:	23 83 ac 95 	stqr	$21,2ab0 <n_bytes>	# 2ab0
+/src/ps3/spu/spe_tex_hash.h:179
+     d50:	1c f8 00 81 	ai	$1,$1,-32
+/src/ps3/spu/spe_tex_hash.h:184
+     d54:	b0 44 02 89 	shufb	$2,$5,$16,$9
+/src/ps3/spu/spe_tex_hash.h:186
+     d58:	21 01 17 14 	brnz	$20,1610 <hash_range+0x938>	# 1610
+     d5c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:191
+     d60:	20 00 9b 0b 	brz	$11,1238 <hash_range+0x560>	# 1238
+/src/ps3/spu/spe_tex_hash.h:193
+     d64:	14 01 01 96 	andi	$22,$3,4
+/src/ps3/spu/spe_tex_hash.h:195
+     d68:	14 fc 01 a2 	andi	$34,$3,-16
+/src/ps3/spu/spe_tex_hash.h:194
+     d6c:	08 02 cb 17 	sf	$23,$22,$11
+/src/ps3/spu/spe_tex_hash.h:195
+     d70:	1c 03 c7 98 	ai	$24,$15,15
+/src/ps3/spu/spe_tex_hash.h:194
+     d74:	0f 3f 4b ad 	rotmi	$45,$23,-3
+/src/ps3/spu/spe_tex_hash.h:197
+     d78:	0f 3e 4b 9f 	rotmi	$31,$23,-7
+/src/ps3/spu/spe_tex_hash.h:194
+     d7c:	14 01 0b bd 	andi	$61,$23,4
+/src/ps3/spu/spe_tex_hash.h:196
+     d80:	18 05 9c 0c 	a	$12,$56,$22
+/src/ps3/spu/spe_tex_hash.h:197
+     d84:	0f 60 d6 9e 	shli	$30,$45,3
+     d88:	0f 61 cf b0 	shli	$48,$31,7
+/src/ps3/spu/spe_tex_hash.h:195
+     d8c:	14 fc 0c 19 	andi	$25,$24,-16
+/src/ps3/spu/spe_tex_hash.h:196
+     d90:	08 03 11 3e 	sf	$62,$34,$12
+/src/ps3/spu/spe_tex_hash.h:197
+     d94:	18 0f 4f 1a 	a	$26,$30,$61
+/src/ps3/spu/spe_tex_hash.h:198
+     d98:	40 80 00 bf 	il	$63,1
+     d9c:	21 01 3c 9a 	brnz	$26,1780 <hash_range+0xaa8>	# 1780
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     da0:	42 56 80 40 	ila	$64,44288	# ad00
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:173
+     da4:	33 a3 eb ae 	lqr	$46,12d00 <setup>	# 12d00
+/src/ps3/spu/spe_tex_hash.h:170
+     da8:	08 06 51 36 	sf	$54,$34,$25
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     dac:	35 90 00 00 	hbrp	dac <hash_range+0xd4>,$0
+     db0:	04 00 20 2f 	ori	$47,$64,0
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:173
+     db4:	18 0b 91 31 	a	$49,$34,$46
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     db8:	21 a0 08 2f 	wrch	$ch16,$47
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     dbc:	40 80 00 32 	il	$50,0
+     dc0:	21 a0 08 b2 	wrch	$ch17,$50
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     dc4:	21 a0 09 31 	wrch	$ch18,$49
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     dc8:	40 9f c8 33 	il	$51,16272	# 3f90
+     dcc:	58 0c db 34 	clgt	$52,$54,$51
+     dd0:	86 ac db 34 	selb	$53,$54,$51,$52
+     dd4:	21 a0 09 b5 	wrch	$ch19,$53
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     dd8:	35 90 00 00 	hbrp	dd8 <hash_range+0x100>,$0
+     ddc:	40 80 01 37 	il	$55,2
+     de0:	21 a0 0a 37 	wrch	$ch20,$55
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     de4:	40 80 20 38 	il	$56,64	# 40
+     de8:	21 a0 0a b8 	wrch	$ch21,$56
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:200
+     dec:	5c 00 5f b9 	clgti	$57,$63,1
+     df0:	20 01 3d 39 	brz	$57,17d8 <hash_range+0xb00>	# 17d8
+     df4:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:169
+     df8:	40 9f c0 3b 	il	$59,16256	# 3f80
+/src/ps3/spu/spe_tex_hash.h:173
+     dfc:	33 a3 e0 8b 	lqr	$11,12d00 <setup>	# 12d00
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     e00:	41 00 00 43 	ilhu	$67,0
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:169
+     e04:	18 0e d1 3c 	a	$60,$34,$59
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     e08:	60 f6 80 43 	iohl	$67,60672	# ed00
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:170
+     e0c:	08 06 5e 41 	sf	$65,$60,$25
+/src/ps3/spu/spe_tex_hash.h:173
+     e10:	04 00 05 ba 	ori	$58,$11,0
+     e14:	18 0e 9e 42 	a	$66,$60,$58
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+     e18:	21 a0 08 43 	wrch	$ch16,$67
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     e1c:	21 a0 08 b2 	wrch	$ch17,$50
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+     e20:	21 a0 09 42 	wrch	$ch18,$66
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     e24:	58 0c e0 c4 	clgt	$68,$65,$51
+     e28:	88 ac e0 c4 	selb	$69,$65,$51,$68
+     e2c:	21 a0 09 c5 	wrch	$ch19,$69
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+     e30:	40 80 01 c6 	il	$70,3
+     e34:	21 a0 0a 46 	wrch	$ch20,$70
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     e38:	21 a0 0a b8 	wrch	$ch21,$56
+     e3c:	00 20 00 00 	lnop
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:244
+     e40:	14 03 d6 c9 	andi	$73,$45,15
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+     e44:	33 82 f7 8c 	lqr	$12,2600 <_fini+0x40>	# 2600
+     e48:	42 97 00 4b 	ila	$75,77312	# 12e00
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+     e4c:	33 82 f8 8e 	lqr	$14,2610 <_fini+0x50>	# 2610
+     e50:	58 0c 0d 4f 	clgt	$79,$26,$48
+/src/ps3/spu/spe_tex_hash.h:128
+     e54:	33 82 f9 8d 	lqr	$13,2620 <_fini+0x60>	# 2620
+     e58:	7c 00 0b 47 	ceqi	$71,$22,0
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:215
+     e5c:	33 82 fa 91 	lqr	$17,2630 <_fini+0x70>	# 2630
+vget():
+/src/ps3/spu/spe_tex_hash.h:173
+     e60:	40 bf 80 4d 	il	$77,32512	# 7f00
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:207
+     e64:	3e c1 00 c8 	cwd	$72,4($1)
+/src/ps3/spu/spe_tex_hash.h:244
+     e68:	40 80 00 17 	il	$23,0
+/src/ps3/spu/spe_tex_hash.h:207
+     e6c:	32 ff 80 4a 	fsmbi	$74,65280	# ff00
+/src/ps3/spu/spe_tex_hash.h:244
+     e70:	40 80 01 18 	il	$24,2
+/src/ps3/spu/spe_tex_hash.h:247
+     e74:	3e c3 00 cc 	cwd	$76,12($1)
+     e78:	0f 60 e4 96 	shli	$22,$73,3
+     e7c:	32 80 7f ce 	fsmbi	$78,255	# ff
+     e80:	1c 00 63 90 	ai	$16,$71,1
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     e84:	3e c1 25 92 	cwd	$18,4($75)
+     e88:	0c 00 27 ad 	sfi	$45,$79,0
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:245
+     e8c:	3e c0 00 93 	cwd	$19,0($1)
+     e90:	14 02 1f 1e 	andi	$30,$62,8
+     e94:	1c ff df 9b 	ai	$27,$63,-1
+/src/ps3/spu/spe_tex_hash.h:244
+     e98:	40 80 3f 9a 	il	$26,127	# 7f
+     e9c:	40 80 00 15 	il	$21,0
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     ea0:	40 80 00 9d 	il	$29,1
+     ea4:	40 80 1a 19 	il	$25,52	# 34
+/src/ps3/spu/spe_tex_hash.h:43
+     ea8:	40 80 00 20 	il	$32,0
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:207
+     eac:	14 03 01 9c 	andi	$28,$3,12
+/src/ps3/spu/spe_tex_hash.h:243
+     eb0:	18 0c 1f 30 	a	$48,$62,$48
+/src/ps3/spu/spe_tex_hash.h:245
+     eb4:	40 80 02 21 	il	$33,4
+vget():
+/src/ps3/spu/spe_tex_hash.h:173
+     eb8:	18 13 51 22 	a	$34,$34,$77
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+     ebc:	08 0d a6 a5 	sf	$37,$77,$54
+     ec0:	40 9f c8 23 	il	$35,16272	# 3f90
+     ec4:	40 9f c0 28 	il	$40,16256	# 3f80
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+     ec8:	04 00 0b a9 	ori	$41,$23,0
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:42
+     ecc:	04 00 0c 27 	ori	$39,$24,0
+vget():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+     ed0:	40 80 20 26 	il	$38,64	# 40
+     ed4:	00 20 00 00 	lnop
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:204
+     ed8:	14 00 4a 88 	andi	$8,$21,1
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     edc:	38 86 65 89 	lqx	$9,$75,$25
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:204
+     ee0:	1c 00 84 03 	ai	$3,$8,2
+     ee4:	35 90 00 00 	hbrp	ee4 <hash_range+0x20c>,$0
+     ee8:	0b 60 ce 87 	shl	$7,$29,$3
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+     eec:	b0 82 4e 92 	shufb	$4,$29,$9,$18
+     ef0:	28 86 65 84 	stqx	$4,$75,$25
+/src/ps3/spu/spe_tex_hash.h:41
+     ef4:	21 a0 0b 07 	wrch	$ch22,$7
+/src/ps3/spu/spe_tex_hash.h:42
+     ef8:	21 a0 0b a7 	wrch	$ch23,$39
+     efc:	01 a0 0c 03 	rdch	$3,$ch24
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:206
+     f00:	7c 00 0a 86 	ceqi	$6,$21,0
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     f04:	38 86 65 8f 	lqx	$15,$75,$25
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:205
+     f08:	0f 63 84 05 	shli	$5,$8,14
+/src/ps3/spu/spe_tex_hash.h:206
+     f0c:	0c 00 03 14 	sfi	$20,$6,0
+     f10:	35 90 00 00 	hbrp	f10 <hash_range+0x238>,$0
+     f14:	18 25 08 24 	and	$36,$16,$20
+/src/ps3/spu/spe_tex_hash.h:205
+     f18:	18 01 60 2a 	a	$42,$64,$5
+     f1c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:206
+     f20:	56 c0 12 2c 	xsbh	$44,$36
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+     f24:	b5 63 d0 12 	shufb	$43,$32,$15,$18
+     f28:	40 20 00 7f 	nop	$127
+     f2c:	28 86 65 ab 	stqx	$43,$75,$25
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:206
+     f30:	22 00 0b 2c 	brhz	$44,f88 <hash_range+0x2b0>	# f88
+     f34:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:207
+     f38:	18 07 15 36 	a	$54,$42,$28
+     f3c:	38 87 15 2e 	lqx	$46,$42,$28
+     f40:	40 80 00 2f 	il	$47,0
+     f44:	3b 8d 97 31 	rotqby	$49,$46,$54
+     f48:	b6 4b d8 c8 	shufb	$50,$49,$47,$72
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+     f4c:	18 4c 85 33 	cg	$51,$10,$50
+/src/ps3/spu/spe_tex_hash.h:119
+     f50:	18 0c 85 34 	a	$52,$10,$50
+     f54:	b6 ac d9 8c 	shufb	$53,$51,$51,$12
+     f58:	18 0d 5a 37 	a	$55,$52,$53
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+     f5c:	3f 60 9b b8 	shlqbii	$56,$55,2
+     f60:	3f e0 5c 39 	shlqbyi	$57,$56,1
+     f64:	18 2e 47 0b 	and	$11,$14,$57
+/src/ps3/spu/spe_tex_hash.h:118
+     f68:	18 42 db ba 	cg	$58,$55,$11
+/src/ps3/spu/spe_tex_hash.h:119
+     f6c:	18 02 db bb 	a	$59,$55,$11
+     f70:	b7 8e 9d 0c 	shufb	$60,$58,$58,$12
+     f74:	18 0f 1d c1 	a	$65,$59,$60
+/src/ps3/spu/spe_tex_hash.h:128
+     f78:	3f 3e a0 c2 	rotqmbii	$66,$65,-6
+     f7c:	18 30 86 c3 	and	$67,$13,$66
+     f80:	48 30 e0 c4 	xor	$68,$65,$67
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:207
+     f84:	81 51 05 4a 	selb	$10,$10,$68,$74
+     f88:	0f 61 ca c5 	shli	$69,$21,7
+/src/ps3/spu/spe_tex_hash.h:209
+     f8c:	58 06 8f c6 	clgt	$70,$31,$26
+     f90:	88 e6 8f c6 	selb	$71,$31,$26,$70
+     f94:	08 11 4a cd 	sf	$77,$21,$69
+/src/ps3/spu/spe_tex_hash.h:212
+     f98:	58 13 63 cf 	clgt	$79,$71,$77
+/src/ps3/spu/spe_tex_hash.h:210
+     f9c:	21 00 81 1e 	brnz	$30,13a4 <hash_range+0x6cc>	# 13a4
+     fa0:	0f 61 e3 89 	shli	$9,$71,7
+/src/ps3/spu/spe_tex_hash.h:227
+     fa4:	12 80 03 85 	hbrr	11b8 <hash_range+0x4e0>,fc0 <hash_range+0x2e8>	# fc0
+     fa8:	08 0f 8b 88 	sf	$8,$23,$62
+     fac:	18 0f 95 0f 	a	$15,$42,$62
+     fb0:	18 02 04 83 	a	$3,$9,$8
+     fb4:	18 00 d5 14 	a	$20,$42,$3
+     fb8:	40 20 00 7f 	nop	$127
+     fbc:	20 00 40 4f 	brz	$79,11bc <hash_range+0x4e4>	# 11bc
+     fc0:	1c 20 07 8f 	ai	$15,$15,128	# 80
+/src/ps3/spu/spe_tex_hash.h:230
+     fc4:	34 fe 07 86 	lqd	$6,-128($15)
+/src/ps3/spu/spe_tex_hash.h:231
+     fc8:	34 fe 47 a4 	lqd	$36,-112($15)
+/src/ps3/spu/spe_tex_hash.h:227
+     fcc:	35 90 00 00 	hbrp	fcc <hash_range+0x2f4>,$0
+     fd0:	78 05 07 b5 	ceq	$53,$15,$20
+/src/ps3/spu/spe_tex_hash.h:232
+     fd4:	34 fe 87 87 	lqd	$7,-96($15)
+/src/ps3/spu/spe_tex_hash.h:233
+     fd8:	34 fe c7 84 	lqd	$4,-80($15)
+/src/ps3/spu/spe_tex_hash.h:234
+     fdc:	34 ff 07 85 	lqd	$5,-64($15)
+/src/ps3/spu/spe_tex_hash.h:235
+     fe0:	40 20 00 7f 	nop	$127
+     fe4:	34 ff 47 ab 	lqd	$43,-48($15)
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+     fe8:	18 41 85 2f 	cg	$47,$10,$6
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:236
+     fec:	34 ff 87 ac 	lqd	$44,-32($15)
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+     ff0:	18 49 01 36 	cg	$54,$2,$36
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:237
+     ff4:	34 ff c7 ae 	lqd	$46,-16($15)
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+     ff8:	18 01 85 0a 	a	$10,$10,$6
+     ffc:	35 90 00 00 	hbrp	ffc <hash_range+0x324>,$0
+    1000:	40 20 00 7f 	nop	$127
+    1004:	b6 2b d7 8c 	shufb	$49,$47,$47,$12
+    1008:	18 09 01 02 	a	$2,$2,$36
+    100c:	b6 4d 9b 0c 	shufb	$50,$54,$54,$12
+    1010:	18 0c 45 33 	a	$51,$10,$49
+    1014:	18 0c 81 34 	a	$52,$2,$50
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1018:	3f 60 99 b7 	shlqbii	$55,$51,2
+    101c:	3f 60 9a 38 	shlqbii	$56,$52,2
+    1020:	3f e0 5b b9 	shlqbyi	$57,$55,1
+    1024:	3f e0 5c 3a 	shlqbyi	$58,$56,1
+    1028:	18 2e 47 0b 	and	$11,$14,$57
+    102c:	18 2e 87 3b 	and	$59,$14,$58
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1030:	18 42 d9 bc 	cg	$60,$51,$11
+    1034:	18 4e da 41 	cg	$65,$52,$59
+/src/ps3/spu/spe_tex_hash.h:119
+    1038:	18 02 d9 c2 	a	$66,$51,$11
+    103c:	b8 6f 1e 0c 	shufb	$67,$60,$60,$12
+    1040:	18 0e da 44 	a	$68,$52,$59
+    1044:	b8 d0 60 8c 	shufb	$70,$65,$65,$12
+    1048:	18 10 e1 47 	a	$71,$66,$67
+    104c:	18 11 a2 4d 	a	$77,$68,$70
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    1050:	3f 3e a3 cf 	rotqmbii	$79,$71,-6
+    1054:	3f 3e a6 88 	rotqmbii	$8,$77,-6
+    1058:	18 33 c6 89 	and	$9,$13,$79
+    105c:	18 22 06 83 	and	$3,$13,$8
+    1060:	48 22 63 a4 	xor	$36,$71,$9
+    1064:	48 20 e6 86 	xor	$6,$77,$3
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1068:	18 41 d2 2f 	cg	$47,$36,$7
+    106c:	18 41 03 36 	cg	$54,$6,$4
+/src/ps3/spu/spe_tex_hash.h:119
+    1070:	18 01 d2 07 	a	$7,$36,$7
+    1074:	b6 2b d7 8c 	shufb	$49,$47,$47,$12
+    1078:	18 01 03 04 	a	$4,$6,$4
+    107c:	b1 4d 9b 0c 	shufb	$10,$54,$54,$12
+    1080:	18 0c 43 82 	a	$2,$7,$49
+    1084:	18 02 82 32 	a	$50,$4,$10
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1088:	3f 60 81 33 	shlqbii	$51,$2,2
+    108c:	3f 60 99 34 	shlqbii	$52,$50,2
+    1090:	3f e0 59 b7 	shlqbyi	$55,$51,1
+    1094:	3f e0 5a 38 	shlqbyi	$56,$52,1
+    1098:	18 2d c7 39 	and	$57,$14,$55
+    109c:	18 2e 07 3a 	and	$58,$14,$56
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    10a0:	18 4e 41 0b 	cg	$11,$2,$57
+    10a4:	18 4e 99 3b 	cg	$59,$50,$58
+/src/ps3/spu/spe_tex_hash.h:119
+    10a8:	18 0e 41 3c 	a	$60,$2,$57
+    10ac:	b8 22 c5 8c 	shufb	$65,$11,$11,$12
+    10b0:	18 0e 99 42 	a	$66,$50,$58
+    10b4:	b8 6e dd 8c 	shufb	$67,$59,$59,$12
+    10b8:	18 10 5e 44 	a	$68,$60,$65
+    10bc:	18 10 e1 46 	a	$70,$66,$67
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    10c0:	3f 3e a2 47 	rotqmbii	$71,$68,-6
+    10c4:	3f 3e a3 4d 	rotqmbii	$77,$70,-6
+    10c8:	18 31 c6 cf 	and	$79,$13,$71
+    10cc:	18 33 46 88 	and	$8,$13,$77
+    10d0:	48 33 e2 09 	xor	$9,$68,$79
+    10d4:	48 22 23 03 	xor	$3,$70,$8
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    10d8:	18 41 44 a4 	cg	$36,$9,$5
+    10dc:	18 4a c1 86 	cg	$6,$3,$43
+/src/ps3/spu/spe_tex_hash.h:119
+    10e0:	18 01 44 85 	a	$5,$9,$5
+    10e4:	b5 e9 12 0c 	shufb	$47,$36,$36,$12
+    10e8:	18 0a c1 ab 	a	$43,$3,$43
+    10ec:	b6 c1 83 0c 	shufb	$54,$6,$6,$12
+    10f0:	18 0b c2 b1 	a	$49,$5,$47
+    10f4:	18 0d 95 8a 	a	$10,$43,$54
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    10f8:	3f 60 98 87 	shlqbii	$7,$49,2
+    10fc:	3f 60 85 04 	shlqbii	$4,$10,2
+    1100:	3f e0 43 82 	shlqbyi	$2,$7,1
+    1104:	3f e0 42 32 	shlqbyi	$50,$4,1
+    1108:	18 20 87 33 	and	$51,$14,$2
+    110c:	18 2c 87 34 	and	$52,$14,$50
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1110:	18 4c d8 b7 	cg	$55,$49,$51
+    1114:	18 4d 05 38 	cg	$56,$10,$52
+/src/ps3/spu/spe_tex_hash.h:119
+    1118:	18 0c d8 b9 	a	$57,$49,$51
+    111c:	b7 4d db 8c 	shufb	$58,$55,$55,$12
+    1120:	18 0d 05 0b 	a	$11,$10,$52
+    1124:	b7 6e 1c 0c 	shufb	$59,$56,$56,$12
+    1128:	18 0e 9c bc 	a	$60,$57,$58
+    112c:	18 0e c5 c1 	a	$65,$11,$59
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    1130:	3f 3e 9e 42 	rotqmbii	$66,$60,-6
+    1134:	3f 3e a0 c3 	rotqmbii	$67,$65,-6
+    1138:	18 30 86 c4 	and	$68,$13,$66
+    113c:	18 30 c6 c6 	and	$70,$13,$67
+    1140:	48 31 1e 47 	xor	$71,$60,$68
+    1144:	48 31 a0 cd 	xor	$77,$65,$70
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1148:	18 4b 23 cf 	cg	$79,$71,$44
+    114c:	18 4b a6 88 	cg	$8,$77,$46
+/src/ps3/spu/spe_tex_hash.h:119
+    1150:	18 0b 23 ac 	a	$44,$71,$44
+    1154:	b1 33 e7 8c 	shufb	$9,$79,$79,$12
+    1158:	18 0b a6 ae 	a	$46,$77,$46
+    115c:	b0 62 04 0c 	shufb	$3,$8,$8,$12
+    1160:	18 02 56 24 	a	$36,$44,$9
+    1164:	18 00 d7 05 	a	$5,$46,$3
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1168:	3f 60 92 06 	shlqbii	$6,$36,2
+    116c:	3f 60 82 af 	shlqbii	$47,$5,2
+    1170:	3f e0 43 2b 	shlqbyi	$43,$6,1
+    1174:	3f e0 57 b6 	shlqbyi	$54,$47,1
+    1178:	18 2a c7 31 	and	$49,$14,$43
+    117c:	18 2d 87 0a 	and	$10,$14,$54
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1180:	18 4c 52 07 	cg	$7,$36,$49
+    1184:	18 42 82 84 	cg	$4,$5,$10
+/src/ps3/spu/spe_tex_hash.h:119
+    1188:	18 0c 52 02 	a	$2,$36,$49
+    118c:	b6 41 c3 8c 	shufb	$50,$7,$7,$12
+    1190:	18 02 82 b3 	a	$51,$5,$10
+    1194:	b6 81 02 0c 	shufb	$52,$4,$4,$12
+    1198:	18 0c 81 37 	a	$55,$2,$50
+    119c:	18 0d 19 b8 	a	$56,$51,$52
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    11a0:	3f 3e 9b b9 	rotqmbii	$57,$55,-6
+    11a4:	3f 3e 9c 3a 	rotqmbii	$58,$56,-6
+    11a8:	18 2e 46 8b 	and	$11,$13,$57
+    11ac:	18 2e 86 bb 	and	$59,$13,$58
+    11b0:	48 22 db 8a 	xor	$10,$55,$11
+    11b4:	48 2e dc 02 	xor	$2,$56,$59
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:227
+    11b8:	20 7f c1 35 	brz	$53,fc0 <hash_range+0x2e8>	# fc0
+/src/ps3/spu/spe_tex_hash.h:241
+    11bc:	78 06 ca c1 	ceq	$65,$21,$27
+    11c0:	0c 00 20 8f 	sfi	$15,$65,0
+    11c4:	18 23 d6 bb 	and	$59,$45,$15
+    11c8:	56 c0 1d cf 	xsbh	$79,$59
+    11cc:	23 00 c2 cf 	brhnz	$79,17e0 <hash_range+0xb08>	# 17e0
+/src/ps3/spu/spe_tex_hash.h:249
+    11d0:	58 06 1f c3 	clgt	$67,$63,$24
+    11d4:	20 00 09 c3 	brz	$67,1220 <hash_range+0x548>	# 1220
+vget():
+/src/ps3/spu/spe_tex_hash.h:173
+    11d8:	14 00 4c 03 	andi	$3,$24,1
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:202
+    11dc:	12 7f 9f 96 	hbrr	1234 <hash_range+0x55c>,ed8 <hash_range+0x200>	# ed8
+vget():
+/src/ps3/spu/spe_tex_hash.h:173
+    11e0:	18 05 d1 36 	a	$54,$34,$23
+    11e4:	33 a3 63 86 	lqr	$6,12d00 <setup>	# 12d00
+    11e8:	0f 63 81 85 	shli	$5,$3,14
+    11ec:	18 01 60 2b 	a	$43,$64,$5
+    11f0:	04 00 03 47 	ori	$71,$6,0
+    11f4:	18 11 db 33 	a	$51,$54,$71
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    11f8:	21 a0 08 2b 	wrch	$ch16,$43
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+    11fc:	21 a0 08 a9 	wrch	$ch17,$41
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+    1200:	21 a0 09 33 	wrch	$ch18,$51
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+    1204:	08 09 4b 94 	sf	$20,$23,$37
+    1208:	58 08 ca 04 	clgt	$4,$20,$35
+    120c:	86 88 ca 04 	selb	$52,$20,$35,$4
+    1210:	21 a0 09 b4 	wrch	$ch19,$52
+vget():
+/src/ps3/spu/spe_tex_hash.h:173
+    1214:	1c 00 81 87 	ai	$7,$3,2
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+    1218:	21 a0 0a 07 	wrch	$ch20,$7
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+    121c:	21 a0 0a a6 	wrch	$ch21,$38
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:202
+    1220:	1c 00 4a 95 	ai	$21,$21,1
+    1224:	1c 00 4c 18 	ai	$24,$24,1
+    1228:	78 05 5f b2 	ceq	$50,$63,$21
+    122c:	1c 1f cd 1a 	ai	$26,$26,127	# 7f
+    1230:	18 0a 0b 97 	a	$23,$23,$40
+    1234:	20 7f 94 b2 	brz	$50,ed8 <hash_range+0x200>	# ed8
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    1238:	04 00 05 36 	ori	$54,$10,0
+    123c:	3f 82 05 14 	rotqbyi	$20,$10,8
+    1240:	04 00 01 33 	ori	$51,$2,0
+    1244:	3f 81 05 05 	rotqbyi	$5,$10,4
+    1248:	3f 83 05 34 	rotqbyi	$52,$10,12
+    124c:	3f bf 1b 07 	rotqmbyi	$7,$54,-4
+    1250:	3f bf 0a 0a 	rotqmbyi	$10,$20,-4
+    1254:	3f bf 02 95 	rotqmbyi	$21,$5,-4
+    1258:	3f bf 1a 18 	rotqmbyi	$24,$52,-4
+    125c:	3f 82 03 b2 	rotqbyi	$50,$7,8
+    1260:	3f 82 05 1f 	rotqbyi	$31,$10,8
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:138
+    1264:	33 82 73 ab 	lqr	$43,2600 <_fini+0x40>	# 2600
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    1268:	3f bf 19 be 	rotqmbyi	$62,$51,-4
+    126c:	3f e3 19 1a 	shlqbyi	$26,$50,12
+    1270:	3f e3 0f bd 	shlqbyi	$61,$31,12
+    1274:	3f 81 01 17 	rotqbyi	$23,$2,4
+    1278:	40 20 00 7f 	nop	$127
+    127c:	3f 82 1f 4b 	rotqbyi	$75,$62,8
+    1280:	08 25 4d 3f 	or	$63,$26,$21
+    1284:	3f 82 01 40 	rotqbyi	$64,$2,8
+    1288:	08 26 1e c8 	or	$72,$61,$24
+    128c:	3f 83 01 49 	rotqbyi	$73,$2,12
+    1290:	40 20 00 7f 	nop	$127
+    1294:	3f bf 0b 82 	rotqmbyi	$2,$23,-4
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:138
+    1298:	18 4f e4 4a 	cg	$74,$72,$63
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    129c:	3f e3 25 cc 	shlqbyi	$76,$75,12
+    12a0:	3f bf 20 4e 	rotqmbyi	$78,$64,-4
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:138
+    12a4:	b2 52 a5 2b 	shufb	$18,$74,$74,$43
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    12a8:	40 20 00 7f 	nop	$127
+    12ac:	3f bf 24 96 	rotqmbyi	$22,$73,-4
+    12b0:	08 20 a6 10 	or	$16,$76,$2
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:256
+    12b4:	12 01 90 a9 	hbrr	1358 <hash_range+0x680>,1f38 <__muldi3>	# 1f38
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    12b8:	40 20 00 7f 	nop	$127
+    12bc:	3f 82 27 2d 	rotqbyi	$45,$78,8
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:138
+    12c0:	68 0f e4 12 	addx	$18,$72,$63
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:256
+    12c4:	33 82 6f 84 	lqr	$4,2640 <_fini+0x80>	# 2640
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:139
+    12c8:	3f 82 09 1b 	rotqbyi	$27,$18,8
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    12cc:	3f e3 16 93 	shlqbyi	$19,$45,12
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:139
+    12d0:	3f e2 4d 9d 	shlqbyi	$29,$27,9
+tx_lane():
+/src/ps3/spu/spe_tex_hash.h:133
+    12d4:	08 25 89 9e 	or	$30,$19,$22
+oaat64():
+/src/ps3/spu/spe_tex_hash.h:139
+    12d8:	3f 60 8e a0 	shlqbii	$32,$29,2
+    12dc:	18 48 09 1c 	cg	$28,$18,$32
+    12e0:	b3 27 0e 2b 	shufb	$25,$28,$28,$43
+    12e4:	68 08 09 19 	addx	$25,$18,$32
+/src/ps3/spu/spe_tex_hash.h:140
+    12e8:	3f 3e 8c 8e 	rotqmbii	$14,$25,-6
+    12ec:	48 23 8c 91 	xor	$17,$25,$14
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:138
+    12f0:	18 44 48 30 	cg	$48,$16,$17
+    12f4:	b4 2c 18 2b 	shufb	$33,$48,$48,$43
+    12f8:	68 04 48 21 	addx	$33,$16,$17
+/src/ps3/spu/spe_tex_hash.h:139
+    12fc:	3f 82 10 a2 	rotqbyi	$34,$33,8
+    1300:	3f e2 51 25 	shlqbyi	$37,$34,9
+    1304:	3f 60 92 a3 	shlqbii	$35,$37,2
+    1308:	18 48 d0 a8 	cg	$40,$33,$35
+    130c:	b5 2a 14 2b 	shufb	$41,$40,$40,$43
+    1310:	68 08 d0 a9 	addx	$41,$33,$35
+/src/ps3/spu/spe_tex_hash.h:140
+    1314:	3f 3e 94 a7 	rotqmbii	$39,$41,-6
+    1318:	48 29 d4 8c 	xor	$12,$41,$39
+/src/ps3/spu/spe_tex_hash.h:138
+    131c:	18 43 0f 26 	cg	$38,$30,$12
+    1320:	b0 69 93 2b 	shufb	$3,$38,$38,$43
+    1324:	68 03 0f 03 	addx	$3,$30,$12
+    1328:	04 00 01 b7 	ori	$55,$3,0
+/src/ps3/spu/spe_tex_hash.h:139
+    132c:	3f 82 1b b8 	rotqbyi	$56,$55,8
+    1330:	3f e2 5c 39 	shlqbyi	$57,$56,9
+    1334:	3f 60 9c ba 	shlqbii	$58,$57,2
+    1338:	18 4e 81 b5 	cg	$53,$3,$58
+    133c:	b1 6d 5a ab 	shufb	$11,$53,$53,$43
+    1340:	68 0e 81 8b 	addx	$11,$3,$58
+/src/ps3/spu/spe_tex_hash.h:140
+    1344:	3f 3e 85 8d 	rotqmbii	$13,$11,-6
+    1348:	48 23 45 bc 	xor	$60,$11,$13
+/src/ps3/spu/spe_tex_hash.h:255
+    134c:	3f 3f de 42 	rotqmbii	$66,$60,-1
+    1350:	3f bf 21 44 	rotqmbyi	$68,$66,-4
+/src/ps3/spu/spe_tex_hash.h:256
+    1354:	48 2f 22 03 	xor	$3,$68,$60
+    1358:	33 01 7c 00 	brsl	$0,1f38 <__muldi3>	# 1f38
+/src/ps3/spu/spe_tex_hash.h:258
+    135c:	33 82 5e 84 	lqr	$4,2650 <_fini+0x90>	# 2650
+/src/ps3/spu/spe_tex_hash.h:257
+    1360:	3f 3f c1 c6 	rotqmbii	$70,$3,-1
+    1364:	3f bf 23 4d 	rotqmbyi	$77,$70,-4
+/src/ps3/spu/spe_tex_hash.h:258
+    1368:	48 20 e6 83 	xor	$3,$77,$3
+    136c:	33 01 79 80 	brsl	$0,1f38 <__muldi3>	# 1f38
+/src/ps3/spu/spe_tex_hash.h:261
+    1370:	1c 08 00 81 	ai	$1,$1,32	# 20
+    1374:	34 00 40 80 	lqd	$0,16($1)
+    1378:	40 20 00 7f 	nop	$127
+    137c:	35 80 00 09 	hbr	13a0 <hash_range+0x6c8>,$0
+    1380:	40 20 00 7f 	nop	$127
+/src/ps3/spu/spe_tex_hash.h:259
+    1384:	3f 3f c1 84 	rotqmbii	$4,$3,-1
+/src/ps3/spu/spe_tex_hash.h:261
+    1388:	40 20 00 7f 	nop	$127
+/src/ps3/spu/spe_tex_hash.h:259
+    138c:	3f bf 02 41 	rotqmbyi	$65,$4,-4
+    1390:	48 20 e0 8f 	xor	$15,$65,$3
+/src/ps3/spu/spe_tex_hash.h:260
+    1394:	3f bf 07 bb 	rotqmbyi	$59,$15,-4
+    1398:	48 23 dd cf 	xor	$79,$59,$15
+    139c:	3f e1 27 83 	shlqbyi	$3,$79,4
+/src/ps3/spu/spe_tex_hash.h:261
+    13a0:	35 00 00 00 	bi	$0
+/src/ps3/spu/spe_tex_hash.h:212
+    13a4:	20 7f c3 4f 	brz	$79,11bc <hash_range+0x4e4>	# 11bc
+    13a8:	0f 61 e3 94 	shli	$20,$71,7
+    13ac:	12 80 02 97 	hbrr	1608 <hash_range+0x930>,13c0 <hash_range+0x6e8>	# 13c0
+    13b0:	08 0f 8b b5 	sf	$53,$23,$62
+    13b4:	18 0f 95 0f 	a	$15,$42,$62
+    13b8:	18 05 1a bc 	a	$60,$53,$20
+    13bc:	18 0f 15 41 	a	$65,$42,$60
+    13c0:	1c 02 07 c2 	ai	$66,$15,8
+/src/ps3/spu/spe_tex_hash.h:215
+    13c4:	1c fe 07 c3 	ai	$67,$15,-8
+    13c8:	1c 06 07 c7 	ai	$71,$15,24	# 18
+    13cc:	35 90 00 00 	hbrp	13cc <hash_range+0x6f4>,$0
+    13d0:	40 20 00 7f 	nop	$127
+    13d4:	34 00 21 44 	lqd	$68,0($66)
+    13d8:	1c 0a 07 cd 	ai	$77,$15,40	# 28
+    13dc:	34 00 21 c6 	lqd	$70,0($67)
+    13e0:	1c 0e 07 89 	ai	$9,$15,56	# 38
+/src/ps3/spu/spe_tex_hash.h:216
+    13e4:	34 00 23 cf 	lqd	$79,0($71)
+    13e8:	1c 12 07 ae 	ai	$46,$15,72	# 48
+/src/ps3/spu/spe_tex_hash.h:217
+    13ec:	34 00 26 ac 	lqd	$44,0($77)
+    13f0:	1c 16 07 83 	ai	$3,$15,88	# 58
+/src/ps3/spu/spe_tex_hash.h:218
+    13f4:	34 00 04 a4 	lqd	$36,0($9)
+/src/ps3/spu/spe_tex_hash.h:222
+    13f8:	1c 1e 07 b9 	ai	$57,$15,120	# 78
+/src/ps3/spu/spe_tex_hash.h:219
+    13fc:	35 90 00 00 	hbrp	13fc <hash_range+0x724>,$0
+    1400:	34 00 17 2f 	lqd	$47,0($46)
+/src/ps3/spu/spe_tex_hash.h:220
+    1404:	34 00 01 b1 	lqd	$49,0($3)
+/src/ps3/spu/spe_tex_hash.h:215
+    1408:	b1 11 23 11 	shufb	$8,$70,$68,$17
+/src/ps3/spu/spe_tex_hash.h:216
+    140c:	b0 d3 e2 11 	shufb	$6,$68,$79,$17
+/src/ps3/spu/spe_tex_hash.h:217
+    1410:	b5 6b 27 91 	shufb	$43,$79,$44,$17
+/src/ps3/spu/spe_tex_hash.h:218
+    1414:	b6 49 16 11 	shufb	$50,$44,$36,$17
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1418:	18 42 05 05 	cg	$5,$10,$8
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:219
+    141c:	b6 6b d2 11 	shufb	$51,$36,$47,$17
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1420:	18 41 81 07 	cg	$7,$2,$6
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:220
+    1424:	b2 8c 57 91 	shufb	$20,$47,$49,$17
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+    1428:	18 01 81 04 	a	$4,$2,$6
+    142c:	b6 c1 42 8c 	shufb	$54,$5,$5,$12
+    1430:	18 02 05 0a 	a	$10,$10,$8
+    1434:	b6 81 c3 8c 	shufb	$52,$7,$7,$12
+    1438:	1c 1a 07 82 	ai	$2,$15,104	# 68
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:222
+    143c:	34 00 1c b5 	lqd	$53,0($57)
+    1440:	1c 20 07 8f 	ai	$15,$15,128	# 80
+    1444:	00 20 00 00 	lnop
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+    1448:	18 0d 85 37 	a	$55,$10,$54
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:221
+    144c:	34 00 01 38 	lqd	$56,0($2)
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+    1450:	18 0d 02 0b 	a	$11,$4,$52
+    1454:	00 20 00 00 	lnop
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:212
+    1458:	78 10 47 bb 	ceq	$59,$15,$65
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    145c:	3f 60 9b ba 	shlqbii	$58,$55,2
+    1460:	3f 60 85 bc 	shlqbii	$60,$11,2
+    1464:	3f e0 5d 42 	shlqbyi	$66,$58,1
+    1468:	3f e0 5e 44 	shlqbyi	$68,$60,1
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:221
+    146c:	b8 6e 18 91 	shufb	$67,$49,$56,$17
+/src/ps3/spu/spe_tex_hash.h:222
+    1470:	b8 ed 5c 11 	shufb	$71,$56,$53,$17
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1474:	18 30 87 46 	and	$70,$14,$66
+    1478:	18 31 07 4f 	and	$79,$14,$68
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    147c:	18 51 9b cd 	cg	$77,$55,$70
+    1480:	18 53 c5 ae 	cg	$46,$11,$79
+    1484:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:119
+    1488:	18 11 9b ac 	a	$44,$55,$70
+    148c:	b1 33 66 8c 	shufb	$9,$77,$77,$12
+    1490:	18 13 c5 88 	a	$8,$11,$79
+    1494:	b4 8b 97 0c 	shufb	$36,$46,$46,$12
+    1498:	18 02 56 2f 	a	$47,$44,$9
+oaat2():
+    149c:	18 09 04 05 	a	$5,$8,$36
+/src/ps3/spu/spe_tex_hash.h:128
+    14a0:	3f 3e 97 83 	rotqmbii	$3,$47,-6
+    14a4:	3f 3e 82 b1 	rotqmbii	$49,$5,-6
+    14a8:	18 20 c6 86 	and	$6,$13,$3
+    14ac:	18 2c 46 b6 	and	$54,$13,$49
+    14b0:	48 21 97 8a 	xor	$10,$47,$6
+    14b4:	48 2d 82 82 	xor	$2,$5,$54
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    14b8:	18 4a c5 04 	cg	$4,$10,$43
+    14bc:	18 4c 81 34 	cg	$52,$2,$50
+/src/ps3/spu/spe_tex_hash.h:119
+    14c0:	18 0a c5 2b 	a	$43,$10,$43
+    14c4:	b0 e1 02 0c 	shufb	$7,$4,$4,$12
+    14c8:	18 0c 81 32 	a	$50,$2,$50
+    14cc:	b6 ed 1a 0c 	shufb	$55,$52,$52,$12
+    14d0:	18 01 d5 b8 	a	$56,$43,$7
+    14d4:	18 0d d9 3a 	a	$58,$50,$55
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    14d8:	3f 60 9c 39 	shlqbii	$57,$56,2
+    14dc:	3f 60 9d 0b 	shlqbii	$11,$58,2
+    14e0:	3f e0 5c b5 	shlqbyi	$53,$57,1
+    14e4:	3f e0 45 bc 	shlqbyi	$60,$11,1
+    14e8:	18 2d 47 42 	and	$66,$14,$53
+    14ec:	18 2f 07 46 	and	$70,$14,$60
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    14f0:	18 50 9c 44 	cg	$68,$56,$66
+    14f4:	18 51 9d 2c 	cg	$44,$58,$70
+/src/ps3/spu/spe_tex_hash.h:119
+    14f8:	18 10 9c 4d 	a	$77,$56,$66
+    14fc:	b9 f1 22 0c 	shufb	$79,$68,$68,$12
+    1500:	18 11 9d 09 	a	$9,$58,$70
+    1504:	b5 cb 16 0c 	shufb	$46,$44,$44,$12
+    1508:	18 13 e6 88 	a	$8,$77,$79
+    150c:	18 0b 84 af 	a	$47,$9,$46
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    1510:	3f 3e 84 24 	rotqmbii	$36,$8,-6
+    1514:	3f 3e 97 83 	rotqmbii	$3,$47,-6
+    1518:	18 29 06 85 	and	$5,$13,$36
+    151c:	18 20 c6 86 	and	$6,$13,$3
+    1520:	48 21 44 31 	xor	$49,$8,$5
+    1524:	48 21 97 b6 	xor	$54,$47,$6
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1528:	18 4c d8 8a 	cg	$10,$49,$51
+    152c:	18 45 1b 2b 	cg	$43,$54,$20
+/src/ps3/spu/spe_tex_hash.h:119
+    1530:	18 0c d8 b3 	a	$51,$49,$51
+    1534:	b0 42 85 0c 	shufb	$2,$10,$10,$12
+    1538:	18 05 1b 14 	a	$20,$54,$20
+    153c:	b0 8a d5 8c 	shufb	$4,$43,$43,$12
+    1540:	18 00 99 b4 	a	$52,$51,$2
+    1544:	18 01 0a 32 	a	$50,$20,$4
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1548:	3f 60 9a 07 	shlqbii	$7,$52,2
+    154c:	3f 60 99 37 	shlqbii	$55,$50,2
+    1550:	3f e0 43 b8 	shlqbyi	$56,$7,1
+    1554:	3f e0 5b b9 	shlqbyi	$57,$55,1
+    1558:	18 2e 07 3a 	and	$58,$14,$56
+    155c:	18 2e 47 35 	and	$53,$14,$57
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1560:	18 4e 9a 0b 	cg	$11,$52,$58
+    1564:	18 4d 59 44 	cg	$68,$50,$53
+/src/ps3/spu/spe_tex_hash.h:119
+    1568:	18 0e 9a 3c 	a	$60,$52,$58
+    156c:	b8 42 c5 8c 	shufb	$66,$11,$11,$12
+    1570:	18 0d 59 46 	a	$70,$50,$53
+    1574:	b9 b1 22 0c 	shufb	$77,$68,$68,$12
+    1578:	18 10 9e 4f 	a	$79,$60,$66
+    157c:	18 13 63 09 	a	$9,$70,$77
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    1580:	3f 3e a7 ac 	rotqmbii	$44,$79,-6
+    1584:	3f 3e 84 ae 	rotqmbii	$46,$9,-6
+    1588:	18 2b 06 88 	and	$8,$13,$44
+    158c:	18 2b 86 af 	and	$47,$13,$46
+    1590:	48 22 27 a4 	xor	$36,$79,$8
+    1594:	48 2b c4 83 	xor	$3,$9,$47
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1598:	18 50 d2 31 	cg	$49,$36,$67
+    159c:	18 51 c1 86 	cg	$6,$3,$71
+/src/ps3/spu/spe_tex_hash.h:119
+    15a0:	18 10 d2 43 	a	$67,$36,$67
+    15a4:	b0 ac 58 8c 	shufb	$5,$49,$49,$12
+    15a8:	18 11 c1 c7 	a	$71,$3,$71
+    15ac:	b1 41 83 0c 	shufb	$10,$6,$6,$12
+    15b0:	18 01 61 b6 	a	$54,$67,$5
+    15b4:	18 02 a3 82 	a	$2,$71,$10
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    15b8:	3f 60 9b 33 	shlqbii	$51,$54,2
+    15bc:	3f 60 81 2b 	shlqbii	$43,$2,2
+    15c0:	3f e0 59 94 	shlqbyi	$20,$51,1
+    15c4:	3f e0 55 84 	shlqbyi	$4,$43,1
+    15c8:	18 25 07 34 	and	$52,$14,$20
+    15cc:	18 21 07 32 	and	$50,$14,$4
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    15d0:	18 4d 1b 07 	cg	$7,$54,$52
+    15d4:	18 4c 81 39 	cg	$57,$2,$50
+/src/ps3/spu/spe_tex_hash.h:119
+    15d8:	18 0c 81 3a 	a	$58,$2,$50
+    15dc:	b7 01 c3 8c 	shufb	$56,$7,$7,$12
+    15e0:	18 0d 1b 37 	a	$55,$54,$52
+oaat2():
+    15e4:	b1 6e 5c 8c 	shufb	$11,$57,$57,$12
+add64():
+    15e8:	18 0e 1b b5 	a	$53,$55,$56
+oaat2():
+    15ec:	18 02 dd 42 	a	$66,$58,$11
+/src/ps3/spu/spe_tex_hash.h:128
+    15f0:	3f 3e 9a bc 	rotqmbii	$60,$53,-6
+    15f4:	3f 3e a1 44 	rotqmbii	$68,$66,-6
+    15f8:	18 2f 06 c6 	and	$70,$13,$60
+    15fc:	18 31 06 cd 	and	$77,$13,$68
+    1600:	48 31 9a 8a 	xor	$10,$53,$70
+    1604:	48 33 61 02 	xor	$2,$66,$77
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:212
+    1608:	20 7f b7 3b 	brz	$59,13c0 <hash_range+0x6e8>	# 13c0
+    160c:	32 7f 76 00 	br	11bc <hash_range+0x4e4>	# 11bc
+/src/ps3/spu/spe_tex_hash.h:188
+    1610:	0f 3f 85 8d 	rotmi	$13,$11,-2
+/src/ps3/spu/spe_tex_hash.h:149
+    1614:	33 82 91 9f 	lqr	$31,2aa0 <n_wraps>	# 2aa0
+    1618:	1c 00 4f bd 	ai	$61,$31,1
+    161c:	23 82 90 bd 	stqr	$61,2aa0 <n_wraps>	# 2aa0
+/src/ps3/spu/spe_tex_hash.h:150
+    1620:	40 20 00 7f 	nop	$127
+    1624:	20 7f 82 8d 	brz	$13,1238 <hash_range+0x560>	# 1238
+    1628:	42 97 00 3e 	ila	$62,77312	# 12e00
+add64():
+/src/ps3/spu/spe_tex_hash.h:119
+    162c:	33 81 fa 90 	lqr	$16,2600 <_fini+0x40>	# 2600
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:153
+    1630:	41 00 3f c8 	ilhu	$72,127	# 7f
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1634:	33 81 fb 96 	lqr	$22,2610 <_fini+0x50>	# 2610
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:152
+    1638:	41 00 3f ce 	ilhu	$78,127	# 7f
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:128
+    163c:	33 81 fc ad 	lqr	$45,2620 <_fini+0x60>	# 2620
+    1640:	42 56 80 13 	ila	$19,44288	# ad00
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:160
+    1644:	32 ff 80 3f 	fsmbi	$63,65280	# ff00
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+    1648:	40 80 00 1b 	il	$27,0
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+    164c:	3e c1 1f 40 	cwd	$64,4($62)
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:153
+    1650:	60 ff f8 48 	iohl	$72,65520	# fff0
+/src/ps3/spu/spe_tex_hash.h:154
+    1654:	04 00 08 c9 	ori	$73,$17,0
+    1658:	40 a0 00 4a 	il	$74,16384	# 4000
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+    165c:	40 80 00 cb 	il	$75,1
+    1660:	40 80 1a 4c 	il	$76,52	# 34
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:152
+    1664:	60 ff fe 4e 	iohl	$78,65532	# fffc
+/src/ps3/spu/spe_tex_hash.h:160
+    1668:	04 00 07 12 	ori	$18,$14,0
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    166c:	04 00 09 9e 	ori	$30,$19,0
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+    1670:	04 00 0d 9d 	ori	$29,$27,0
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+    1674:	40 80 01 20 	il	$32,2
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+    1678:	40 80 20 1c 	il	$28,64	# 40
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:41
+    167c:	40 80 02 19 	il	$25,4
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:153
+    1680:	18 32 1c 11 	and	$17,$56,$72
+/src/ps3/spu/spe_tex_hash.h:159
+    1684:	12 00 0d b8 	hbrr	1764 <hash_range+0xa8c>,16f0 <hash_range+0xa18>	# 16f0
+/src/ps3/spu/spe_tex_hash.h:157
+    1688:	33 a2 cf 0e 	lqr	$14,12d00 <setup>	# 12d00
+/src/ps3/spu/spe_tex_hash.h:154
+    168c:	08 12 48 b0 	sf	$48,$17,$73
+    1690:	58 12 98 22 	clgt	$34,$48,$74
+    1694:	84 b2 98 22 	selb	$37,$48,$74,$34
+/src/ps3/spu/spe_tex_hash.h:157
+    1698:	18 03 88 a1 	a	$33,$17,$14
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    169c:	21 a0 08 1e 	wrch	$ch16,$30
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+    16a0:	21 a0 08 9d 	wrch	$ch17,$29
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+    16a4:	21 a0 09 21 	wrch	$ch18,$33
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+    16a8:	04 00 12 a3 	ori	$35,$37,0
+    16ac:	21 a0 09 a3 	wrch	$ch19,$35
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+    16b0:	21 a0 0a 20 	wrch	$ch20,$32
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+    16b4:	21 a0 0a 9c 	wrch	$ch21,$28
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+    16b8:	38 93 1f 28 	lqx	$40,$62,$76
+    16bc:	b5 2a 25 c0 	shufb	$41,$75,$40,$64
+    16c0:	28 93 1f 29 	stqx	$41,$62,$76
+/src/ps3/spu/spe_tex_hash.h:41
+    16c4:	21 a0 0b 19 	wrch	$ch22,$25
+/src/ps3/spu/spe_tex_hash.h:42
+    16c8:	21 a0 0b a0 	wrch	$ch23,$32
+    16cc:	01 a0 0c 04 	rdch	$4,$ch24
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:152
+    16d0:	18 33 9c 0c 	and	$12,$56,$78
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+    16d4:	38 93 1f 27 	lqx	$39,$62,$76
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:159
+    16d8:	08 03 08 8b 	sf	$11,$17,$12
+    16dc:	58 02 d2 a6 	clgt	$38,$37,$11
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+    16e0:	b6 e9 cd c0 	shufb	$55,$27,$39,$64
+    16e4:	28 93 1f 37 	stqx	$55,$62,$76
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:159
+    16e8:	40 20 00 7f 	nop	$127
+    16ec:	20 00 11 a6 	brz	$38,1778 <hash_range+0xaa0>	# 1778
+/src/ps3/spu/spe_tex_hash.h:160
+    16f0:	18 02 c9 ba 	a	$58,$19,$11
+    16f4:	38 82 c9 b9 	lqx	$57,$19,$11
+    16f8:	40 80 00 35 	il	$53,0
+/src/ps3/spu/spe_tex_hash.h:159
+    16fc:	1c 01 05 8b 	ai	$11,$11,4
+    1700:	1c ff c6 8d 	ai	$13,$13,-1
+    1704:	58 02 d2 bc 	clgt	$60,$37,$11
+    1708:	7c 00 06 c2 	ceqi	$66,$13,0
+    170c:	00 20 00 00 	lnop
+    1710:	0c 00 1e 46 	sfi	$70,$60,0
+/src/ps3/spu/spe_tex_hash.h:160
+    1714:	3b 8e 9c c4 	rotqby	$68,$57,$58
+/src/ps3/spu/spe_tex_hash.h:159
+    1718:	1c 00 61 41 	ai	$65,$66,1
+    171c:	18 30 63 0f 	and	$15,$70,$65
+/src/ps3/spu/spe_tex_hash.h:160
+    1720:	b9 ad 62 12 	shufb	$77,$68,$53,$18
+/src/ps3/spu/spe_tex_hash.h:159
+    1724:	56 c0 07 c5 	xsbh	$69,$15
+add64():
+/src/ps3/spu/spe_tex_hash.h:118
+    1728:	18 53 45 3b 	cg	$59,$10,$77
+/src/ps3/spu/spe_tex_hash.h:119
+    172c:	18 13 45 4f 	a	$79,$10,$77
+    1730:	b5 8e dd 90 	shufb	$44,$59,$59,$16
+    1734:	18 0b 27 89 	a	$9,$79,$44
+oaat2():
+/src/ps3/spu/spe_tex_hash.h:127
+    1738:	3f 60 84 aa 	shlqbii	$42,$9,2
+    173c:	3f e0 55 2e 	shlqbyi	$46,$42,1
+    1740:	18 2b 8b 08 	and	$8,$22,$46
+/src/ps3/spu/spe_tex_hash.h:118
+    1744:	18 42 04 a4 	cg	$36,$9,$8
+/src/ps3/spu/spe_tex_hash.h:119
+    1748:	18 02 04 af 	a	$47,$9,$8
+    174c:	b6 29 12 10 	shufb	$49,$36,$36,$16
+    1750:	18 0c 57 c3 	a	$67,$47,$49
+/src/ps3/spu/spe_tex_hash.h:128
+    1754:	3f 3e a1 86 	rotqmbii	$6,$67,-6
+    1758:	18 21 96 c7 	and	$71,$45,$6
+    175c:	48 31 e1 83 	xor	$3,$67,$71
+hash_range():
+/src/ps3/spu/spe_tex_hash.h:160
+    1760:	81 40 c5 3f 	selb	$10,$10,$3,$63
+/src/ps3/spu/spe_tex_hash.h:159
+    1764:	23 7f f1 c5 	brhnz	$69,16f0 <hash_range+0xa18>	# 16f0
+/src/ps3/spu/spe_tex_hash.h:161
+    1768:	18 09 48 b8 	a	$56,$17,$37
+/src/ps3/spu/spe_tex_hash.h:150
+    176c:	21 7f e2 8d 	brnz	$13,1680 <hash_range+0x9a8>	# 1680
+    1770:	40 20 00 7f 	nop	$127
+    1774:	32 7f 58 80 	br	1238 <hash_range+0x560>	# 1238
+/src/ps3/spu/spe_tex_hash.h:161
+    1778:	18 09 48 b8 	a	$56,$17,$37
+    177c:	32 7f e0 80 	br	1680 <hash_range+0x9a8>	# 1680
+/src/ps3/spu/spe_tex_hash.h:198
+    1780:	40 9f bf 9b 	il	$27,16255	# 3f7f
+    1784:	12 7e c3 94 	hbrr	17d4 <hash_range+0xafc>,da0 <hash_range+0xc8>	# da0
+    1788:	41 04 08 9d 	ilhu	$29,2065	# 811
+    178c:	18 06 cd 1c 	a	$28,$26,$27
+    1790:	60 81 02 1d 	iohl	$29,516	# 204
+    1794:	0f 3e 4e 20 	rotmi	$32,$28,-7
+    1798:	41 01 02 21 	ilhu	$33,516	# 204
+    179c:	60 84 08 a1 	iohl	$33,2065	# 811
+    17a0:	79 87 50 23 	mpyu	$35,$32,$29
+    17a4:	79 c7 50 24 	mpyhhu	$36,$32,$29
+    17a8:	79 88 50 25 	mpyu	$37,$32,$33
+    17ac:	79 c8 50 26 	mpyhhu	$38,$32,$33
+    17b0:	0f 64 11 a7 	shli	$39,$35,16
+    17b4:	0f 64 12 28 	shli	$40,$36,16
+    17b8:	0f 3c 11 a9 	rotmi	$41,$35,-16
+    17bc:	0f 3c 12 2a 	rotmi	$42,$36,-16
+    17c0:	18 09 d2 ab 	a	$43,$37,$39
+    17c4:	18 49 d2 ac 	cg	$44,$37,$39
+    17c8:	18 4a 15 bf 	cg	$63,$43,$40
+    17cc:	68 0a 53 2c 	addx	$44,$38,$41
+    17d0:	68 0a 96 3f 	addx	$63,$44,$42
+    17d4:	32 7e b9 80 	br	da0 <hash_range+0xc8>	# da0
+/src/ps3/spu/spe_tex_hash.h:202
+    17d8:	21 7e cd 3f 	brnz	$63,e40 <hash_range+0x168>	# e40
+    17dc:	32 7f 4b 80 	br	1238 <hash_range+0x560>	# 1238
+/src/ps3/spu/spe_tex_hash.h:243
+    17e0:	08 11 4a c5 	sf	$69,$21,$69
+    17e4:	0f 61 e2 ac 	shli	$44,$69,7
+    17e8:	08 0c 16 09 	sf	$9,$44,$48
+    17ec:	18 02 55 43 	a	$67,$42,$9
+    17f0:	04 00 21 aa 	ori	$42,$67,0
+/src/ps3/spu/spe_tex_hash.h:244
+    17f4:	20 00 0f 49 	brz	$73,186c <hash_range+0xb94>	# 186c
+    17f8:	18 05 a1 aa 	a	$42,$67,$22
+    17fc:	12 00 00 9b 	hbrr	1868 <hash_range+0xb90>,1800 <hash_range+0xb28>	# 1800
+/src/ps3/spu/spe_tex_hash.h:245
+    1800:	1c 01 21 af 	ai	$47,$67,4
+    1804:	34 00 21 ae 	lqd	$46,0($67)
+    1808:	40 80 00 24 	il	$36,0
+    180c:	38 88 61 88 	lqx	$8,$67,$33
+    1810:	40 20 00 7f 	nop	$127
+    1814:	3b 90 d7 31 	rotqby	$49,$46,$67
+/src/ps3/spu/spe_tex_hash.h:244
+    1818:	1c 02 21 c3 	ai	$67,$67,8
+/src/ps3/spu/spe_tex_hash.h:245
+    181c:	3b 8b c4 05 	rotqby	$5,$8,$47
+/src/ps3/spu/spe_tex_hash.h:244
+    1820:	78 0a a1 86 	ceq	$6,$67,$42
+/src/ps3/spu/spe_tex_hash.h:245
+    1824:	b0 69 18 93 	shufb	$3,$49,$36,$19
+    1828:	b8 e0 c2 c8 	shufb	$71,$5,$3,$72
+/src/ps3/spu/spe_tex_hash.h:118
+    182c:	18 51 c5 36 	cg	$54,$10,$71
+/src/ps3/spu/spe_tex_hash.h:119
+    1830:	18 11 c5 33 	a	$51,$10,$71
+    1834:	b5 6d 9b 0c 	shufb	$43,$54,$54,$12
+    1838:	18 0a d9 94 	a	$20,$51,$43
+/src/ps3/spu/spe_tex_hash.h:127
+    183c:	3f 60 8a 04 	shlqbii	$4,$20,2
+    1840:	3f e0 42 34 	shlqbyi	$52,$4,1
+    1844:	18 2d 07 07 	and	$7,$14,$52
+/src/ps3/spu/spe_tex_hash.h:118
+    1848:	18 41 ca 32 	cg	$50,$20,$7
+/src/ps3/spu/spe_tex_hash.h:119
+    184c:	18 01 ca 37 	a	$55,$20,$7
+    1850:	b7 0c 99 0c 	shufb	$56,$50,$50,$12
+    1854:	18 0e 1b b9 	a	$57,$55,$56
+/src/ps3/spu/spe_tex_hash.h:128
+    1858:	3f 3e 9c ba 	rotqmbii	$58,$57,-6
+    185c:	18 2e 86 8b 	and	$11,$13,$58
+    1860:	48 22 dc b5 	xor	$53,$57,$11
+/src/ps3/spu/spe_tex_hash.h:245
+    1864:	81 4d 45 4a 	selb	$10,$10,$53,$74
+/src/ps3/spu/spe_tex_hash.h:244
+    1868:	20 7f f3 06 	brz	$6,1800 <hash_range+0xb28>	# 1800
+/src/ps3/spu/spe_tex_hash.h:246
+    186c:	20 7f 2c bd 	brz	$61,11d0 <hash_range+0x4f8>	# 11d0
+/src/ps3/spu/spe_tex_hash.h:247
+    1870:	40 80 00 42 	il	$66,0
+    1874:	34 00 15 3c 	lqd	$60,0($42)
+    1878:	12 7f 2b 12 	hbrr	18c0 <hash_range+0xbe8>,11d0 <hash_range+0x4f8>	# 11d0
+    187c:	3b 8a 9e 44 	rotqby	$68,$60,$42
+    1880:	b8 d0 a2 4c 	shufb	$70,$68,$66,$76
+/src/ps3/spu/spe_tex_hash.h:118
+    1884:	18 51 81 4d 	cg	$77,$2,$70
+/src/ps3/spu/spe_tex_hash.h:119
+    1888:	18 11 81 41 	a	$65,$2,$70
+    188c:	b1 f3 66 8c 	shufb	$15,$77,$77,$12
+    1890:	18 03 e0 bb 	a	$59,$65,$15
+/src/ps3/spu/spe_tex_hash.h:127
+    1894:	3f 60 9d cf 	shlqbii	$79,$59,2
+    1898:	3f e0 67 c5 	shlqbyi	$69,$79,1
+    189c:	18 31 47 2c 	and	$44,$14,$69
+/src/ps3/spu/spe_tex_hash.h:118
+    18a0:	18 4b 1d 89 	cg	$9,$59,$44
+/src/ps3/spu/spe_tex_hash.h:119
+    18a4:	18 0b 1d aa 	a	$42,$59,$44
+    18a8:	b5 c2 44 8c 	shufb	$46,$9,$9,$12
+    18ac:	18 0b 95 08 	a	$8,$42,$46
+/src/ps3/spu/spe_tex_hash.h:128
+    18b0:	3f 3e 84 24 	rotqmbii	$36,$8,-6
+    18b4:	18 29 06 af 	and	$47,$13,$36
+    18b8:	48 2b c4 31 	xor	$49,$8,$47
+/src/ps3/spu/spe_tex_hash.h:247
+    18bc:	80 4c 41 4e 	selb	$2,$2,$49,$78
+    18c0:	32 7f 22 00 	br	11d0 <hash_range+0x4f8>	# 11d0
+    18c4:	00 20 00 00 	lnop
+
+000018c8 <tex_result>:
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:307
+    18c8:	14 02 01 83 	andi	$3,$3,8
+/src/ps3/spu/spe_tex_hash.h:303
+    18cc:	24 fe c0 d4 	stqd	$84,-80($1)
+    18d0:	04 00 02 d4 	ori	$84,$5,0
+    18d4:	35 90 00 00 	hbrp	18d4 <tex_result+0xc>,$0
+    18d8:	40 20 00 7f 	nop	$127
+    18dc:	24 fe 40 d6 	stqd	$86,-112($1)
+/src/ps3/spu/spe_tex_hash.h:305
+    18e0:	40 80 00 05 	il	$5,0
+/src/ps3/spu/spe_tex_hash.h:303
+    18e4:	24 00 40 80 	stqd	$0,16($1)
+    18e8:	24 ff c0 d0 	stqd	$80,-16($1)
+    18ec:	24 ff 80 d1 	stqd	$81,-32($1)
+    18f0:	24 ff 40 d2 	stqd	$82,-48($1)
+    18f4:	24 ff 00 d3 	stqd	$83,-64($1)
+    18f8:	24 fe 80 d5 	stqd	$85,-96($1)
+    18fc:	24 fe 00 d7 	stqd	$87,-128($1)
+    1900:	24 fd c0 d8 	stqd	$88,-144($1)
+    1904:	35 90 00 00 	hbrp	1904 <tex_result+0x3c>,$0
+    1908:	40 20 00 7f 	nop	$127
+    190c:	24 fc 00 81 	stqd	$1,-256($1)
+    1910:	1c c0 00 81 	ai	$1,$1,-256
+/src/ps3/spu/spe_tex_hash.h:305
+    1914:	34 00 04 02 	lqd	$2,0($8)
+    1918:	3e c0 04 56 	cwd	$86,0($8)
+    191c:	b1 20 82 d6 	shufb	$9,$5,$2,$86
+    1920:	40 20 00 7f 	nop	$127
+    1924:	24 00 04 09 	stqd	$9,0($8)
+/src/ps3/spu/spe_tex_hash.h:307
+    1928:	20 00 53 03 	brz	$3,1bc0 <tex_result+0x2f8>	# 1bc0
+    192c:	0f 39 6a 0d 	rotmi	$13,$84,-27
+    1930:	14 01 c6 92 	andi	$18,$13,7
+    1934:	7c 00 c9 0a 	ceqi	$10,$18,3
+    1938:	21 00 51 0a 	brnz	$10,1bc0 <tex_result+0x2f8>	# 1bc0
+    193c:	00 20 00 00 	lnop
+tbl_slot():
+/src/ps3/spu/spe_tex_hash.h:297
+    1940:	41 4f 1b 8b 	ilhu	$11,40503	# 9e37
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:315
+    1944:	12 00 0b 24 	hbrr	19d4 <tex_result+0x10c>,199c <tex_result+0xd4>	# 199c
+/src/ps3/spu/spe_tex_hash.h:312
+    1948:	14 0f c2 55 	andi	$85,$4,63	# 3f
+tbl_slot():
+/src/ps3/spu/spe_tex_hash.h:297
+    194c:	60 bc d8 8b 	iohl	$11,31153	# 79b1
+    1950:	41 42 f5 94 	ilhu	$20,34283	# 85eb
+    1954:	78 a2 ea 8c 	mpyh	$12,$85,$11
+    1958:	78 b5 45 8e 	mpyh	$14,$11,$85
+    195c:	79 82 ea 93 	mpyu	$19,$85,$11
+    1960:	60 e5 35 94 	iohl	$20,51819	# ca6b
+    1964:	42 15 80 15 	ila	$21,11008	# 2b00
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:317
+    1968:	40 81 ff 90 	il	$16,1023	# 3ff
+/src/ps3/spu/spe_tex_hash.h:318
+    196c:	40 80 02 0f 	il	$15,4
+/src/ps3/spu/spe_tex_hash.h:323
+    1970:	40 80 04 11 	il	$17,8
+tbl_slot():
+/src/ps3/spu/spe_tex_hash.h:297
+    1974:	18 03 86 16 	a	$22,$12,$14
+    1978:	18 04 cb 17 	a	$23,$22,$19
+    197c:	48 35 0b 98 	xor	$24,$23,$84
+    1980:	78 a5 0c 19 	mpyh	$25,$24,$20
+    1984:	78 a6 0a 1a 	mpyh	$26,$20,$24
+    1988:	79 85 0c 1b 	mpyu	$27,$24,$20
+    198c:	18 06 8c 9c 	a	$28,$25,$26
+    1990:	18 06 ce 1d 	a	$29,$28,$27
+    1994:	0f 3a 8e a0 	rotmi	$32,$29,-22
+    1998:	1c 02 10 1e 	ai	$30,$32,8
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:317
+    199c:	18 24 10 1f 	and	$31,$32,$16
+    19a0:	1c 00 50 20 	ai	$32,$32,1
+/src/ps3/spu/spe_tex_hash.h:318
+    19a4:	0f 61 0f a1 	shli	$33,$31,4
+/src/ps3/spu/spe_tex_hash.h:315
+    19a8:	78 08 0f 22 	ceq	$34,$30,$32
+/src/ps3/spu/spe_tex_hash.h:318
+    19ac:	18 08 4a a3 	a	$35,$21,$33
+    19b0:	1c 01 11 a5 	ai	$37,$35,4
+    19b4:	38 83 d1 a4 	lqx	$36,$35,$15
+    19b8:	3b 89 52 26 	rotqby	$38,$36,$37
+    19bc:	78 09 83 a7 	ceq	$39,$7,$38
+    19c0:	20 00 82 27 	brz	$39,1dd0 <tex_result+0x508>	# 1dd0
+/src/ps3/spu/spe_tex_hash.h:323
+    19c4:	38 88 4a a8 	lqx	$40,$21,$33
+    19c8:	78 0a 2a 29 	ceq	$41,$84,$40
+    19cc:	00 20 00 00 	lnop
+    19d0:	21 00 4c 29 	brnz	$41,1c30 <tex_result+0x368>	# 1c30
+/src/ps3/spu/spe_tex_hash.h:315
+    19d4:	20 7f f9 22 	brz	$34,199c <tex_result+0xd4>	# 199c
+/src/ps3/spu/spe_tex_hash.h:314
+    19d8:	40 80 00 53 	il	$83,0
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:60
+    19dc:	0f 3f 42 30 	rotmi	$48,$4,-3
+/src/ps3/spu/spe_tex_hash.h:67
+    19e0:	1c fe c9 31 	ai	$49,$18,-5
+    19e4:	0f 38 aa 51 	rotmi	$81,$84,-30
+/src/ps3/spu/spe_tex_hash.h:60
+    19e8:	0f 3a ea 50 	rotmi	$80,$84,-21
+/src/ps3/spu/spe_tex_hash.h:64
+    19ec:	0f 60 ea 57 	shli	$87,$84,3
+/src/ps3/spu/spe_tex_hash.h:67
+    19f0:	5c 00 58 b2 	clgti	$50,$49,1
+/src/ps3/spu/spe_tex_hash.h:64
+    19f4:	41 00 3f b7 	ilhu	$55,127	# 7f
+/src/ps3/spu/spe_tex_hash.h:60
+    19f8:	14 01 d8 33 	andi	$51,$48,7
+/src/ps3/spu/spe_tex_hash.h:62
+    19fc:	40 80 04 34 	il	$52,8
+/src/ps3/spu/spe_tex_hash.h:66
+    1a00:	7c 01 89 58 	ceqi	$88,$18,6
+/src/ps3/spu/spe_tex_hash.h:67
+    1a04:	18 34 59 35 	and	$53,$50,$81
+/src/ps3/spu/spe_tex_hash.h:64
+    1a08:	60 ff fc 37 	iohl	$55,65528	# fff8
+/src/ps3/spu/spe_tex_hash.h:68
+    1a0c:	7c 01 49 52 	ceqi	$82,$18,5
+/src/ps3/spu/spe_tex_hash.h:62
+    1a10:	0b 6c da 09 	shl	$9,$52,$51
+/src/ps3/spu/spe_tex_hash.h:60
+    1a14:	14 0f e8 36 	andi	$54,$80,63	# 3f
+/src/ps3/spu/spe_tex_hash.h:64
+    1a18:	18 2d eb d7 	and	$87,$87,$55
+/src/ps3/spu/spe_tex_hash.h:66
+    1a1c:	0c 00 2c 38 	sfi	$56,$88,0
+/src/ps3/spu/spe_tex_hash.h:67
+    1a20:	14 00 5a b9 	andi	$57,$53,1
+/src/ps3/spu/spe_tex_hash.h:68
+    1a24:	20 00 49 d2 	brz	$82,1c70 <tex_result+0x3a8>	# 1c70
+/src/ps3/spu/spe_tex_hash.h:73
+    1a28:	4c ff ea 40 	cgti	$64,$84,-1
+/src/ps3/spu/spe_tex_hash.h:69
+    1a2c:	0f 61 1b 50 	shli	$80,$54,4
+    1a30:	1c 00 d9 c1 	ai	$65,$51,3
+/src/ps3/spu/spe_tex_hash.h:73
+    1a34:	21 00 4b c0 	brnz	$64,1c90 <tex_result+0x3c8>	# 1c90
+/src/ps3/spu/spe_tex_hash.h:76
+    1a38:	56 c0 1c d1 	xsbh	$81,$57
+    1a3c:	22 00 73 d1 	brhz	$81,1dd8 <tex_result+0x510>	# 1dd8
+/src/ps3/spu/spe_tex_hash.h:80
+    1a40:	0f 60 a0 a7 	shli	$39,$65,2
+    1a44:	42 13 30 28 	ila	$40,9824	# 2660
+/src/ps3/spu/spe_tex_hash.h:74
+    1a48:	04 00 04 c7 	ori	$71,$9,0
+    1a4c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:80
+    1a50:	18 0a 13 aa 	a	$42,$39,$40
+    1a54:	38 8a 13 a9 	lqx	$41,$39,$40
+    1a58:	3b 8a 94 ab 	rotqby	$43,$41,$42
+    1a5c:	18 0a eb ac 	a	$44,$87,$43
+/src/ps3/spu/spe_tex_hash.h:82
+    1a60:	78 a2 63 ad 	mpyh	$45,$71,$9
+    1a64:	78 b1 c4 ae 	mpyh	$46,$9,$71
+    1a68:	79 82 63 84 	mpyu	$4,$71,$9
+/src/ps3/spu/spe_tex_hash.h:81
+    1a6c:	40 84 00 2f 	il	$47,2048	# 800
+    1a70:	18 0b d6 03 	a	$3,$44,$47
+/src/ps3/spu/spe_tex_hash.h:82
+    1a74:	18 0b 96 b0 	a	$48,$45,$46
+    1a78:	18 01 18 31 	a	$49,$48,$4
+    1a7c:	0f 3f 98 84 	rotmi	$4,$49,-2
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1a80:	41 40 8e 05 	ilhu	$5,33052	# 811c
+    1a84:	24 01 00 86 	stqd	$6,64($1)	# 40
+    1a88:	40 20 00 7f 	nop	$127
+    1a8c:	24 00 c0 87 	stqd	$7,48($1)	# 30
+    1a90:	60 ce e2 85 	iohl	$5,40389	# 9dc5
+    1a94:	24 00 80 88 	stqd	$8,32($1)	# 20
+    1a98:	33 7e 48 00 	brsl	$0,cd8 <hash_range>	# cd8
+/src/ps3/spu/spe_tex_hash.h:280
+    1a9c:	34 01 00 86 	lqd	$6,64($1)	# 40
+    1aa0:	34 00 c0 87 	lqd	$7,48($1)	# 30
+    1aa4:	34 00 80 88 	lqd	$8,32($1)	# 20
+    1aa8:	35 90 00 00 	hbrp	1aa8 <tex_result+0x1e0>,$0
+    1aac:	23 00 5c 51 	brhnz	$81,1d8c <tex_result+0x4c4>	# 1d8c
+/src/ps3/spu/spe_tex_hash.h:282
+    1ab0:	40 20 00 7f 	nop	$127
+    1ab4:	20 00 62 52 	brz	$82,1dc4 <tex_result+0x4fc>	# 1dc4
+    1ab8:	42 35 c0 35 	ila	$53,27520	# 6b80
+/src/ps3/spu/spe_tex_hash.h:284
+    1abc:	33 8a 08 c9 	lqr	$73,6b00 <pal_off>	# 6b00
+    1ac0:	4c ff e4 b2 	cgti	$50,$73,-1
+    1ac4:	20 00 6d b2 	brz	$50,1e30 <tex_result+0x568>	# 1e30
+/src/ps3/spu/spe_tex_hash.h:286
+    1ac8:	7c 00 29 52 	ceqi	$82,$82,0
+/src/ps3/spu/spe_tex_hash.h:287
+    1acc:	12 00 03 9b 	hbrr	1b38 <tex_result+0x270>,1ae8 <tex_result+0x220>	# 1ae8
+/src/ps3/spu/spe_tex_hash.h:286
+    1ad0:	40 80 80 57 	il	$87,256	# 100
+    1ad4:	40 80 08 4d 	il	$77,16
+/src/ps3/spu/spe_tex_hash.h:288
+    1ad8:	35 90 00 00 	hbrp	1ad8 <tex_result+0x210>,$0
+    1adc:	40 81 ff cc 	il	$76,1023	# 3ff
+/src/ps3/spu/spe_tex_hash.h:286
+    1ae0:	89 d5 e6 d2 	selb	$78,$77,$87,$82
+    1ae4:	18 14 27 4f 	a	$79,$78,$80
+/src/ps3/spu/spe_tex_hash.h:288
+    1ae8:	18 33 28 02 	and	$2,$80,$76
+    1aec:	1c 00 68 50 	ai	$80,$80,1
+    1af0:	18 12 41 05 	a	$5,$2,$73
+/src/ps3/spu/spe_tex_hash.h:287
+    1af4:	78 14 27 8d 	ceq	$13,$79,$80
+/src/ps3/spu/spe_tex_hash.h:288
+    1af8:	0f 60 82 92 	shli	$18,$5,2
+    1afc:	00 20 00 00 	lnop
+    1b00:	18 04 9a 89 	a	$9,$53,$18
+    1b04:	38 84 9a 8a 	lqx	$10,$53,$18
+    1b08:	3b 82 45 0c 	rotqby	$12,$10,$9
+    1b0c:	48 23 01 83 	xor	$3,$3,$12
+    1b10:	0f 64 01 8e 	shli	$14,$3,16
+    1b14:	18 00 c7 0b 	a	$11,$14,$3
+    1b18:	18 02 c5 93 	a	$19,$11,$11
+    1b1c:	18 00 c9 94 	a	$20,$19,$3
+    1b20:	0f 60 ca 15 	shli	$21,$20,3
+    1b24:	18 00 ca 90 	a	$16,$21,$3
+    1b28:	0f 60 c8 0f 	shli	$15,$16,3
+    1b2c:	18 00 c7 91 	a	$17,$15,$3
+    1b30:	18 04 48 96 	a	$22,$17,$17
+    1b34:	18 00 cb 03 	a	$3,$22,$3
+/src/ps3/spu/spe_tex_hash.h:287
+    1b38:	20 7f f6 0d 	brz	$13,1ae8 <tex_result+0x220>	# 1ae8
+/src/ps3/spu/spe_tex_hash.h:289
+    1b3c:	34 00 83 50 	lqd	$80,32($6)	# 20
+    1b40:	14 00 e8 17 	andi	$23,$80,3
+    1b44:	48 25 c1 83 	xor	$3,$3,$23
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:333
+    1b48:	40 80 00 9b 	il	$27,1
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:291
+    1b4c:	33 81 f2 98 	lqr	$24,2ae0 <n_hashed>	# 2ae0
+    1b50:	1c 00 4c 19 	ai	$25,$24,1
+    1b54:	23 81 f1 99 	stqr	$25,2ae0 <n_hashed>	# 2ae0
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:333
+    1b58:	34 00 04 1a 	lqd	$26,0($8)
+    1b5c:	ba c6 8d d6 	shufb	$86,$27,$26,$86
+    1b60:	24 00 04 56 	stqd	$86,0($8)
+/src/ps3/spu/spe_tex_hash.h:334
+    1b64:	20 00 05 d3 	brz	$83,1b90 <tex_result+0x2c8>	# 1b90
+/src/ps3/spu/spe_tex_hash.h:336
+    1b68:	34 00 29 9c 	lqd	$28,0($83)
+    1b6c:	3e c0 00 9d 	cwd	$29,0($1)
+/src/ps3/spu/spe_tex_hash.h:337
+    1b70:	3e c1 00 9e 	cwd	$30,4($1)
+/src/ps3/spu/spe_tex_hash.h:338
+    1b74:	3e c2 00 a0 	cwd	$32,8($1)
+/src/ps3/spu/spe_tex_hash.h:339
+    1b78:	3e c3 00 a1 	cwd	$33,12($1)
+/src/ps3/spu/spe_tex_hash.h:336
+    1b7c:	ba 87 2a 1d 	shufb	$84,$84,$28,$29
+/src/ps3/spu/spe_tex_hash.h:337
+    1b80:	b3 f5 03 9e 	shufb	$31,$7,$84,$30
+/src/ps3/spu/spe_tex_hash.h:338
+    1b84:	ba a7 ea a0 	shufb	$85,$85,$31,$32
+/src/ps3/spu/spe_tex_hash.h:339
+    1b88:	b4 55 41 a1 	shufb	$34,$3,$85,$33
+    1b8c:	24 00 29 a2 	stqd	$34,0($83)
+    1b90:	40 20 00 7f 	nop	$127
+    1b94:	12 00 0c 0a 	hbrr	1bbc <tex_result+0x2f4>,1bf4 <tex_result+0x32c>	# 1bf4
+    1b98:	40 20 00 7f 	nop	$127
+    1b9c:	34 01 80 d3 	lqd	$83,96($1)	# 60
+    1ba0:	40 20 00 7f 	nop	$127
+    1ba4:	3e c0 00 a3 	cwd	$35,0($1)
+    1ba8:	3e c1 00 a5 	cwd	$37,4($1)
+    1bac:	b4 94 c1 a3 	shufb	$36,$3,$83,$35
+    1bb0:	b0 e9 03 a5 	shufb	$7,$7,$36,$37
+    1bb4:	24 01 80 87 	stqd	$7,96($1)	# 60
+    1bb8:	40 20 00 7f 	nop	$127
+    1bbc:	32 00 07 00 	br	1bf4 <tex_result+0x32c>	# 1bf4
+/src/ps3/spu/spe_tex_hash.h:310
+    1bc0:	40 80 00 2b 	il	$43,0
+    1bc4:	34 01 80 a6 	lqd	$38,96($1)	# 60
+/src/ps3/spu/spe_tex_hash.h:304
+    1bc8:	41 40 00 29 	ilhu	$41,32768	# 8000
+/src/ps3/spu/spe_tex_hash.h:310
+    1bcc:	3e c0 00 ac 	cwd	$44,0($1)
+/src/ps3/spu/spe_tex_hash.h:309
+    1bd0:	40 20 00 7f 	nop	$127
+    1bd4:	33 81 dd a7 	lqr	$39,2ac0 <n_skips>	# 2ac0
+/src/ps3/spu/spe_tex_hash.h:304
+    1bd8:	08 2a 43 aa 	or	$42,$7,$41
+/src/ps3/spu/spe_tex_hash.h:310
+    1bdc:	3e c1 00 ae 	cwd	$46,4($1)
+    1be0:	b5 a9 95 ac 	shufb	$45,$43,$38,$44
+/src/ps3/spu/spe_tex_hash.h:309
+    1be4:	1c 00 53 a8 	ai	$40,$39,1
+/src/ps3/spu/spe_tex_hash.h:310
+    1be8:	b0 8b 55 2e 	shufb	$4,$42,$45,$46
+/src/ps3/spu/spe_tex_hash.h:309
+    1bec:	23 81 da a8 	stqr	$40,2ac0 <n_skips>	# 2ac0
+/src/ps3/spu/spe_tex_hash.h:310
+    1bf0:	24 01 80 84 	stqd	$4,96($1)	# 60
+    1bf4:	34 01 80 83 	lqd	$3,96($1)	# 60
+/src/ps3/spu/spe_tex_hash.h:342
+    1bf8:	1c 40 00 81 	ai	$1,$1,256	# 100
+    1bfc:	34 00 40 80 	lqd	$0,16($1)
+    1c00:	34 ff c0 d0 	lqd	$80,-16($1)
+    1c04:	34 ff 80 d1 	lqd	$81,-32($1)
+    1c08:	34 ff 40 d2 	lqd	$82,-48($1)
+    1c0c:	34 ff 00 d3 	lqd	$83,-64($1)
+    1c10:	34 fe c0 d4 	lqd	$84,-80($1)
+    1c14:	35 80 00 06 	hbr	1c2c <tex_result+0x364>,$0
+    1c18:	34 fe 80 d5 	lqd	$85,-96($1)
+    1c1c:	34 fe 40 d6 	lqd	$86,-112($1)
+    1c20:	34 fe 00 d7 	lqd	$87,-128($1)
+    1c24:	34 fd c0 d8 	lqd	$88,-144($1)
+    1c28:	40 20 00 7f 	nop	$127
+    1c2c:	35 00 00 00 	bi	$0
+/src/ps3/spu/spe_tex_hash.h:323
+    1c30:	1c 02 11 ab 	ai	$43,$35,8
+    1c34:	38 84 51 aa 	lqx	$42,$35,$17
+    1c38:	3b 8a d5 2c 	rotqby	$44,$42,$43
+    1c3c:	78 0b 2a ad 	ceq	$45,$85,$44
+    1c40:	20 7f b2 ad 	brz	$45,19d4 <tex_result+0x10c>	# 19d4
+    1c44:	12 7f e9 8a 	hbrr	1c6c <tex_result+0x3a4>,1b90 <tex_result+0x2c8>	# 1b90
+/src/ps3/spu/spe_tex_hash.h:326
+    1c48:	40 80 06 08 	il	$8,12
+/src/ps3/spu/spe_tex_hash.h:325
+    1c4c:	33 81 d0 86 	lqr	$6,2ad0 <n_dups>	# 2ad0
+/src/ps3/spu/spe_tex_hash.h:326
+    1c50:	1c 03 11 84 	ai	$4,$35,12
+    1c54:	00 20 00 00 	lnop
+    1c58:	40 20 00 7f 	nop	$127
+    1c5c:	38 82 11 ae 	lqx	$46,$35,$8
+/src/ps3/spu/spe_tex_hash.h:325
+    1c60:	1c 00 43 2f 	ai	$47,$6,1
+/src/ps3/spu/spe_tex_hash.h:326
+    1c64:	3b 81 17 03 	rotqby	$3,$46,$4
+/src/ps3/spu/spe_tex_hash.h:325
+    1c68:	23 81 cd 2f 	stqr	$47,2ad0 <n_dups>	# 2ad0
+    1c6c:	32 7f e4 80 	br	1b90 <tex_result+0x2c8>	# 1b90
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:68
+    1c70:	08 2e 1c ba 	or	$58,$57,$56
+/src/ps3/spu/spe_tex_hash.h:69
+    1c74:	0f 3f 1b 3c 	rotmi	$60,$54,-4
+/src/ps3/spu/spe_tex_hash.h:68
+    1c78:	56 c0 1d 3b 	xsbh	$59,$58
+    1c7c:	22 00 0e 3b 	brhz	$59,1cec <tex_result+0x424>	# 1cec
+/src/ps3/spu/spe_tex_hash.h:73
+    1c80:	4c ff ea 40 	cgti	$64,$84,-1
+/src/ps3/spu/spe_tex_hash.h:69
+    1c84:	0f 62 1e 50 	shli	$80,$60,8
+    1c88:	1c 00 d9 c1 	ai	$65,$51,3
+/src/ps3/spu/spe_tex_hash.h:73
+    1c8c:	20 7f b5 c0 	brz	$64,1a38 <tex_result+0x170>	# 1a38
+/src/ps3/spu/spe_tex_hash.h:60
+    1c90:	14 01 c2 42 	andi	$66,$4,7
+/src/ps3/spu/spe_tex_hash.h:63
+    1c94:	40 80 04 43 	il	$67,8
+/src/ps3/spu/spe_tex_hash.h:76
+    1c98:	56 c0 1c d1 	xsbh	$81,$57
+/src/ps3/spu/spe_tex_hash.h:63
+    1c9c:	0b 70 a1 c7 	shl	$71,$67,$66
+/src/ps3/spu/spe_tex_hash.h:76
+    1ca0:	40 20 00 7f 	nop	$127
+    1ca4:	23 00 30 d1 	brhnz	$81,1e28 <tex_result+0x560>	# 1e28
+/src/ps3/spu/spe_tex_hash.h:86
+    1ca8:	40 80 02 44 	il	$68,4
+/src/ps3/spu/spe_tex_hash.h:84
+    1cac:	20 00 4c d2 	brz	$82,1f10 <tex_result+0x648>	# 1f10
+/src/ps3/spu/spe_tex_hash.h:89
+    1cb0:	78 b1 23 9d 	mpyh	$29,$71,$68
+    1cb4:	12 7f b9 8d 	hbrr	1ce8 <tex_result+0x420>,1a80 <tex_result+0x1b8>	# 1a80
+    1cb8:	78 b1 e2 1e 	mpyh	$30,$68,$71
+    1cbc:	79 91 23 9f 	mpyu	$31,$71,$68
+    1cc0:	04 00 2b 83 	ori	$3,$87,0
+/src/ps3/spu/spe_tex_hash.h:71
+    1cc4:	40 80 00 57 	il	$87,0
+/src/ps3/spu/spe_tex_hash.h:89
+    1cc8:	18 07 8e a0 	a	$32,$29,$30
+    1ccc:	18 07 d0 21 	a	$33,$32,$31
+    1cd0:	78 a2 50 a2 	mpyh	$34,$33,$9
+    1cd4:	78 a8 44 a3 	mpyh	$35,$9,$33
+    1cd8:	79 82 50 a4 	mpyu	$36,$33,$9
+    1cdc:	18 08 d1 25 	a	$37,$34,$35
+    1ce0:	18 09 12 a6 	a	$38,$37,$36
+    1ce4:	0f 3f 53 04 	rotmi	$4,$38,-3
+    1ce8:	32 7f b3 00 	br	1a80 <tex_result+0x1b8>	# 1a80
+/src/ps3/spu/spe_tex_hash.h:68
+    1cec:	41 02 00 3d 	ilhu	$61,1024	# 400
+    1cf0:	18 2f 6a 3e 	and	$62,$84,$61
+    1cf4:	20 7f f1 be 	brz	$62,1c80 <tex_result+0x3b8>	# 1c80
+/src/ps3/spu/spe_tex_hash.h:60
+    1cf8:	14 01 c2 3f 	andi	$63,$4,7
+/src/ps3/spu/spe_tex_hash.h:69
+    1cfc:	0f 62 1e 50 	shli	$80,$60,8
+/src/ps3/spu/spe_tex_hash.h:63
+    1d00:	0b 6f da 47 	shl	$71,$52,$63
+/src/ps3/spu/spe_tex_hash.h:68
+    1d04:	40 80 00 48 	il	$72,0
+    1d08:	56 c0 1c d1 	xsbh	$81,$57
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:277
+    1d0c:	40 80 0e 4e 	il	$78,28	# 1c
+    1d10:	1c 07 03 4d 	ai	$77,$6,28	# 1c
+    1d14:	38 93 83 4f 	lqx	$79,$6,$78
+    1d18:	3b 93 67 82 	rotqby	$2,$79,$77
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:95
+    1d1c:	21 00 04 c8 	brnz	$72,1d40 <tex_result+0x478>	# 1d40
+    1d20:	41 01 00 03 	ilhu	$3,512	# 200
+    1d24:	18 20 ea 05 	and	$5,$84,$3
+    1d28:	20 00 03 05 	brz	$5,1d40 <tex_result+0x478>	# 1d40
+/src/ps3/spu/spe_tex_hash.h:97
+    1d2c:	14 07 c1 0d 	andi	$13,$2,31	# 1f
+    1d30:	0f 61 46 92 	shli	$18,$13,5
+/src/ps3/spu/spe_tex_hash.h:98
+    1d34:	7c 00 09 0a 	ceqi	$10,$18,0
+    1d38:	81 22 49 0a 	selb	$9,$18,$9,$10
+    1d3c:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:101
+    1d40:	18 11 e3 8c 	a	$12,$71,$71
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1d44:	12 7d f2 8c 	hbrr	1d74 <tex_result+0x4ac>,cd8 <hash_range>	# cd8
+    1d48:	41 40 8e 05 	ilhu	$5,33052	# 811c
+    1d4c:	24 01 00 86 	stqd	$6,64($1)	# 40
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:101
+    1d50:	78 a2 46 0e 	mpyh	$14,$12,$9
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1d54:	24 00 c0 87 	stqd	$7,48($1)	# 30
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:101
+    1d58:	78 a3 04 8b 	mpyh	$11,$9,$12
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1d5c:	24 00 80 88 	stqd	$8,32($1)	# 20
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:101
+    1d60:	79 82 46 13 	mpyu	$19,$12,$9
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1d64:	60 ce e2 85 	iohl	$5,40389	# 9dc5
+    1d68:	04 00 2b 83 	ori	$3,$87,0
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:101
+    1d6c:	18 02 c7 14 	a	$20,$14,$11
+    1d70:	18 04 ca 04 	a	$4,$20,$19
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:278
+    1d74:	33 7d ec 80 	brsl	$0,cd8 <hash_range>	# cd8
+/src/ps3/spu/spe_tex_hash.h:280
+    1d78:	34 01 00 86 	lqd	$6,64($1)	# 40
+    1d7c:	34 00 c0 87 	lqd	$7,48($1)	# 30
+    1d80:	34 00 80 88 	lqd	$8,32($1)	# 20
+    1d84:	22 7f b8 d1 	brhz	$81,1b48 <tex_result+0x280>	# 1b48
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:71
+    1d88:	40 80 00 57 	il	$87,0
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:281
+    1d8c:	12 7d e9 89 	hbrr	1db0 <tex_result+0x4e8>,cd8 <hash_range>	# cd8
+    1d90:	40 84 00 04 	il	$4,2048	# 800
+    1d94:	24 01 00 86 	stqd	$6,64($1)	# 40
+    1d98:	04 00 01 85 	ori	$5,$3,0
+    1d9c:	24 00 c0 87 	stqd	$7,48($1)	# 30
+    1da0:	04 00 2b 83 	ori	$3,$87,0
+    1da4:	24 00 80 88 	stqd	$8,32($1)	# 20
+    1da8:	40 20 00 7f 	nop	$127
+    1dac:	40 20 00 7f 	nop	$127
+    1db0:	33 7d e5 00 	brsl	$0,cd8 <hash_range>	# cd8
+    1db4:	34 00 80 88 	lqd	$8,32($1)	# 20
+    1db8:	34 00 c0 87 	lqd	$7,48($1)	# 30
+    1dbc:	34 01 00 86 	lqd	$6,64($1)	# 40
+/src/ps3/spu/spe_tex_hash.h:282
+    1dc0:	21 7f 9f 52 	brnz	$82,1ab8 <tex_result+0x1f0>	# 1ab8
+    1dc4:	21 7f 9e d8 	brnz	$88,1ab8 <tex_result+0x1f0>	# 1ab8
+    1dc8:	40 20 00 7f 	nop	$127
+    1dcc:	32 7f af 80 	br	1b48 <tex_result+0x280>	# 1b48
+tex_result():
+/src/ps3/spu/spe_tex_hash.h:317
+    1dd0:	04 00 11 d3 	ori	$83,$35,0
+    1dd4:	32 7f 81 00 	br	19dc <tex_result+0x114>	# 19dc
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:84
+    1dd8:	21 00 26 52 	brnz	$82,1f08 <tex_result+0x640>	# 1f08
+    1ddc:	20 00 1f d8 	brz	$88,1ed8 <tex_result+0x610>	# 1ed8
+/src/ps3/spu/spe_tex_hash.h:86
+    1de0:	40 80 04 44 	il	$68,8
+    1de4:	00 20 00 00 	lnop
+/src/ps3/spu/spe_tex_hash.h:88
+    1de8:	0f 60 a0 95 	shli	$21,$65,2
+    1dec:	12 7f d8 8e 	hbrr	1e24 <tex_result+0x55c>,1cb0 <tex_result+0x3e8>	# 1cb0
+    1df0:	42 13 48 10 	ila	$16,9872	# 2690
+    1df4:	04 00 04 c7 	ori	$71,$9,0
+    1df8:	18 04 0a 91 	a	$17,$21,$16
+    1dfc:	38 84 0a 8f 	lqx	$15,$21,$16
+    1e00:	3b 84 47 96 	rotqby	$22,$15,$17
+    1e04:	78 a5 a2 17 	mpyh	$23,$68,$22
+    1e08:	78 b1 0b 18 	mpyh	$24,$22,$68
+    1e0c:	79 85 a2 19 	mpyu	$25,$68,$22
+    1e10:	18 06 0b 9a 	a	$26,$23,$24
+    1e14:	18 06 4d 1b 	a	$27,$26,$25
+    1e18:	0f 3f 4d 9c 	rotmi	$28,$27,-3
+    1e1c:	18 07 2b d7 	a	$87,$87,$28
+    1e20:	40 20 00 7f 	nop	$127
+    1e24:	32 7f d1 80 	br	1cb0 <tex_result+0x3e8>	# 1cb0
+/src/ps3/spu/spe_tex_hash.h:64
+    1e28:	04 00 2b ac 	ori	$44,$87,0
+    1e2c:	32 7f 86 80 	br	1a60 <tex_result+0x198>	# 1a60
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:267
+    1e30:	42 96 82 34 	ila	$52,77060	# 12d04
+    1e34:	12 7f 92 a8 	hbrr	1ed4 <tex_result+0x60c>,1ac8 <tex_result+0x200>	# 1ac8
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    1e38:	42 35 c0 35 	ila	$53,27520	# 6b80
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:267
+    1e3c:	33 a1 d9 33 	lqr	$51,12d04 <setup+0x4>	# 12d04
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    1e40:	04 00 1a b6 	ori	$54,$53,0
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:267
+    1e44:	3b 8d 19 b7 	rotqby	$55,$51,$52
+    1e48:	14 fc 1b b8 	andi	$56,$55,-16
+spu_mfcdma64():
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:402
+    1e4c:	21 a0 08 36 	wrch	$ch16,$54
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:403
+    1e50:	40 80 00 39 	il	$57,0
+    1e54:	04 00 1c ba 	ori	$58,$57,0
+    1e58:	21 a0 08 ba 	wrch	$ch17,$58
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:404
+    1e5c:	04 00 1c 3b 	ori	$59,$56,0
+    1e60:	21 a0 09 3b 	wrch	$ch18,$59
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:405
+    1e64:	40 88 08 3c 	il	$60,4112	# 1010
+    1e68:	21 a0 09 bc 	wrch	$ch19,$60
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:406
+    1e6c:	40 80 04 3d 	il	$61,8
+    1e70:	21 a0 0a 3d 	wrch	$ch20,$61
+/usr/local/ps3dev/spu/lib/gcc/spu/7.2.0/include/spu_internals.h:407
+    1e74:	40 80 20 3e 	il	$62,64	# 40
+    1e78:	21 a0 0a be 	wrch	$ch21,$62
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:40
+    1e7c:	42 97 00 3f 	ila	$63,77312	# 12e00
+    1e80:	40 80 1a 40 	il	$64,52	# 34
+    1e84:	00 20 00 00 	lnop
+    1e88:	40 80 00 d1 	il	$81,1
+    1e8c:	3e c1 1f c1 	cwd	$65,4($63)
+/src/ps3/spu/spe_tex_hash.h:41
+    1e90:	40 80 80 44 	il	$68,256	# 100
+/src/ps3/spu/spe_tex_hash.h:40
+    1e94:	38 90 1f c2 	lqx	$66,$63,$64
+    1e98:	b8 70 a8 c1 	shufb	$67,$81,$66,$65
+    1e9c:	28 90 1f c3 	stqx	$67,$63,$64
+/src/ps3/spu/spe_tex_hash.h:41
+    1ea0:	21 a0 0b 44 	wrch	$ch22,$68
+/src/ps3/spu/spe_tex_hash.h:42
+    1ea4:	40 80 01 58 	il	$88,2
+    1ea8:	21 a0 0b d8 	wrch	$ch23,$88
+    1eac:	01 a0 0c 0a 	rdch	$10,$ch24
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:270
+    1eb0:	33 a1 ca c5 	lqr	$69,12d04 <setup+0x4>	# 12d04
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+    1eb4:	38 90 1f c6 	lqx	$70,$63,$64
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:270
+    1eb8:	3b 8d 22 c7 	rotqby	$71,$69,$52
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+    1ebc:	b9 71 9c c1 	shufb	$75,$57,$70,$65
+tex_hash():
+/src/ps3/spu/spe_tex_hash.h:270
+    1ec0:	08 11 dc 48 	sf	$72,$56,$71
+    1ec4:	0f 3f a4 49 	rotmi	$73,$72,-2
+    1ec8:	04 00 24 ca 	ori	$74,$73,0
+    1ecc:	23 89 86 ca 	stqr	$74,6b00 <pal_off>	# 6b00
+tx_wait():
+/src/ps3/spu/spe_tex_hash.h:43
+    1ed0:	28 90 1f cb 	stqx	$75,$63,$64
+    1ed4:	32 7f 7e 80 	br	1ac8 <tex_result+0x200>	# 1ac8
+tx_describe():
+/src/ps3/spu/spe_tex_hash.h:94
+    1ed8:	0f 60 a0 c5 	shli	$69,$65,2
+    1edc:	12 7f c6 0a 	hbrr	1f04 <tex_result+0x63c>,1d0c <tex_result+0x444>	# 1d0c
+    1ee0:	42 13 48 46 	ila	$70,9872	# 2690
+/src/ps3/spu/spe_tex_hash.h:74
+    1ee4:	04 00 04 c7 	ori	$71,$9,0
+/src/ps3/spu/spe_tex_hash.h:94
+    1ee8:	40 80 00 c8 	il	$72,1
+    1eec:	00 20 00 00 	lnop
+    1ef0:	18 11 a2 ca 	a	$74,$69,$70
+    1ef4:	38 91 a2 c9 	lqx	$73,$69,$70
+    1ef8:	3b 92 a4 cb 	rotqby	$75,$73,$74
+    1efc:	18 12 e5 cc 	a	$76,$75,$75
+    1f00:	18 13 2b d7 	a	$87,$87,$76
+    1f04:	32 7f c1 00 	br	1d0c <tex_result+0x444>	# 1d0c
+/src/ps3/spu/spe_tex_hash.h:86
+    1f08:	40 80 02 44 	il	$68,4
+    1f0c:	32 7f db 80 	br	1de8 <tex_result+0x520>	# 1de8
+/src/ps3/spu/spe_tex_hash.h:84
+    1f10:	40 80 00 c8 	il	$72,1
+    1f14:	20 7f bf 58 	brz	$88,1d0c <tex_result+0x444>	# 1d0c
+/src/ps3/spu/spe_tex_hash.h:86
+    1f18:	40 80 04 44 	il	$68,8
+    1f1c:	32 7f b2 80 	br	1cb0 <tex_result+0x3e8>	# 1cb0
+
+00001f20 <spu_thread_exit>:
+spu_thread_exit():
+    1f20:	24 ff 40 81 	stqd	$1,-48($1)
+    1f24:	1c f4 00 81 	ai	$1,$1,-48
+    1f28:	21 a0 0e 03 	wrch	$ch28,$3
+    1f2c:	00 00 01 02 	stop
+    1f30:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    1f34:	35 00 00 00 	bi	$0
+
+00001f38 <__muldi3>:
+__muldi3():
+    1f38:	42 7f ff 86 	ila	$6,65535	# ffff
+    1f3c:	3f e1 01 82 	shlqbyi	$2,$3,4
+    1f40:	3f e1 02 0d 	shlqbyi	$13,$4,4
+    1f44:	35 90 00 00 	hbrp	1f44 <__muldi3+0xc>,$0
+    1f48:	24 ff 40 81 	stqd	$1,-48($1)
+    1f4c:	1c f4 00 81 	ai	$1,$1,-48
+    1f50:	18 21 81 0a 	and	$10,$2,$6
+    1f54:	0f 3c 01 09 	rotmi	$9,$2,-16
+    1f58:	18 21 86 91 	and	$17,$13,$6
+    1f5c:	0f 3c 06 8c 	rotmi	$12,$13,-16
+    1f60:	78 a4 45 07 	mpyh	$7,$10,$17
+    1f64:	78 a2 88 8b 	mpyh	$11,$17,$10
+    1f68:	79 84 45 10 	mpyu	$16,$10,$17
+    1f6c:	78 a4 44 88 	mpyh	$8,$9,$17
+    1f70:	35 90 00 00 	hbrp	1f70 <__muldi3+0x38>,$0
+    1f74:	78 a2 48 8f 	mpyh	$15,$17,$9
+    1f78:	78 a3 05 05 	mpyh	$5,$10,$12
+    1f7c:	78 a2 86 0e 	mpyh	$14,$12,$10
+    1f80:	79 84 44 92 	mpyu	$18,$9,$17
+    1f84:	79 83 05 13 	mpyu	$19,$10,$12
+    1f88:	18 02 c3 94 	a	$20,$7,$11
+    1f8c:	78 a3 04 95 	mpyh	$21,$9,$12
+    1f90:	18 04 0a 16 	a	$22,$20,$16
+    1f94:	18 03 c4 17 	a	$23,$8,$15
+    1f98:	18 03 82 98 	a	$24,$5,$14
+    1f9c:	78 a2 46 19 	mpyh	$25,$12,$9
+    1fa0:	18 04 8b 9a 	a	$26,$23,$18
+    1fa4:	18 04 cc 1b 	a	$27,$24,$19
+    1fa8:	0f 3c 0b 1c 	rotmi	$28,$22,-16
+    1fac:	79 83 04 9d 	mpyu	$29,$9,$12
+    1fb0:	18 06 8d 9e 	a	$30,$27,$26
+    1fb4:	18 07 8e 1f 	a	$31,$28,$30
+    1fb8:	18 06 4a a0 	a	$32,$21,$25
+    1fbc:	58 07 cd 21 	clgt	$33,$26,$31
+    1fc0:	18 07 50 23 	a	$35,$32,$29
+    1fc4:	20 00 01 a1 	brz	$33,1fd0 <__muldi3+0x98>	# 1fd0
+    1fc8:	42 80 00 22 	ila	$34,65536	# 10000
+    1fcc:	18 08 91 a3 	a	$35,$35,$34
+    1fd0:	0f 3c 0f a4 	rotmi	$36,$31,-16
+    1fd4:	32 80 78 25 	fsmbi	$37,240	# f0
+    1fd8:	40 80 00 36 	il	$54,0
+    1fdc:	3f be 02 04 	rotqmbyi	$4,$4,-8
+    1fe0:	0f 64 0f a6 	shli	$38,$31,16
+    1fe4:	32 80 07 be 	fsmbi	$62,15
+    1fe8:	42 7f ff a8 	ila	$40,65535	# ffff
+    1fec:	3f be 01 83 	rotqmbyi	$3,$3,-8
+    1ff0:	18 08 d2 27 	a	$39,$36,$35
+    1ff4:	35 80 00 20 	hbr	2074 <__muldi3+0x13c>,$0
+    1ff8:	18 2a 0b 29 	and	$41,$22,$40
+    1ffc:	3f 82 02 2a 	rotqbyi	$42,$4,8
+    2000:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    2004:	3f bd 13 ac 	rotqmbyi	$44,$39,-12
+    2008:	18 0a 53 2d 	a	$45,$38,$41
+    200c:	3f 82 01 ae 	rotqbyi	$46,$3,8
+    2010:	78 a0 95 2b 	mpyh	$43,$42,$2
+    2014:	3f bd 16 b1 	rotqmbyi	$49,$45,-12
+    2018:	78 aa 81 2f 	mpyh	$47,$2,$42
+    201c:	3f e1 16 33 	shlqbyi	$51,$44,4
+    2020:	79 80 95 30 	mpyu	$48,$42,$2
+    2024:	78 a3 57 32 	mpyh	$50,$46,$13
+    2028:	78 ab 86 b4 	mpyh	$52,$13,$46
+    202c:	86 ec db 25 	selb	$55,$54,$51,$37
+    2030:	79 83 57 35 	mpyu	$53,$46,$13
+    2034:	3f e2 1b b9 	shlqbyi	$57,$55,8
+    2038:	18 0b d5 b8 	a	$56,$43,$47
+    203c:	18 0c 1c 3a 	a	$58,$56,$48
+    2040:	18 0d 19 3b 	a	$59,$50,$52
+    2044:	3f be 1c bd 	rotqmbyi	$61,$57,-8
+    2048:	18 0d 5d bc 	a	$60,$59,$53
+    204c:	87 ec 5e be 	selb	$63,$61,$49,$62
+    2050:	3f e2 1f c0 	shlqbyi	$64,$63,8
+    2054:	3f be 20 41 	rotqmbyi	$65,$64,-8
+    2058:	3f 82 20 c2 	rotqbyi	$66,$65,8
+    205c:	18 10 9d 43 	a	$67,$58,$66
+    2060:	18 0f 21 c4 	a	$68,$67,$60
+    2064:	3f bd 22 45 	rotqmbyi	$69,$68,-12
+    2068:	3f e1 22 c6 	shlqbyi	$70,$69,4
+    206c:	88 f1 a0 a5 	selb	$71,$65,$70,$37
+    2070:	3f e2 23 83 	shlqbyi	$3,$71,8
+    2074:	35 00 00 00 	bi	$0
+
+00002078 <atexit>:
+atexit():
+    2078:	40 20 00 7f 	nop	$127
+    207c:	12 00 20 89 	hbrr	20a0 <atexit+0x28>,2180 <__register_exitproc>	# 2180
+    2080:	40 80 00 06 	il	$6,0
+    2084:	24 ff 40 81 	stqd	$1,-48($1)
+    2088:	1c f4 00 81 	ai	$1,$1,-48
+    208c:	04 00 01 84 	ori	$4,$3,0
+    2090:	40 80 00 05 	il	$5,0
+    2094:	40 80 00 03 	il	$3,0
+    2098:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    209c:	40 20 00 7f 	nop	$127
+    20a0:	32 00 1c 00 	br	2180 <__register_exitproc>	# 2180
+    20a4:	00 20 00 00 	lnop
+
+000020a8 <memset>:
+memset():
+    20a8:	41 81 81 82 	ilh	$2,771	# 303
+    20ac:	12 00 09 8e 	hbrr	20e4 <memset+0x3c>,20f8 <memset+0x50>	# 20f8
+    20b0:	14 03 c1 86 	andi	$6,$3,15
+    20b4:	24 ff 40 81 	stqd	$1,-48($1)
+    20b8:	40 ff ff 96 	il	$22,-1
+    20bc:	b2 a1 02 02 	shufb	$21,$4,$4,$2
+    20c0:	1c f4 00 81 	ai	$1,$1,-48
+    20c4:	04 00 01 97 	ori	$23,$3,0
+    20c8:	20 00 08 06 	brz	$6,2108 <memset+0x60>	# 2108
+    20cc:	0c 00 03 08 	sfi	$8,$6,0
+    20d0:	0c 04 03 09 	sfi	$9,$6,16
+    20d4:	3b a2 0b 0a 	rotqmby	$10,$22,$8
+    20d8:	08 01 44 85 	sf	$5,$9,$5
+    20dc:	4c ff c2 8b 	cgti	$11,$5,-1
+    20e0:	04 00 05 0e 	ori	$14,$10,0
+    20e4:	21 00 02 8b 	brnz	$11,20f8 <memset+0x50>	# 20f8
+    20e8:	12 00 0b 09 	hbrr	210c <memset+0x64>,2140 <memset+0x98>	# 2140
+    20ec:	0c 00 02 8c 	sfi	$12,$5,0
+    20f0:	3b e3 0b 0d 	shlqby	$13,$22,$12
+    20f4:	18 23 45 0e 	and	$14,$10,$13
+    20f8:	1c 04 01 97 	ai	$23,$3,16
+    20fc:	34 00 01 8f 	lqd	$15,0($3)
+    2100:	82 05 47 8e 	selb	$16,$15,$21,$14
+    2104:	24 00 01 90 	stqd	$16,0($3)
+    2108:	4c 1f c2 91 	cgti	$17,$5,127	# 7f
+    210c:	21 00 06 91 	brnz	$17,2140 <memset+0x98>	# 2140
+    2110:	4c 03 c2 92 	cgti	$18,$5,15
+    2114:	21 00 0b 92 	brnz	$18,2170 <memset+0xc8>	# 2170
+    2118:	4c 00 02 93 	cgti	$19,$5,0
+    211c:	20 00 03 93 	brz	$19,2138 <memset+0x90>	# 2138
+    2120:	0c 04 02 85 	sfi	$5,$5,16
+    2124:	34 00 0b 94 	lqd	$20,0($23)
+    2128:	3b e1 4b 07 	shlqby	$7,$22,$5
+    212c:	80 85 4a 07 	selb	$4,$20,$21,$7
+    2130:	40 20 00 7f 	nop	$127
+    2134:	24 00 0b 84 	stqd	$4,0($23)
+    2138:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    213c:	35 00 00 00 	bi	$0
+    2140:	1c 20 0b 97 	ai	$23,$23,128	# 80
+    2144:	12 7f f8 8a 	hbrr	216c <memset+0xc4>,2108 <memset+0x60>	# 2108
+    2148:	1c e0 02 85 	ai	$5,$5,-128
+    214c:	24 fe 0b 95 	stqd	$21,-128($23)
+    2150:	24 fe 4b 95 	stqd	$21,-112($23)
+    2154:	24 fe 8b 95 	stqd	$21,-96($23)
+    2158:	24 fe cb 95 	stqd	$21,-80($23)
+    215c:	24 ff 0b 95 	stqd	$21,-64($23)
+    2160:	24 ff 4b 95 	stqd	$21,-48($23)
+    2164:	24 ff 8b 95 	stqd	$21,-32($23)
+    2168:	24 ff cb 95 	stqd	$21,-16($23)
+    216c:	32 7f f3 80 	br	2108 <memset+0x60>	# 2108
+    2170:	1c 04 0b 97 	ai	$23,$23,16
+    2174:	24 ff cb 95 	stqd	$21,-16($23)
+    2178:	1c fc 02 85 	ai	$5,$5,-16
+    217c:	32 7f f2 80 	br	2110 <memset+0x68>	# 2110
+
+00002180 <__register_exitproc>:
+__register_exitproc():
+    2180:	40 20 00 7f 	nop	$127
+    2184:	12 00 08 0a 	hbrr	21ac <__register_exitproc+0x2c>,21c4 <__register_exitproc+0x44>	# 21c4
+    2188:	40 80 a4 08 	il	$8,328	# 148
+    218c:	33 80 b0 87 	lqr	$7,2710 <_global_impure_ptr>	# 2710
+    2190:	40 20 00 7f 	nop	$127
+    2194:	24 ff 40 81 	stqd	$1,-48($1)
+    2198:	1c f4 00 81 	ai	$1,$1,-48
+    219c:	00 20 00 00 	lnop
+    21a0:	1c 52 03 89 	ai	$9,$7,328	# 148
+    21a4:	38 82 03 82 	lqx	$2,$7,$8
+    21a8:	3b 82 41 12 	rotqby	$18,$2,$9
+    21ac:	21 00 03 12 	brnz	$18,21c4 <__register_exitproc+0x44>	# 21c4
+    21b0:	1c 53 03 92 	ai	$18,$7,332	# 14c
+    21b4:	38 82 03 8b 	lqx	$11,$7,$8
+    21b8:	3e c2 03 8a 	cwd	$10,8($7)
+    21bc:	b1 82 c9 0a 	shufb	$12,$18,$11,$10
+    21c0:	28 82 03 8c 	stqx	$12,$7,$8
+    21c4:	40 80 02 0e 	il	$14,4
+    21c8:	1c 01 09 0d 	ai	$13,$18,4
+    21cc:	38 83 89 0f 	lqx	$15,$18,$14
+    21d0:	3b 83 47 93 	rotqby	$19,$15,$13
+    21d4:	4c 07 c9 90 	cgti	$16,$19,31	# 1f
+    21d8:	21 00 1d 10 	brnz	$16,22c0 <__register_exitproc+0x140>	# 22c0
+    21dc:	0f 60 89 94 	shli	$20,$19,2
+    21e0:	40 20 00 7f 	nop	$127
+    21e4:	20 00 11 83 	brz	$3,2270 <__register_exitproc+0xf0>	# 2270
+    21e8:	18 05 09 15 	a	$21,$18,$20
+    21ec:	3e c2 09 16 	cwd	$22,8($18)
+    21f0:	40 80 44 17 	il	$23,136	# 88
+    21f4:	12 00 0f 94 	hbrr	2244 <__register_exitproc+0xc4>,2270 <__register_exitproc+0xf0>	# 2270
+    21f8:	40 80 c4 18 	il	$24,392	# 188
+    21fc:	3e c2 0a 99 	cwd	$25,8($21)
+    2200:	1c 62 09 1a 	ai	$26,$18,392	# 188
+    2204:	38 85 ca 91 	lqx	$17,$21,$23
+    2208:	40 80 00 9b 	il	$27,1
+    220c:	40 80 84 1d 	il	$29,264	# 108
+    2210:	0b 64 cd 9c 	shl	$28,$27,$19
+    2214:	7c 00 81 83 	ceqi	$3,$3,2
+    2218:	b0 a4 42 99 	shufb	$5,$5,$17,$25
+    221c:	28 85 ca 85 	stqx	$5,$21,$23
+    2220:	38 86 09 1e 	lqx	$30,$18,$24
+    2224:	38 86 09 1f 	lqx	$31,$18,$24
+    2228:	3b 86 8f 20 	rotqby	$32,$30,$26
+    222c:	08 27 10 21 	or	$33,$32,$28
+    2230:	b4 47 d0 96 	shufb	$34,$33,$31,$22
+    2234:	28 86 09 22 	stqx	$34,$18,$24
+    2238:	38 87 4a a3 	lqx	$35,$21,$29
+    223c:	b0 c8 c3 19 	shufb	$6,$6,$35,$25
+    2240:	28 87 4a 86 	stqx	$6,$21,$29
+    2244:	20 00 05 83 	brz	$3,2270 <__register_exitproc+0xf0>	# 2270
+    2248:	40 80 c6 24 	il	$36,396	# 18c
+    224c:	3e c3 09 25 	cwd	$37,12($18)
+    2250:	1c 63 09 26 	ai	$38,$18,396	# 18c
+    2254:	38 89 09 27 	lqx	$39,$18,$36
+    2258:	38 89 09 28 	lqx	$40,$18,$36
+    225c:	3b 89 93 a9 	rotqby	$41,$39,$38
+    2260:	08 27 14 aa 	or	$42,$41,$28
+    2264:	b5 6a 15 25 	shufb	$43,$42,$40,$37
+    2268:	40 20 00 7f 	nop	$127
+    226c:	28 89 09 2b 	stqx	$43,$18,$36
+    2270:	40 80 02 2c 	il	$44,4
+    2274:	3e c1 09 2d 	cwd	$45,4($18)
+    2278:	1c 00 49 ae 	ai	$46,$19,1
+    227c:	00 20 00 00 	lnop
+    2280:	18 05 09 30 	a	$48,$18,$20
+    2284:	38 8b 09 2f 	lqx	$47,$18,$44
+    2288:	40 80 04 31 	il	$49,8
+    228c:	00 20 00 00 	lnop
+    2290:	40 80 00 03 	il	$3,0
+    2294:	3e c2 18 32 	cwd	$50,8($48)
+    2298:	b6 6b d7 2d 	shufb	$51,$46,$47,$45
+    229c:	28 8b 09 33 	stqx	$51,$18,$44
+    22a0:	38 8c 58 34 	lqx	$52,$48,$49
+    22a4:	b0 8d 02 32 	shufb	$4,$4,$52,$50
+    22a8:	40 20 00 7f 	nop	$127
+    22ac:	28 8c 58 04 	stqx	$4,$48,$49
+    22b0:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    22b4:	00 20 00 00 	lnop
+    22b8:	35 00 00 00 	bi	$0
+    22bc:	00 20 00 00 	lnop
+    22c0:	40 ff ff 83 	il	$3,-1
+    22c4:	32 7f fd 80 	br	22b0 <__register_exitproc+0x130>	# 22b0
+
+000022c8 <__call_exitprocs>:
+__call_exitprocs():
+    22c8:	12 00 28 37 	hbrr	23a4 <__call_exitprocs+0xdc>,2408 <__call_exitprocs+0x140>	# 2408
+    22cc:	24 fb 40 e2 	stqd	$98,-304($1)
+    22d0:	33 80 88 62 	lqr	$98,2710 <_global_impure_ptr>	# 2710
+    22d4:	35 90 00 00 	hbrp	22d4 <__call_exitprocs+0xc>,$0
+    22d8:	40 20 00 7f 	nop	$127
+    22dc:	24 ff 00 d3 	stqd	$83,-64($1)
+    22e0:	40 80 02 53 	il	$83,4
+    22e4:	24 fe 80 d5 	stqd	$85,-96($1)
+    22e8:	04 00 02 55 	ori	$85,$4,0
+    22ec:	24 fe 40 d6 	stqd	$86,-112($1)
+    22f0:	40 80 a4 56 	il	$86,328	# 148
+    22f4:	24 fe 00 d7 	stqd	$87,-128($1)
+    22f8:	40 20 00 7f 	nop	$127
+    22fc:	24 fd c0 d8 	stqd	$88,-144($1)
+    2300:	1c 52 31 57 	ai	$87,$98,328	# 148
+    2304:	24 fd 40 da 	stqd	$90,-176($1)
+    2308:	04 00 01 d8 	ori	$88,$3,0
+    230c:	24 fd 00 db 	stqd	$91,-192($1)
+    2310:	40 80 00 da 	il	$90,1
+    2314:	35 90 00 00 	hbrp	2314 <__call_exitprocs+0x4c>,$0
+    2318:	40 80 c4 5b 	il	$91,392	# 188
+    231c:	24 fc c0 dc 	stqd	$92,-208($1)
+    2320:	40 80 42 5c 	il	$92,132	# 84
+    2324:	24 fc 80 dd 	stqd	$93,-224($1)
+    2328:	40 80 c6 5d 	il	$93,396	# 18c
+    232c:	24 fc 40 de 	stqd	$94,-240($1)
+    2330:	40 80 00 5e 	il	$94,0
+    2334:	24 fc 00 df 	stqd	$95,-256($1)
+    2338:	40 80 82 5f 	il	$95,260	# 104
+    233c:	24 00 40 80 	stqd	$0,16($1)
+    2340:	24 ff c0 d0 	stqd	$80,-16($1)
+    2344:	24 ff 80 d1 	stqd	$81,-32($1)
+    2348:	24 ff 40 d2 	stqd	$82,-48($1)
+    234c:	24 fe c0 d4 	stqd	$84,-80($1)
+    2350:	24 fd 80 d9 	stqd	$89,-160($1)
+    2354:	24 fb c0 e0 	stqd	$96,-272($1)
+    2358:	24 fb 80 e1 	stqd	$97,-288($1)
+    235c:	35 90 00 00 	hbrp	235c <__call_exitprocs+0x94>,$0
+    2360:	24 fb 00 e3 	stqd	$99,-320($1)
+    2364:	24 fa 40 81 	stqd	$1,-368($1)
+    2368:	1c a4 00 81 	ai	$1,$1,-368
+    236c:	38 95 b1 50 	lqx	$80,$98,$86
+    2370:	3b 95 e8 50 	rotqby	$80,$80,$87
+    2374:	20 00 06 d0 	brz	$80,23a8 <__call_exitprocs+0xe0>	# 23a8
+    2378:	1c 01 28 54 	ai	$84,$80,4
+    237c:	38 94 e8 51 	lqx	$81,$80,$83
+    2380:	1c 62 28 59 	ai	$89,$80,392	# 188
+    2384:	3e c1 28 61 	cwd	$97,4($80)
+    2388:	1c 63 28 60 	ai	$96,$80,396	# 18c
+    238c:	3b 95 28 82 	rotqby	$2,$81,$84
+    2390:	0f 60 81 52 	shli	$82,$2,2
+    2394:	1c ff c1 51 	ai	$81,$2,-1
+    2398:	18 14 a8 52 	a	$82,$80,$82
+    239c:	4c ff e8 83 	cgti	$3,$81,-1
+    23a0:	40 20 00 7f 	nop	$127
+    23a4:	21 00 0c 83 	brnz	$3,2408 <__call_exitprocs+0x140>	# 2408
+    23a8:	1c 5c 00 81 	ai	$1,$1,368	# 170
+    23ac:	34 00 40 80 	lqd	$0,16($1)
+    23b0:	34 ff c0 d0 	lqd	$80,-16($1)
+    23b4:	34 ff 80 d1 	lqd	$81,-32($1)
+    23b8:	34 ff 40 d2 	lqd	$82,-48($1)
+    23bc:	34 ff 00 d3 	lqd	$83,-64($1)
+    23c0:	34 fe c0 d4 	lqd	$84,-80($1)
+    23c4:	35 80 00 10 	hbr	2404 <__call_exitprocs+0x13c>,$0
+    23c8:	34 fe 80 d5 	lqd	$85,-96($1)
+    23cc:	34 fe 40 d6 	lqd	$86,-112($1)
+    23d0:	34 fe 00 d7 	lqd	$87,-128($1)
+    23d4:	34 fd c0 d8 	lqd	$88,-144($1)
+    23d8:	34 fd 80 d9 	lqd	$89,-160($1)
+    23dc:	34 fd 40 da 	lqd	$90,-176($1)
+    23e0:	34 fd 00 db 	lqd	$91,-192($1)
+    23e4:	34 fc c0 dc 	lqd	$92,-208($1)
+    23e8:	34 fc 80 dd 	lqd	$93,-224($1)
+    23ec:	34 fc 40 de 	lqd	$94,-240($1)
+    23f0:	34 fc 00 df 	lqd	$95,-256($1)
+    23f4:	34 fb c0 e0 	lqd	$96,-272($1)
+    23f8:	34 fb 80 e1 	lqd	$97,-288($1)
+    23fc:	34 fb 40 e2 	lqd	$98,-304($1)
+    2400:	34 fb 00 e3 	lqd	$99,-320($1)
+    2404:	35 00 00 00 	bi	$0
+    2408:	40 20 00 7f 	nop	$127
+    240c:	20 00 04 d5 	brz	$85,2430 <__call_exitprocs+0x168>	# 2430
+    2410:	1c 41 29 05 	ai	$5,$82,260	# 104
+    2414:	38 97 e9 04 	lqx	$4,$82,$95
+    2418:	3b 81 42 06 	rotqby	$6,$4,$5
+    241c:	78 15 43 07 	ceq	$7,$6,$85
+    2420:	21 00 02 07 	brnz	$7,2430 <__call_exitprocs+0x168>	# 2430
+    2424:	1c ff e8 d1 	ai	$81,$81,-1
+    2428:	1c ff 29 52 	ai	$82,$82,-4
+    242c:	32 7f ee 00 	br	239c <__call_exitprocs+0xd4>	# 239c
+    2430:	40 20 00 7f 	nop	$127
+    2434:	12 00 11 89 	hbrr	2458 <__call_exitprocs+0x190>,24c0 <__call_exitprocs+0x1f8>	# 24c0
+    2438:	1c 01 29 0a 	ai	$10,$82,4
+    243c:	38 94 e8 08 	lqx	$8,$80,$83
+    2440:	40 20 00 7f 	nop	$127
+    2444:	38 94 e9 09 	lqx	$9,$82,$83
+    2448:	3b 95 04 0b 	rotqby	$11,$8,$84
+    244c:	3b 82 84 8d 	rotqby	$13,$9,$10
+    2450:	1c ff c5 8c 	ai	$12,$11,-1
+    2454:	78 14 46 0e 	ceq	$14,$12,$81
+    2458:	20 00 0d 0e 	brz	$14,24c0 <__call_exitprocs+0x1f8>	# 24c0
+    245c:	38 94 e8 12 	lqx	$18,$80,$83
+    2460:	b2 64 a8 e1 	shufb	$19,$81,$18,$97
+    2464:	28 94 e8 13 	stqx	$19,$80,$83
+    2468:	35 80 06 89 	hbr	248c <__call_exitprocs+0x1c4>,$13
+    246c:	20 7f f7 0d 	brz	$13,2424 <__call_exitprocs+0x15c>	# 2424
+    2470:	0b 74 6d 16 	shl	$22,$90,$81
+    2474:	38 96 e8 14 	lqx	$20,$80,$91
+    2478:	38 94 e8 15 	lqx	$21,$80,$83
+    247c:	3b 96 4a 17 	rotqby	$23,$20,$89
+    2480:	3b 95 0a e3 	rotqby	$99,$21,$84
+    2484:	18 25 cb 18 	and	$24,$22,$23
+    2488:	21 00 09 98 	brnz	$24,24d4 <__call_exitprocs+0x20c>	# 24d4
+    248c:	35 20 06 80 	bisl	$0,$13
+    2490:	40 20 00 7f 	nop	$127
+    2494:	12 7f f2 09 	hbrr	24b8 <__call_exitprocs+0x1f0>,2424 <__call_exitprocs+0x15c>	# 2424
+    2498:	40 20 00 7f 	nop	$127
+    249c:	38 94 e8 1e 	lqx	$30,$80,$83
+    24a0:	38 95 b1 1f 	lqx	$31,$98,$86
+    24a4:	3b 95 0f 20 	rotqby	$32,$30,$84
+    24a8:	3b 95 cf a2 	rotqby	$34,$31,$87
+    24ac:	78 18 d0 21 	ceq	$33,$32,$99
+    24b0:	20 7f d7 a1 	brz	$33,236c <__call_exitprocs+0xa4>	# 236c
+    24b4:	78 08 a8 23 	ceq	$35,$80,$34
+    24b8:	21 7f ed a3 	brnz	$35,2424 <__call_exitprocs+0x15c>	# 2424
+    24bc:	32 7f d6 00 	br	236c <__call_exitprocs+0xa4>	# 236c
+    24c0:	38 94 e9 0f 	lqx	$15,$82,$83
+    24c4:	3e c1 29 10 	cwd	$16,4($82)
+    24c8:	b2 23 ef 10 	shufb	$17,$94,$15,$16
+    24cc:	28 94 e9 11 	stqx	$17,$82,$83
+    24d0:	32 7f f3 00 	br	2468 <__call_exitprocs+0x1a0>	# 2468
+    24d4:	35 80 06 89 	hbr	24f8 <__call_exitprocs+0x230>,$13
+    24d8:	1c 21 29 1b 	ai	$27,$82,132	# 84
+    24dc:	38 97 68 19 	lqx	$25,$80,$93
+    24e0:	38 97 29 1a 	lqx	$26,$82,$92
+    24e4:	3b 98 0c 9c 	rotqby	$28,$25,$96
+    24e8:	3b 86 cd 04 	rotqby	$4,$26,$27
+    24ec:	18 27 0b 1d 	and	$29,$22,$28
+    24f0:	21 00 02 1d 	brnz	$29,2500 <__call_exitprocs+0x238>	# 2500
+    24f4:	04 00 2c 03 	ori	$3,$88,0
+    24f8:	35 20 06 80 	bisl	$0,$13
+    24fc:	32 7f f2 80 	br	2490 <__call_exitprocs+0x1c8>	# 2490
+    2500:	04 00 02 03 	ori	$3,$4,0
+    2504:	35 20 06 80 	bisl	$0,$13
+    2508:	32 7f f1 00 	br	2490 <__call_exitprocs+0x1c8>	# 2490
+    250c:	00 20 00 00 	lnop
+
+00002510 <_exit>:
+_exit():
+    2510:	40 20 00 7f 	nop	$127
+    2514:	24 ff 40 81 	stqd	$1,-48($1)
+    2518:	1c f4 00 81 	ai	$1,$1,-48
+    251c:	12 00 04 08 	hbrr	253c <_exit+0x2c>,253c <_exit+0x2c>	# 253c
+    2520:	04 00 01 83 	ori	$3,$3,0
+    2524:	33 80 02 84 	lqr	$4,2538 <_exit+0x28>	# 2538
+    2528:	3e 8e c0 85 	cbd	$5,59($1)	# 3b
+    252c:	b0 01 01 85 	shufb	$0,$3,$4,$5
+    2530:	23 80 01 00 	stqr	$0,2538 <_exit+0x28>	# 2538
+    2534:	00 40 00 00 	sync
+    2538:	00 00 20 00 	stop
+    253c:	32 00 00 00 	br	0
+
+00002540 <__do_global_ctors_aux>:
+__do_global_ctors_aux():
+    2540:	12 00 0b 91 	hbrr	2584 <__do_global_ctors_aux+0x44>,259c <__do_global_ctors_aux+0x5c>	# 259c
+    2544:	24 ff 80 fe 	stqd	$126,-32($1)
+    2548:	42 12 a8 4b 	ila	$75,9552	# 2550
+    254c:	33 00 00 fe 	brsl	$126,2550 <__do_global_ctors_aux+0x10>	# 2550
+    2550:	40 20 00 7f 	nop	$127
+    2554:	24 ff c0 d0 	stqd	$80,-16($1)
+    2558:	42 13 80 50 	ila	$80,9984	# 2700
+    255c:	24 00 40 80 	stqd	$0,16($1)
+    2560:	24 ff 00 81 	stqd	$1,-64($1)
+    2564:	08 1f a5 fe 	sf	$126,$75,$126
+    2568:	1c f0 00 81 	ai	$1,$1,-64
+    256c:	18 1f a8 50 	a	$80,$80,$126
+    2570:	34 00 28 02 	lqd	$2,0($80)
+    2574:	3b 94 01 04 	rotqby	$4,$2,$80
+    2578:	1c ff 28 50 	ai	$80,$80,-4
+    257c:	7c ff c2 03 	ceqi	$3,$4,-1
+    2580:	40 20 00 7f 	nop	$127
+    2584:	20 00 03 03 	brz	$3,259c <__do_global_ctors_aux+0x5c>	# 259c
+    2588:	1c 10 00 81 	ai	$1,$1,64	# 40
+    258c:	34 00 40 80 	lqd	$0,16($1)
+    2590:	34 ff c0 d0 	lqd	$80,-16($1)
+    2594:	34 ff 80 fe 	lqd	$126,-32($1)
+    2598:	35 00 00 00 	bi	$0
+    259c:	35 20 02 00 	bisl	$0,$4
+    25a0:	32 7f fa 00 	br	2570 <__do_global_ctors_aux+0x30>	# 2570
+    25a4:	00 20 00 00 	lnop
+
+000025a8 <call___do_global_ctors_aux>:
+call___do_global_ctors_aux():
+    25a8:	24 00 40 80 	stqd	$0,16($1)
+    25ac:	24 ff 40 81 	stqd	$1,-48($1)
+    25b0:	1c f4 00 81 	ai	$1,$1,-48
+    25b4:	1c 0c 00 81 	ai	$1,$1,48	# 30
+    25b8:	34 00 40 80 	lqd	$0,16($1)
+    25bc:	35 00 00 00 	bi	$0
+
+Disassembly of section .fini:
+
+000025c0 <_fini>:
+_fini():
+    25c0:	24 00 40 80 	stqd	$0,16($1)
+    25c4:	24 ff 80 81 	stqd	$1,-32($1)
+    25c8:	1c f8 00 81 	ai	$1,$1,-32
+    25cc:	33 7c a3 80 	brsl	$0,ae8 <__do_global_dtors_aux>	# ae8
+    25d0:	1c 08 00 81 	ai	$1,$1,32	# 20
+    25d4:	34 00 40 80 	lqd	$0,16($1)
+    25d8:	35 00 00 00 	bi	$0
