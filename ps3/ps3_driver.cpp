@@ -31,6 +31,7 @@
 #include "ps3/ps3_jit_div32.h"
 #include "ps3/ps3_jit_exit.h"
 #include "ps3/ps3_jit_gate.h"
+#include "ps3/ps3_jit_link.h"
 #include "dc/sh4/sys_gate.h"
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
@@ -1091,8 +1092,10 @@ void DoStatic(u32 pc)
 {
 	// Exactly 12 bytes: ngen_LinkBlock_Static_stub patches LR-12 with `b target`. ppc_li can be 1 instruction
 	// (e.g. a block at 0x8C010000), which would patch the other exit's branch, so always addis + ori.
-	ppc_addis(ppc_rarg0,0,pc>>16);
-	ppc_ori(ppc_rarg0,ppc_rarg0,(u16)pc);
+	u32 w[2];
+	static_site_pc_words(pc,w);
+	ppc_emit(w[0]);
+	ppc_emit(w[1]);
 	ppc_call(ngen_LinkBlock_Static_stub);
 }
 
@@ -1634,8 +1637,8 @@ struct HotBlock
 	u16 cls[HC_COUNT];
 };
 
-// ~15k blocks compile after Crazy Taxi's last cache clear. ~3.3 MB, allocated only with the preset on.
-#define HOT_MAX 32768
+// Looney Tunes compiles ~40K blocks from its last cache clear to a race's end. ~13 MB, only with the preset on.
+#define HOT_MAX 131072
 static HotBlock* s_hb = 0;
 static u32* s_hb_hits = 0;	// bumped by each block's entry counter
 static u32* s_hb_cold = 0;	// bumped at each counted cold-fragment entry
@@ -4484,9 +4487,9 @@ void* FASTCALL ngen_LinkBlock_Static(u32 pc,u32* patch)
 	
 	DynarecCodeEntry* rv=rdv_FindOrCompile();
 	
-	// rdv_FindOrCompile may have cleared the cache, and the next compile lands on the dead site: patch only if
-	// slot 2 is still our `bl` (this livelocked before), else just enter rv.
-	const bool site_live = (patch[2] == static_site_bl_word(patch));
+	// A cache clear (in rdv_FindOrCompile, or inside the calling block) can put new code on the site: patch only a site
+	// that still asks for pc and calls the stub, else just enter rv.
+	const bool site_live = static_site_wants(patch,pc) && patch[2] == static_site_bl_word(patch);
 
 	// Bring-up trace, logged before the write (a bad link kills the SH4 thread); capped for the UDP log.
 	if (get_debug_loop())

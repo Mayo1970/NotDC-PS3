@@ -34,7 +34,15 @@ INLINE void FASTCALL do_sqw_target(u32 Dest)
 	else
 	{
 		g_vram_split.sq_mem++;
+		const bool ram = g_ta_split.armed && ((Address >> 26) & 0x7) == 3;
+		if (ram)
+			g_ta_split.t_store = ta_stamp();
 		WriteMemBlock_nommu_ptr(Address, sq, 32);  // 8 * 4 bytes
+		if (ram)
+		{
+			g_ta_split.t_copy = ta_stamp();
+			g_ta_split.ram = 1;
+		}
 	}
 }
 

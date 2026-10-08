@@ -22,13 +22,22 @@ static u32 s_n[ST_N], s_frames;
 
 static double ms(u64 t) { return (double)t * 1000.0 / (double)ps3_timebase_hz; }
 
+u64 g_stall_nested;
+
+static inline void stall_add(int cat, u64 t)
+{
+	s_frame[cat] += t;
+	if (cat != ST_SYS)
+		g_stall_nested += t;
+}
+
 void stall_push_on(int cat)
 {
 	if (s_depth >= 16)
 		return;
 	const u64 now = gettime();
 	if (s_depth)
-		s_frame[s_stack[s_depth - 1]] += now - s_t;
+		stall_add(s_stack[s_depth - 1], now - s_t);
 	s_stack[s_depth] = cat;
 	s_start[s_depth++] = now;
 	s_t = now;
@@ -41,7 +50,7 @@ void stall_pop_on()
 		return;
 	const u64 now = gettime();
 	const int cat = s_stack[--s_depth];
-	s_frame[cat] += now - s_t;
+	stall_add(cat, now - s_t);
 	const u64 incl = now - s_start[s_depth];
 	if (incl > s_max[cat])
 		s_max[cat] = incl;
@@ -63,7 +72,7 @@ void stall_frame()
 	if (was_on && s_frame_t0)
 	{
 		if (s_depth)
-			s_frame[s_stack[s_depth - 1]] += now - s_t;
+			stall_add(s_stack[s_depth - 1], now - s_t);
 		const u64 wall = now - s_frame_t0;
 		if (wall > s_worst_wall)
 		{

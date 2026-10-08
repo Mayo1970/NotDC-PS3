@@ -272,6 +272,8 @@ static std::string run(const Scen& sc, bool gate)
 	s_sched = sc.sched;
 	s_render_delay = sc.render_delay;
 	s_exit_fix = sc.exit_fix;
+	// STALL=1: the [sys] probe's stamps run too; the traces must not change.
+	g_stall_on = getenv("STALL") != 0;
 	Sh4_ApplyAccuracyPreset();
 	if (gate)
 		sys_gate_install();

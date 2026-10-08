@@ -13,9 +13,15 @@ _settings_type pvrsetts;
 OpCallFP* OpPtr[0x10000];
 extern "C" { u32 g_ccall[CC_COUNT]; int g_jit_ccalls_preset; }
 bool g_stall_on;
+u64 g_stall_nested;
 uint64_t ps3_timebase_hz = 1000000000ull;
 
-u32 SB_ADSTAR, SB_ADSTAG, SB_ADLEN, SB_ADDIR, SB_ADEN, SB_ADST;
+u32 SB_ADSTAR, SB_ADSTAG, SB_ADLEN, SB_ADDIR, SB_ADEN, SB_ADST, SB_ADSUSP;
+// Added after 5.36: AICA Race Fix (RACEFIX=1 runs its G2 DMA rules) and the bundle 1 framebuffer watch.
+extern "C" int get_aica_race_fix_preset() { return getenv("RACEFIX") != 0; }
+void aica_fix_dump(double s) { (void)s; }
+bool g_fb_dirty;
+void fb_watch_set(u32 s, u32 n) { (void)s; (void)n; }
 u32 SB_E1STAR, SB_E1STAG, SB_E1LEN, SB_E1DIR, SB_E1EN, SB_E1ST;
 u32 SB_E2STAR, SB_E2STAG, SB_E2LEN, SB_E2DIR, SB_E2EN, SB_E2ST;
 u32 SB_ISTNRM;

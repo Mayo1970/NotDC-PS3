@@ -10,6 +10,7 @@ struct TaSplit
 	u32 next;   // call number of the next sample
 	u32 armed;  // the running do_sqw call is a sample
 	u32 hit;    // the sample reached ps3ta_store_sq
+	u32 ram;    // the sample wrote main RAM; t_store and t_copy then bracket the block write
 	u64 t_store, t_copy, t_fsm;
 };
 extern TaSplit g_ta_split;

@@ -13,6 +13,194 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-08)
 
+**Active: the Looney Tunes race is SH4-bound (Matt 2026-10-08: "Let's work
+with the The Looney Tunes race being SH4-bound.", then "Profile + 2
+probes"). Step 1 done 2026-10-08: the race profile and both probes ran on
+HW (package of 20:57, which also holds a JIT link fix, HW confirmed).
+NEXT: Step 2, Matt picks one or more of the four candidates at the end of
+this block ("Next steps"; Matt 2026-10-08: "Can you save them in the
+OPTIMIZATION_PLAN.md as next steps?"). Nothing of Step 2 is built.** The
+agreed order (the open item below): faster SH4 thread on the race first,
+then an SH4 Clock above 200 MHz. At 21:10 this session's UDP listener
+(PID 24700, `ps3log_lt_run1.txt`) still held port 18194.
+- HW boot 1 2026-10-08 ~20:24 (JIT HOTBLOCKS ON; `ps3log_lt_run1.txt`,
+  scratchpad of session 898d8ac1): FAILURE, the boot froze in the BIOS.
+  Right after the first code cache clear (CCR write at A0000016), every BSC
+  write landed 0x10 too high (RTCOR -> +0x34, RFCR -> +0x38, unimplemented),
+  so the RFCR wait loop at 800000A2 spun (~32K unimplemented reads/s,
+  226 MB of log). Clean XMB exit at 20:27. The only setting that differs
+  from the last good boot (`ps3log_bump_run1.txt`) is `hotblocks=1`; the
+  `[sys]` and RAM probes start at the first vblank, after the fault. The
+  profiler was last run on 2026-10-04, before 5.25, 5.26, 5.24, 5.3, 5.27,
+  5.31, 5.36 and 5.2. Fault not found yet in the code. Debug boots: profiler
+  OFF (a race, for the probes), profiler ON again, profiler ON with Debug
+  Loop (the `[link]` LIVE/DEAD trace).
+- HW run 1 2026-10-08 ~20:40 (JIT HOTBLOCKS OFF, a full race; same log
+  after byte 225880655, cut as `run1_off.txt`; `probesplit.py`): normal
+  boot, clean XMB exit. 127 race windows (vt >= 10K, RPS < 40): SPEED
+  100.0%, RPS 26.5, `[stall]` sys 80 ms/s, sleep 63 ms/s.
+  - `[sys]` parts, ms/s (ns per call): arm 30.1 (1077, ~28K/s: the SPE
+    ARM7 command per medium update, with ~0.8% of lag waits), pvr 18.1
+    (163 per slice), plan 13.0 (458 per gate run), tmu 12.5 (112 per
+    slice), gate 4.3, aicadma 3.8, gd 3.0, intc 2.3, dma 1.6, vslow 1.1,
+    spin 1.0, vbl 0.3 (4.9 us per vblank); sum 91 (the stamps add some).
+  - RAM SQ flushes: ~240-260 ns each (in ~100, write ~125, out ~24); 87-116K
+    per s, 1.8-2.3% of the SH4 thread in the race; in the 60 fps scenes
+    (7 windows, 360K per s) 217 ns, 6.2%. TA SQ path 6.3-7.5% (race).
+- HW boot 2 (JIT HOTBLOCKS ON): the same freeze, the same 1704 bytes at
+  the clear: deterministic. Boot 3 (JIT HOTBLOCKS ON + Debug Loop ON): no
+  freeze, the game runs (Debug Loop adds code at each block entry, so the
+  layout moves). Its `[link]` trace: #1, the exit of the block that wrote
+  CCR (the clear ran inside it), site 0x46414 DEAD: the first new block
+  (80000080, at 0x4625c) now covers it and has its own link `bl` to the
+  same stub at 0x46414, 8 bytes before slot 2.
+- Diagnosis (not proven on HW yet): `ngen_LinkBlock_Static` checks only
+  slot 2 (the `bl` to the stub). After a cache clear inside a block, a new
+  block can put its own link site at the old site's address; the check
+  then passes and `b rv` rewires the new block's exit to the old target.
+  With the profiler's layout this lines up in the BIOS (80000080 runs
+  again, R3 +0x10). Proposed fix: also compare slots 0 and 1 (`addis` and
+  `ori` of the target pc); a match then means the site wants the same pc,
+  so the patch is right. A DYN_IC fill is safe as is: its guard compares
+  the pc at run time.
+- Fix built (Matt: "Yes"), package of 20:57, no toggle: `ps3/ps3_jit_link.h`
+  (new) gives the site's `addis`/`ori` words; DoStatic emits them and
+  `ngen_LinkBlock_Static` patches only when slots 0-2 all match (the
+  compiled DoStatic checked in the disassembly). PC (WSL):
+  `misc/link_check/run.sh` PASS, 600031 checks (the words against the
+  emitter for 200K pcs, the boot 3 HW words, cleared sites); `mutate.sh` 7
+  of 7 planted bugs fail. Link: `.got` 0xCE20, 0 `r2off`, the old warnings
+  only. HW: the profile run of the steps above (JIT HOTBLOCKS ON, Debug
+  Loop OFF); the boot passing the BIOS proves the fix.
+- HW profile run 2026-10-08 ~21:03 (package of 20:57; `run_prof.txt`, cut
+  after byte 423185683 of `ps3log_lt_run1.txt`; `hotlt.py`, `hotlt_deep.py`,
+  report in `hotlt/`, scratchpad of session 898d8ac1): the boot passed the
+  BIOS with the layout that froze before (1704 bytes at the clear): link
+  fix confirmed on HW. One race, clean XMB exit. 254 dense windows (239 of
+  them race), SPEED 92.4% with the profiler, RPS 24.8; table 43118 blocks
+  (no overflow; 32768 would have been short), 25 censuses, 128 dumps =
+  58.6% of the weight; Python re-classification: 8 blocks differ by one
+  stub/bc word (DYN_IC sites), the rest equal.
+  - JIT code: 10.9M block entries/s x 51.6 hot PPC instructions = 565M/s.
+    Per entry: 6.7 loads, 4.2 stores (4.2 on the context), 0.57
+    load-hit-stores (real ~2.7M/s in the dumped 59%: sr_T 0.98M/s after
+    fcmp, FPSCR 0.90M/s at fschg, pr 0.29M/s), 0.35 bctr, 3.98 cold
+    branches.
+  - Hottest code: the vertex loop 8C08738C / 8C0873A6 / 8C0873B4 /
+    8C0873CA (ftrv, fdiv, fipr, then 7 stores to the store queue and a
+    pref), ~10.7% of the weight, ~0.5M turns/s. 8C0873B4 sends all 7 of
+    its stores (`fmov.s FRm,@-R6`, `mov.l Rm,@-R6`) through the cold path:
+    3.74M of the 3.9M cold entries/s. Its PREF is in the successor
+    8C0873CA after `mov.l R7,@-R6`, and the 5.27 look-ahead stops at any
+    op that writes R6. Both 8C0873A6 and 8C0873B4 end at an `fschg` (one
+    block end and one FPSCR load-hit-store each, ~0.65M/s).
+  - Then FP blocks of 27-92 SH4 ops at 8C0688xx-8C069xxx and 8C089xxx
+    (transforms; 8C06997E runs 4 ftrv with 64 XMTRX loads from the
+    context).
+- NEXT STEPS (Step 2 candidates, not built; Matt picks). Estimates are % of
+  the SH4 thread in the race; together ~7-8%. With the ~6% the race now
+  sleeps, that is room for an SH4 Clock of ~215-225 MHz (Step 3). The plan
+  rule holds: own toggle each, default OFF until HW validated, SH4 Clock
+  200 for the HW runs, PC check first.
+  1. Gate slice batching, ~3%, every game. Now `UpdateSystem_gate`
+     (`dc/sh4/sh4_interpreter.cpp`) runs its ~3.9 skipped slices one by
+     one through `sys_slice()`; `[sys]` in the race: tmu 11.5 (112 ns per
+     slice), pvr 17.1 (166 ns), aicadma 3.5, gate 3.9, plan 12.0 (456 ns per
+     run) ms/s. Change: one `UpdateTMU`, `UpdatePvr` and `UpdateAicaDma`
+     call for all k slices (the gate already proves no event inside them;
+     the medium update keeps its own slice); `libPvr_UpdatePvr`
+     (`plugs/drkPvr/SPG.cpp`) then needs a loop for more than one scanline
+     per call (VGA lines are ~6.4K cycles); `tmu_slices_to_event`
+     (`dc/sh4/tmu.cpp`) steps slice by slice, so a closed form for it.
+     Check: `misc/sysgate_check` (gate on/off traces must stay equal; it
+     links again since this session, also with STALL=1 and RACEFIX=1),
+     then HW: `[sys]` parts and `[stall]` sys in a race, Crazy Taxi
+     same-load VPS.
+  2. JIT SQ look-ahead through pointer steps, ~1.4%. The vertex loop's
+     block 8C0873B4 has 7 stores per vertex (`fmov.s FRm,@-R6`, `mov.l
+     Rm,@-R6`) to the store queue; its PREF is in the successor 8C0873CA
+     after `mov.l R7,@-R6`, and `sqla_class` (`ps3/ps3_jit_sqla.h`) stops
+     at any op that writes Rn, so all 7 take the cold path (3.74M of the
+     3.9M cold entries/s). Change: an op that only steps Rn by a constant
+     (`mov.x Rm,@-Rn`, `fmov FRm,@-Rn`, `add #imm,Rn`) passes, as
+     `sqla_guess` already allows inside the block. The guess only picks
+     the shape (`emit_sq_store` still tests the address), so a wrong guess
+     costs speed, not correctness. Check: `misc/sqla_check`, then HW
+     `[HOT]` cold entries/s (profiler) or `sqcold`, race `[stall]` sleep.
+  3. RAM SQ direct, ~1.6-2% in the race, ~6% in the 60 fps scenes. A flush
+     to area 3 now runs `do_sqw_flat` -> `sqw_chain` -> `do_sqw_target` ->
+     `WriteMemBlock_nommu_ptr` (`sh4_cached_invalidate_range`, a no-op
+     under the JIT; `_vmem_GetBlockPtr`; `memmove`): ~240-265 ns per flush
+     (`[ta-split]` ram ns), 77-116K flushes/s in the race, 360K/s in the 60
+     fps scenes. Change: in `do_sqw_flat` (`ps3/ps3_rend.cpp`), a RAM
+     target copies its 32 bytes straight into the RAM array. Check: the
+     cached interpreter must still invalidate (keep the old path when it
+     runs); HW: `ram ns` gone, `[stall]` sleep up.
+  4. 5.37 `fschg` without a block end, ~1%. The vertex loop ends 2 blocks
+     per vertex at `fschg` (8C0873A6, 8C0873B4), each with an FPSCR
+     load-hit-store (`stw` then `lwz` of fpscr, 0.90M/s). Section 5 has
+     5.37 (P17); it touches 5.29's `emit_frchg_test`.
+  - Later or uncertain: SPE ARM7 commands batched (`arm_spe_update`,
+    `ps3/ps3_arm_spe.cpp`: arm 25-30 ms/s, ~1 us per call, likely cache
+    misses on SPU-shared lines; sound timing risk); T kept in r3 after
+    `fcmp` (sr_T load-hit-store 0.98M/s; 5.26 found no gain for the same
+    kind); a return stack for `rts` (DYN_IC ret misses 1.2-1.9M/s); XMTRX
+    kept in FPRs across the ftrv of one block (8C06997E loads it 4 times).
+  - Step 3 (after Step 2): let SH4 Clock go above 200 MHz (`ps3_menu.cpp`
+    range 150-200 today). Check first whether TMU time scales with the
+    clock (the TMU counts SH4 cycles, so game timers may run fast); HW:
+    race RPS and SPEED at 210-230 MHz.
+- From the old logs (no new run; `racesplit.py`, scratchpad of session
+  898d8ac1), race windows at vt >= 10K: `lt_spepix.txt` (61 windows, cut
+  from `ps3log_spepix_run1.txt`) and `lt_on.txt` (262 windows). SPEED
+  97.7-99.7%, RPS 26-27. SH4 thread per second: sleep 65-74 ms, sys 72-77
+  ms, dma 5-7, maple 5.5, rend 2, log 2, gd dma 1; the rest (JIT code, the
+  TA path, C calls without a bracket) 830-841 ms. TA flushes 655-698K/s
+  (sq path 5.7-6.1%); C calls ~1.07M/s (sqw 657-698K, sync_fpscr 171-182K,
+  writemem 74-79K, getcode 61-65K); DYN_IC ret misses 1.2-1.9M/s. No
+  interpreter fallbacks; idle skips 27/s at most.
+- 1. JIT HOTBLOCKS table 32768 -> 131072 blocks (~13 MB, only with the
+  option ON). Looney Tunes clears its code cache only at boot and compiles
+  ~32K blocks before a race and ~40K by its end, so the race blocks would
+  get no slot.
+- 2. `[sys]` line, with JIT C-Calls and JIT SYS GATE (after `[gate]`): 1
+  gate run in 16 stamps each part of its slices; times leave out the nested
+  `[stall]` sections (gd dma, rend, log, sleep), as `[stall]` sys does
+  (`g_stall_nested`, new). Parts: gate (run entry and loop), arm (ARM7
+  tick), dma, gd, spin, vslow (RTC, maple), tmu, pvr, vbl (a PVR update
+  with a vblank start), aicadma, sched, plan (`sys_plan`), intc (pending
+  check). `ms/s` per part (the samples scaled to all runs, one mftb per
+  stamp taken out), `irq` (`UpdateSystem_handle_event`) and `sync`
+  (`sys_gate_sync_slow`) timed in full, then ns per call.
+- 3. `[ta-split]` ends in `| ram ns: in write out = n= long= path %`: the
+  sampled store-queue flushes to main RAM (area 3), split at
+  `WriteMemBlock_nommu_ptr` (in = the chain to it, write = the call, out =
+  to the exit); "path" = % of the wall for all RAM flushes, 3 mftb out.
+- PC (WSL): `misc/sysgate_check/run.sh` PASS (120 and 300 seeds), also
+  with STALL=1 (the probe's stamps run; traces unchanged) and RACEFIX=1.
+  The check had not linked since the Looney Tunes fixes and bundle 1: 5
+  stubs added (`SB_ADSUSP`, `get_aica_race_fix_preset`, `aica_fix_dump`,
+  `g_fb_dirty`, `fb_watch_set`).
+- Link: `.got` 0xCE20, 0 `r2off`, the old warnings only (`verify`,
+  `g_jit_blocks_entered`, the unused `fm_*`).
+- HW steps (package of 19:22):
+  1. Install. The install keeps `nullDC.cfg`. SH4 Clock 200. On the main
+     menu, before the boot: VIDEO / DEBUG -> JIT HOTBLOCKS ON (the in-game
+     menu acts only at the next boot), JIT C-Calls ON. The rest as now.
+  2. UDP listener on port 18194, only when Matt says so. Matt: "Let's
+     replace it for a cleaner run." At 20:23 the Bump Maps session's
+     listener (PID 7520) was stopped; this session's runs as PID 24700 into
+     `ps3log_lt_run1.txt` (scratchpad of session 898d8ac1).
+  3. Looney Tunes: START past the attract demo if it begins. One full
+     race, 3 minutes or more. The profiler costs ~6% of the SH4 thread, so
+     a lower SPEED is expected. Then exit to the XMB.
+  4. Log: `[jitcfg] ... hotblocks=1`, `[HOT] table of 131072 blocks`, no
+     `blocks did not fit` line, `[HOTC]` censuses, `[HOT] --- dump` blocks,
+     `[sys]` lines, `ram ns` with n above 0.
+  5. Analysis: the last census and the dumps (`hot518.py`, scratchpad of
+     session 29bdd1c1), the `[sys]` split against `[stall]` sys, the RAM
+     flush cost. Then a ranking; Matt picks.
+
 **Done: 3j Bump Maps, the Rayman 2 untextured level surfaces (Matt
 2026-10-08: "Ok then, can we work on the Rayman 2 untextured surfaces?",
 then design A: "A"). Package of 18:31. HW SUCCESS 2026-10-08 (Matt: "It
@@ -908,6 +1096,8 @@ reads or waits in the race), not the render thread, not the sound SPUs.
   frames/s, 2- and 3-refresh frames, SH4 thread idle ~7%. Matt: "The faster
   JIT in one of the plans sounds fine." (JIT work on the race code, then an
   SH4 Clock above 200 MHz; the menu stops at 200.)
+- 2026-10-08, later: active. Step 1 (profile + 2 probes) built, package of
+  19:22; see the top of section 0.
 - Stutters (Matt 2026-10-07, with SPE Build ON: "very smooth. But there are
   some micro-stutters sometimes"; "add the stutter ... with a possible fix
   later on"). Race seconds (vt >= 10K) whose worst frame is over 25 ms, by

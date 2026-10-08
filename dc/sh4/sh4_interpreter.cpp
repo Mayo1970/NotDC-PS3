@@ -22,6 +22,7 @@
 #include "sh4_sched.h"   // SCHED preset: unified cycle-deadline event scheduler
 #include "sys_gate.h"
 #include "ps3/ps3_stall.h"
+#include "ps3_timebase.h"
 
 // SCHED preset accessor (ps3_presets.cpp). When on, migrated completion/IRQ events
 // fire through sh4_sched (deadline-ordered) instead of at their own cascade tier.
@@ -277,6 +278,39 @@ s32 rtc_cycles  = 0;
 u32 update_cnt  = 0;
 u32 gcp_timer   = 0;
 
+// [sys] probe, with JIT C-Calls: 1 gate run in 16 stamps the parts of its slices. Times leave out the nested
+// [stall] sections (gd dma, rend, log, sleep), as [stall] sys does.
+enum { SP_GATE, SP_ARM, SP_DMA, SP_GD, SP_SPIN, SP_VSLOW, SP_TMU, SP_PVR, SP_VBL, SP_ADMA, SP_SCHED, SP_PLAN,
+       SP_INTC, SP_N };
+static const char* const k_sp_name[SP_N] = { "gate", "arm", "dma", "gd", "spin", "vslow", "tmu", "pvr", "vbl",
+                                             "aicadma", "sched", "plan", "intc" };
+static bool s_sp_on;
+static u64 s_sp_t, s_sp_nest;
+static u64 s_sp_tot[SP_N];
+static u32 s_sp_n[SP_N];
+static u32 s_sp_runs, s_sp_samples, s_sp_slices;
+static u64 s_sp_irq, s_sp_sync;
+static u32 s_sp_irq_n, s_sp_sync_n;
+extern u32 spg_VblankCountTotal;
+
+// Ticks since (t0, n0) less the nested sections' ticks in them.
+static inline u64 sp_excl(u64 now, u64 nest, u64 t0, u64 n0)
+{
+	const s64 d = (s64)(now - t0) - (s64)(nest - n0);
+	return d > 0 ? (u64)d : 0;
+}
+
+static inline void sp_mark(int part)
+{
+	if (!s_sp_on)
+		return;
+	const u64 now = gettime(), nest = g_stall_nested;
+	s_sp_tot[part] += sp_excl(now, nest, s_sp_t, s_sp_nest);
+	s_sp_n[part]++;
+	s_sp_t = now;
+	s_sp_nest = nest;
+}
+
 void FASTCALL VerySlowUpdate()
 {
 	gcp_timer++;
@@ -287,12 +321,15 @@ void FASTCALL VerySlowUpdate()
 		settings.dreamcast.RTC++;
 	}
 	maple_Update(s_timeslice * s_vslow_period);
+	sp_mark(SP_VSLOW);
 }
 
 void FASTCALL SlowUpdate()
 {
 	UpdateGDRom();
+	sp_mark(SP_GD);
 	gdrom_spinup_tick(s_timeslice * s_slow_period);
+	sp_mark(SP_SPIN);
 
 	if (!(update_cnt & (s_vslow_period - 1)))
 		VerySlowUpdate();
@@ -302,7 +339,9 @@ void FASTCALL MediumUpdate()
 {
 	UpdateAica(s_timeslice * s_medium_period);
 	UpdateArm(s_timeslice * s_medium_period);  // ARM7 tick — same cycle count, arm_aica.cpp divides by arm_sh4_bias (8)
+	sp_mark(SP_ARM);
 	UpdateDMA();
+	sp_mark(SP_DMA);
 
 	if (!(update_cnt & (s_slow_period - 1)))
 		SlowUpdate();
@@ -311,18 +350,26 @@ void FASTCALL MediumUpdate()
 // One timeslice of the update without the interrupt check. Touches no SH4 GPRs.
 static inline void sys_slice()
 {
+	sp_mark(SP_GATE);
 	if (!(update_cnt & (s_medium_period - 1)))
 		MediumUpdate();
 
 	update_cnt++;
 
 	UpdateTMU(s_timeslice);
+	sp_mark(SP_TMU);
+	const u32 vbl = spg_VblankCountTotal;
 	UpdatePvr(s_timeslice);
+	sp_mark(spg_VblankCountTotal != vbl ? SP_VBL : SP_PVR);
 	UpdateAicaDma(s_timeslice);     // deferred AICA G2-DMA completion IRQ (DMA_FIX)
+	sp_mark(SP_ADMA);
 
 	// SCHED: fire due completions before the interrupt check so their IRQs are seen this timeslice.
 	if (get_sched_preset())
+	{
 		sh4_sched_tick(s_timeslice);
+		sp_mark(SP_SCHED);
+	}
 }
 
 int FASTCALL UpdateSystem()
@@ -390,6 +437,14 @@ int FASTCALL UpdateSystem_gate()
 	StallScope st_(ST_SYS);
 	CCALL(CC_TIMESLICE);
 	s32 k = Sh4cntx.sys_elapsed;
+	s_sp_on = g_stall_on && (++s_sp_runs & 15) == 0;
+	if (s_sp_on)
+	{
+		s_sp_samples++;
+		s_sp_slices += (u32)k;
+		s_sp_t = gettime();
+		s_sp_nest = g_stall_nested;
+	}
 	s_gate_runs++;
 	s_gate_slices += k;
 	s_gate_why[k < s_gate_plan ? GR_KICK : s_gate_plan_why]++;
@@ -397,8 +452,12 @@ int FASTCALL UpdateSystem_gate()
 	while (k-- > 0)
 		sys_slice();
 	s_gate_plan = sys_plan();
+	sp_mark(SP_PLAN);
 	Sh4cntx.sys_due = s_gate_plan;
-	return UpdateINTC_pending() | (int)(g_jit_exit_on && !sh4_int_bCpuRun);
+	const int rv = UpdateINTC_pending() | (int)(g_jit_exit_on && !sh4_int_bCpuRun);
+	sp_mark(SP_INTC);
+	s_sp_on = false;
+	return rv;
 }
 
 // None of the skipped slices holds an event, so running them before a write changes nothing the guest saw.
@@ -408,6 +467,8 @@ void sys_gate_sync_slow()
 	if (k <= 0)
 		return;
 	StallScope st_(ST_SYS);
+	const bool timed = g_stall_on;
+	const u64 t0 = timed ? gettime() : 0, n0 = g_stall_nested;
 	s_gate_syncs++;
 	s_gate_slices += k;
 	Sh4cntx.sys_elapsed = 0;
@@ -415,6 +476,11 @@ void sys_gate_sync_slow()
 	s_gate_plan -= k;
 	while (k-- > 0)
 		sys_slice();
+	if (timed)
+	{
+		s_sp_sync += sp_excl(gettime(), g_stall_nested, t0, n0);
+		s_sp_sync_n++;
+	}
 }
 
 void sys_gate_kick_slow()
@@ -438,6 +504,53 @@ void sys_gate_install()
 	tmu_gate_install();
 }
 
+// [sys] line: ms/s per part (the sampled runs scaled to all runs, one mftb per stamp taken out), then ns per call.
+static void sys_probe_stats(double secs)
+{
+	if (s_sp_samples)
+	{
+		const double tick_ns = 1e9 / (double)ps3_timebase_hz;
+		const int reads = 1024;
+		const u64 m0 = gettime();
+		for (int i = 0; i < reads; i++)
+			(void)gettime();
+		const double mftb_ns = (double)(gettime() - m0) * tick_ns / (reads + 1);
+		const double scale = (double)s_sp_runs / s_sp_samples;
+		char buf[1024];
+		int n = snprintf(buf, sizeof(buf), "[sys] runs %.0f/s sampled %u (%u slices) | ms/s:", s_sp_runs / secs,
+		                 s_sp_samples, s_sp_slices);
+		double sum = 0.0;
+		for (int i = 0; i < SP_N && n < (int)sizeof(buf); i++)
+		{
+			if (!s_sp_n[i])
+				continue;
+			const double ns = (double)s_sp_tot[i] * tick_ns - s_sp_n[i] * mftb_ns;
+			const double ms = (ns > 0.0 ? ns : 0.0) * scale / 1e6 / secs;
+			sum += ms;
+			n += snprintf(buf + n, sizeof(buf) - n, " %s %.2f", k_sp_name[i], ms);
+		}
+		const double irq = ((double)s_sp_irq * tick_ns - s_sp_irq_n * mftb_ns) / 1e6 / secs;
+		const double sync = ((double)s_sp_sync * tick_ns - s_sp_sync_n * mftb_ns) / 1e6 / secs;
+		if (n < (int)sizeof(buf))
+			n += snprintf(buf + n, sizeof(buf) - n, " = %.1f | irq %.2f (%.0f/s) sync %.2f (%.0f/s) | ns/call:", sum,
+			              irq, s_sp_irq_n / secs, sync, s_sp_sync_n / secs);
+		for (int i = 0; i < SP_N && n < (int)sizeof(buf); i++)
+			if (s_sp_n[i])
+				n += snprintf(buf + n, sizeof(buf) - n, " %s %.0f", k_sp_name[i],
+				              (double)s_sp_tot[i] * tick_ns / s_sp_n[i] - mftb_ns);
+		if (n < (int)sizeof(buf))
+			snprintf(buf + n, sizeof(buf) - n, " | mftb %.1f ns", mftb_ns);
+		printf("%s\n", buf);
+	}
+	s_sp_runs = s_sp_samples = s_sp_slices = s_sp_irq_n = s_sp_sync_n = 0;
+	s_sp_irq = s_sp_sync = 0;
+	for (int i = 0; i < SP_N; i++)
+	{
+		s_sp_tot[i] = 0;
+		s_sp_n[i] = 0;
+	}
+}
+
 void sys_gate_stats(double secs)
 {
 	if (!g_sys_gate_on || secs <= 0.0)
@@ -451,12 +564,19 @@ void sys_gate_stats(double secs)
 	s_gate_runs = s_gate_slices = s_gate_syncs = s_gate_kicks = 0;
 	for (u32 i = 0; i < GR_N; i++)
 		s_gate_why[i] = 0;
+	sys_probe_stats(secs);
 }
 
 int FASTCALL UpdateSystem_handle_event()
 {
 	StallScope st_(ST_SYS);
-	return UpdateINTC();
+	if (!g_stall_on)
+		return UpdateINTC();
+	const u64 t0 = gettime(), n0 = g_stall_nested;
+	const int rv = UpdateINTC();
+	s_sp_irq += sp_excl(gettime(), g_stall_nested, t0, n0);
+	s_sp_irq_n++;
+	return rv;
 }
 
 // The plain interpreter emulates no cache; the cached engine uses this to drop

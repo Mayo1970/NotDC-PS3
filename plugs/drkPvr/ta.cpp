@@ -16,11 +16,13 @@ namespace TASplitter
 
 using namespace TASplitter;
 
-TaSplit g_ta_split = { 0, 64, 0, 0, 0, 0, 0 };
+TaSplit g_ta_split = { 0, 64, 0, 0, 0, 0, 0, 0 };
 static u32 s_split_gap = 64;           // calls the next sample stands for
 static u32 s_split_seed = 0x9E3779B9u;
 static u64 s_split_sum[4];             // in, copy, fsm, out, in timebase ticks
 static u32 s_split_taken, s_split_n, s_split_long, s_split_calls0;
+static u64 s_ram_sum[3];               // RAM samples: in, write, out
+static u32 s_ram_n, s_ram_long;
 static u64 s_dma_ticks;
 static u32 s_dma_calls, s_dma_blocks;
 
@@ -40,7 +42,23 @@ void ta_split_leave(u64 t_entry)
     s_split_gap = 48 + (s_split_seed >> 27);
     g.next = g.calls + s_split_gap;
     if (!g.hit)
-        return;     // the flush went to RAM, VRAM or the YUV converter
+    {
+        // RAM, VRAM or the YUV converter; only RAM writes are timed.
+        if (g.ram)
+        {
+            g.ram = 0;
+            const u64 r[3] = { g.t_store - t_entry, g.t_copy - g.t_store, t_exit - g.t_copy };
+            if (r[0] > TA_SPLIT_MAX_TICKS || r[1] > TA_SPLIT_MAX_TICKS || r[2] > TA_SPLIT_MAX_TICKS)
+                s_ram_long++;
+            else
+            {
+                for (int i = 0; i < 3; i++)
+                    s_ram_sum[i] += r[i];
+                s_ram_n++;
+            }
+        }
+        return;
+    }
     g.hit = 0;
     const u64 d[4] = { g.t_store - t_entry, g.t_copy - g.t_store, g.t_fsm - g.t_copy, t_exit - g.t_fsm };
     for (int i = 0; i < 4; i++)
@@ -83,17 +101,35 @@ void ta_split_dump(double seconds)
         const double ta_per_s = calls / seconds * hits / s_split_taken;
         path = (sum - 4.0 * mftb_ns) * ta_per_s / 1e9 * 100.0;
     }
+    // RAM flushes: 3 segments, 3 mftb taken out of "path".
+    double rseg[3] = { 0.0, 0.0, 0.0 };
+    double rsum = 0.0, rpath = 0.0;
+    if (s_ram_n)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            rseg[i] = (double)s_ram_sum[i] * tick_ns / s_ram_n;
+            rsum += rseg[i];
+        }
+        const double ram_per_s = calls / seconds * (s_ram_n + s_ram_long) / s_split_taken;
+        rpath = (rsum - 3.0 * mftb_ns) * ram_per_s / 1e9 * 100.0;
+    }
     char vbuf[320];
     vram_split_format(vbuf, sizeof(vbuf), seconds, calls);
     printf("[ta-split] sq=%.0fk/s n=%u/%u long=%u ns: in %.1f copy %.1f fsm %.1f out %.1f = %.1f mftb %.1f"
-           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d sqst=%u sqla=%u sqcold=%u | %s\n",
+           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d sqst=%u sqla=%u sqcold=%u | %s"
+           " | ram ns: in %.1f write %.1f out %.1f = %.1f n=%u long=%u path %.1f%%\n",
            calls / seconds / 1000.0, s_split_n, s_split_taken, s_split_long,
            seg[0], seg[1], seg[2], seg[3], sum, mftb_ns, path,
            s_dma_calls, s_dma_blocks, (double)s_dma_ticks * tick_ns / 1e9 / seconds * 100.0,
-           g_ta_sq_direct_preset, g_jit_sq_sites, g_jit_sq_la_sites, g_jit_sq_cold_sites, vbuf);
+           g_ta_sq_direct_preset, g_jit_sq_sites, g_jit_sq_la_sites, g_jit_sq_cold_sites, vbuf,
+           rseg[0], rseg[1], rseg[2], rsum, s_ram_n, s_ram_long, rpath);
 
     for (int i = 0; i < 4; i++)
         s_split_sum[i] = 0;
+    for (int i = 0; i < 3; i++)
+        s_ram_sum[i] = 0;
+    s_ram_n = s_ram_long = 0;
     s_split_taken = s_split_n = s_split_long = 0;
     s_dma_ticks = 0;
     s_dma_calls = s_dma_blocks = 0;
