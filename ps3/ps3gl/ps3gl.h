@@ -55,7 +55,11 @@
 #define PS3GL_TENV_ADD          4
 #define PS3GL_TENV_BLEND        5
 #define PS3GL_TENV_MODULATE2    6   /* tex0 * tex1: dual-texture lightmap pass */
-#define PS3GL_TENV_COUNT        7
+/* DC bump maps (NotDC plan 3j): REPLACE/MODULATE/DECAL with the bump texel; texcoord1 = the offset colour bytes. */
+#define PS3GL_TENV_BUMP_REPLACE  7
+#define PS3GL_TENV_BUMP_MODULATE 8
+#define PS3GL_TENV_BUMP_DECAL    9
+#define PS3GL_TENV_COUNT        10
 
 /* 36-byte interleaved vertex: pos(16) + tc0(8) + tc1(8) + color(4) */
 #pragma pack(push, 1)
@@ -103,6 +107,7 @@ typedef struct {
     int              enabled;
     int              texenv;
     int              dirty;
+    int              bump;     /* ps3gl_tex_bump(): the texenv's bump program */
 } ps3gl_tmu_t;
 
 /* Matrix stack (column-major 4x4) */
@@ -430,6 +435,16 @@ void ps3gl_flush_deferred_texture_frees(void);
 /* Shader helpers */
 int ps3gl_shader_key(void);
 void ps3gl_shader_select(int key);
+
+/* PS3-only (NotDC plan 3j): the active TMU's texenv draws with its bump program (REPLACE, MODULATE, DECAL). */
+void ps3gl_tex_bump(int on);
+
+/* PS3-only: texcoord1 of the next immediate vertices as raw bits; a bump program reads them as 4 bytes. */
+static inline void ps3gl_tex1_bits(uint32_t bits)
+{
+    memcpy(&ps3gl.imm.u1, &bits, 4);
+    ps3gl.imm.v1 = 0.0f;
+}
 
 /* Cross-module internals, declared once here so the definitions in ps3gl_matrices.c/ps3gl_vertices.c see a
  * prototype. */

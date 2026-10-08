@@ -97,6 +97,8 @@ struct TaContext
 {
 	u32 addr;
 	DcVertex vtx[MAX_VTX];
+	// Plan 3j: each vertex's offset colour (ARGB), written for bump polygons only; the SPU lists carry none.
+	u32 offs[MAX_VTX];
 	DcStrip strip[MAX_STRIPS];
 	DcParam param[MAX_PARAMS];
 	u32 nvtx, nstrip, nparam;
@@ -151,6 +153,7 @@ struct DrawLists
 	const DcParam* param;
 	const ModTri* mtri;
 	const ModVolParam* mvol;
+	const u32* offs;  // 3j: vtx's offset colours, NULL for the SPU lists
 	u32 nvtx, nstrip, nparam, nmtri, nmvol;
 	float min_w, max_w, max_inv_w;
 	u32 mv_tris[5];
@@ -179,6 +182,13 @@ static bool s_peak_frame;
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
 static u32 s_sprite_col = 0xFFFFFFFF;
+// Plan 3j: the face offset colour (PolyParam 2B) and the sprite's; offset colours are kept while s_bump_param.
+static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
+static u32 s_sprite_offs;
+static bool s_bump_param;
+// Plan 3j Bump Maps, latched per job: the decoder keeps offset colours, the draw picks the bump programs.
+static bool s_bump_on;
+static u32 s_stat_bump_ppu;
 
 static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 
@@ -339,6 +349,7 @@ static void set_ta_context(u32 addr)
 	s_ta = c;
 }
 
+// misc/bump_check compiles the code from here to "bump_check: end" against a model of the offset colours.
 static inline u32 clamp_byte(float f)
 {
 	// Flycast c0f0a758d: NaN is max. PPC fctiwz turns NaN into 0x80000000, which clamped to black.
@@ -356,6 +367,12 @@ static inline u32 float_argb(float a, float r, float g, float b)
 static inline u32 intensity_argb(float i)
 {
 	return float_argb(s_face_a, s_face_r * i, s_face_g * i, s_face_b * i);
+}
+
+// Flycast vert_face_offs_color: the face offset colour scaled by the vertex's offset intensity, alpha unscaled.
+static inline u32 intensity_offs(float i)
+{
+	return float_argb(s_foffs_a, s_foffs_r * i, s_foffs_g * i, s_foffs_b * i);
 }
 
 // Floor on 1/W to keep W finite. 1e-4 merged every plane past W=10000 (SC5's video backdrop failed
@@ -425,9 +442,14 @@ static inline DcVertex* vtx_slot()
 	if (!v) return;                                                  \
 	set_pos(v, (pkt)->xyz[0], (pkt)->xyz[1], (pkt)->xyz[2]);
 
-#define VTX_B(color)                                                 \
+// 3j: vertex i's offset colour; argb is evaluated only for a bump polygon.
+#define VTX_OFFS(i, argb)                                            \
+	do { if (s_bump_param) s_dec->offs[i] = (argb); } while (0)
+
+#define VTX_B(color, offs)                                           \
 	if (s_dec->nvtx >= MAX_VTX) return;                              \
 	s_dec->vtx[s_dec->nvtx].col = (color);                           \
+	VTX_OFFS(s_dec->nvtx, offs);                                     \
 	s_dec->nvtx++;
 
 #define VTX_B_KEEP()                                                 \
@@ -458,6 +480,7 @@ struct Ps3VertexDecoder
 		p.isp = pp->isp;
 		p.tsp = pp->tsp;
 		p.tcw = pp->tcw;
+		s_bump_param = s_bump_on && pp->pcw.Texture && pp->tcw.NO_PAL.PixelFmt == 4;
 	}
 
 	static void AppendPolyParam0(TA_PolyParam0* pp) { add_param(pp); }
@@ -472,6 +495,8 @@ struct Ps3VertexDecoder
 	{
 		s_face_a = pp->FaceColorA; s_face_r = pp->FaceColorR;
 		s_face_g = pp->FaceColorG; s_face_b = pp->FaceColorB;
+		s_foffs_a = pp->FaceOffsetA; s_foffs_r = pp->FaceOffsetR;
+		s_foffs_g = pp->FaceOffsetG; s_foffs_b = pp->FaceOffsetB;
 	}
 	static void AppendPolyParam3(TA_PolyParam3* pp) { add_param(pp); }
 	static void AppendPolyParam4A(TA_PolyParam4A* pp) { add_param(pp); }
@@ -502,29 +527,69 @@ struct Ps3VertexDecoder
 	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); v->u = v->v = 0.0f; }
 	static void AppendPolyVertex1(TA_Vertex1* p) { VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); v->u = v->v = 0.0f; }
 	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = v->v = 0.0f; }
-	static void AppendPolyVertex3(TA_Vertex3* p) { VTX_ONE(p, p->BaseCol); v->u = p->u; v->v = p->v; }
-	static void AppendPolyVertex4(TA_Vertex4* p) { VTX_ONE(p, p->BaseCol); v->u = uv16(p->u); v->v = uv16(p->v); }
+	static void AppendPolyVertex3(TA_Vertex3* p)
+	{
+		VTX_ONE(p, p->BaseCol); v->u = p->u; v->v = p->v;
+		VTX_OFFS(v - s_dec->vtx, p->OffsCol);
+	}
+	static void AppendPolyVertex4(TA_Vertex4* p)
+	{
+		VTX_ONE(p, p->BaseCol); v->u = uv16(p->u); v->v = uv16(p->v);
+		VTX_OFFS(v - s_dec->vtx, p->OffsCol);
+	}
 	static void AppendPolyVertex5A(TA_Vertex5A* p) { VTX_A(p); v->u = p->u; v->v = p->v; }
-	static void AppendPolyVertex5B(TA_Vertex5B* p) { VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
+	static void AppendPolyVertex5B(TA_Vertex5B* p)
+	{
+		VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB), float_argb(p->OffsA, p->OffsR, p->OffsG, p->OffsB));
+	}
 	static void AppendPolyVertex6A(TA_Vertex6A* p) { VTX_A(p); v->u = uv16(p->u); v->v = uv16(p->v); }
-	static void AppendPolyVertex6B(TA_Vertex6B* p) { VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); }
-	static void AppendPolyVertex7(TA_Vertex7* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = p->u; v->v = p->v; }
-	static void AppendPolyVertex8(TA_Vertex8* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = uv16(p->u); v->v = uv16(p->v); }
+	static void AppendPolyVertex6B(TA_Vertex6B* p)
+	{
+		VTX_B(float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB), float_argb(p->OffsA, p->OffsR, p->OffsG, p->OffsB));
+	}
+	static void AppendPolyVertex7(TA_Vertex7* p)
+	{
+		VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = p->u; v->v = p->v;
+		VTX_OFFS(v - s_dec->vtx, intensity_offs(p->OffsInt));
+	}
+	static void AppendPolyVertex8(TA_Vertex8* p)
+	{
+		VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = uv16(p->u); v->v = uv16(p->v);
+		VTX_OFFS(v - s_dec->vtx, intensity_offs(p->OffsInt));
+	}
 	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); v->u = v->v = 0.0f; }
 	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); v->u = v->v = 0.0f; }
-	static void AppendPolyVertex11A(TA_Vertex11A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = p->u0; v->v = p->v0; }
+	// Volume 0 is drawn, so its offset colour is the one kept.
+	static void AppendPolyVertex11A(TA_Vertex11A* p)
+	{
+		VTX_A(p); v->col = p->BaseCol0; v->u = p->u0; v->v = p->v0;
+		VTX_OFFS(v - s_dec->vtx, p->OffsCol0);
+	}
 	static void AppendPolyVertex11B(TA_Vertex11B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex12A(TA_Vertex12A* p) { VTX_A(p); v->col = p->BaseCol0; v->u = uv16(p->u0); v->v = uv16(p->v0); }
+	static void AppendPolyVertex12A(TA_Vertex12A* p)
+	{
+		VTX_A(p); v->col = p->BaseCol0; v->u = uv16(p->u0); v->v = uv16(p->v0);
+		VTX_OFFS(v - s_dec->vtx, p->OffsCol0);
+	}
 	static void AppendPolyVertex12B(TA_Vertex12B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex13A(TA_Vertex13A* p) { VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = p->u0; v->v = p->v0; }
+	static void AppendPolyVertex13A(TA_Vertex13A* p)
+	{
+		VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = p->u0; v->v = p->v0;
+		VTX_OFFS(v - s_dec->vtx, intensity_offs(p->OffsInt0));
+	}
 	static void AppendPolyVertex13B(TA_Vertex13B* p) { VTX_B_KEEP(); }
-	static void AppendPolyVertex14A(TA_Vertex14A* p) { VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = uv16(p->u0); v->v = uv16(p->v0); }
+	static void AppendPolyVertex14A(TA_Vertex14A* p)
+	{
+		VTX_A(p); v->col = intensity_argb(p->BaseInt0); v->u = uv16(p->u0); v->v = uv16(p->v0);
+		VTX_OFFS(v - s_dec->vtx, intensity_offs(p->OffsInt0));
+	}
 	static void AppendPolyVertex14B(TA_Vertex14B* p) { VTX_B_KEEP(); }
 
 	static void AppendSpriteParam(TA_SpriteParam* spr)
 	{
 		add_param(spr);
 		s_sprite_col = spr->BaseCol;
+		s_sprite_offs = spr->OffsCol;
 	}
 
 	// Sprite corners A,B,C arrive with UVs; D is sent without z or UV, so it completes the parallelogram.
@@ -562,6 +627,7 @@ struct Ps3VertexDecoder
 		{
 			s_dec->vtx[s_dec->nvtx] = s_spr[order[i]];
 			s_dec->vtx[s_dec->nvtx].col = s_sprite_col;
+			VTX_OFFS(s_dec->nvtx, s_sprite_offs);
 			s_dec->nvtx++;
 		}
 		EndPolyStrip();
@@ -614,6 +680,7 @@ struct Ps3VertexDecoder
 };
 DcVertex Ps3VertexDecoder::s_spr[4];
 float Ps3VertexDecoder::s_spr_z[3];
+// bump_check: end
 
 // The decode stage replays bytes the store stage already answered for, so it
 // must not raise the list-end interrupts a second time.
@@ -1297,6 +1364,7 @@ static void reset_param_cache()
 
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
 static u32 apply_param_body(const DcParam& p, u32 list);
+static inline const u32* bump_offs(const DcParam& p);
 
 // 5.12 #3: p's slot in this scene's SPU texture hashes: its list index, or the background's slot.
 static inline u32 spetex_slot(const DcParam& p)
@@ -1355,6 +1423,8 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 	}
 	else
 		glDisable(GL_TEXTURE_2D);
+	// 3j: the texenv's bump program for a bump texture; the background has no offset colours.
+	ps3gl_tex_bump(textured && &p != &g_rr.bg_param && bump_offs(p) != 0);
 
 	// UseAlpha=0 means opaque vertex alpha; modulate (1) takes alpha from the texture only.
 	bool force = !p.tsp.UseAlpha || (textured && p.tsp.ShadInstr == 1);
@@ -1368,11 +1438,13 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 	return s_cache_or;
 }
 
-static inline void emit_vertex(const DcVertex* v, u32 alpha_or)
+// offs: the 3j offset colour (ARGB), 0 outside a bump run; texcoord1 takes it as RGBA bytes.
+static inline void emit_vertex(const DcVertex* v, u32 alpha_or, u32 offs)
 {
 	u32 c = v->col | alpha_or;
 	glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
 	glTexCoord2f(v->u, v->v);
+	ps3gl_tex1_bits((offs << 8) | (offs >> 24));
 	glVertex3f(v->x * v->w, v->y * v->w, v->w);
 }
 
@@ -1401,8 +1473,16 @@ struct StripRun
 	u32 first;              // Vertex Arrays: the run's first vertex in s_vb
 	u32 alpha_or;
 	const DcVertex* last;   // last vertex emitted
+	const u32* offs;        // 3j: the offset colours of a bump run's vertices, else NULL
 };
 static StripRun s_run;
+
+// 3j: the offset colours a bump run carries in texcoord1, NULL for any other run.
+static inline const u32* bump_offs(const DcParam& p)
+{
+	return s_bump_on && p.pcw.Texture && p.tcw.NO_PAL.PixelFmt == 4 ? s_rl.offs : 0;
+}
+static u32 s_stat_bump_strips;  // 3j: strips drawn with their offset colours
 
 // Flycast PolyParam::equivalentIgnoreCullingDirection: ISP 0xF4000000 keeps cull on/off, not its direction.
 static inline bool strip_equivalent(const DcParam& a, const DcParam& b)
@@ -1421,7 +1501,7 @@ static inline bool vertex_inf(const DcVertex* v)
 
 // emit_vertex in ps3gl_vertex_t form (z = W, w = 1, RGBA). Word stores only: RSX memory is
 // cache-inhibited, and GCC's merged u1/v1 std is misaligned on odd 36-byte vertices (alignment trap).
-static inline bool vb_emit(const DcVertex* v, u32 alpha_or)
+static inline bool vb_emit(const DcVertex* v, u32 alpha_or, u32 offs)
 {
 	if (s_vb_used >= s_vb_cap)
 		return false;
@@ -1433,7 +1513,8 @@ static inline bool vb_emit(const DcVertex* v, u32 alpha_or)
 	o[3] = 1.0f;
 	o[4] = v->u;
 	o[5] = v->v;
-	o[6] = 0.0f;
+	// 3j: u1 holds the offset colour as RGBA bytes, 0 (= 0.0f) outside a bump run.
+	((volatile u32*)o)[6] = (offs << 8) | (offs >> 24);
 	o[7] = 0.0f;
 	((volatile u32*)o)[8] = (c << 8) | (c >> 24);
 	return true;
@@ -1441,13 +1522,14 @@ static inline bool vb_emit(const DcVertex* v, u32 alpha_or)
 
 static inline void run_emit(const DcVertex* v)
 {
+	const u32 offs = s_run.offs ? s_run.offs[v - s_rl.vtx] : 0;
 	if (s_vb)
 	{
-		if (!vb_emit(v, s_run.alpha_or))
+		if (!vb_emit(v, s_run.alpha_or, offs))
 			return;
 	}
 	else
-		emit_vertex(v, s_run.alpha_or);
+		emit_vertex(v, s_run.alpha_or, offs);
 	s_run.last = v;
 	s_run.count++;
 }
@@ -1491,10 +1573,15 @@ template <bool DRY = false> static void run_close()
 template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 {
 	const DcParam& p = s_rl.param[s.param];
+	const u32* offs = bump_offs(p);
 	if (DRY)
 		s_dry_strips++;
 	else
+	{
 		s_stat_strips[list]++;
+		if (offs)
+			s_stat_bump_strips++;
+	}
 
 	if (!s_merge)
 	{
@@ -1502,7 +1589,7 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 		glBegin(GL_TRIANGLE_STRIP);
 		const DcVertex* v = &s_rl.vtx[s.first];
 		for (u32 k = 0; k < s.count; k++, v++)
-			emit_vertex(v, alpha_or);
+			emit_vertex(v, alpha_or, offs ? offs[s.first + k] : 0);
 		const u64 t0 = PERF_TICKS();
 		glEnd();
 		s_dt[DT_GLEND] += PERF_TICKS() - t0;
@@ -1545,6 +1632,8 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 		s_run.param = s.param;
 		s_run.list = list;
 		s_run.count = 0;
+		// The merge key holds the TCW, so every strip of the run is a bump strip or none is.
+		s_run.offs = offs;
 	}
 
 	const DcVertex* v0 = &s_rl.vtx[s.first];
@@ -1958,6 +2047,7 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 static void reset_gl_state()
 {
 	glDisable(GL_TEXTURE_2D);
+	ps3gl_tex_bump(0);
 	glDisable(GL_BLEND);
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_CULL_FACE);
@@ -2206,6 +2296,8 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			spevb_check();
 		s_vb = 0;
 	}
+	ps3gl_tex_bump(0);
+	ps3gl_tex1_bits(0);
 	glDisable(GL_ALPHA_TEST);
 	glDisable(GL_BLEND);
 	glDisable(GL_CULL_FACE);
@@ -2658,7 +2750,7 @@ static void rth_print_stats()
 		       th, td, tg, us[DT_TEX] - th - td - tg, hashes / r, (u32)(hash_bytes / r / 1024));
 	}
 	s_stat_t_dec = s_stat_t_draw = s_stat_t_end = 0.0;
-	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u fbw=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK\n",
+	printf("[rend] renders=%u drop=%u wait=%ums fbdef=%u rtt=%u/%u fb=%u fbw=%u sort=%s store=%s job_max=%ums avg/render: vtx=%u strips op=%u pt=%u tr=%u draws=%s op=%u pt=%u tr=%u (built op=%u pt=%u tr=%u) mv_tris op=%u tr=%u | w=[%g..%g] near=%g wclamp=%u/%u bg=%g zw=%u | tex decodes=%u live=%u | overflow=%u ta_raw_of=%u peak=%uK/%uK | bump strips=%u ppu=%u\n",
 	       s_stat_renders, s_stat_dropped, (u32)(s_stat_wait * 1000.0), s_stat_fb_defer,
 	       s_stat_rtt_copies, s_stat_rtt, s_stat_fb_presents, s_stat_fb_watch,
 	       g_rr.autosort ? "auto" : "pre", s_ta_fast ? "fsm" : "split",
@@ -2674,7 +2766,8 @@ static void rth_print_stats()
 	       (double)s_stat_w_lo, (double)s_stat_w_hi, (double)s_stat_near_lo,
 	       s_stat_wclamp, s_stat_wtotal, (double)s_stat_bg_inv_w, s_stat_bg_zw,
 	       decodes, live, s_overflow,
-	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024));
+	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024), s_stat_bump_strips / r, s_stat_bump_ppu);
+	s_stat_bump_strips = s_stat_bump_ppu = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -2799,6 +2892,7 @@ static void lists_from_ctx(const TaContext* c)
 	s_rl.param = c->param;
 	s_rl.mtri = c->mtri;
 	s_rl.mvol = c->mvol;
+	s_rl.offs = c->offs;
 	s_rl.nvtx = c->nvtx;
 	s_rl.nstrip = c->nstrip;
 	s_rl.nparam = c->nparam;
@@ -2840,6 +2934,7 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	s_rl.param = (const DcParam*)o->param;
 	s_rl.mtri = (const ModTri*)o->mtri;
 	s_rl.mvol = (const ModVolParam*)o->mvol;
+	s_rl.offs = 0;
 	s_rl.nvtx = r->nvtx;
 	s_rl.nstrip = r->nstrip;
 	s_rl.nparam = r->nparam;
@@ -2853,14 +2948,30 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	return true;
 }
 
+// 3j: a scene with a bump polygon needs offset colours, which only the PPU replay keeps.
+static bool has_bump(const DcParam* p, u32 n)
+{
+	for (u32 i = 0; i < n; i++)
+		if (p[i].pcw.Texture && p[i].tcw.NO_PAL.PixelFmt == 4)
+			return true;
+	return false;
+}
+
 // Stage 1 of a job: the TA replay. It is split from the draw so the inline path
 // can still run it under the guest rounding mode, as TR2 did.
 static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 {
 	REND_PHASE(PH_TADEC);
 	double t0 = os_GetSeconds();
+	s_bump_on = g_bump_map_preset != 0;
 	// S3 skips the replay; a late or wrong fence replays from raw_decoded, which S3 never moves.
-	if (!(fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end)))
+	bool spe = fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end);
+	if (spe && s_bump_on && has_bump(s_rl.param, s_rl.nparam))
+	{
+		spe = false;
+		s_stat_bump_ppu++;
+	}
+	if (!spe)
 	{
 		decode_pending(c, raw_end, cont_end);
 		lists_from_ctx(c);

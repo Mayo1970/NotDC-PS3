@@ -51,7 +51,8 @@ static void die(const char* fmt, ...)
 	va_end(ap);
 	exit(1);
 }
-static void emit_vertex(const DcVertex*, u32) { die("emit_vertex"); }
+static void emit_vertex(const DcVertex*, u32, u32) { die("emit_vertex"); }
+static bool s_bump_on;  // plan 3j: off, as on the PS3 for every scene the SPU builds
 static void glBegin(GLenum) { die("glBegin"); }
 static void glEnd() { die("glEnd"); }
 static u32 apply_param(const DcParam&, u32) { die("apply_param in the DRY pass"); }

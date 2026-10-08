@@ -13,6 +13,85 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-08)
 
+**Done: 3j Bump Maps, the Rayman 2 untextured level surfaces (Matt
+2026-10-08: "Ok then, can we work on the Rayman 2 untextured surfaces?",
+then design A: "A"). Package of 18:31. HW SUCCESS 2026-10-08 (Matt: "It
+looks good now!", then "SUCCESS"); default ON in source since 2026-10-08
+(Matt: "keep them on by default"), not packaged.** Section 3 has the
+evidence and the DC rule (3j).
+- HW run 2026-10-08 (package of 18:31, Bump Maps ON from boot, no OFF boot;
+  `ps3log_bump_run1.txt`, scratchpad of session d0cd44fe):
+  - Rayman 2: the level surfaces textured again (Matt). In the first level
+    31-71 bump strips per render, every render replayed on the PPU
+    (`ppu=` = renders); intro and menus 0 (SPU path). Level: SPEED 100.0%
+    (lowest second 99.7%) over 83 s, RPS 50 (PAL 50 Hz), drop 0; render
+    thread busy 4-15% (2-6% on the SPU path before the level), job_max
+    2-9 ms. Clean XMB exit; largest free block at boot 144203 KB (-1 MB).
+  - Crazy Taxi: 0 bump strips, 0 PPU replays; SPEED 99.8% over 344 s
+    (99.8% in the 239 s at vt >= 6K), drop 0, no SPU fail or mismatch.
+  - Sonic Adventure: 0 bump strips, 0 PPU replays; SPEED 99.8% over 218 s
+    (100.0% in play, RPS 28.7), drop 0, clean XMB exit.
+- Design A (Matt's pick of two): a scene with a bump polygon is decoded and
+  built on the PPU, as after a late SPU fence; the SPU code and the 24-byte
+  vertex do not change. Design B (offset colour in DcVertex/SpeVtx, both
+  decoders, SPE Build) was not taken: every game would pay, and the SPE
+  Build fast path assumes 24-byte vertices. 3b (offset colour in every game)
+  would still need B's SPU work.
+- VIDEO / DEBUG -> "Bump Maps" (`BumpMap`), default ON (OFF until the HW
+  run), live.
+- Texture (`ps3/ps3_tex.cpp`): a PixelFmt 4 texel decodes as raw 4444 (S in
+  A:R, R in G:B), with no IgnoreTexA (Flycast `texBMP_TW`); the SPE Tex
+  Decode job gets fmt 2. The toggle is in the cache key of bump textures, so
+  a switch decodes them again.
+- Offset colour (`ps3/ps3_rend.cpp`): the PPU decoder keeps it per vertex in
+  `TaContext.offs` (1 MB of .bss in all), for bump polygons only: packed
+  (types 3, 4, 11A, 12A), float (5B, 6B), intensity times the face offset
+  colour of PolyParam 2B, alpha unscaled (7, 8, 13A, 14A; Flycast
+  `vert_face_offs_color`), and sprites. `rth_job_decode` replays a scene on
+  the PPU when the SPU lists hold a bump param (`has_bump`).
+- Draw: a bump run writes each vertex's offset colour as RGBA bytes into
+  u1 (byte 24 of ps3gl_vertex_t) on both PPU paths (vertex arrays and
+  glBegin); 0 outside bump runs, the old value. ps3gl binds texcoord1 as 4
+  normalised bytes for the bump programs only, and `ps3gl_tex_bump()` picks
+  them (REPLACE, MODULATE, DECAL keys 7-9).
+- Shaders (`ps3/ps3gl/shaders/`): `bump_vp.vcg` (texcoord1 as float4, no
+  clip plane) and `bump_fp_replace/modulate/decal.fcg` with
+  `bump.cgh` (the Flycast/Reicast `pp_BumpMap` formula). `compile_bump.sh`
+  builds them (cgc.exe, then cgcomp in Docker) into `ps3gl_shader_bump.h`.
+  `ps3gl_shader_data.h` is unchanged: `compile_shaders.sh` would rebuild
+  `q3_vp.vpo`, whose committed binary is an older build (no clip plane).
+  The decoded ucode: TEX, COS, SIN, COS, MAD_SAT, then the texenv op; the
+  bump VP writes TEX1.xyzw (q3_vp: .xy).
+- Log: `[tex] bump maps ON|OFF`; the `[rend] renders=` line ends in
+  `| bump strips=N ppu=M`: bump strips drawn per render, and scenes the PPU
+  decoded for bump in the window.
+- PC (WSL): `misc/bump_check/run.sh` PASS: the decoder region of
+  ps3_rend.cpp through the real FIFO splitter, 20000 streams (every textured
+  vertex type, type-2 face offsets, sprites, records split across calls),
+  91540 bump vertices right, 563124 others not written.
+  `misc/spevb_check/run.sh` PASS (3000 scenes): the SPU compare as before,
+  plus three passes per scene: Bump Maps off over lists with offs (word for
+  word as before), on (u1 of every vertex in a bump run = its source's
+  offset colour, every other word unchanged), and the glBegin path: 19.3M
+  and 15.7M vertices in bump runs.
+  `sim.sh`: the real SPU image, same as the PPU merge.
+  `misc/bump_check/mutate.py`: 31 of 31 planted bugs fail (21 in the
+  decoder, 10 in the draw). `misc/spepix_check/run.sh` PASS (code unchanged,
+  as the fmt 2 job is the 4444 one).
+- Link: `.got` 0xCD38, 0 `r2off`, no warning; .bss 35.4 MB (+1 MB).
+- HW steps:
+  1. Install. The install keeps `nullDC.cfg`. SH4 Clock 200; VIDEO / DEBUG
+     -> Bump Maps OFF.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Rayman 2, the first level, OFF: the untextured surfaces as before.
+  4. SELECT -> VIDEO / DEBUG -> Bump Maps ON -> SELECT. Look at the same
+     surfaces: the level texture with the bump shading over it. Switch OFF
+     and ON once more.
+  5. Crazy Taxi and Sonic Adventure with ON: no change (no bump textures).
+  6. Log: `[tex] bump maps ON`, `bump strips=` above 0 and `ppu=` near the
+     renders in the Rayman 2 level, `[texfmt] bump=`.
+  7. On a fault: Bump Maps OFF (live).
+
 **Open, separate (Matt 2026-10-08: "Also write down the Ikaruga and Rez
 issues. We may be able to get back to them later on."): Rez and Ikaruga
 stop right after the BIOS logo; so does Sonic Shuffle. Not bundle 1: the
@@ -1753,7 +1832,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
-| 3a fog, 3b offset colour, 3j bump maps | OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged); 3j added 2026-10-08 (Rayman 2) |
+| 3a fog, 3b offset colour, 3j bump maps | 3a, 3b OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
 | 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged; bundle 2 (section 7) |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
@@ -2078,6 +2157,10 @@ Status 2026-09-23 (all big-endian checked):
   - Own toggle, default OFF until HW validated. Checks: PC first; the S2
     compare stays bit-exact; `misc/spepix_check` for the fmt 4 decode. HW:
     the Rayman 2 first level.
+  - 2026-10-08: built as design A (Matt's pick, section 0): bump scenes go
+    to the PPU decoder and draw, so parts (1)-(3) need no SPU change; the
+    offset colour lives in `TaContext.offs`, not in DcVertex. HW SUCCESS
+    2026-10-08 (Matt), default ON in source.
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
@@ -2171,6 +2254,7 @@ Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt:
 AICA Race Fix, ARM7 Reset Fix, CA Clamp, SPE AICA DSP and SPE DSP JIT ON default to ON since the package of 03:41 on 2026-10-07 (Matt: "mark this on by default").
 SPE Build (5.12 #2) defaults to ON since the package of 18:36 on 2026-10-07; SPE Tex Hash (5.12 #3) since the package of 22:35 on 2026-10-07 (Matt: "Yes, I want it by default.").
 YUV Conv Fast (P43, bundle 1) defaults to ON in source since 2026-10-08, not packaged yet (Matt: "Yes, thanks."); VRAM Direct, LMMODE and FB Write Watch stay OFF.
+Bump Maps (3j) defaults to ON in source since 2026-10-08, not packaged yet (Matt: "keep them on by default").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for

@@ -53,6 +53,7 @@ extern int g_yuv_conv_fast_preset;
 extern int g_vram_direct_preset;
 extern int g_lmmode_preset;
 extern int g_fb_watch_preset;
+extern int g_bump_map_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;

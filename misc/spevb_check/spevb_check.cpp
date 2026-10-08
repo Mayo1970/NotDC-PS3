@@ -62,9 +62,19 @@ static void die(const char* fmt, ...)
 	exit(1);
 }
 
-static void emit_vertex(const DcVertex*, u32) { die("emit_vertex with a vertex buffer"); }
-static void glBegin(GLenum) { die("glBegin with a vertex buffer"); }
-static void glEnd() { die("glEnd with a vertex buffer"); }
+// Plan 3j: the bump passes set it; the SPU compare runs with it off, as the PPU never builds bump scenes there.
+static bool s_bump_on;
+// The 3j glBegin pass (Strip Merge off) records each vertex and its offset colour; any other pass has a buffer.
+struct ImmVtx { const DcVertex* v; u32 offs; };
+static std::vector<ImmVtx>* g_imm;
+static void emit_vertex(const DcVertex* v, u32, u32 offs)
+{
+	if (!g_imm)
+		die("emit_vertex with a vertex buffer");
+	g_imm->push_back({ v, offs });
+}
+static void glBegin(GLenum) { if (!g_imm) die("glBegin with a vertex buffer"); }
+static void glEnd() { if (!g_imm) die("glEnd with a vertex buffer"); }
 
 // The GL pass: apply_param opens a run (its param), the draw at run_close gives its range.
 static std::vector<SpeRun> g_trace;
@@ -166,6 +176,9 @@ static void gen_params(SpeParam* p, u32 n)
 		base[k].isp = rnd32();
 		base[k].tsp = rnd32();
 		base[k].tcw = rnd32() % 4;
+		// 3j: PixelFmt 4, a bump texture when the Texture bit is set too.
+		if (rnd32() % 3 == 0)
+			base[k].tcw |= 4u << 27;
 	}
 	for (u32 i = 0; i < n; i++)
 	{
@@ -292,12 +305,17 @@ struct RefOut
 	std::vector<u32> vb;
 };
 
-static void ref_run(const Scene& s, bool dry, RefOut& r)
+// 3j: the bump passes' offset colours; bump = PPU-replayed lists with Bump Maps on, else the SPU's lists.
+static std::vector<u32> g_offs(SPE_MAX_VTX);
+
+static void ref_run(const Scene& s, bool dry, RefOut& r, bool bump = false, bool offs = false)
 {
 	const SpeOut* o = g_out[s.ctx];
 	s_rl.vtx = (const DcVertex*)o->vtx;
 	s_rl.strip = (const DcStrip*)o->strip;
 	s_rl.param = (const DcParam*)o->param;
+	s_rl.offs = bump || offs ? g_offs.data() : 0;
+	s_bump_on = bump;
 	s_rl.nvtx = s.nvtx;
 	s_rl.nstrip = s.nstrip;
 	s_rl.nparam = s.nparam;
@@ -461,6 +479,85 @@ static void spu_check(const Scene& s, const RefOut& ref)
 		die("only %u echoes", g_pubs);
 }
 
+// ---- 3j: bump runs carry each vertex's offset colour in u1 ---------------
+
+// The offset colour of a source vertex, from its u and v: an emitted copy names its source by the same two words.
+static u32 offs_of(u32 u, u32 v) { return u ^ (v << 7 | v >> 25) ^ 0x5A5A5A5Au; }
+static u32 rgba(u32 argb) { return argb << 8 | argb >> 24; }
+static bool bump_param(const SpeParam& p) { return (p.pcw & 8) && ((p.tcw >> 27) & 7) == 4; }
+
+static u64 g_bump_vtx, g_bump_imm;
+
+// With Bump Maps on, the runs and every word but u1 stay as in the plain pass; u1 is the source's offset colour as
+// RGBA in a bump run, else 0. Then the glBegin path (Strip Merge off): each vertex gets its own strip's offs.
+static void bump_check(const Scene& s, const RefOut& plain)
+{
+	const SpeOut* o = g_out[s.ctx];
+	for (u32 i = 0; i < s.nvtx; i++)
+		g_offs[i] = offs_of(o->vtx[i].u, o->vtx[i].v);
+	// Bump Maps off over the PPU replay's lists (they have offs): the plain pass, word for word.
+	RefOut off;
+	ref_run(s, false, off, false, true);
+	if (off.runs.size() != plain.runs.size() ||
+	    memcmp(off.runs.data(), plain.runs.data(), off.runs.size() * sizeof(SpeRun)) || off.vb != plain.vb)
+		die("bump off with offs: the output differs from the plain pass");
+	RefOut b;
+	ref_run(s, false, b, true);
+	for (int k = 0; k < 3; k++)
+		if (b.sec_end[k] != plain.sec_end[k] || b.strips[k] != plain.strips[k] || b.vtx_end[k] != plain.vtx_end[k])
+			die("bump pass: section %d differs", k);
+	if (b.runs.size() != plain.runs.size() ||
+	    memcmp(b.runs.data(), plain.runs.data(), b.runs.size() * sizeof(SpeRun)) || b.vb.size() != plain.vb.size())
+		die("bump pass: the runs differ");
+	std::vector<u8> in_bump(b.vb.size() / 9, 0);
+	for (const SpeRun& r : b.runs)
+		if (bump_param(o->param[r.param]))
+			for (u32 i = r.first; i < r.first + r.count; i++)
+				in_bump[i] = 1;
+	for (u32 i = 0; i < in_bump.size(); i++)
+	{
+		const u32* a = &b.vb[(size_t)i * 9];
+		const u32* q = &plain.vb[(size_t)i * 9];
+		for (int k = 0; k < 9; k++)
+			if (k != 6 && a[k] != q[k])
+				die("bump pass: vertex %u word %d %08X, plain %08X", i, k, a[k], q[k]);
+		const u32 want = in_bump[i] ? rgba(offs_of(a[4], a[5])) : 0;
+		if (a[6] != want)
+			die("bump pass: vertex %u u1 %08X, want %08X (%s run)", i, a[6], want, in_bump[i] ? "bump" : "plain");
+		g_bump_vtx += in_bump[i];
+	}
+
+	std::vector<ImmVtx> imm;
+	g_imm = &imm;
+	s_vb = 0;
+	s_merge = false;
+	g_trace.clear();
+	static const u32 lists[3] = { ListType_Opaque, ListType_Punch_Through, ListType_Translucent };
+	for (u32 k = 0; k < 3; k++)
+		draw_list(lists[k]);
+	g_imm = 0;
+	size_t n = 0;
+	for (u32 k = 0; k < 3; k++)
+		for (u32 i = 0; i < s.nstrip; i++)
+		{
+			const SpeStrip& st = o->strip[i];
+			if (st.list != lists[k])
+				continue;
+			const bool bump = bump_param(o->param[st.param]);
+			for (u32 j = 0; j < st.count; j++, n++)
+			{
+				if (n >= imm.size() || imm[n].v != (const DcVertex*)&o->vtx[st.first + j])
+					die("glBegin pass: vertex %zu is not strip %u's vertex %u", n, i, j);
+				if (imm[n].offs != (bump ? g_offs[st.first + j] : 0))
+					die("glBegin pass: strip %u vertex %u offs %08X, want %08X", i, j, imm[n].offs,
+					    bump ? g_offs[st.first + j] : 0);
+				g_bump_imm += bump;
+			}
+		}
+	if (n != imm.size())
+		die("glBegin pass: %zu vertices, the strips hold %zu", imm.size(), n);
+}
+
 // ---- float steps ---------------------------------------------------------
 
 static u64 g_float_checks;
@@ -612,12 +709,15 @@ int main(int argc, char** argv)
 		ref_run(s, false, b);
 		same_ref(a, b);
 		spu_check(s, a);
+		bump_check(s, b);
 		trppu += g_trppu_exp;
 		capped += a.vtx_end[2] >= s.cap && s.cap < 3 * s.nvtx + 4 * s.nstrip + 16;
 		runs += a.runs.size();
 		vtx += a.vtx_end[2];
 	}
-	printf("PASS: %u scenes (%u with TR left to the PPU, %u at the cap), %llu runs, %llu vertices; %llu float checks\n",
-	       cases, trppu, capped, (unsigned long long)runs, (unsigned long long)vtx, (unsigned long long)g_float_checks);
+	printf("PASS: %u scenes (%u with TR left to the PPU, %u at the cap), %llu runs, %llu vertices; %llu float checks; "
+	       "3j bump vertices %llu (vertex arrays), %llu (glBegin)\n",
+	       cases, trppu, capped, (unsigned long long)runs, (unsigned long long)vtx, (unsigned long long)g_float_checks,
+	       (unsigned long long)g_bump_vtx, (unsigned long long)g_bump_imm);
 	return 0;
 }

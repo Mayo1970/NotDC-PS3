@@ -1,0 +1,9 @@
+// NotDC 3j: the DC bump-map texel alpha, as Flycast/Reicast pp_BumpMap. The texel is raw 4444, S in A:R and R in
+// G:B; offs is the vertex offset colour, whose A, R, G, B carry the bump parameters (Q, K1-K3).
+float bump_alpha(float4 t, float4 offs)
+{
+    const float PI = 3.14159265;
+    float s = PI / 2.0 * (t.a * 240.0 + t.r * 15.0) / 255.0;
+    float r = 2.0 * PI * (t.g * 240.0 + t.b * 15.0) / 255.0;
+    return saturate(offs.a + offs.r * sin(s) + offs.g * cos(s) * cos(r - 2.0 * PI * offs.b));
+}

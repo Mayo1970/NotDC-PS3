@@ -1,11 +1,11 @@
 #!/bin/sh
 # 5.12 #2 (WSL): ps3/spu/spe_vb_build.h on SPU shims against the merge code of ps3_rend.cpp. Args: scenes (3000).
-# SPEVB_SOURCE: a mutated copy of spe_vb_build.h (mutate.py).
+# SPEVB_SOURCE: a mutated copy of spe_vb_build.h (mutate.py); REND_SOURCE: of ps3_rend.cpp (misc/bump_check/mutate.py).
 set -e
 cd "$(dirname "$0")/../.."
 OUT=/tmp/spevb
 mkdir -p $OUT
-tr -d '\r' < ps3/ps3_rend.cpp > $OUT/rend.cpp
+tr -d '\r' < "${REND_SOURCE:-ps3/ps3_rend.cpp}" > $OUT/rend.cpp
 awk '/misc\/spevb_check compiles the code from here/{f=1} f{print} /\/\/ spevb_check: end/{f=0}' $OUT/rend.cpp > $OUT/region.inc
 : > $OUT/structs.inc
 for s in DcVertex DcStrip ModTri ModVolParam DrawLists; do

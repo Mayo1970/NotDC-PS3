@@ -1,0 +1,14 @@
+// NotDC 3j, DC bump map with ShadInstr 0 (decal): the texel itself, RGB 1 and the bump alpha.
+#include "bump.cgh"
+
+void main(
+    float2 tc0   : TEXCOORD0,
+    float4 offs  : TEXCOORD1,
+
+    uniform sampler2D tex0,
+
+    out float4 oColor : COLOR
+)
+{
+    oColor = float4(1.0, 1.0, 1.0, bump_alpha(tex2D(tex0, tc0), offs));
+}

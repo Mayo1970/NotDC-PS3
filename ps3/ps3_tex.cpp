@@ -23,6 +23,7 @@ extern "C" {
 
 extern "C" int get_tex_slot_hash_preset();
 extern "C" int get_yuv_block_preset();
+extern "C" int get_bump_map_preset();
 extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint32_t* pitch);
 extern "C" void ps3gl_tex_direct_end(void);
 extern "C" uint8_t* ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t* pitch, int* swizzled);
@@ -35,7 +36,7 @@ extern "C" void ps3gl_tex_convert_check(void* dst, GLsizei width, GLsizei height
 
 struct TexEntry
 {
-	u32 key0, key1; // TCW, TSP size bits | IgnoreTexA | palette format
+	u32 key0, key1; // TCW, TSP size bits | IgnoreTexA | palette format | mirror | 3j bump
 	u32 hash;
 	GLuint name;
 	u32 last_frame;
@@ -57,6 +58,8 @@ static int s_spetex;
 
 static YuvTables s_yuvt;
 static int s_yuv_block = -1;
+// Plan 3j Bump Maps, latched per frame; it is in the cache key of bump textures, so a switch decodes them again.
+static int s_bump = -1;
 // [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
 static u32 s_yuv_blk;
 static u32 s_yuv_last_w, s_yuv_last_h, s_yuv_last_pitch;
@@ -556,6 +559,14 @@ static bool upload_yuv_block(const TexDesc& d)
 // Decodes d into the bound texture.
 static void upload(const TexDesc& d, bool ignore_alpha)
 {
+	// 3j: a bump texel is raw 4444 (S in A:R, R in G:B), and IgnoreTexA does not apply (Flycast texBMP_TW).
+	if (d.fmt == 4 && s_bump > 0)
+	{
+		TexDesc b = d;
+		b.fmt = 2;
+		upload(b, false);
+		return;
+	}
 	if (d.fmt == 3)
 	{
 		s_yuv_last_w = d.w;
@@ -610,6 +621,12 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 		s_yuv_block = yuv_block;
 		printf("[tex] yuv block decode %s\n", yuv_block ? "ON" : "OFF");
 	}
+	const int bump = get_bump_map_preset() != 0;
+	if (bump != s_bump)
+	{
+		s_bump = bump;
+		printf("[tex] bump maps %s\n", bump ? "ON" : "OFF");
+	}
 
 	s_frame++;
 	// Age out a slice per frame so the sweep cost stays flat.
@@ -650,7 +667,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
 	// Mirror is in the key because it decides the RSX layout at allocation time,
 	// and that layout is fixed for the life of the texture.
 	u32 key1 = (tsp.TexU << 3) | tsp.TexV | (tsp.IgnoreTexA << 6) | ((g_rr.pal_ram_ctrl & 3) << 7)
-	         | (mirror << 9);
+	         | (mirror << 9) | ((s_bump > 0 && tcw.NO_PAL.PixelFmt == 4) << 10);
 
 	u32 slot = tex_slot(key0, key1, s_slot_hash > 0);
 	TexEntry* hit = 0;

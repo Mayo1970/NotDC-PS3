@@ -3,6 +3,7 @@
 
 #include "ps3gl.h"
 #include "ps3gl_shader_data.h"
+#include "ps3gl_shader_bump.h"
 #include <stdio.h>
 
 /* Forward declarations */
@@ -52,6 +53,15 @@ void ps3gl_shaders_init(void)
     load_fp(&ps3gl.shaders[PS3GL_TENV_BLEND],     shader_fp_blend_data,    shader_fp_blend_data_size);
     load_fp(&ps3gl.shaders[PS3GL_TENV_MODULATE2], shader_fp_modulate2_data, shader_fp_modulate2_data_size);
 
+    /* NotDC 3j: the bump programs have their own VP, which passes texcoord1 as 4 components. */
+    for (int i = PS3GL_TENV_BUMP_REPLACE; i <= PS3GL_TENV_BUMP_DECAL; i++) {
+        load_vp(&ps3gl.shaders[i], shader_vp_bump_data, shader_vp_bump_data_size);
+        ps3gl.shaders[i].mvp_const = rsxVertexProgramGetConst(ps3gl.shaders[i].vp, "mvp");
+    }
+    load_fp(&ps3gl.shaders[PS3GL_TENV_BUMP_REPLACE],  shader_fp_bump_replace_data,  shader_fp_bump_replace_data_size);
+    load_fp(&ps3gl.shaders[PS3GL_TENV_BUMP_MODULATE], shader_fp_bump_modulate_data, shader_fp_bump_modulate_data_size);
+    load_fp(&ps3gl.shaders[PS3GL_TENV_BUMP_DECAL],    shader_fp_bump_decal_data,    shader_fp_bump_decal_data_size);
+
     ps3gl.active_shader = -1;
     ps3gl.active_vp = NULL;
     ps3gl.mvp_uploaded_gen = 0;
@@ -77,10 +87,24 @@ int ps3gl_shader_key(void)
     if (tmu0 && tmu1)
         return PS3GL_TENV_MODULATE2;
 
+    if (tmu0 && ps3gl.tmu[0].bump) {
+        switch (ps3gl.tmu[0].texenv) {
+        case PS3GL_TENV_REPLACE:  return PS3GL_TENV_BUMP_REPLACE;
+        case PS3GL_TENV_MODULATE: return PS3GL_TENV_BUMP_MODULATE;
+        case PS3GL_TENV_DECAL:    return PS3GL_TENV_BUMP_DECAL;
+        default:                  break;
+        }
+    }
+
     if (tmu0)
         return ps3gl.tmu[0].texenv;
 
     return PS3GL_TENV_DISABLED;
+}
+
+void ps3gl_tex_bump(int on)
+{
+    ps3gl.tmu[ps3gl.active_tmu].bump = on != 0;
 }
 
 void ps3gl_apply_shader(void)
@@ -110,22 +134,17 @@ void ps3gl_apply_shader(void)
         ps3gl.active_shader = key;
     }
 
-    /* MVP constant is independent of which FP is bound -- only re-patch it
-     * when it changed since the last upload (patching RSX microcode isn't free). */
+    /* The MVP is independent of the FP: re-patch it when it changed (patching RSX microcode isn't free),
+     * or on a VP switch (the NotDC bump VP), which may keep it elsewhere. */
     uint32_t mvp_gen = ps3gl_get_mvp_generation();
-    if (s->mvp_const && mvp_gen != ps3gl.mvp_uploaded_gen) {
+    if (s->mvp_const && (vp_reloaded || mvp_gen != ps3gl.mvp_uploaded_gen)) {
         const float *mvp = ps3gl_get_mvp();
         rsxSetVertexProgramParameter(ctx, s->vp, s->mvp_const, mvp);
         ps3gl.mvp_uploaded_gen = mvp_gen;
     }
 
-    /* Upload the world-space clip plane only if this shader binary was recompiled to support
-     * it (clip_plane_const is NULL on the old pre-clip-plane binary -- software clip in ps3gl_draw.c covers that case).
-     *
-     * Guarded on the value actually changing, like the MVP above: this runs on
-     * every state-applying flush, and patching vertex-program constants is not
-     * free. The plane only moves when a portal/mirror pass sets it, i.e. a
-     * handful of times per frame at most, not once per draw. */
+    /* The world-space clip plane, only on a binary built with it (else NULL: ps3gl_draw.c clips in software), and only
+     * when it changed: this runs every flush, and a portal/mirror pass moves it a few times per frame at most. */
     if (s->clip_plane_const &&
         (vp_reloaded ||
          memcmp(ps3gl.clip_plane_uploaded, ps3gl.clip_plane, sizeof(ps3gl.clip_plane)) != 0)) {
@@ -149,6 +168,8 @@ void ps3gl_shaders_init(void)
 void ps3gl_shaders_shutdown(void) {}
 
 int ps3gl_shader_key(void) { return PS3GL_TENV_DISABLED; }
+
+void ps3gl_tex_bump(int on) { (void)on; }
 
 void ps3gl_apply_shader(void)
 {

@@ -1,0 +1,17 @@
+// NotDC 3j, DC bump map with ShadInstr 2 (decal alpha): the colour RGB moves to the texel RGB (1) by the bump
+// alpha; the colour alpha stays.
+#include "bump.cgh"
+
+void main(
+    float4 color : COLOR0,
+    float2 tc0   : TEXCOORD0,
+    float4 offs  : TEXCOORD1,
+
+    uniform sampler2D tex0,
+
+    out float4 oColor : COLOR
+)
+{
+    float a = bump_alpha(tex2D(tex0, tc0), offs);
+    oColor = float4(lerp(color.rgb, float3(1.0, 1.0, 1.0), a), color.a);
+}
