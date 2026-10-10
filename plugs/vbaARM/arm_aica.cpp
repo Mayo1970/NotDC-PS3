@@ -56,7 +56,7 @@ static u32 aica_samples_due(u32 Cycles)
 
 	// Refresh the cached samples-per-cycle only when the underclock preset
 	// changed (never during gameplay — set at game load / in the menu).
-	int mhz = get_sh4_clock_preset();
+	int mhz = sh4_clock_eff_mhz();
 	if (mhz != aica_clock_mhz)
 	{
 		aica_clock_mhz     = mhz;

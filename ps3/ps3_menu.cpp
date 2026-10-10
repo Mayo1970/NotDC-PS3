@@ -25,6 +25,7 @@
 extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
 void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
+bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
 
 // -- Pad ---------------------------------------------------------------------
 
@@ -297,10 +298,15 @@ static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
 static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
-static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", NULL };
+static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", "+ LA STEPS", NULL };
+static const char* k_fschg[]     = { "OFF", "ON", "+ NO BLOCK END", NULL };
 static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
 static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
 static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
+static const char* k_gdstatus[]  = { "OLD", "READ STOPS CD-DA", "+ TIMING", NULL };
+static const char* k_gdpos[]     = { "OLD", "REQ_STAT", "+ GET_SCD", NULL };
+static const char* k_gdspeed[]   = { "FAST", "REAL", NULL };
+static const char* k_cddamiss[]  = { "OFF", "PLAY AHEAD", "+ SILENCE", NULL };
 static const char* k_div32[]     = { "OLD", "FIXED", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
@@ -324,8 +330,8 @@ struct Option
 static Option s_emu[] = {
 	{ "Accuracy",        &g_accuracy_preset,      OPT_CHOICE, k_accuracy,  0, 0,0,0, NULL,
 	  "SH4 FPU and timing exactness. FAST is the PS3 default." },
-	{ "SH4 Clock",       &g_sh4_clock_preset,     OPT_RANGE,  NULL,        0, 150,200,5, "%d MHz",
-	  "Underclocks the emulated SH4. Audio, video and RTC scale together." },
+	{ "SH4 Clock",       &g_sh4_clock_preset,     OPT_RANGE,  NULL,        0, 150,250,5, "%d MHz",
+	  "Below 200 underclocks the SH4, above 200 overclocks it. 200 is the real clock." },
 	{ "SH4 Cached",      &g_sh4_cached_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Pre-decoded SH4 interpreter. Faster; takes effect on the next boot." },
 	{ "Dynarec",         &g_dynarec_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -410,6 +416,8 @@ static Option s_video[] = {
 	  "Table-driven TA store stage. Cheaper on the SH4. Takes effect on boot." },
 	{ "TA SQ Direct",    &g_ta_sq_direct_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A store-queue flush to the TA runs in one flat function, not 4 calls. Live." },
+	{ "RAM SQ Direct",   &g_ram_sq_direct_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A store-queue flush to main RAM copies straight into RAM, not 3 calls (5.44). Live." },
 	{ "TA Peak Frame",   &g_ta_peak_frame_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The [rend] peak= stat is noted per frame, not per TA record. Set before boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
@@ -472,8 +480,8 @@ static Option s_video[] = {
 
 // OPTIMIZATION_PLAN 5.1: JIT speed paths, one A/B toggle each.
 static Option s_jit[] = {
-	{ "JIT FSCHG",       &g_jit_fschg_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "fschg skips the FPSCR sync call. Takes effect on boot." },
+	{ "JIT FSCHG",       &g_jit_fschg_preset,     OPT_CHOICE, k_fschg,     0, 0,0,0, NULL,
+	  "fschg skips the FPSCR sync; NO BLOCK END: the block goes on (5.37). Set before boot." },
 	{ "JIT FSQRT",       &g_jit_fsqrt_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "fsqrt and fsrra run as inline fsqrts, not a C call. Takes effect on boot." },
 	{ "JIT FPU PIN",     &g_fpu_pin_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -497,7 +505,7 @@ static Option s_jit[] = {
 	{ "JIT T COPY",      &g_jit_tcopy_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "bt.s/bf.s take T from the compare's register copy, not memory. Set before boot." },
 	{ "JIT SQ MISS",     &g_jit_sq_miss_preset,   OPT_CHOICE, k_sqmiss,    0, 0,0,0, NULL,
-	  "Missed SQ stores skip the table; LOOK-AHEAD needs JIT SQ STORES. Set before boot." },
+	  "Missed SQ stores skip the table; LA STEPS looks past @-Rn stores. Set before boot." },
 	{ "JIT MFOCRF",      &g_jit_mfocrf_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Compares read CR0 with mfocrf, not the microcoded mfcr. Set before boot." },
 	{ "JIT FPUL MOVES",  &g_jit_fpul_moves_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
@@ -506,8 +514,42 @@ static Option s_jit[] = {
 	  "Dynamic exits test their first target inline, not the lookup. Set before boot." },
 	{ "JIT SYS GATE",    &g_sys_gate_preset,      OPT_CHOICE, k_sysgate,   0, 0,0,0, NULL,
 	  "Slice ends run the update only when due; RESUME skips the lookup. Set before boot." },
+	{ "SYS GATE BATCH",  &g_sys_gate_batch_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "The slices the gate skipped run as one step, not one by one (5.42). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
+};
+
+// Plan section 7, bundle 2: one row per item; the first value is the old path.
+static Option s_gdrom[] = {
+	{ "GD Status",       &g_gd_status_preset,     OPT_CHOICE, k_gdstatus,  0, 0,0,0, NULL,
+	  "A data read stops CD-DA; + TIMING: Flycast's status delays (P21). Set before boot." },
+	{ "CD-DA Rules",     &g_cdda_rules_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Flycast's CD-DA end, resume and repeat rules (P61). Set before boot." },
+	{ "GD Position",     &g_gd_position_preset,   OPT_CHOICE, k_gdpos,     0, 0,0,0, NULL,
+	  "REQ_STAT sends the FAD, track and control from the TOC (P47). Live." },
+	{ "GET_SCD Q Data",  &g_gd_scd_q_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "GET_SCD format 1 as 14 bytes of Q data, cut at the asked length (P62). Live." },
+	{ "TOC Fields",      &g_toc_fields_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TOC: ADR 1, a data lead-out, the real low-density end (P23). Set before boot." },
+	{ "CD-DA Miss",      &g_cdda_miss_preset,     OPT_CHOICE, k_cddamiss,  0, 0,0,0, NULL,
+	  "Read-ahead starts at CD_PLAY; + SILENCE: a miss waits in silence, no stall. Live." },
+	{ "GD-ROM Speed",    &g_gd_speed_preset,      OPT_CHOICE, k_gdspeed,   0, 0,0,0, NULL,
+	  "REAL paces disc DMA at 1.8 MB/s as a Dreamcast; loads take longer (P22). Live." },
+	{ "GD DMA Fix",      &g_gd_dma_fix_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A DMA of length 0 is 32 MB; a DMA longer than its read stops (P22, P9). Live." },
+	{ "GD Command Fix",  &g_gd_cmd_fix_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Unknown ATA commands, EXEC_DIAG and long lengths do not hang (P22). Live." },
+	{ "SET_MODE Fix",    &g_gd_set_mode_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SET_MODE writes at its byte offset, not at twice it (P48). Live." },
+	{ "2340-byte Sectors", &g_sector_2340_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Reads with header and subheader get the sector's bytes, not zeros (P9). Live." },
+	{ "GDI Parser",      &g_gdi_parser_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "GDI track names in quotes; REQ_SES gives session 2 at track 3 (P23). Set before boot." },
+	{ "GDI Backslash",   &g_gdi_paths_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A backslash in a GDI track path opens as a slash (P57). Set before boot." },
+	{ "Disc Swap",       &g_disc_swap_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TRIANGLE in the in-game menu changes the disc (P34). Live." },
 };
 
 static Option s_controls[] = {
@@ -529,6 +571,7 @@ static Page s_opt_pages[] = {
 	{ "AUDIO",         s_audio, (int)(sizeof(s_audio) / sizeof(s_audio[0])) },
 	{ "VIDEO / DEBUG", s_video, (int)(sizeof(s_video) / sizeof(s_video[0])) },
 	{ "JIT SPEED",     s_jit,   (int)(sizeof(s_jit) / sizeof(s_jit[0])) },
+	{ "GD-ROM",        s_gdrom, (int)(sizeof(s_gdrom) / sizeof(s_gdrom[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -753,7 +796,11 @@ static void browser_enter_device(int index)
 	s_sel = 0;
 }
 
-static Screen browser_input(u32 pressed)
+// P34: the browser of the in-game menu picks the next disc into this.
+static char s_swap_path[512];
+
+// swap: the in-game "change disc" browser. X on an image returns SCR_LAUNCH, O at the root SCR_OPTIONS.
+static Screen browser_input(u32 pressed, bool swap)
 {
 	int top = (s_sel / ROWS_PER_PAGE) * ROWS_PER_PAGE;
 
@@ -774,7 +821,7 @@ static Screen browser_input(u32 pressed)
 		if (s_dev_count > 1)
 			browser_enter_device((s_dev_cur + 1) % s_dev_count);
 	}
-	else if (pressed & MB_SQUARE)
+	else if ((pressed & MB_SQUARE) && !swap)
 	{
 		selectedFilePath[0] = '\0';
 		return SCR_OPTIONS;
@@ -789,6 +836,15 @@ static Screen browser_input(u32 pressed)
 			snprintf(s_cur_path, sizeof(s_cur_path), "%s", f->path);
 			list_directory(s_cur_path);
 			s_sel = 0;
+		}
+		else if (swap)
+		{
+			// An .elf is a program, not a disc.
+			size_t n = strlen(f->path);
+			if (n > 4 && strcasecmp(f->path + n - 4, ".elf") == 0)
+				return SCR_BROWSER;
+			snprintf(s_swap_path, sizeof(s_swap_path), "%s", f->path);
+			return SCR_LAUNCH;
 		}
 		else
 		{
@@ -809,6 +865,8 @@ static Screen browser_input(u32 pressed)
 				s_sel = 0;
 			}
 		}
+		else if (swap)
+			return SCR_OPTIONS;
 	}
 	else if (pressed & MB_SELECT)
 		return SCR_QUIT;
@@ -816,12 +874,12 @@ static Screen browser_input(u32 pressed)
 	return SCR_BROWSER;
 }
 
-static void browser_draw()
+static void browser_draw(bool swap)
 {
 	char buf[256], cut[256], right[64];
 
 	snprintf(right, sizeof(right), "DEVICE: %s", s_dev[s_dev_cur].label);
-	draw_header("NotDC", right);
+	draw_header(swap ? "CHANGE DISC" : "NotDC", right);
 
 	float max_w = list_max_w();
 	ps3ui_text(s_mx, s_head_y + 10 + s_cap, PS3UI_FONT_BODY, COL_DIM,
@@ -848,8 +906,8 @@ static void browser_draw()
 		pages = 1;
 	snprintf(buf, sizeof(buf), "Page %d/%d   %d item(s)",
 	         s_sel / ROWS_PER_PAGE + 1, pages, s_file_count);
-	draw_footer(buf,
-	            "X Select   O Up a folder   /\\ Next device   [] Boot BIOS   SELECT Quit");
+	draw_footer(buf, swap ? "X Insert   O Up a folder / Back   /\\ Next device   SELECT Back to game"
+	                      : "X Select   O Up a folder   /\\ Next device   [] Boot BIOS   SELECT Quit");
 }
 
 static Screen options_input(u32 pressed)
@@ -962,10 +1020,12 @@ static int* const k_live_opts[] = {
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
 	&g_aica_kyonb_preset, &g_ta_sq_direct_preset, &g_tex_slot_hash_preset, &g_depth_float_preset,
 	&g_yuv_block_preset, &g_frame_hold_preset, &g_yuv_conv_fast_preset, &g_vram_direct_preset, &g_lmmode_preset,
-	&g_fb_watch_preset, &g_bump_map_preset,
+	&g_fb_watch_preset, &g_bump_map_preset, &g_gd_position_preset, &g_gd_scd_q_preset, &g_cdda_miss_preset,
+	&g_gd_speed_preset, &g_gd_dma_fix_preset, &g_gd_cmd_fix_preset, &g_gd_set_mode_preset, &g_sector_2340_preset,
+	&g_disc_swap_preset,
 };
 
-#define MAX_INGAME_OPTS 96
+#define MAX_INGAME_OPTS 128
 static int s_run_val[MAX_INGAME_OPTS];    // the running emulator's values while the menu is open
 static int s_boot_val[MAX_INGAME_OPTS];   // boot-only options as saved for the next boot
 static bool s_boot_val_set;
@@ -1035,8 +1095,9 @@ static void ingame_draw()
 		draw_row(i - top, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
 	}
 
-	draw_footer(p->rows[s_opt_row].help,
-	            "LEFT/RIGHT Change   L1/R1 Page   SELECT Back to game   * Next boot");
+	draw_footer(p->rows[s_opt_row].help, g_disc_swap_preset
+	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   SELECT Back   * Next boot"
+	            : "LEFT/RIGHT Change   L1/R1 Page   SELECT Back to game   * Next boot");
 }
 
 void ps3_menu_request(void)
@@ -1078,19 +1139,43 @@ void ps3_menu_ingame(void)
 
 		// The SELECT still held from opening does not count as a press.
 		s_pad_prev = ~0u;
+		// P34: TRIANGLE opens the disc browser in the folder the menu last showed.
+		bool swap = false;
+		s_swap_path[0] = '\0';
 		while (!ps3_exit_pending())
 		{
 			u32 pressed = pad_poll(16);
 			if (pressed & MB_SELECT)
 				break;
-			ingame_input(pressed);
+			if (swap)
+			{
+				Screen r = browser_input(pressed, true);
+				if (r == SCR_LAUNCH)
+					break;
+				swap = r == SCR_BROWSER;
+			}
+			else if ((pressed & MB_TRIANGLE) && g_disc_swap_preset)
+			{
+				if (!s_files)
+					s_files = (FileEntry*)malloc(sizeof(FileEntry) * MAX_FILES);
+				list_directory(s_cur_path);
+				s_sel = 0;
+				swap = s_files != NULL;
+			}
+			else
+				ingame_input(pressed);
 			if (ps3ui_begin(COL_BG))
 			{
-				ingame_draw();
+				if (swap)
+					browser_draw(true);
+				else
+					ingame_draw();
 				ps3ui_end();
 			}
 			usleep(16 * 1000);
 		}
+		free(s_files);
+		s_files = NULL;
 
 		ps3_presets_save();
 		for_each_option([](Option* o, int k) {
@@ -1111,6 +1196,10 @@ void ps3_menu_ingame(void)
 		if (g_aica_kyonb_preset != kyonb)
 			sgc_KyonbSync();
 		ps3_sndcfg_print("menu", false);
+		ps3_gdcfg_print("menu", false);
+		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
+		if (s_swap_path[0])
+			gdrom_disc_swap(s_swap_path);
 	}
 	else
 		printf("[menu] in-game menu: no UI\n");
@@ -1156,7 +1245,7 @@ int ps3_menu_run(void)
 		u32 pressed = pad_poll(16);
 		switch (scr)
 		{
-		case SCR_BROWSER:  scr = browser_input(pressed);  break;
+		case SCR_BROWSER:  scr = browser_input(pressed, false);  break;
 		case SCR_OPTIONS:  scr = options_input(pressed);  break;
 		case SCR_CONTROLS: scr = controls_input(pressed); break;
 		default: break;
@@ -1166,7 +1255,7 @@ int ps3_menu_run(void)
 		{
 			switch (scr)
 			{
-			case SCR_BROWSER:  browser_draw();  break;
+			case SCR_BROWSER:  browser_draw(false);  break;
 			case SCR_OPTIONS:  options_draw();  break;
 			case SCR_CONTROLS: controls_draw(); break;
 			default: break;
@@ -1192,5 +1281,6 @@ int ps3_menu_run(void)
 	printf("[menu] launching %s\n",
 	       selectedFilePath[0] ? selectedFilePath : "(BIOS, no disc)");
 	ps3_sndcfg_print("boot", true);
+	ps3_gdcfg_print("boot", true);
 	return 1;
 }

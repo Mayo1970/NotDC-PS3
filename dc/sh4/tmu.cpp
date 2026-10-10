@@ -109,6 +109,55 @@ s32 tmu_slices_to_event(s32 ts, s32 max)
 	return max;
 }
 
+// Plan 5.42: the same count without the slice loop. Most plans end at the first test: no underflow in reach.
+s32 tmu_slices_to_event_fast(s32 ts, s32 max)
+{
+	for (u32 ch = 0; ch < 3; ch++)
+	{
+		if ((TMU_TSTR & tmu_ch_bit[ch]) == 0 || max <= 1)
+			continue;
+		const u32 sh = tmu_prescaler_shift[ch], pres = tmu_prescaler[ch], cnt = tmu_regs_CNT[ch];
+		if (((pres + (u32)ts * (u32)(max - 1)) >> sh) <= cnt)
+			continue;
+		// First n with (pres + n * ts) >> sh above TCNT. The test above keeps (cnt + 1) << sh in 32 bits.
+		const u32 need = (cnt + 1) << sh;
+		max = need <= pres ? 1 : (s32)((need - pres + (u32)ts - 1) / (u32)ts);
+	}
+	return max;
+}
+
+// Plan 5.42: channel ch after clc cycles in pres and cnt; false when it underflows in them.
+static INLINE bool tmu_quiet_chan(u32 ch, u32 clc, u32& pres, u32& cnt)
+{
+	pres = tmu_prescaler[ch];
+	cnt = tmu_regs_CNT[ch];
+	if ((TMU_TSTR & tmu_ch_bit[ch]) == 0)
+		return true;
+	pres += clc;
+	const u32 steps = pres >> tmu_prescaler_shift[ch];
+	pres &= tmu_prescaler_mask[ch];
+	if (steps > cnt)
+		return false;
+	cnt -= steps;
+	return true;
+}
+
+// Plan 5.42: n slices as one step when no running channel underflows in them; else false and no change.
+bool tmu_slices_quiet_run(s32 ts, s32 n)
+{
+	const u32 clc = (u32)ts * (u32)n;
+	u32 p0, c0, p1, c1, p2, c2;
+	if (!tmu_quiet_chan(0, clc, p0, c0) || !tmu_quiet_chan(1, clc, p1, c1) || !tmu_quiet_chan(2, clc, p2, c2))
+		return false;
+	tmu_prescaler[0] = p0;
+	tmu_regs_CNT[0] = c0;
+	tmu_prescaler[1] = p1;
+	tmu_regs_CNT[1] = c1;
+	tmu_prescaler[2] = p2;
+	tmu_regs_CNT[2] = c2;
+	return true;
+}
+
 // TCNT after the slices the SYS GATE skipped. None of them underflows, so TCNT is the only thing they move.
 static u32 tmu_tcnt_now(u32 ch)
 {

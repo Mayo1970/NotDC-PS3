@@ -11,8 +11,19 @@ STFS = 'ppc_stfs(pin0 + g + i, ctx, xf_ofs + 4 * (g + i));'
 
 MUTANTS = [
     (FR, 'test reads fpscr twice', 'ppc_lwz(t1, ctx, old_ofs);', 'ppc_lwz(t1, ctx, fpscr_ofs);'),
-    (FR, 'SZ bit taken for FR', 'ppc_xoris(t1, t1, 0x0020);', 'ppc_xoris(t1, t1, 0x0010);'),
-    (FR, 'no FR flip in the test', '\tppc_xoris(t1, t1, 0x0020);\n', ''),
+    (FR, 'SZ bit taken for FR', 'ppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);',
+     'ppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0010);'),
+    (FR, 'no FR flip in the test', '\tppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);\n', ''),
+    (FR, 'SZ not left out (5.37)', '\tif (sz_free)\n\t\tppc_oris(t1, t1, 0x0010);\n', ''),
+    (FR, 'SZ set but not flipped back (5.37)', 'ppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);',
+     'ppc_xoris(t1, t1, 0x0020);'),
+    (FR, 'SZ left out always (5.37)', '\tif (sz_free)\n\t\tppc_oris(t1, t1, 0x0010);\n'
+     '\tppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);', '\tppc_oris(t1, t1, 0x0010);\n\tppc_xoris(t1, t1, 0x0030);'),
+    (FR, 'FR left out too (5.37)', 'ppc_oris(t1, t1, 0x0010);', 'ppc_oris(t1, t1, 0x0030);'),
+    (FR, 'bit 19 left out, not SZ (5.37)', '\t\tppc_oris(t1, t1, 0x0010);\n'
+     '\tppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);',
+     '\t\tppc_oris(t1, t1, 0x0008);\n\tppc_xoris(t1, t1, sz_free ? 0x0028 : 0x0020);'),
+    (FR, 'ori for oris (5.37)', 'ppc_oris(t1, t1, 0x0010);', 'ppc_ori(t1, t1, 0x0010);'),
     (FR, 'compare with 1', 'ppc_cmpli(ppc_cr0, t1, 0, 0);', 'ppc_cmpli(ppc_cr0, t1, 1, 0);'),
     (FR, 'compare into CR1', 'ppc_cmpli(ppc_cr0, t1, 0, 0);', 'ppc_cmpli(ppc_cr1, t1, 0, 0);'),
     (FR, 'xor of t1 with itself', 'ppc_xorx(t1, t0, t1, 0);', 'ppc_xorx(t1, t1, t1, 0);'),

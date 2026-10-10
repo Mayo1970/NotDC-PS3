@@ -3,13 +3,15 @@
 // UpdateFPSCR(). Needs ppc_emitter.h in scope; misc/frpref_check tests it on the PC.
 
 // t0 = fpscr, t1 = fpscr ^ old_fpscr ^ FR (bit 21), compared with 0 into CR0: eq when FR alone changed. On ne
-// the caller takes the old C path.
-static inline void emit_frchg_test(u32 t0, u32 t1, u32 ctx, u32 fpscr_ofs, u32 old_ofs)
+// the caller takes the old C path. sz_free (plan 5.37): old_fpscr's SZ (bit 20) may be stale, so SZ is left out.
+static inline void emit_frchg_test(u32 t0, u32 t1, u32 ctx, u32 fpscr_ofs, u32 old_ofs, bool sz_free = false)
 {
 	ppc_lwz(t0, ctx, fpscr_ofs);
 	ppc_lwz(t1, ctx, old_ofs);
 	ppc_xorx(t1, t0, t1, 0);
-	ppc_xoris(t1, t1, 0x0020);
+	if (sz_free)
+		ppc_oris(t1, t1, 0x0010);
+	ppc_xoris(t1, t1, sz_free ? 0x0030 : 0x0020);
 	ppc_cmpli(ppc_cr0, t1, 0, 0);
 }
 

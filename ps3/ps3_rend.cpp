@@ -18,6 +18,7 @@
 #include "dc/pvr/pvr_vram.h"
 #include "dc/sh4/sh4_sqw.h"
 #include "dc/sh4/sys_gate.h"
+#include "dc/sh4/sh4_interpreter.h"
 #include <algorithm>
 #include <math.h>
 #include <malloc.h>
@@ -1041,6 +1042,20 @@ static inline bool sqw_flat_target(u32 dest)
 	return area == 4 && (dest & 0x01800000) == 0;
 }
 
+// Plan 5.44 RAM SQ Direct: a flush to main RAM (QACR area 3) is a 32-byte copy into the RAM image, which is all
+// WriteMemBlock_nommu_ptr does there while the cached interpreter has no blocks to drop.
+static inline bool sqw_ram_target(u32 dest)
+{
+	const u32 area = (dest & 0x20) ? CCN_QACR1.Area : CCN_QACR0.Area;
+	return area == 3 && g_ram_sq_direct_preset && !g_sh4_cached_live;
+}
+
+static inline void sqw_ram_copy(u32 dest)
+{
+	g_vram_split.sq_mem++;
+	memcpy(&mem_b[dest & (RAM_MASK & ~31u)], &sq_both[dest & 0x20], 32);
+}
+
 // The rare cases of do_sqw_nommu. It reaches them by tail calls, so its fast path needs no stack frame.
 // The old path; do_sqw_nommu has already counted the flush for the probe.
 static __attribute__((noinline)) void sqw_chain(u32 dest)
@@ -1058,6 +1073,13 @@ static __attribute__((noinline)) void sqw_sampled(u32 dest)
 	{
 		store_sq<true, true>((u32*)&sq_both[dest & 0x20]);
 		TaCalls++;
+	}
+	else if (sqw_ram_target(dest))
+	{
+		g_ta_split.t_store = ta_stamp();
+		sqw_ram_copy(dest);
+		g_ta_split.t_copy = ta_stamp();
+		g_ta_split.ram = 1;
 	}
 	else
 	{
@@ -1082,15 +1104,20 @@ static __attribute__((noinline)) void sqw_finish(u32 pcw, Ta_Dma* rec)
 	TaCalls++;
 }
 
-// The JIT's PREF target without the MMU. TA SQ Direct ON: a TA polygon flush runs here in one flat body,
-// not through TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq (plan 5.17); everything else takes the old path.
+// The JIT's PREF target without the MMU. One flat body for a TA polygon flush (TA SQ Direct, plan 5.17: no
+// TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq) and a main RAM flush (RAM SQ Direct, plan 5.44); the rest: the old path.
 template<bool peak>
 static inline __attribute__((always_inline)) void do_sqw_flat(u32 dest)
 {
 	if (++g_ta_split.calls == g_ta_split.next)
 		return sqw_sampled(dest);
 	if (!sqw_flat_target(dest))
-		return sqw_chain(dest);
+	{
+		if (!sqw_ram_target(dest))
+			return sqw_chain(dest);
+		CCALL(CC_SQW);
+		return sqw_ram_copy(dest);
+	}
 	CCALL(CC_SQW);
 	u32* data = (u32*)&sq_both[dest & 0x20];
 	TaContext* c = s_ta;

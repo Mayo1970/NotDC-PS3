@@ -27,6 +27,7 @@
 // SCHED preset accessor (ps3_presets.cpp). When on, migrated completion/IRQ events
 // fire through sh4_sched (deadline-ordered) instead of at their own cascade tier.
 extern "C" int get_sched_preset();
+extern "C" int get_sys_gate_batch_preset();
 #include <time.h>
 #include <float.h>
 
@@ -40,6 +41,7 @@ volatile bool sh4_int_bCpuRun = false;
 f32 sin_table[0x10000 + 0x4000];
 
 static s32 s_timeslice     = SH4_TIMESLICE_ACCURATE;
+static s32 s_cpu_timeslice = SH4_TIMESLICE_ACCURATE;   // SH4 cycles the CPU runs per slice
 static s32 s_cpu_ratio     = SH4_CPU_RATIO_ACCURATE;
 static u32 s_medium_period = SH4_MEDIUM_ACCURATE;
 static u32 s_slow_period   = SH4_SLOW_ACCURATE;
@@ -78,6 +80,13 @@ static void ApplyAccuracyPreset()
 		s_vslow_period  = SH4_VSLOW_ACCURATE;
 		printf("Sh4: accuracy preset = ACCURATE (timeslice %d)\n", s_timeslice);
 	}
+
+	// SH4 Clock above 200 MHz: the SH4 runs clock/200 times the slice; the modules still advance by s_timeslice.
+	// Capped at the menu's 250: the JIT main loop adds the slice as a 16-bit immediate.
+	int mhz = get_sh4_clock_preset();
+	if (mhz > 250)
+		mhz = 250;
+	s_cpu_timeslice = mhz > 200 ? (s_timeslice * mhz + 100) / 200 : s_timeslice;
 }
 
 // The JIT bakes the timeslice into its mainloop, so it latches the preset before emitting it
@@ -92,6 +101,11 @@ s32 sh4_GetTimeslice()
 	return s_timeslice;
 }
 
+s32 sh4_GetCpuTimeslice()
+{
+	return s_cpu_timeslice;
+}
+
 s32 sh4_GetCpuRatio()
 {
 	return s_cpu_ratio;
@@ -104,7 +118,7 @@ void Sh4_int_Run()
 
 	sh4_int_bCpuRun = true;
 
-	s32 l = s_timeslice;
+	s32 l = s_cpu_timeslice;
 
 	do
 	{
@@ -118,7 +132,7 @@ void Sh4_int_Run()
 			l -= s_cpu_ratio;
 		} while (l > 0);
 
-		l += s_timeslice;
+		l += s_cpu_timeslice;
 
 		// Peripheral update cascade (TMU, PVR, AICA, DMA, GDRom, Maple …)
 		UpdateSystem();
@@ -281,9 +295,9 @@ u32 gcp_timer   = 0;
 // [sys] probe, with JIT C-Calls: 1 gate run in 16 stamps the parts of its slices. Times leave out the nested
 // [stall] sections (gd dma, rend, log, sleep), as [stall] sys does.
 enum { SP_GATE, SP_ARM, SP_DMA, SP_GD, SP_SPIN, SP_VSLOW, SP_TMU, SP_PVR, SP_VBL, SP_ADMA, SP_SCHED, SP_PLAN,
-       SP_INTC, SP_N };
+       SP_INTC, SP_QUIET, SP_N };
 static const char* const k_sp_name[SP_N] = { "gate", "arm", "dma", "gd", "spin", "vslow", "tmu", "pvr", "vbl",
-                                             "aicadma", "sched", "plan", "intc" };
+                                             "aicadma", "sched", "plan", "intc", "quiet" };
 static bool s_sp_on;
 static u64 s_sp_t, s_sp_nest;
 static u64 s_sp_tot[SP_N];
@@ -421,7 +435,7 @@ static s32 sys_plan()
 	const u32 m = s_medium_period;
 	s32 n = (s32)(((m - (update_cnt & (m - 1))) & (m - 1)) + 1);
 	u32 why = GR_MED;
-	s32 t = tmu_slices_to_event(ts, n);
+	s32 t = g_sys_batch_on ? tmu_slices_to_event_fast(ts, n) : tmu_slices_to_event(ts, n);
 	if (t < n) { n = t; why = GR_TMU; }
 	t = spg_slices_to_event(ts, n);
 	if (t < n) { n = t; why = GR_SPG; }
@@ -429,6 +443,30 @@ static s32 sys_plan()
 	if (t < n) { n = t; why = GR_DMA; }
 	s_gate_plan_why = why;
 	return n;
+}
+
+// Plan 5.42 SYS GATE BATCH: n slices as one step per module. False, with nothing moved, when one of them is a
+// medium tick or holds a module event; the caller then runs them one by one, so the result is the same.
+bool g_sys_batch_on;
+u32 g_gate_batches, g_gate_batch_slices, g_gate_batch_miss;
+
+static bool sys_slices_quiet(s32 n)
+{
+	const u32 m = s_medium_period, u = update_cnt & (m - 1);
+	const s32 ts = s_timeslice;
+	if (u == 0 || u + (u32)n > m || get_sched_preset() || !spg_slices_quiet(ts, n) ||
+	    !aica_dma_slices_quiet(ts, n) || !tmu_slices_quiet_run(ts, n))
+	{
+		g_gate_batch_miss++;
+		return false;
+	}
+	aica_dma_slices_run(ts, n);
+	spg_slices_run(ts, n);
+	update_cnt += (u32)n;
+	g_gate_batches++;
+	g_gate_batch_slices += (u32)n;
+	sp_mark(SP_QUIET);
+	return true;
 }
 
 // The slices the gate skipped and this one, then the next plan. Same return as _no_event().
@@ -449,6 +487,9 @@ int FASTCALL UpdateSystem_gate()
 	s_gate_slices += k;
 	s_gate_why[k < s_gate_plan ? GR_KICK : s_gate_plan_why]++;
 	Sh4cntx.sys_elapsed = 0;
+	// The last slice stays whole: the plan puts the event there.
+	if (g_sys_batch_on && k > 2 && sys_slices_quiet(k - 1))
+		k = 1;
 	while (k-- > 0)
 		sys_slice();
 	s_gate_plan = sys_plan();
@@ -474,6 +515,8 @@ void sys_gate_sync_slow()
 	Sh4cntx.sys_elapsed = 0;
 	Sh4cntx.sys_due -= k;
 	s_gate_plan -= k;
+	if (g_sys_batch_on && k > 1 && sys_slices_quiet(k))
+		k = 0;
 	while (k-- > 0)
 		sys_slice();
 	if (timed)
@@ -501,6 +544,7 @@ void sys_gate_install()
 	Sh4cntx.sys_elapsed = 0;
 	Sh4cntx.sys_due = 0;
 	s_gate_plan = 0;
+	g_sys_batch_on = get_sys_gate_batch_preset() != 0;
 	tmu_gate_install();
 }
 
@@ -560,6 +604,10 @@ void sys_gate_stats(double secs)
 	                 s_gate_slices / secs, s_gate_runs / secs, s_gate_syncs / secs, s_gate_kicks / secs);
 	for (u32 i = 0; i < GR_N && n < (int)sizeof(buf); i++)
 		n += snprintf(buf + n, sizeof(buf) - n, " %s %.0f", k_gate_why[i], s_gate_why[i] / secs);
+	if (g_sys_batch_on && n < (int)sizeof(buf))
+		snprintf(buf + n, sizeof(buf) - n, " | batch runs=%.0f/s slices=%.0f/s miss=%.0f/s", g_gate_batches / secs,
+		         g_gate_batch_slices / secs, g_gate_batch_miss / secs);
+	g_gate_batches = g_gate_batch_slices = g_gate_batch_miss = 0;
 	printf("%s\n", buf);
 	s_gate_runs = s_gate_slices = s_gate_syncs = s_gate_kicks = 0;
 	for (u32 i = 0; i < GR_N; i++)

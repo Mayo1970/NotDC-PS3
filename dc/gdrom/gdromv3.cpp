@@ -32,6 +32,20 @@ static int gdrom_dma_end_cb(int tag, int sch_cycl, int jitter)
 extern "C" int get_debug_loop();
 extern "C" int get_debug_gdrom();
 
+// Plan section 7, bundle 2: each item has its own option on the GD-ROM page; 0 is the old path.
+extern "C" {
+int get_gd_status_preset();     // P21: 1 = a data read stops CD-DA, 2 = also Flycast dev's status timing
+int get_gd_position_preset();   // P47: 1 = REQ_STAT position bytes, 2 = GET_SCD format 0 too
+int get_gd_scd_q_preset();      // P62: GET_SCD format 1 layout, replies cut at the asked length
+int get_cdda_rules_preset();    // P61: CD-DA end, resume and repeat rules
+int get_gd_speed_preset();      // P22: 1 = DMA paced as the drive
+int get_gd_dma_fix_preset();    // P22 SB_GDLEN 0, P9 DMA clamp
+int get_cdda_miss_preset();     // 5.34: 1 = read-ahead from CD_PLAY, 2 = a ring miss also plays silence
+int get_gd_cmd_fix_preset();    // P22: ATA and SPI command hangs
+int get_gd_set_mode_preset();   // P48
+int get_disc_swap_preset();     // P34
+}
+
 enum gd_states
 {
 	//Generic
@@ -122,9 +136,13 @@ struct
 	u8 command;
 } ata_cmd;
 
+// P21, P61: the CD-DA state as Flycast's cdda_t. playing is true in CDDA_PLAYING only; the old paths test it.
+enum { CDDA_NOINFO, CDDA_PLAYING, CDDA_PAUSED, CDDA_TERMINATED };
+
 struct
 {
 	bool playing;
+	u32 status;
 	u32 repeats;
 	union
 	{
@@ -184,6 +202,35 @@ static void gd_read(int who,u8* buff,u32 fad,u32 count,u32 secsz)
 	gda_count(who,count,gettime()-t0);
 }
 
+static void cdda_set(u32 st)
+{
+	cdda.status=st;
+	cdda.playing=st==CDDA_PLAYING;
+}
+
+// P21 step 2 (Flycast dev cddaTransition): the status shows transient, then state after ms of emulated time.
+static int gd_trans_next=-1;
+static s64 gd_trans_cycles;
+
+static void cdda_transition(int state,u32 ms,int transient)
+{
+	SecNumber.Status=transient;
+	gd_trans_next=state;
+	gd_trans_cycles=(s64)(SH4_CLOCK_EFF/1000)*ms;
+}
+
+// GD-ROM Speed REAL: SH4 cycles until the next DMA chunk is due.
+static s64 gd_dma_wait;
+
+// P34: sense key, ASC and ASCQ as Flycast's; only a disc swap sets them, and they act only after one.
+static int sns_key,sns_asc,sns_ascq;
+static bool gd_swapped;
+static s64 gd_swap_cycles;
+
+// CD-DA Miss + SILENCE: pulls in a row that the ring did not have; past the limit the SH4 thread reads again.
+#define CDDA_HOLD_MAX 150
+static u32 cdda_held;
+
 void FASTCALL gdrom_get_cdda(s16* sector)
 {
 	//silence ! :p
@@ -191,15 +238,28 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 	{
 		// P3 + CD-DA: the worker's read-ahead has the sector most of the time.
 		if (!gda_cdda((u8*)sector,cdda.CurrAddr.FAD))
+		{
+			// CD-DA Miss + SILENCE: the sector waits for the worker, so the SH4 thread does not stall on the disc.
+			if (get_cdda_miss_preset()>=2 && gda_cdda_on() && cdda_held<CDDA_HOLD_MAX)
+			{
+				cdda_held++;
+				memset(sector,0,2352);
+				gda_cdda_next(true,cdda.CurrAddr.FAD);
+				return;
+			}
 			gd_read(GDR_CDDA,(u8*)sector,cdda.CurrAddr.FAD,1,2352);
+		}
+		cdda_held=0;
 		cdda.CurrAddr.FAD++;
-		if (cdda.CurrAddr.FAD==cdda.EndAddr.FAD)
+		// P61: >= also ends a play that started at or past its end; the drive then stays in PAUSE (Flycast).
+		const bool rules=get_cdda_rules_preset()!=0;
+		if (rules ? cdda.CurrAddr.FAD>=cdda.EndAddr.FAD : cdda.CurrAddr.FAD==cdda.EndAddr.FAD)
 		{
 			if (cdda.repeats==0)
 			{
 				//stop
-				cdda.playing=false;
-				SecNumber.Status=GD_STANDBY;
+				cdda_set(CDDA_TERMINATED);
+				SecNumber.Status=rules ? GD_PAUSE : GD_STANDBY;
 			}
 			else
 			{
@@ -311,6 +371,8 @@ void gd_set_state(gd_states state)
 					sector_count=27;
 					next_state=gds_readsector_pio;
 				}
+				else if (get_gd_status_preset()>=2)
+					cdda_transition(GD_PAUSE,67,GD_PLAY);   // P21: PLAY for 67 ms after a data read
 				gd_read(GDR_PIO,(u8*)&pio_buff.data[0],read_params.start_sector,sector_count,
 											read_params.sector_type);
 				read_params.start_sector+=sector_count;
@@ -349,7 +411,8 @@ void gd_set_state(gd_states state)
 			break;
 
 		case gds_process_set_mode:
-			memcpy(&gd_data_0x11[set_mode_offset*2],pio_buff.data ,pio_buff.size<<1);
+			// P48: REQ_MODE reads at the byte offset, so the write goes there too; the *2 is from Reicast's u16 table.
+			memcpy(&gd_data_0x11[get_gd_set_mode_preset() ? set_mode_offset : set_mode_offset*2],pio_buff.data ,pio_buff.size<<1);
 			//end pio transfer ;)
 			gd_set_state(gds_pio_end);
 			break;
@@ -367,6 +430,13 @@ static s64 gd_spinup_cycles = 0;
 
 void gd_setdisc()
 {
+	gd_trans_next=-1;   // P21: a pending status change does not outlive the disc state
+	// P61 (Flycast): a new disc state stops CD-DA.
+	if (get_cdda_rules_preset())
+	{
+		cdda_set(CDDA_NOINFO);
+		gda_cdda_next(false,0);
+	}
 	gd_disk_type = (DiscType)libGDR_GetDiscType();
 
 	switch(gd_disk_type)
@@ -394,6 +464,9 @@ void gd_setdisc()
 		//GDStatus.DRDY=1;
 		break;
 	}
+	// P34: the busy second of a disc swap is not over.
+	if (gd_swap_cycles>0)
+		SecNumber.Status = GD_BUSY;
 
 	SecNumber.DiscFormat=gd_disk_type>>4;
 }
@@ -452,7 +525,8 @@ void gd_process_ata_cmd()
 {
 	//Any ata cmd clears these bits , unless aborted/error :p
 	Error.ABRT=0;
-	GDStatus.CHECK=0;
+	// P34 (Flycast): a sense key other than none, aborted or unit attention keeps CHECK set.
+	GDStatus.CHECK=(sns_key==0 || sns_key==0xB || sns_key==6) ? 0 : 1;
 
 	switch(ata_cmd.command)
 	{
@@ -461,9 +535,13 @@ void gd_process_ata_cmd()
 		// Set ABRT and the status error bit, clear BSY, assert INTRQ.
 
 		Error.ABRT=1;
-		//Error.Sense=0x00; //fixme ?
+		if (gd_swapped)
+			Error.Sense=sns_key;
 		GDStatus.BSY=0;
 		GDStatus.CHECK=1;
+		// P34 (Flycast cb33387ed): a NOP also ends a data phase (Sentimental Graffiti 2 disc switch).
+		if (get_disc_swap_preset())
+			GDStatus.DRQ=0;
 
 		asic_RaiseInterrupt(holly_GDROM_CMD);
 		gd_set_state(gds_waitcmd);
@@ -474,12 +552,23 @@ void gd_process_ata_cmd()
 			printf_ata("ATA_SOFT_RESET\n");
 			//DRV -> preserved -> wtf is it anyway ?
 			gd_reset();
+			sns_key=0;
 		}
 		break;
 
 	case ATA_EXEC_DIAG:
 		printf_ata("ATA_EXEC_DIAG\n");
-		if (get_debug_gdrom()) printf("ATA_EXEC_DIAG -- not implemented\n");
+		// P22: Flycast completes it. With BSY left set and no interrupt, the guest waits for ever.
+		if (get_gd_cmd_fix_preset())
+		{
+			Error.full=1;	// no error
+			sns_key=0;
+			GDStatus.BSY=0;
+			GDStatus.CHECK=1;
+			asic_RaiseInterrupt(holly_GDROM_CMD);
+			gd_set_state(gds_waitcmd);
+		}
+		else if (get_debug_gdrom()) printf("ATA_EXEC_DIAG -- not implemented\n");
 		break;
 
 	case ATA_SPI_PACKET:
@@ -492,7 +581,11 @@ void gd_process_ata_cmd()
 	case ATA_IDENTIFY_DEV:
 		printf_ata("ATA_IDENTIFY_DEV\n");
 		GDStatus.BSY = 0;
-		gd_spi_pio_end(&reply_a1[packet_cmd.data_8[2] & ~1], packet_cmd.data_8[4]);
+		// P22: the whole 0x50-byte block, as Flycast; the packet bytes here are left from an older SPI command.
+		if (get_gd_cmd_fix_preset())
+			gd_spi_pio_end(&reply_a1[0], 0x50);
+		else
+			gd_spi_pio_end(&reply_a1[packet_cmd.data_8[2] & ~1], packet_cmd.data_8[4]);
 		break;
 
 	// IDENTIFY DEVICE (0xEC) on ATAPI aborts and leaves the ATAPI signature (SecCount=1,
@@ -535,9 +628,56 @@ void gd_process_ata_cmd()
 		break;
 
 	default:
-		die("Unkown ATA command..");
+		// P22: Flycast aborts an unknown ATA command with an interrupt; die() never returns.
+		if (get_gd_cmd_fix_preset())
+		{
+			printf("GDROM: unknown ATA command %02X, aborted\n",ata_cmd.command);
+			Error.ABRT=1;
+			Error.Sense=5;	// illegal request
+			GDStatus.BSY=0;
+			GDStatus.CHECK=1;
+			asic_RaiseInterrupt(holly_GDROM_CMD);
+			gd_set_state(gds_waitcmd);
+		}
+		else
+			die("Unkown ATA command..");
 		break;
 	};
+}
+
+// P47: the CD-DA position while it plays or is paused, else the last sector a data read took (Flycast).
+static u32 gd_cur_fad()
+{
+	return (cdda.status==CDDA_PLAYING || cdda.status==CDDA_PAUSED) ? cdda.CurrAddr.FAD : read_params.start_sector-1;
+}
+
+static u8 gd_ctrl_adr(u32 track)
+{
+	u8 adr,ctrl;
+	libGDR_GetTrackAdrAndControl(track,&adr,&ctrl);
+	return (u8)((ctrl<<4)|adr);
+}
+
+// GET_SCD byte 1. P21 step 2 and P61 take it from the CD-DA state, as Flycast; else it follows the drive status.
+static u8 gd_audio_status()
+{
+	if (get_gd_status_preset()>=2 || get_cdda_rules_preset())
+	{
+		switch (cdda.status)
+		{
+		case CDDA_PLAYING:    return 0x11;
+		case CDDA_PAUSED:     return 0x12;
+		case CDDA_TERMINATED: return 0x13;
+		default:              return 0x15;
+		}
+	}
+	if (SecNumber.Status==GD_STANDBY)
+		return 0x13;	// audio playback ended normally
+	if (SecNumber.Status==GD_PAUSE)
+		return 0x15;	// no audio status (data disc, ready to read)
+	if (SecNumber.Status==GD_PLAY)
+		return 0x11;	// audio playback in progress
+	return cdda.playing ? 0x11 : 0x15;
 }
 
 void gd_process_spi_cmd()
@@ -547,7 +687,8 @@ void gd_process_spi_cmd()
 		packet_cmd.data_8[0], packet_cmd.data_8[1], packet_cmd.data_8[2], packet_cmd.data_8[3], packet_cmd.data_8[4], packet_cmd.data_8[5],
 		packet_cmd.data_8[6], packet_cmd.data_8[7], packet_cmd.data_8[8], packet_cmd.data_8[9], packet_cmd.data_8[10], packet_cmd.data_8[11] );
 
-	GDStatus.CHECK=0;
+	// P34 (Flycast): CHECK stays set while a sense key waits for REQ_ERROR.
+	GDStatus.CHECK=(sns_key==0 || sns_key==0xB) ? 0 : 1;
 
 	switch(packet_cmd.data_8[0])
 	{
@@ -596,6 +737,21 @@ void gd_process_spi_cmd()
 			u32 start_sector = GetFAD(&readcmd.b[2],readcmd.prmtype);
 
 			u32 sector_count = (readcmd.b[8]<<16) | (readcmd.b[9]<<8) | (readcmd.b[10]);
+			// P22 (Flycast): CD_READ2 has its length in bytes 6-7.
+			if (packet_cmd.data_8[0]==SPI_CD_READ2 && get_gd_cmd_fix_preset())
+				sector_count=(readcmd.b[6]<<8) | readcmd.b[7];
+
+			// P21: a data read stops CD-DA (Hydro Thunder, NFL Blitz 2001). Step 2: the status is PLAY while it runs.
+			if (get_gd_status_preset())
+			{
+				cdda_set(CDDA_NOINFO);
+				gda_cdda_next(false,0);
+				gd_trans_next=-1;
+				if (get_gd_status_preset()>=2)
+					SecNumber.Status=GD_PLAY;
+				else if (SecNumber.Status==GD_PLAY)
+					SecNumber.Status=GD_PAUSE;
+			}
 
 			gda_wait();   // P3: a fill still in flight (an aborted read) lands before read_buff is armed again
 			read_params.start_sector=start_sector;
@@ -625,7 +781,11 @@ void gd_process_spi_cmd()
 			//toc - dd/sd
 			libGDR_GetToc(&toc_gd[0],packet_cmd.data_8[1]&0x1);
 
-			gd_spi_pio_end((u8*)&toc_gd[0], (packet_cmd.data_8[4]) | (packet_cmd.data_8[3]<<8) );
+			u32 toc_len=(packet_cmd.data_8[4]) | (packet_cmd.data_8[3]<<8);
+			// P22 (Flycast): no more than the TOC holds.
+			if (get_gd_cmd_fix_preset() && toc_len>sizeof(toc_gd))
+				toc_len=sizeof(toc_gd);
+			gd_spi_pio_end((u8*)&toc_gd[0],toc_len);
 		}
 		break;
 
@@ -656,7 +816,11 @@ void gd_process_spi_cmd()
 			printf_spicmd("SPI_SET_MODE\n");
 			u32 Offset = packet_cmd.data_8[2];
 			u32 Count = packet_cmd.data_8[4];
-			verify((Offset+Count)<11);	//cant set write olny things :P
+			// P22 (Flycast): a longer write stops at the 10 writable bytes; the verify hangs on it.
+			if (get_gd_cmd_fix_preset())
+				Count=Offset<10 ? min(Count,10-Offset) : 0;
+			else
+				verify((Offset+Count)<11);	//cant set write olny things :P
 			set_mode_offset=Offset;
 			gd_spi_pio_read_end(Count,gds_process_set_mode);
 		}
@@ -691,6 +855,20 @@ void gd_process_spi_cmd()
 			stat[8]=0;
 			//9	0	0	0	0	0	0	0	0
 			stat[9]=0;
+			// P47 (Flycast e5344d37d): the FAD by shifts, the track and control/ADR from the TOC, index 1. The
+			// union bytes above are FAD >> 8 on a big-endian host.
+			if (get_gd_position_preset())
+			{
+				u32 elapsed;
+				const u32 fad=gd_cur_fad();
+				const u32 track=libGDR_GetTrackNumber(fad,&elapsed);
+				stat[2]=gd_ctrl_adr(track);
+				stat[3]=(u8)track;
+				stat[4]=1;
+				stat[5]=(u8)(fad>>16);
+				stat[6]=(u8)(fad>>8);
+				stat[7]=(u8)fad;
+			}
 
 
 			verify((packet_cmd.data_8[2]+packet_cmd.data_8[4])<11);
@@ -710,8 +888,20 @@ void gd_process_spi_cmd()
 		resp[4]=resp[5]=resp[6]=resp[7]=0; //Command Specific Information
 		resp[8]=0;//Additional Sense Code
 		resp[9]=0;//Additional Sense Code Qualifier
+		// P34 (Flycast): after a disc swap the reply is the sense the swap left, and reading it clears it.
+		if (gd_swapped)
+		{
+			resp[2]=(u8)sns_key;
+			resp[8]=(u8)sns_asc;
+			resp[9]=(u8)sns_ascq;
+		}
 
 		gd_spi_pio_end(resp,packet_cmd.data_8[4]);
+		if (gd_swapped)
+		{
+			sns_key=sns_asc=sns_ascq=0;
+			GDStatus.CHECK=0;
+		}
 		break;
 
 	case SPI_REQ_SES:
@@ -744,32 +934,60 @@ void gd_process_spi_cmd()
 			if (get_debug_gdrom()) printf("GDROM: Unhandled Sega SPI frame: SPI_CD_PLAY\n");
 			//cdda.CurrAddr.FAD=60000;
 
-			cdda.playing=true;
-			SecNumber.Status=GD_PLAY;
-
 			u32 param_type=packet_cmd.data_8[1]&0x7;
+			const bool rules=get_cdda_rules_preset()!=0, timing=get_gd_status_preset()>=2;
+			bool play=true;      // old: every form starts the audio at once
+			int next=GD_PLAY;
 			if (get_debug_gdrom()) printf("param_type=%d\n",param_type);
-			if (param_type==1)
+			if (param_type==1 || param_type==2)
 			{
-				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],0);
-				cdda.EndAddr.FAD=GetFAD(&packet_cmd.data_8[8],0);
-				GDStatus.DSC=1;	//we did the seek xD lol
-			}
-			else if (param_type==2)
-			{
-				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],1);
-				cdda.EndAddr.FAD=GetFAD(&packet_cmd.data_8[8],1);
-				GDStatus.DSC=1;	//we did the seek xD lol
+				const bool msf=param_type==2;
+				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],msf);
+				cdda.EndAddr.FAD=GetFAD(&packet_cmd.data_8[8],msf);
+				// P61 (Flycast): an end of 0 is the end of the disc, from REQ_SES session 0.
+				if (rules && cdda.EndAddr.FAD==0)
+				{
+					u8 ses_inf[6]={0};
+					libGDR_GetSessionInfo(ses_inf,0);
+					cdda.EndAddr.FAD=(ses_inf[3]<<16) | (ses_inf[4]<<8) | ses_inf[5];
+				}
+				if (!timing)
+					GDStatus.DSC=1;	//we did the seek xD lol
 			}
 			else if (param_type==7)
 			{
 				//Resume from previus pos :)
+				// P21 step 2, P61 (Flycast): only a paused play resumes; past its end it stops.
+				if (rules || timing)
+				{
+					play=cdda.status==CDDA_PAUSED;
+					if (play && cdda.CurrAddr.FAD>cdda.EndAddr.FAD)
+						next=GD_STANDBY;
+				}
 			}
 			else
 			{
 				die("SPI_CD_SEEK  : not known parameter..");
 			}
-			cdda.repeats=packet_cmd.data_8[6]&0xF;
+			// P61: only the two start forms carry a repeat count.
+			if (!rules || param_type!=7)
+				cdda.repeats=packet_cmd.data_8[6]&0xF;
+			if (play)
+			{
+				// P21 step 2 (Flycast dev): CD-DA starts 5 ms after the command; a resume shows BUSY for 20 ms.
+				if (timing && param_type==7)
+					cdda_transition(next,20,GD_BUSY);
+				else if (timing)
+					cdda_transition(GD_PLAY,5,SecNumber.Status);
+				else
+				{
+					cdda_set(next==GD_PLAY ? CDDA_PLAYING : CDDA_TERMINATED);
+					SecNumber.Status=next;
+				}
+				// CD-DA Miss: the worker reads the start of the play now, not after the first miss.
+				if (next==GD_PLAY && get_cdda_miss_preset())
+					gda_cdda_seek(cdda.CurrAddr.FAD);
+			}
 			if (get_debug_gdrom()) printf("cdda.StartAddr=%d\n",cdda.StartAddr.FAD);
 			if (get_debug_gdrom()) printf("cdda.EndAddr=%d\n",cdda.EndAddr.FAD);
 			if (get_debug_gdrom()) printf("cdda.repeats=%d\n",cdda.repeats);
@@ -785,31 +1003,48 @@ void gd_process_spi_cmd()
 			printf_spicmd("SPI_CD_SEEK\n");
 			if (get_debug_gdrom()) printf("GDROM: Unhandled Sega SPI frame: SPI_CD_SEEK\n");
 
-			SecNumber.Status=GD_PAUSE;
-			cdda.playing=false;
+			// P21 step 2 (Flycast dev): SEEK with DSC clear for 20 ms, then PAUSE; a stop is BUSY for 5 ms, then
+			// STANDBY. The play state changes when the time is up.
+			const bool timing=get_gd_status_preset()>=2;
+			if (!timing)
+			{
+				SecNumber.Status=GD_PAUSE;
+				// As Flycast master: a seek pauses a play; any other CD-DA state stays.
+				if (cdda.status==CDDA_PLAYING)
+					cdda_set(CDDA_PAUSED);
+			}
 
 			u32 param_type=packet_cmd.data_8[1]&0x7;
 			if (get_debug_gdrom()) printf("param_type=%d\n",param_type);
-			if (param_type==1)
+			if (param_type==1 || param_type==2)
 			{
-				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],0);
-				GDStatus.DSC=1;	//we did the seek xD lol
-			}
-			else if (param_type==2)
-			{
-				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],1);
-				GDStatus.DSC=1;	//we did the seek xD lol
+				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=GetFAD(&packet_cmd.data_8[2],param_type==2);
+				GDStatus.DSC=timing ? 0 : 1;
+				if (timing)
+					cdda_transition(GD_PAUSE,20,GD_SEEK);
 			}
 			else if (param_type==3)
 			{
 				//stop audio , goto home
-				SecNumber.Status=GD_STANDBY;
 				cdda.StartAddr.FAD=cdda.CurrAddr.FAD=150;
-				GDStatus.DSC=1;	//we did the seek xD lol
+				GDStatus.DSC=timing ? 0 : 1;
+				if (timing)
+					cdda_transition(GD_STANDBY,5,GD_BUSY);
+				else
+				{
+					SecNumber.Status=GD_STANDBY;
+					cdda_set(CDDA_NOINFO);
+				}
 			}
 			else if (param_type==4)
 			{
 				//pause audio -- nothing more (nullDC-v1, Reicast, Flycast): a resume continues from here
+				if (timing)
+				{
+					SecNumber.Status=GD_PAUSE;
+					cdda_set(CDDA_PAUSED);
+					gd_trans_next=-1;
+				}
 			}
 			else
 			{
@@ -842,8 +1077,7 @@ void gd_process_spi_cmd()
 			format=packet_cmd.data_8[1]&0xF;
 			u32 alloc_len = (packet_cmd.data_8[3]<<8)|packet_cmd.data_8[4];
 			if (get_debug_loop()) printf("[GDR] SPI_GET_SCD fmt=%u alloc=%u status=0x%02X subc_info[1] will be 0x%02X\n",
-				format, alloc_len, (u32)SecNumber.Status,
-				(SecNumber.Status==GD_STANDBY)?0x13:(SecNumber.Status==GD_PAUSE)?0x15:(SecNumber.Status==GD_PLAY)?0x11:(cdda.playing?0x11:0x15));
+				format, alloc_len, (u32)SecNumber.Status, (u32)gd_audio_status());
 			u32 sz;
 			u8 subc_info[100];
 		memset(subc_info, 0, 100);  // zero all; BIOS requests 100 bytes, we fill 18, rest must be 0
@@ -852,28 +1086,7 @@ void gd_process_spi_cmd()
 			//0	Reserved
 			subc_info[0]=0;
 			//1	Audio status
-			if (SecNumber.Status==GD_STANDBY)
-			{
-				//13h	Audio playback ended normally
-				subc_info[1]=0x13;
-			}
-			else if (SecNumber.Status==GD_PAUSE)
-			{
-				// 0x15 = No audio status (data disc, not playing audio, ready to read)
-				subc_info[1]=0x15;
-			}
-			else if (SecNumber.Status==GD_PLAY)
-			{
-				//11h	Audio playback in progress
-				subc_info[1]=0x11;
-			}
-			else
-			{
-				if (cdda.playing)
-					subc_info[1]=0x11;//11h	Audio playback in progress
-				else
-					subc_info[1]=0x15;//15h	No audio status information
-			}
+			subc_info[1]=gd_audio_status();
 
 			if (format==0)
 			{
@@ -881,6 +1094,17 @@ void gd_process_spi_cmd()
 				// Times are BCD MSF (minutes, seconds, frames at 75 fps).
 				u32 absFAD = cdda.CurrAddr.FAD ? cdda.CurrAddr.FAD : 150;
 				u32 relFAD = (absFAD >= 150) ? (absFAD - 150) : 0;
+				u8 ctrl_adr=0x14;  // CTRL=4 data track (low nibble), ADR=1 current position (high nibble)
+				u8 tno=0x01;       // TNO = track 1
+				// P47 level 2 (Flycast): the position REQ_STAT sends, its track and control/ADR, the time inside
+				// that track.
+				if (get_gd_position_preset()>=2)
+				{
+					absFAD=gd_cur_fad();
+					const u32 track=libGDR_GetTrackNumber(absFAD,&relFAD);
+					ctrl_adr=gd_ctrl_adr(track);
+					tno=(u8)(track<100 ? ((track/10)<<4)|(track%10) : track);
+				}
 				// Convert to MSF (BCD)
 				u32 absFrames = absFAD % 75;
 				u32 absSec    = (absFAD / 75) % 60;
@@ -891,8 +1115,8 @@ void gd_process_spi_cmd()
 				#define TOBCD(x) ((((x)/10)<<4)|((x)%10))
 				subc_info[2]=0x00;
 				subc_info[3]=0x0E;  // data length = 14 bytes
-				subc_info[4]=0x14;  // CTRL=4 data track (low nibble), ADR=1 current position (high nibble)
-				subc_info[5]=0x01;  // TNO = track 1
+				subc_info[4]=ctrl_adr;
+				subc_info[5]=tno;
 				subc_info[6]=0x01;  // Index = 1
 				subc_info[7]=(u8)TOBCD(relMin);    // Relative Min (BCD)
 				subc_info[8]=(u8)TOBCD(relSec);    // Relative Sec (BCD)
@@ -903,9 +1127,33 @@ void gd_process_spi_cmd()
 				subc_info[13]=(u8)TOBCD(absFrames); // Absolute Frame (BCD)
 				#undef TOBCD
 				sz=alloc_len;  // send exactly what BIOS requested (100 bytes); bytes 18+ are zero-padded
+				// P62 (Flycast 959b6344b): no more than the buffer holds.
+				if (get_gd_scd_q_preset() && sz>sizeof(subc_info))
+					sz=sizeof(subc_info);
 				if (get_debug_loop()) printf("[GDR] SPI_GET_SCD fmt=0: bytes[0..13]=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X sz=%u\n",
 					subc_info[0],subc_info[1],subc_info[2],subc_info[3],subc_info[4],subc_info[5],subc_info[6],
 					subc_info[7],subc_info[8],subc_info[9],subc_info[10],subc_info[11],subc_info[12],subc_info[13],sz);
+			}
+			else if (get_gd_scd_q_preset())
+			{
+				// P62 (Flycast): 14 bytes. The Q data follows the length: control/ADR, track, index, the FADs
+				// since the track start, 0, the FAD. The old layout has control/ADR twice and cuts the FAD.
+				u32 elapsed;
+				const u32 fad=gd_cur_fad();
+				const u32 track=libGDR_GetTrackNumber(fad,&elapsed);
+				subc_info[2]=0;
+				subc_info[3]=0xE;
+				subc_info[4]=gd_ctrl_adr(track);
+				subc_info[5]=(u8)track;
+				subc_info[6]=1;
+				subc_info[7]=(u8)(elapsed>>16);
+				subc_info[8]=(u8)(elapsed>>8);
+				subc_info[9]=(u8)elapsed;
+				subc_info[10]=0;
+				subc_info[11]=(u8)(fad>>16);
+				subc_info[12]=(u8)(fad>>8);
+				subc_info[13]=(u8)fad;
+				sz=min((u32)14,alloc_len);
 			}
 			else
 			{
@@ -956,15 +1204,19 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 {
 	switch (Addr)
 	{
+	// DSC (bit 4) reads as set, but P21 step 2 shows the real bit: it is clear while a seek runs.
 		//cancel interrupt
 	case GD_STATUS_Read :
 		asic_CancelInterrupt(holly_GDROM_CMD);	//Clear INTRQ signal
+		// P22 (Flycast c3d954263, DreamShell): there is no slave drive.
+		if ((DriveSel&0x10) && get_gd_cmd_fix_preset())
+			return 0;
 		printf_rm("GDROM: STATUS [cancel int](v=%X)\n",GDStatus.full);
-		return GDStatus.full | (1<<4);
+		return GDStatus.full | (get_gd_status_preset()>=2 ? 0 : (1<<4));
 
 	case GD_ALTSTAT_Read:
 		printf_rm("GDROM: Read From AltStatus (v=%X)\n",GDStatus.full);
-		return GDStatus.full | (1<<4);
+		return GDStatus.full | (get_gd_status_preset()>=2 ? 0 : (1<<4));
 
 	case GD_BYCTLLO	:
 		printf_rm("GDROM: Read From GD_BYCTLLO\n");
@@ -1009,6 +1261,8 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 
 	case GD_ERROR_Read:
 		printf_rm("GDROM: Read from ERROR Register\n");
+		if (gd_swapped)
+			Error.Sense=sns_key;   // P34 (Flycast)
 		return Error.full;
 
 	case GD_IREASON_Read:
@@ -1071,7 +1325,8 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 
 	case GD_DRVSEL:
 		if (get_debug_gdrom()) printf("GDROM: Write to GD_DRVSEL\n");
-		DriveSel = data;
+		// P22 (Flycast): only the low 5 bits take a write; bit 4 selects the slave drive.
+		DriveSel = get_gd_cmd_fix_preset() ? (0xa0 | (data&0x1f)) : data;
 		break;
 
 
@@ -1092,7 +1347,14 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 		break;
 
 	case GD_COMMAND_Write:
-		verify(sz==1);
+		// P22 (Flycast): a write of the wrong size or to the slave drive does nothing; the verify hangs.
+		if (get_gd_cmd_fix_preset())
+		{
+			if (sz!=1 || (DriveSel&0x10))
+				break;
+		}
+		else
+			verify(sz==1);
 		if ((data !=ATA_NOP) && (data != ATA_SOFT_RESET))
 			verify(gd_state==gds_waitcmd);
 		//printf("\nGDROM:\tCOMMAND: %X !\n", data);
@@ -1106,6 +1368,25 @@ void WriteMem_gdrom(u32 Addr, u32 data, u32 sz)
 	}
 }
 
+// P22 (Flycast d0d971254): 0 in SB_GDLEN is the full 32 MB (Pro Pinball Trilogy).
+static u32 gd_dma_total()
+{
+	return (SB_GDLEN==0 && get_gd_dma_fix_preset()) ? 0x02000000 : SB_GDLEN;
+}
+
+// GD-ROM Speed REAL (Flycast getGDROMTicks): 10 KB chunks at 1.8 MB/s, a last small chunk at 25 MB/s.
+#define GD_DMA_CHUNK 10240
+#define GD_DMA_NOW   448     // Flycast's SH4_TIMESLICE: a shorter wait moves the data inside the SB_GDST write
+static u32 gd_dma_ticks()
+{
+	if (!(SB_GDST&1))
+		return 0;
+	const u32 left=gd_dma_total()-SB_GDLEND;
+	if (left>GD_DMA_CHUNK)
+		return (u32)((u64)SH4_CLOCK_EFF*GD_DMA_CHUNK/1800000);
+	return (u32)((u64)SH4_CLOCK_EFF*left/25000000);
+}
+
 //is this needed ?
 void UpdateGDRom()
 {
@@ -1115,6 +1396,13 @@ void UpdateGDRom()
 	// P3: read_buff is the worker's until its fill lands; the DMA goes on at a later update.
 	if (gda_busy())
 		return;
+	const bool real=get_gd_speed_preset()!=0, fix=get_gd_dma_fix_preset()!=0;
+	// GD-ROM Speed REAL: the next chunk is not due.
+	if (real && gd_dma_wait>0)
+		return;
+	// P9 (Flycast): a DMA with no read behind it waits for the next read. A disc swap also leaves one.
+	if ((fix || gd_swapped) && read_buff.cache_size==read_buff.cache_index && read_params.remaining_sectors==0)
+		return;
 
 	//SB_GDST=0;
 
@@ -1122,15 +1410,16 @@ void UpdateGDRom()
 	u32 dmaor	= DMAC_DMAOR.full;
 
 	u32	src		= SB_GDSTARD,
-		len		= SB_GDLEN-SB_GDLEND ;
+		len		= gd_dma_total()-SB_GDLEND ;
 
-	len=min(len,(u32)32000);
+	len=min(len,(u32)(real ? GD_DMA_CHUNK : 32000));
 	// do we need to do this for gdrom dma ?
 	if(0x8201 != (dmaor &DMAOR_MASK)) {
 		if (get_debug_gdrom()) printf("\n!\tGDROM: DMAOR has invalid settings (%X) !\n", dmaor);
 		//return;
 	}
-	if(len & 0x1F) {
+	// With the fix a chunk may stop inside a 32-byte unit, so the register is tested, as Flycast does.
+	if((fix ? SB_GDLEN : len) & 0x1F) {
 		if (get_debug_gdrom()) printf("\n!\tGDROM: SB_GDLEN has invalid size (%X) !\n", len);
 		return;
 	}
@@ -1147,6 +1436,9 @@ void UpdateGDRom()
 			u32 buff_size =read_buff.cache_size - read_buff.cache_index;
 			if (buff_size==0)
 			{
+				// P9 (Reicast, Flycast): a DMA longer than its read stops where the read ends; the verify hangs.
+				if (fix && read_params.remaining_sectors==0)
+					break;
 				verify(read_params.remaining_sectors>0);
 				//buffer is empty , fill it :)
 				FillReadBuffer();
@@ -1187,9 +1479,12 @@ void UpdateGDRom()
 	// P3: only the bytes that moved; a fill in flight ends the transfer early.
 	const u32 moved=len_backup-len;
 	SB_GDLEND+= moved;
+	// P22 (Flycast): the counter has bits 5-24, so the 32 MB of SB_GDLEN 0 end at 0.
+	if (fix)
+		SB_GDLEND&=0x01ffffe0;
 	SB_GDSTARD+= moved;//(src + len_backup)&0x1FFFFFFF;
 
-	if (SB_GDLEND==SB_GDLEN)
+	if (SB_GDLEND==SB_GDLEN && (moved || !fix))
 	{
 		//printf("Streamed GDMA end - %d bytes trasnfered\n",SB_GDLEND);
 		SB_GDST=0; // cleared now so UpdateGDRom re-entry cannot fire the end IRQ twice
@@ -1206,10 +1501,19 @@ void UpdateGDRom()
 		//And all buffer :p
 		if (buff_size==0)
 		{
-			verify(!(SB_GDST&1))
+			// P9 (Flycast): the DMA may run on into the next read; the verify hangs on that.
+			if (!fix && !gd_swapped)
+			{
+				verify(!(SB_GDST&1));
+			}
 			gd_set_state(gds_procpacketdone);
+			// P21 step 2 (Flycast dev): PLAY for 67 ms after a data read, then PAUSE.
+			if (get_gd_status_preset()>=2)
+				cdda_transition(GD_PAUSE,67,GD_PLAY);
 		}
 	}
+	if (real && moved)
+		gd_dma_wait=gd_dma_ticks();
 }
 //Dma Start
 void GDROM_DmaStart(u32 data)
@@ -1226,6 +1530,17 @@ void GDROM_DmaStart(u32 data)
 		SB_GDSTARD=SB_GDSTAR;
 		SB_GDLEND=0;
 		//printf("Streamed GDMA start\n");
+		// GD-ROM Speed REAL (Flycast): only a transfer shorter than a timeslice moves inside this write.
+		gd_dma_wait=0;
+		if (get_gd_speed_preset())
+		{
+			const u32 ticks=gd_dma_ticks();
+			if (ticks>=GD_DMA_NOW)
+			{
+				gd_dma_wait=ticks;
+				return;
+			}
+		}
 		UpdateGDRom();
 	}
 }
@@ -1262,13 +1577,43 @@ void gdrom_reg_Term()
 void gdrom_reg_Reset(bool Manual)
 {
 	gda_wait();   // P3: as gd_reset
+	gd_trans_next=-1;
+	gd_dma_wait=0;
 	gd_spinup_cycles = (s64)SH4_CLOCK_EFF * GD_SPINUP_SECONDS;
 	if (gd_disk_type == NoDisk)
 		SecNumber.Status = GD_BUSY;
 }
 
+// Every SlowUpdate: the spin-up, and the emulated-time waits of P21 step 2, GD-ROM Speed REAL and P34.
 void gdrom_spinup_tick(u32 cycles)
 {
+	if (gd_dma_wait>0)
+		gd_dma_wait-=cycles;
+
+	// P21 step 2 (Flycast dev statusSched): the status and the CD-DA state a command asked for.
+	if (gd_trans_next!=-1 && (gd_trans_cycles-=cycles)<=0)
+	{
+		GDStatus.DSC=1;
+		if (gd_trans_next==GD_PAUSE && cdda.status==CDDA_PLAYING)
+			cdda_set(CDDA_PAUSED);
+		else if (gd_trans_next==GD_STANDBY)
+			cdda_set(CDDA_TERMINATED);
+		else if (gd_trans_next==GD_PLAY)
+			cdda_set(CDDA_PLAYING);
+		SecNumber.Status=gd_trans_next;
+		gd_trans_next=-1;
+	}
+
+	// P34 (Flycast discSwapCallback): the busy second is over; unit attention, medium changed or none.
+	if (gd_swap_cycles>0 && (gd_swap_cycles-=cycles)<=0)
+	{
+		sns_key=6;
+		sns_asc=libGDR_GetDiscType()==NoDisk ? 0x29 : 0x28;
+		sns_ascq=0;
+		gd_setdisc();
+		printf("[swap] drive ready: status %u, disc format %u\n",(u32)SecNumber.Status,(u32)SecNumber.DiscFormat);
+	}
+
 	if (gd_spinup_cycles <= 0)
 		return;
 	gd_spinup_cycles -= cycles;
@@ -1276,3 +1621,28 @@ void gdrom_spinup_tick(u32 cycles)
 		SecNumber.Status = GD_NODISC;
 }
 
+// P34 (Flycast insertDisk): the next image opens, then the drive is BUSY with sense 2/04/01 for 1 s.
+bool gdrom_disc_swap(const char* path)
+{
+	const bool ok=libGDR_SwapDisc(path);
+	// Fourth review (Reicast c050ee8f): the old disc's command, buffers and CD-DA do not survive the change.
+	memset(&read_params,0,sizeof(read_params));
+	memset(&packet_cmd,0,sizeof(packet_cmd));
+	set_mode_offset=0;
+	read_buff.cache_index=read_buff.cache_size=0;
+	pio_buff.index=pio_buff.size=0;
+	ata_cmd.command=0;
+	memset(&cdda,0,sizeof(cdda));
+	cdda_held=0;
+	gd_trans_next=-1;
+	gd_dma_wait=0;
+
+	gd_swapped=true;
+	sns_key=2;
+	sns_asc=4;
+	sns_ascq=1;
+	gd_swap_cycles=(s64)SH4_CLOCK_EFF;
+	SecNumber.Status=GD_BUSY;
+	printf("[swap] %s: %s\n",path,ok ? "open, drive busy for 1 s" : "no reader took it, no disc");
+	return ok;
+}

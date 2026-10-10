@@ -62,6 +62,7 @@ static Sh4Uop s_pool[SH4_POOL_SIZE];
 static Sh4Ep  s_ep[SH4_EP_SIZE];
 static u32    s_pool_used   = 1;      // slot 0 is the "decode this block" sentinel
 static bool   s_tables_init = false;  // label addresses are only valid inside Run()
+bool g_sh4_cached_live = false;       // the same flag, for RAM writers that skip the invalidate call (plan 5.44)
 static u32    s_pool_resets = 0;
 
 // opcode -> label, built once from OpPtr[] and the generated name list.
@@ -113,7 +114,7 @@ void Sh4_int_Run_Cached()
 	// Latch the timing parameters for this run, as the plain interpreter does.
 	Sh4_ApplyAccuracyPreset();
 
-	const s32 timeslice = sh4_GetTimeslice();
+	const s32 timeslice = sh4_GetCpuTimeslice();
 	const s32 ratio     = sh4_GetCpuRatio();
 
 	Sh4Uop* pc_op = &s_pool[0];
@@ -164,6 +165,7 @@ void Sh4_int_Run_Cached()
 		s_pool_used        = 1;
 		ep_clear_all();
 		s_tables_init      = true;
+		g_sh4_cached_live  = true;
 		printf("Sh4: cached interpreter ready, %u opcode labels, %u opcodes on the generic fallback\n",
 		       (unsigned)k, (unsigned)unlabelled);
 	}

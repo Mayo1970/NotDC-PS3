@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Plan 5.27 (WSL): reference table for sqla_check, built from dc/sh4/sh4_opcode_list.cpp as BuildOpcodeTables
-# fills OpDesc. Per opcode: flags, pref register, GPRs written (from the disassembly text). Arg: output file.
+# Plans 5.27 and 5.43 (WSL): sqla_check's reference table, from dc/sh4/sh4_opcode_list.cpp as BuildOpcodeTables fills
+# OpDesc. Per opcode: flags, pref register, GPRs written, GPRs only moved by a constant (@-Rn, add #imm). Arg: out file.
 import re, struct, sys, os
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -39,23 +39,30 @@ def analyze(op, typ, diss):
     mnem = mnem.lower()
     ops = split_ops(rest)
     field = {'N': (op >> 8) & 15, 'M': (op >> 4) & 15}
-    writes = 0
+    steps = other = 0
     for o in ops:
-        m = re.fullmatch(r'@<REG_([NM])>\+|@-<REG_([NM])>', o)
+        m = re.fullmatch(r'@<REG_([NM])>\+', o)
         if m:
-            writes |= 1 << field[m.group(1) or m.group(2)]
+            other |= 1 << field[m.group(1)]
+        m = re.fullmatch(r'@-<REG_([NM])>', o)
+        if m:
+            steps |= 1 << field[m.group(1)]
     last = ops[-1] if ops else ''
     m = re.fullmatch(r'<REG_([NM])>', last)
     if m and mnem not in NO_DST:
-        writes |= 1 << field[m.group(1)]
+        if mnem == 'add' and ops[0].startswith('#'):
+            steps |= 1 << field[m.group(1)]
+        else:
+            other |= 1 << field[m.group(1)]
     if last == 'R0' and mnem not in ('tst', 'cmp/eq'):
-        writes |= 1
+        other |= 1
+    writes = steps | other
     flags = 1
     flags |= 2 if typ in PC_WRITERS else 0
     flags |= 4 if typ in DELAYED else 0
     flags |= 8 if (mnem in ('ldc', 'ldc.l') and last == 'SR') or mnem == 'rte' else 0
     flags |= 16 if mnem == 'pref' else 0
-    return flags, field['N'], writes
+    return flags, field['N'], writes, steps & ~other
 
 desc = [None] * 65536
 for mask, key, typ, diss in entries:
@@ -71,8 +78,8 @@ for mask, key, typ, diss in entries:
 with open(sys.argv[1], 'wb') as f:
     for op in range(65536):
         if desc[op] is None:
-            f.write(struct.pack('<BBH', 0, 0, 0))
+            f.write(struct.pack('<BBHH', 0, 0, 0, 0))
         else:
-            fl, pr, wr = analyze(op, *desc[op])
-            f.write(struct.pack('<BBH', fl, pr, wr))
+            fl, pr, wr, st = analyze(op, *desc[op])
+            f.write(struct.pack('<BBHH', fl, pr, wr, st))
 print(f'gen.py: {len(entries)} opcode entries, {sum(d is not None for d in desc)} defined opcodes')

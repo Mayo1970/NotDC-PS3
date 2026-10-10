@@ -10,6 +10,7 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz);
 void WriteMem_gdrom(u32 Addr, u32 data, u32 sz);
 void UpdateGDRom();
 void gdrom_spinup_tick(u32 cycles);
+bool gdrom_disc_swap(const char* path);   // P34, SH4 thread: false when no reader took the image
 
 //Structs & unions
 struct SpiCommandInfo

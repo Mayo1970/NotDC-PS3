@@ -57,7 +57,10 @@ extern DriveIF* CurrDrive;
 bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector);
 
 bool InitDrive(u32 fileflags=0);
+bool InitDrive_(char* fn);
 void TermDrive();
+u32 GetDriveTrackNumber(u32 fad,u32* elapsed);
+void GetDriveTrackAdrAndControl(u32 track,u8* adr,u8* ctrl);
 
 void PatchRegion_0(u8* sector,int size);
 void PatchRegion_6(u8* sector,int size);

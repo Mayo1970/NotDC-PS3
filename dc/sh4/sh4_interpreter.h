@@ -88,10 +88,11 @@ int FASTCALL UpdateSystem_handle_event();
 int FASTCALL UpdateSystem_gate();   // plan 5.36: _no_event() for every slice end the SYS GATE skipped
 extern bool g_jit_exit_on;   // P6 JIT EXIT: _no_event() also reports a stop request
 
-// For the recompiler: Sh4_ApplyAccuracyPreset() latches the preset's timing (as Sh4_int_Run does on entry), and
-// sh4_GetTimeslice() returns it so the emitted JIT mainloop has a matching cycle budget, not a hardcoded SH4_TIMESLICE.
+// For the recompiler: Sh4_ApplyAccuracyPreset() latches the preset's timing (as Sh4_int_Run does on entry).
+// sh4_GetTimeslice() is the slice the modules advance by, sh4_GetCpuTimeslice() the SH4's cycle budget for it.
 void Sh4_ApplyAccuracyPreset();
 s32  sh4_GetTimeslice();
+s32  sh4_GetCpuTimeslice();
 s32  sh4_GetCpuRatio();
 
 // ---- Cached (pre-decoded / threaded) interpreter, dc/sh4/sh4_cached.cpp ----
@@ -101,6 +102,7 @@ extern volatile bool sh4_int_bCpuRun;
 void Sh4_int_Run_Cached();
 void sh4_cached_flush();                                   // drop all blocks
 void sh4_cached_invalidate_range(u32 addr, u32 size);      // drop [addr, addr+size)
+extern bool g_sh4_cached_live;                             // false: sh4_cached_invalidate_range does nothing
 
 // Coarse timer (~13,216 kHz) used for block lifecycle tracking
 extern u32 gcp_timer;

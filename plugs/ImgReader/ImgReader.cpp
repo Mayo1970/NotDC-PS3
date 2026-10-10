@@ -62,6 +62,30 @@ void FASTCALL libGDR_GetSessionInfo(u8* out,u8 ses)
 }
 
 
+u32 FASTCALL libGDR_GetTrackNumber(u32 fad,u32* elapsed)
+{
+	return GetDriveTrackNumber(fad,elapsed);
+}
+
+void FASTCALL libGDR_GetTrackAdrAndControl(u32 track,u8* adr,u8* ctrl)
+{
+	GetDriveTrackAdrAndControl(track,adr,ctrl);
+}
+
+// P34, SH4 thread: the worker's fill lands and its CD-DA ring empties, then the next image opens under the lock.
+bool libGDR_SwapDisc(const char* path)
+{
+	gda_wait();
+	gda_cdda_reset();
+	gda_lock();
+	TermDrive();
+	char fn[512];
+	snprintf(fn,sizeof(fn),"%s",path);
+	const bool ok=InitDrive_(fn);
+	gda_unlock();
+	return ok;
+}
+
 //called when plugin is used by emu (you should do first time init here)
 s32 FASTCALL libGDR_Load()
 {

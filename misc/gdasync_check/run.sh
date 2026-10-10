@@ -14,7 +14,7 @@ run()
 {
 	[ -n "$QUICK" ] && [ $fail -ne 0 ] && return 0
 	"$@" > /tmp/gdcheck.out 2>&1 && r=0 || r=$?
-	grep -E "^(PASS|FAIL|ERROR|  steady|  seeks|  loops)|ThreadSanitizer|SUMMARY" /tmp/gdcheck.out | head -12 || true
+	grep -E "^(PASS|FAIL|ERROR|  steady|  seeks|  loops|  play ahead|  cap|  len0|  swap)|ThreadSanitizer|SUMMARY" /tmp/gdcheck.out | head -16 || true
 	[ $r -eq 0 ] || fail=1
 }
 for lvl in 0 1 2; do
@@ -25,5 +25,21 @@ for lvl in 0 1 2; do
 		TSAN_OPTIONS="halt_on_error=1" run /tmp/gdcheck_tsan $lvl $((N / 5)) $s
 	done
 done
+# Bundle 2, CD-DA Miss: PLAY AHEAD and + SILENCE with the read-ahead on, + SILENCE also with it off.
+for miss in 1 2; do
+	for s in 6 7; do
+		run /tmp/gdcheck_opt 2 $N $s $miss
+	done
+	TSAN_OPTIONS="halt_on_error=1" run /tmp/gdcheck_tsan 2 $((N / 5)) 8 $miss
+done
+run /tmp/gdcheck_opt 1 $((N / 3)) 9 2
+# GD-ROM Speed REAL with the worker: paced chunks wait for a fill in flight, and nothing hangs.
+run /tmp/gdcheck_opt 2 $((N / 3)) 10 2 1
+run /tmp/gdcheck_opt 1 $((N / 3)) 11 0 1
+TSAN_OPTIONS="halt_on_error=1" run /tmp/gdcheck_tsan 2 $((N / 10)) 12 0 1
+# P34: the real libGDR_SwapDisc must take the harness's steps, in this order.
+grep -A12 '^bool libGDR_SwapDisc' "${IMG_SRC:-plugs/ImgReader/ImgReader.cpp}" | tr -d '\r\n\t ' |
+	grep -q 'gda_wait();gda_cdda_reset();gda_lock();TermDrive();.*InitDrive_(fn);gda_unlock();' ||
+	{ echo "ERROR: libGDR_SwapDisc steps changed"; fail=1; }
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

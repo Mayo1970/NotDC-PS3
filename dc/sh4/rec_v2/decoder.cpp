@@ -99,6 +99,7 @@ struct
 } state;
 
 extern "C" int get_jit_pcrel_preset();
+extern "C" int get_jit_fschg_preset();
 extern "C" int get_jit_ifb_mask();
 extern "C" int get_jit_ifb_group();
 extern "C" int get_jit_ifb_lomask();
@@ -396,10 +397,14 @@ sh4dec(i1111_0011_1111_1101)
 {
 	//fpscr.SZ is bit 20
 	block.Emit(shop_xor,reg_fpscr,reg_fpscr,mk_imm(1<<20));
+	state.cpu.FSZ64=!state.cpu.FSZ64;
+	// Plan 5.37 (JIT FSCHG 2, as Flycast): the xor is all of it. old_fpscr keeps a stale SZ, which only JIT FRCHG's
+	// test reads (it leaves SZ out); the block goes on, as the decoder follows SZ itself.
+	if (get_jit_fschg_preset()>=2)
+		return;
 	// SZ only (flags = SYNC_FPSCR_SZ_ONLY): JIT_FSCHG skips UpdateFPSCR(); T&L loops run ~1.3M fschg/s and
 	// almost none change FP banks. frchg and the ldc..FPSCR forms must not set it.
 	block.Emit(shop_sync_fpscr,shil_param(),shil_param(),shil_param(),SYNC_FPSCR_SZ_ONLY);
-	state.cpu.FSZ64=!state.cpu.FSZ64;
 	
 	if (!state.cpu.is_delayslot)
 		dec_End(state.cpu.rpc + 2, BET_StaticJump, false);

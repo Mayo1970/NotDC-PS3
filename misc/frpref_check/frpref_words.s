@@ -68,3 +68,10 @@
 	rlwinm 12,31,0,8,31
 	addis 12,12,0x1
 	dcbt 0,12
+# Plan 5.37: the frchg test with SZ (bit 20) left out.
+	lwz 3,0x11C(30)
+	lwz 4,0x128(30)
+	xor 4,3,4
+	oris 4,4,0x10
+	xoris 4,4,0x30
+	cmplwi 0,4,0

@@ -46,6 +46,7 @@ static u32 s_ra_req;              // SH4: fill the window
 static u32 s_ra_ready;            // worker: the ring holds the run up to here
 static u32 s_ra_run, s_ra_next;   // worker only: the run [s_ra_run, s_ra_next)
 static bool s_ra_missed;          // SH4 only
+static u32 s_ra_flush;            // SH4: a disc swap; the worker drops the ring and clears it
 
 // [gdr] counters. The worker's only grow and the dump prints deltas; the SH4 thread's are cleared per dump.
 struct Count { u32 n, sec; u64 ticks, max; };
@@ -119,6 +120,16 @@ static void worker(void*)
 {
 	while (!ACQ(s_quit))
 	{
+		// P34: the ring held the old disc. No reader runs now: the SH4 thread waits in gda_cdda_reset.
+		if (ACQ(s_ra_flush))
+		{
+			for (u32 i = 0; i < RA_SLOTS; i++)
+				STORE(s_ra_tag[i], RA_NONE);
+			s_ra_run = s_ra_next = 0;
+			REL(s_ra_ready, 0u);
+			REL(s_ra_flush, 0u);
+			continue;
+		}
 		if (ACQ(s_busy))
 		{
 			do_fill();
@@ -127,7 +138,7 @@ static void worker(void*)
 		if (s_level >= 2 && __atomic_exchange_n(&s_ra_req, 0u, __ATOMIC_ACQ_REL))
 		{
 			// A data fill goes first; the next request finishes the window.
-			while (!ACQ(s_busy) && !ACQ(s_quit) && ra_batch())
+			while (!ACQ(s_busy) && !ACQ(s_quit) && !ACQ(s_ra_flush) && ra_batch())
 				;
 			continue;
 		}
@@ -285,6 +296,34 @@ void gda_cdda_next(bool playing, uint32_t fad)
 		REL(s_ra_req, 1u);
 		sysSemPost(s_sem, 1);
 	}
+	s_ra_missed = false;
+}
+
+bool gda_cdda_on()
+{
+	return s_level >= 2;
+}
+
+// CD-DA Miss: play starts at fad. Unlike gda_cdda_next it always asks, so the window is read before the first pull.
+void gda_cdda_seek(uint32_t fad)
+{
+	if (s_level < 2)
+		return;
+	REL(s_ra_want, fad);
+	REL(s_ra_req, 1u);
+	sysSemPost(s_sem, 1);
+}
+
+// P34: before the next image opens. Returns when the worker has dropped its run and every ring tag.
+void gda_cdda_reset()
+{
+	if (s_level < 2)
+		return;
+	REL(s_ra_want, RA_NONE);
+	REL(s_ra_flush, 1u);
+	sysSemPost(s_sem, 1);
+	while (ACQ(s_ra_flush))
+		sysUsleep(50);
 	s_ra_missed = false;
 }
 

@@ -21,6 +21,16 @@ s32 tmu_slices_to_event(s32 ts, s32 max);
 s32 spg_slices_to_event(s32 ts, s32 max);
 s32 aica_dma_slices_to_event(s32 ts, s32 max);
 
+// Plan 5.42 SYS GATE BATCH: n skipped slices as one step per module, when none of them holds an event.
+extern bool g_sys_batch_on;
+s32  tmu_slices_to_event_fast(s32 ts, s32 max);
+// The checks change nothing the update reads; each *_run needs its true check first. The TMU does both in one.
+bool tmu_slices_quiet_run(s32 ts, s32 n);
+bool spg_slices_quiet(s32 ts, s32 n);
+void spg_slices_run(s32 ts, s32 n);
+bool aica_dma_slices_quiet(s32 ts, s32 n);
+void aica_dma_slices_run(s32 ts, s32 n);
+
 s32  sh4_GetTimeslice();
 void sys_gate_install();
 void tmu_gate_install();

@@ -11,15 +11,619 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-08)
+## 0. Resume here (updated 2026-10-10)
 
-**Active: the Looney Tunes race is SH4-bound (Matt 2026-10-08: "Let's work
+**Done: bundle 2, GD-ROM and disc images (section 7; Matt 2026-10-10: "Go
+with bundle 2."), HW SUCCESS 2026-10-10 (Matt), every row default ON in
+the source since 2026-10-10 (Matt: "apply them as ON by default."; GD-ROM
+Speed default REAL, his pick). Not packaged: the package of 19:26 (the
+build of 18:48, packed again) still has every row OFF. HW: ChuChu Rocket
+and Crazy Taxi with every row ON, and a Crazy Taxi load with GD-ROM Speed
+REAL. Not tested on HW (Matt: "I'll do it later on"): Disc Swap (a
+two-disc game) and the two GDI rows (a GDI set); they are default ON too.
+Crazy Taxi freezes at its pause: the open item below, not a bundle 2
+fault. Matt's picks before the build (2026-10-10, asked once): all items
+in one package; P61 and P62 added (they were not in the bundle's list);
+the CD-DA miss fix as 3 levels (OFF / PLAY AHEAD / + SILENCE); a new
+options page, "GD-ROM". 14 rows; the first value of each is the old path.**
+- Defaults (`ps3/ps3_presets.cpp`): `GdStatus` 2, `CddaRules` 1,
+  `GdPosition` 2, `GdScdQ` 1, `TocFields` 1, `CddaMiss` 2, `GdSpeed` 1,
+  `GdDmaFix` 1, `GdCmdFix` 1, `GdSetMode` 1, `Sector2340` 1, `GdiParser` 1,
+  `GdiPaths` 1, `DiscSwap` 1. An install keeps `nullDC.cfg`: Matt's file
+  has these values from the HW run (GdSpeed 1 too).
+- The rows (options page 5, GD-ROM; the key is in `nullDC.cfg` [ps3]).
+  "Live" rows act from the SELECT menu; the rest are set before boot.
+  - GD Status (`GdStatus`, P21): OLD / READ STOPS CD-DA / + TIMING. Level
+    1: SPI_CD_READ stops CD-DA, and a PLAY status becomes PAUSE (Hydro
+    Thunder, NFL Blitz 2001). Level 2: Flycast dev's timing (`e6707469d`,
+    `fff68b3f5`): PLAY while a data read runs and for 67 ms after it;
+    CD-DA starts 5 ms after CD_PLAY; a seek shows SEEK with DSC clear for
+    20 ms, then PAUSE; a stop shows BUSY for 5 ms, then STANDBY; a resume
+    shows BUSY for 20 ms. Level 2 also: a resume acts only on a paused
+    play; GET_SCD takes its audio status from the CD-DA state (0x11, 0x12,
+    0x13, 0x15); the status registers show the real DSC bit (the old path
+    always reads it as set).
+  - CD-DA Rules (`CddaRules`, P61): (a) the end test is >=; (b) an end FAD
+    of 0 is the end of the disc (REQ_SES session 0); (c) a resume acts only
+    on a paused play, and past the end it stops (STANDBY); (d) only the two
+    start forms take a repeat count; (e) the end of a play leaves PAUSE and
+    audio status 0x13; (f) a disc event stops CD-DA.
+  - GD Position (`GdPosition`, P47, live): OLD / REQ_STAT / + GET_SCD.
+    REQ_STAT sends the FAD by shifts (the old union bytes are FAD >> 8 on
+    the PS3), the track and control/ADR from the TOC, index 1. The FAD is
+    the CD-DA position while it plays or is paused, else the last sector a
+    data read took. Level 2 puts the same position, track (BCD) and
+    control/ADR in GET_SCD format 0, with the time inside the track.
+  - GET_SCD Q Data (`GdScdQ`, P62, live): format 1 is 14 bytes (control/ADR,
+    track, index, FADs in the track, 0, FAD), cut at the asked length;
+    format 0 is cut at its 100 bytes (the old path copies past the buffer).
+  - TOC Fields (`TocFields`, P23): ADR 1 in every used TOC entry; the
+    lead-out is a data entry with ADR 1; a GDI's low-density lead-out is
+    the FAD after track 2 (from its file size), not 13085.
+  - CD-DA Miss (`CddaMiss`, 5.34's parked item, live): PLAY AHEAD: CD_PLAY
+    and a resume tell the worker to read the play's window at once
+    (`gda_cdda_seek`). + SILENCE: a ring miss gives silence and the play
+    position waits; the SH4 thread reads no CD-DA sector. After 150 silent
+    pulls in a row (2 s) it reads the sector itself. Needs GD-ROM Async at
+    + CD-DA.
+  - GD-ROM Speed (`GdSpeed`, P22, live): FAST / REAL. REAL is Flycast's
+    pacing: 10 KB chunks at 1.8 MB/s, a last chunk of 10 KB or less at 25
+    MB/s; only a transfer under 448 cycles moves inside the SB_GDST write.
+    The waits count down in SlowUpdate (each chunk is 80 SlowUpdates, 0.8%
+    over). Loads take as long as on a Dreamcast.
+  - GD DMA Fix (`GdDmaFix`, P22 + P9, live): SB_GDLEN 0 is 32 MB (Pro
+    Pinball Trilogy); a DMA longer than its read stops where the read
+    ends, the read completes, and the DMA goes on with the next read. The
+    two verifies that hang are not reached.
+  - GD Command Fix (`GdCmdFix`, P22, live): an unknown ATA command aborts
+    with an interrupt (sense 5); ATA_EXEC_DIAG completes; a command to the
+    slave drive does nothing and its status reads 0; a command write of the
+    wrong size does nothing; CD_READ2 takes its length from bytes 6-7;
+    SET_MODE stops at the 10 writable bytes and GET_TOC at the TOC's 408;
+    IDENTIFY_DEV sends its 0x50 bytes from offset 0.
+  - SET_MODE Fix (`GdSetMode`, P48, live): the write goes to the byte
+    offset, where REQ_MODE reads.
+  - 2340-byte Sectors (`Sector2340`, P9, live): a read with header and
+    subheader gets the raw sector from byte 12.
+  - GDI Parser (`GdiParser`, P23): a track name in quotes may hold spaces;
+    a line that does not parse fails the load with a message; REQ_SES
+    gives session 2 at track 3 (`SessionStart[1]`).
+  - GDI Backslash (`GdiPaths`, P57): a `\` in a track path opens as `/`.
+  - Disc Swap (`DiscSwap`, P34, live): TRIANGLE in the SELECT menu opens
+    the disc browser (X inserts, O goes up or back). The next image opens
+    after the menu closes; the drive is BUSY with sense 2/04/01 for 1
+    emulated second, then reports unit attention once (sense 6, ASC 0x28;
+    0x29 when no reader took the image). The swap clears the command in
+    flight, the buffers and CD-DA (fourth review). ON also makes ATA_NOP
+    clear DRQ (Sentimental Graffiti 2).
+- Log: `[gdcfg] boot: GdAsync= GdStatus= ...` with every row, and a
+  `[gdcfg] menu:` line when one changes; `[swap] <path>: open, drive busy
+  for 1 s`, then `[swap] drive ready: status N, disc format N`. With +
+  SILENCE the `[gdr]` line shows `cdda 0/0` (no SH4 read) while `ra miss`
+  counts the silent pulls. A GDI track that does not open now logs `GDI :
+  cannot open track file <path>` (every mode).
+- Code: `dc/gdrom/gdromv3.cpp` (the drive: all but the image rows),
+  `ps3/ps3_gdasync.cpp` (`gda_cdda_seek`, `gda_cdda_on`, `gda_cdda_reset`),
+  `plugs/ImgReader/common.cpp` (2340, TOC fields, the track table for
+  P47), `iso9660.cpp` (GDI parser, paths, lead-out; `iso_term` now closes
+  the track files), `ImgReader.cpp` (`libGDR_SwapDisc`, the track
+  lookups), `ps3/ps3_menu.cpp` (the page, the in-game browser),
+  `ps3/ps3_presets.cpp`. The status changes, the DMA waits and the swap's
+  second count down in `gdrom_spinup_tick` (SlowUpdate), so the SYS GATE
+  needs no change.
+- Not taken from Flycast: the raw 96-byte Q data of GET_SCD format 0 (ours
+  keeps its 18-byte form), format 2, the stop at the lead-out, sense 5 on
+  an unknown SPI command, the soft-reset rework, an open-lid state.
+- PC (WSL), three checks, all PASS:
+  - `misc/gd2_check/run.sh` (new, one thread): the file with every option
+    at 0 against the frozen old file (`ref_gdromv3.inc`, HEAD 93fca79): 40
+    seeds of 20000 random guest operations (ATA and SPI commands, PIO and
+    DMA reads, CD-DA pulls, ticks, disc events), every reply and register
+    hashed: equal. Then 11 models, one per option, against the ported
+    rule (P21 step 1, step 2, P47, P62, P61, commands, P48, DMA fix with
+    the full 32 MB, REAL pacing, PLAY AHEAD, the swap's sense). `mutate.py`:
+    89 of 89 planted bugs fail.
+  - `misc/gdasync_check/run.sh` (the 5.34 check, extended): 25 runs, all
+    PASS, no ThreadSanitizer report. New in it: CD-DA Miss at PLAY AHEAD
+    and + SILENCE, the 150-pull limit with a blocked worker, a DMA of
+    length 0 with the worker, GD-ROM Speed REAL with the worker, and 24
+    disc swaps per run (the ring gives no sector of the old disc; a DMA in
+    flight does not hang). SILENCE: 0 SH4 reads in steady play, seeks and
+    loops; about 6 silent pulls per seek or loop turn in the check's
+    timing. PLAY AHEAD: 0 misses at the start of 40 plays (80 without it).
+    `mutate.py`: 34 of 34 planted bugs fail (17 of 5.34, 17 new;
+    the new ones run `run_b2.sh`, the bundle 2 runs alone).
+  - `misc/gdi_check/run.sh` (new, ASan + UBSan): the real `iso9660.cpp` and
+    `common.cpp` on GDI sets in the 4 layouts of Flycast's
+    `tests/files/test_gdis`, broken GDIs, the TOC conversion against the
+    old formula (2000 random TOCs), the lead-outs, the track table, 2340
+    from 2352 and 2448, 1300 disc changes (no file left open).
+    `mutate.py`: 36 of 36 planted bugs fail.
+- Not under a check: the menu (the page, the in-game browser), the real
+  `libGDR_SwapDisc` with CDI and MDS images (its three steps are compared
+  by text), the big-endian build of the new replies (they are built by
+  shifts and bytes).
+- Found, not changed (not in the bundle):
+  - The GDI reader takes FAD 150 as LBA 150 (`if (StartSector>150)`,
+    `iso9660.cpp`), so the first sector of track 1 reads wrong.
+  - A loop turn or a seek still costs either one SH4 stall (OFF, PLAY
+    AHEAD) or 1-2 silent sectors (+ SILENCE): the ring holds one run, so
+    it cannot hold the loop start before the turn.
+  - Flycast dev keeps CD-DA playing for the 20 ms of a seek, from the new
+    position. + TIMING ports it as it is.
+  - A soft reset leaves DRQ set (old path).
+- Link: `.got` 0xD030, 0 `r2off`, the old warning only.
+- UDP listener: started at Matt's request (2026-10-10 20:18, PID 22112,
+  port 18194, into `ps3log_b2_run1.txt`, scratchpad of session 12aaf4cf),
+  stopped at his request at 20:59. Port 18194 is free.
+- Short HW procedure (Matt 2026-10-10: "Any way to reduce the boots?"), in
+  place of the 10 steps below: every row ON at its top level, set one
+  time on the main menu, GD-ROM Speed FAST. Boot 1 ChuChu Rocket (music,
+  pause, resume, loops). Boot 2 Crazy Taxi (load, drive; then GD-ROM Speed
+  REAL in the SELECT menu for one load). Boot 3, if Matt has one: a
+  two-disc game for Disc Swap. On a fault: the live rows OFF first, then
+  one boot each for GD Status, CD-DA Rules and TOC Fields.
+- HW boot 1 2026-10-10 ~20:17-20:19, ChuChu Rocket. Matt: "Music ran
+  fine." The game ran before the listener did, so the log has 58 s and no
+  `[gdcfg] boot:` line: the rows of this boot are not on record (boot 2
+  will show them; the install keeps them).
+  - No fault line, SPEED 100%, clean XMB exit.
+  - CD-DA: 1369 sectors from the ring, 16 ring misses, 0 SH4 CD-DA reads.
+    So + SILENCE was on and acted: a miss was 13 ms of silence, not an SH4
+    stall. The misses fell in 6 of the 27 `[gdr]` seconds, 4 of them
+    seconds with data fills (the worker reads the data first).
+  - Disc data: 177 fills, all on the worker.
+  - Matt also: "ChuChu Rocket still has the slow reverb"; "sound cues that
+    play fast instead here they loop and play slowly". That is F1 (section
+    6, parked 2026-10-04), not a bundle 2 item: no row acts on the AICA.
+- HW boot 2 2026-10-10 ~20:20-20:24, Crazy Taxi (cut as `ct_b2.txt`).
+  `[gdcfg] boot: GdAsync=2 GdStatus=2 CddaRules=0 GdPosition=2 GdScdQ=0
+  TocFields=0 CddaMiss=2 GdSpeed=0 GdDmaFix=1 GdCmdFix=1 GdSetMode=1
+  Sector2340=1 GdiParser=1 GdiPaths=1 DiscSwap=0`. So 4 rows were OFF and
+  are not tested: CD-DA Rules, GET_SCD Q Data, TOC Fields, Disc Swap (most
+  likely in boot 1 too).
+  - Boot, menus, load and a drive: no fault line. 194 s, mean SPEED 99.8%.
+    850 data fills (18910 sectors), all on the worker; 0 SH4 disc reads.
+  - The run ended in a freeze at START in the drive: the open item below.
+    It is in the render-to-texture path, not in the GD-ROM.
+  - Not run: the load with GD-ROM Speed REAL (no row changed in the SELECT
+    menu before the freeze).
+- HW boot 3 2026-10-10 ~20:26-20:28, ChuChu Rocket with every row ON
+  (cut as `chu_b2_boot3.txt`). `[gdcfg] boot: GdAsync=2 GdStatus=2
+  CddaRules=1 GdPosition=2 GdScdQ=1 TocFields=1 CddaMiss=2 GdSpeed=0
+  GdDmaFix=1 GdCmdFix=1 GdSetMode=1 Sector2340=1 GdiParser=1 GdiPaths=1
+  DiscSwap=1`. Matt: "Then It's a success." (the sound cues are F1, not
+  this bundle).
+  - 84 s, mean SPEED 99.7%, no fault line, clean XMB exit.
+  - CD-DA: 4324 sectors from the ring, 23 ring misses, 0 SH4 CD-DA reads.
+- HW boot 4 2026-10-10 ~20:31-20:36, Crazy Taxi with every row ON, then
+  GD-ROM Speed REAL from the title on (`[menu] GD-ROM Speed: 0 -> 1`; cut
+  as `ct_b2_real.txt`; timelines `tl_real.txt`, `tl_fast.txt` by
+  `tl.awk`). Matt: "Success".
+  - No fault line, clean XMB exit, 0 SH4 disc reads. The first Crazy Taxi
+    boot with TOC Fields, CD-DA Rules and GET_SCD Q Data ON: it boots and
+    plays.
+  - Loads: the worker's peak is 640 sectors/s (1.3 MB/s) with REAL, 1184
+    to 1824 with FAST (boot 2). The load to the drive reads ~2100 sectors
+    in ~4.5 s (REAL) against ~2.5 s (FAST). So REAL adds about 2 s to that
+    load: FAST is already bound by the PS3 disk, near the drive's rate.
+  - ~30 s with no vertices and no disc read come before that load in both
+    boots (30 and 31 s): not from REAL.
+  - Drive: the same stream rate (46 against 47 sectors/s); SPEED 99.8%
+    (77 s) against 99.9% (117 s); the dips of the REAL run (90-98%, 6 s)
+    are in scenes of 15-20K vertices, which boot 2 did not have.
+  - The second SELECT menu visit changed no row, so `nullDC.cfg` still has
+    GdSpeed=1 (REAL).
+- Verdict (Matt 2026-10-10): "apply them as ON by default." All 14 rows;
+  for GD-ROM Speed he picked REAL (asked: FAST or REAL).
+- Left for bundle 2 on HW, for later (Matt): Disc Swap with a two-disc
+  game; a GDI set for the two GDI rows and for the GDI lead-out of TOC
+  Fields. The 4 rows that act only on rare input (GD DMA Fix, GD Command
+  Fix, SET_MODE Fix, 2340-byte Sectors) showed no change in the two
+  games; no game that needs them ran.
+- HW steps (package of 19:26). The install keeps `nullDC.cfg`; the 14 rows
+  come up OFF. SH4 Clock 200. Each boot: read the `[gdcfg] boot:` line.
+  1. Boot 1, all rows OFF: Crazy Taxi to a drive, ChuChu Rocket with
+     music. Nothing must change against the last package.
+  2. Boot 2, the fixes that must change nothing in a good game (all live,
+     set in the SELECT menu): GD DMA Fix, GD Command Fix, SET_MODE Fix,
+     2340-byte Sectors ON. Crazy Taxi load and drive, Sonic Adventure,
+     Looney Tunes to a race.
+  3. Boot 3, CD-DA Miss: ChuChu Rocket and Looney Tunes with CD-DA. PLAY
+     AHEAD first, then + SILENCE in the SELECT menu. Listen at song starts
+     and loop turns. Log: `[gdr] ... cdda N/N` (0/0 with SILENCE), `ra hit
+     / miss`, `[stall] gd` at the misses.
+  4. Boot 4, GD Status = READ STOPS CD-DA; boot 5, + TIMING; boot 6, CD-DA
+     Rules ON: ChuChu Rocket and Looney Tunes CD-DA (pause, resume, looped
+     tracks), the BIOS CD player, Crazy Taxi loading.
+  5. Boot 7, GD Position = + GET_SCD and GET_SCD Q Data ON (live): the
+     same games; the BIOS CD player's track and time display.
+  6. Boot 8, TOC Fields ON: every game must still boot; a GD-ROM image if
+     Matt has one (the lead-out change is GDI only).
+  7. GD-ROM Speed REAL (live): Crazy Taxi from the menu to a drive. Loads
+     take longer; nothing must hang.
+  8. GDI Parser and GDI Backslash: a GDI set with spaces in its track
+     names (quoted) or `\` paths, if Matt has one.
+  9. Disc Swap ON (live): a two-disc game at its disc 2 prompt; SELECT,
+     TRIANGLE, X on disc 2. Log: the two `[swap]` lines.
+  10. On a fault: the row OFF (live rows at once); note the game and when.
+
+**Open, to investigate (Matt 2026-10-10: "Also Crazy Taxi crashes when
+pushing start. Add it to the things to investigate."): Crazy Taxi freezes
+when START is pressed in a drive (the pause). Evidence from one log only;
+nothing analysed further, nothing built.**
+- HW 2026-10-10 ~20:24, package of 19:26, boot 2 of the bundle 2 run
+  (`ct_b2.txt`, cut from `ps3log_b2_run1.txt`, scratchpad of session
+  12aaf4cf; the `[gdcfg]` line is in the bundle 2 block above).
+- The log:
+  - START at the title and in the menus is fine (3 presses, `[pad] dc0
+    kcode=FFF7`). The freeze is at the first START in the drive, after 194
+    s at SPEED ~100%.
+  - Right after that `[pad]` line: `[hb] t=240s pc=0C159AE4 vbl=11541
+    (+54) blk=0 (+0) phase=rtt seq=17264 rend=rtt seq=47870`. Every later
+    `[hb]` line is the same, with `vbl ... (+0)`; `[aud] out=0/s`. No
+    fault line.
+  - XMB exit: `[ps3] SH4 did not stop in 3 s, forcing process exit`.
+- Reading: this is the first render to texture seen on HW (`rtt=` read
+  0/0 in every `[rend]` line before it, in all earlier logs too). The
+  pause takes the frame as a texture: `StartRender()` sees FB_W_SOF1 bit
+  24 and the SH4 thread waits in `rth_run(JOB_RTT)` (`ps3/ps3_rend.cpp`,
+  `SH4_PHASE(PH_RTT)`); the render thread is in `rtt_render()`
+  (`REND_PHASE(PH_RTT)`) and does not return.
+- Not known: if an older package pauses Crazy Taxi (no earlier log has an
+  RTT, so it may never have worked); which call in `rtt_render()` does
+  not return; if SPE Draw, SPE Build, SPE Tex Decode or Depth Float have a
+  part in it (all ON here).
+- Not a bundle 2 fault: no bundle 2 row is in the renderer.
+- Related: the RTT note of section 3 and P54 (render-to-texture pixel
+  packing), bundle 11 (output stage, RTT games), TR1/TR3 of TArender.MD
+  (their RTT checks were never run).
+
+**Step 3 of the SH4-bound Looney Tunes race (Matt 2026-10-10: "We will now
+work on Step 3."): 5.45, an SH4 Clock above 200 MHz, is built and PC
+tested, package of 16:30 on 2026-10-10. HW 2026-10-10, Looney Tunes at 220
+and 250 MHz: the logs are clean and the game draws more frames per
+emulated second (26.4 -> 28.0 at 220, 28.2 at 250), but the PS3 does not
+hold the clock in the race (SPEED 97.5% at 220, 86.6% at 250). Matt: 220
+"was basically the same", "250 feels worse. Stopping now." Boot 3 (Crazy
+Taxi) was not run. Matt's verdict (2026-10-10): "Keep at 200 MHz. Clearly
+not the right approach on this issue.", then "We can close the step 3."
+Step 3 is closed. The default stays
+200 MHz; the 150-250 range stays in the menu (no word from Matt on it).
+The Looney Tunes stutter stays open: its cause is not known.**
+- Matt's two choices (2026-10-10): the mechanism "CPU cycles per slice"
+  and the menu limit 250 MHz.
+- EMULATION -> SH4 Clock is now 150-250 MHz in steps of 5 (`SH4Clock`), set
+  before boot.
+  - Up to 200: as before. The time bases (SPG lines, AICA samples, RTC, DMA
+    delays) follow the clock through `SH4_CLOCK_EFF`.
+  - Above 200: `SH4_CLOCK_EFF` stays at 200 MHz (`sh4_clock_eff_mhz`,
+    `plugins/plugin_types.h`). The SH4 gets clock/200 times the cycles per
+    timeslice: `s_cpu_timeslice` (`ApplyAccuracyPreset`,
+    `dc/sh4/sh4_interpreter.cpp`), to the nearest cycle. Accuracy FAST:
+    1971 at 220, 2240 at 250 (1792 at 200). The modules still advance by
+    `s_timeslice`, so the TMU, the video, the sound, the ARM7, the disc
+    and the SYS GATE keep 200 MHz time. No more slices per second and no
+    more ARM7 work. 6.4 (TMU Clock EFF) is not needed for it.
+  - The SH4's slice goes to the JIT main loop (`jit_timeslice`: its `li`,
+    its `addi` and the RESUME `addi`, `ps3/ps3_driver.cpp`), to
+    `Sh4_int_Run` and to the cached interpreter. A clock above 250 in
+    `nullDC.cfg` acts as 250.
+  - Reference: Flycast scales each block's cycles by 200/clock
+    (`core/hw/sh4/dyna/decoder.cpp:1064`, slider 100-300) and leaves its
+    modules at 200 MHz time: the same effect. Its rounding per block gives
+    short blocks no gain at 205-220; the slice form has no such loss.
+  - Why not the menu range alone: the TMU counts raw SH4 cycles, so at 220
+    it runs 10% fast against the video, and the host runs 10% more slices
+    and ARM7 cycles.
+- Log: `[jitcfg] gbatch= ramsq= fschg= clk= slice= cpuslice=`; `[sndcfg]
+  boot: ... SH4Clock=`. SPEED reads against 200 MHz time at every clock
+  above 200 (100% = full speed).
+- PC (WSL): `misc/clock_check/run.sh` (new) PASS, 2878 checks, on
+  `sysgate_check`'s harness (its clock stub is now a variable):
+  - The module trace and the batch counts of 60 timelines (gate off, gate,
+    gate + batch) at 205, 220 and 250 MHz equal those at 200 MHz. All 60
+    traces change at 150 MHz, so the traces do see the time bases.
+  - Both slices and `SH4_CLOCK_EFF` for each clock 100-300 and each
+    Accuracy, against `lround(slice x clock / 200)`.
+  - The real `Sh4_int_Run` on one counted opcode, 3000 slices: the ops
+    follow the clock, each AICA tick keeps its cycles.
+  - 7 source lines (the JIT main loop, the cached interpreter, the sound
+    samples, the menu range): that code does not build on the PC.
+  - `mutate.py`: 22 of 22 planted bugs fail (4 of them only on the source
+    lines).
+- `misc/sysgate_check/run.sh` PASS with the same counts as on 2026-10-10
+  before the change (300 seeds: 169263 batches, 512502 slices, 27245 runs
+  fell back, 32.4M plan checks, 0 differ); also with STALL=1 and RACEFIX=1.
+  Its `mutate.py`: 63 of 63 planted bugs fail.
+- Not checked on the PC: the emitted JIT main loop with the larger slice.
+  The compiled `ApplyAccuracyPreset` was read in the disassembly (the 250
+  limit, the multiply, the +100, the divide by 200). The HW run is the
+  test.
+- Link: `.got` 0xCEA8, 0 `r2off`, the old warnings only.
+- UDP listener: started at Matt's request (2026-10-10 17:13, PID 18064,
+  port 18194, into `ps3log_step3_run1.txt`, scratchpad of session
+  dcef45af), stopped at his request at 17:23. Port 18194 is free.
+- HW boot 1 2026-10-10 ~17:13-17:17, Looney Tunes at 220 MHz, one race
+  (cut as `lt_step3_220.txt`; `step2cmp.py` of session fda9f847 and
+  `rpshist.py`, scratchpad of session dcef45af), against `lt_step2.txt`
+  (200 MHz, the same settings). `[jitcfg] ... clk=220 slice=1792
+  cpuslice=1971`; `[gate]` slices 111.6K/s as at 200 MHz; no fault line,
+  clean XMB exit. Matt: "It was basically the same."
+  - 108 race windows. The game draws 28.0 frames per emulated second
+    (26.4): 2.14 vblanks per frame (2.27). Most windows are now at 28-30
+    (53 of 108; before 26-28, 36 of 78), 14 at 30 or more (1). So RPS
+    follows the clock: +6% frames for +10% cycles.
+  - The host does not hold it: SPEED 97.5% (100.0%), full-speed windows
+    35% (94%), sleep 27 ms/s (99.5), sys 73.4 (72.6). By load, SPEED and
+    sleep: 10-20K 100.2%, 40 ms/s; 20-25K 98.5%, 37; 25-30K 96.8%, 30;
+    30K+ 95.1%, 5. Wall RPS 27.3 (26.4).
+- HW boot 2 2026-10-10 ~17:18-17:21, Looney Tunes at 250 MHz, a shorter
+  race (cut as `lt_step3_250.txt`). `[jitcfg] ... clk=250 slice=1792
+  cpuslice=2240`; no fault line, clean XMB exit. Matt: "250 feels worse.
+  Stopping now."
+  - 35 race windows. 28.2 frames per emulated second, 2.12 vblanks per
+    frame: almost no gain over 220 MHz (28.0). 23 of 35 windows at 28-30,
+    3 at 30 or more.
+  - SPEED 86.6%, full-speed windows 6%, wall RPS 24.3 (26.4 at 200 MHz):
+    the race runs slower in real time. 30K+ vertices: SPEED 84.6%.
+- Reading of the two boots:
+  - The working assumption of 2026-10-08 holds in part. +10% SH4 cycles
+    remove about half of the game's 3-vblank frames (27% of the frames
+    at 200 MHz, 14% at 220). +25% removes no more (12%). So the rest of
+    the stutter is not the SH4 cycle budget; cause not known.
+  - The PS3 lacks ~2.5% of SH4 thread time for 220 MHz in the race (5% at
+    30K+ vertices) and ~13% for 250 MHz.
+  - Not tested: 205-215 MHz (the room of the Step 2 run), Crazy Taxi.
+- Estimate from the Step 2 run: the race sleeps 99.5 ms/s, 51 ms/s at 30K+
+  vertices. 220 MHz asks for up to ~10% more JIT work (~80 ms/s): it fits
+  on average, not in the heaviest scenes. 250 MHz will not hold SPEED 100%
+  in the race; it shows if RPS follows the clock.
+- HW steps (package of 16:30):
+  1. Install. The install keeps `nullDC.cfg`. On the main menu, before the
+     boot: EMULATION -> SH4 Clock 220 MHz. The rest as in the Step 2 run
+     (JIT C-Calls ON, JIT HOTBLOCKS OFF).
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Boot 1, Looney Tunes at 220: the intro FMV, then one full race (3
+     minutes or more). Look at the stutter, the sound and the game speed
+     (timers and music must run as at 200).
+  4. Boot 2, Looney Tunes at 250: the same race.
+  5. Boot 3, Crazy Taxi at 220: a dense drive of 2 minutes, then the XMB
+     exit.
+  6. Log: `[jitcfg] ... clk=220 slice=1792 cpuslice=1971` (2240 at 250);
+     `[gate] slices=` as at 200 MHz; race RPS against 26.4, SPEED,
+     `[stall]` sleep against 99.5 ms/s.
+  7. Reading: RPS up at SPEED ~100% -> the working assumption holds (the
+     game's work per frame does not fit the 200 MHz cycles of 2 vblanks).
+     RPS the same -> it does not hold, and the clock is not the answer.
+  8. On a fault: SH4 Clock 200.
+
+**Step 2 of the SH4-bound Looney Tunes race: HW SUCCESS 2026-10-10 (Matt:
+"Success: everything looked like before."). The four Step 2 candidates
+(Matt 2026-10-10: "Resume with the next steps.") are built and PC tested,
+package of 14:26 on 2026-10-10, each with its own setting. HW run (one
+boot per game, all four ON): the logs are clean and the SH4 thread has
+more spare time (below). Matt then: "But Crazy Taxi felt smoother. Looney
+Tunes still had the stutter." All four are default ON since the package
+of 15:49 on 2026-10-10 (Matt: "keep the settings default on since they
+seem to be mostly massive wins."): SYS GATE BATCH ON, JIT SQ MISS + LA
+STEPS, JIT FSCHG + NO BLOCK END, RAM SQ Direct ON. Step 3 (an SH4 Clock
+above 200 MHz) is the block above (Matt then: "do not start Step 3 yet. I
+will start it in a separate session.").**
+- Defaults (`ps3/ps3_presets.cpp`): `SysGateBatch` 1, `RamSqDirect` 1,
+  `JitFschg` 2, `JitSqMiss` 3. The last one also makes 5.27's SLOW PATH
+  and LOOK-AHEAD default ON (they were default OFF; Matt's `nullDC.cfg`
+  had 2). Package of 15:49: `.got` 0xCEA0, 0 `r2off`. An install keeps
+  `nullDC.cfg`, and Matt's file has these values from the HW run.
+- The Looney Tunes stutter is not SH4 host speed any more: the race runs
+  at SPEED 100.00% and the game still draws 26.4 frames/s, a mix of 2- and
+  3-vblank frames. Working assumption of 2026-10-08, not proven: the
+  game's work per frame does not fit the emulated cycles of 2 vblanks (the
+  JIT bills 1 cycle per non-FPU op, `CPU_RATIO` 1, and 0 per FPU op). Step
+  3 is the test: if RPS rises with the clock, it holds. Step 2 only added
+  spare time: sleep 99.5 ms/s in the race, 51 ms/s at 30K+ vertices. That
+  is the room for Step 3: ~10% (220 MHz) on average, ~5% (210 MHz) in the
+  heaviest scenes.
+- Sonic Adventure 2 (Europe, CDI; Matt 2026-10-10: "as last test: I'm
+  going to do Sonic Adventure 2 with these settings."), the same package
+  and settings; cut as `sa2_step2.txt`, against the boot of 2026-10-08
+  (`sa2_bump.txt`, cut from `ps3log_bump_run1.txt`, session d0cd44fe;
+  `sqmiss=2`, no batch). No fault line, clean XMB exit. Windows at 6K+
+  vertices (144 against 63): SPEED 100.00% (100.05%), full-speed windows
+  96% (86%), sleep 278 ms/s (239), sys 64.0 (67.8); sleep at 6-9K 447
+  (345), at 9-12K 345 (266), at 12K+ 186 (195, other scenes). Batch 27.7K
+  of 28.6K runs/s, `miss=0`; RAM flush write 22 ns. The game was at full
+  speed before too. Matt gave no remark on this run.
+- Step 3 facts (read before the build of 5.45): SH4 Clock scales the SPG
+  line cycles, the AICA sample cycles, the RTC and the DMA delays through
+  `SH4_CLOCK_EFF`; the TMU does not scale (6.4 "TMU Clock EFF" is open),
+  so above 200 MHz the game timers would run fast against the video. The
+  menu range was 150-200 (`ps3/ps3_menu.cpp`). 5.45 (the block above)
+  takes the other way: above 200 the time bases stay and the SH4 gets
+  more cycles per slice.
+- UDP listener: started at Matt's request (2026-10-10 ~14:40, PID 16720,
+  into `ps3log_step2_run1.txt`, scratchpad of session fda9f847), stopped
+  at his request at ~15:48. Port 18194 is free.
+- 5.42 SYS GATE BATCH (candidate 1). JIT SPEED -> "SYS GATE BATCH"
+  (`SysGateBatch`), set before boot, acts only with JIT SYS GATE.
+  - `UpdateSystem_gate` (`dc/sh4/sh4_interpreter.cpp`) runs the k - 1
+    slices it skipped as one step per module, then the last slice whole
+    (the plan puts the event there). `sys_gate_sync_slow` batches all its
+    slices. Batches of 2 slices or more only.
+  - `sys_slices_quiet(n)` first proves that the n slices hold no medium
+    tick, no TMU underflow, no SPG event line or countdown end, and no AICA
+    DMA end. If one does, nothing moves and the slices run one by one. So
+    the batch equals the old gate in every case, also after a kick with no
+    sync. The Scheduler and a pending list IRQ (Render Delay) keep the old
+    path.
+  - TMU (`tmu_slices_quiet_run`, `dc/sh4/tmu.cpp`): n slices are one step
+    of n x timeslice cycles, exact while no channel underflows. SPG
+    (`spg_slices_quiet` / `spg_slices_run`, `plugs/drkPvr/SPG.cpp`): one
+    compare when no line ends in the run; else the slice loop on copies,
+    then the line, the field (one flip per line) and SPG_STATUS in one word
+    store. AICA DMA (`dc/aica/aica_if.cpp`): one subtract.
+  - `sys_plan` takes `tmu_slices_to_event_fast`: per running channel one
+    multiply, shift and compare; a divide only when an underflow is in
+    reach. The SPG plan keeps its loop (cheap).
+  - With Accuracy FAST (Matt's setting) the medium tick ends every 4th
+    slice, so a gate run is 3 batched slices and 1 whole slice. A line is
+    ~3.5 slices (6355 cycles at 200 MHz), so most batches hold a line
+    change: the batch handles lines that are not event lines.
+  - Log: `[gate] ... | batch runs= slices= miss=` (miss = runs that fell
+    back to the slice loop), a `quiet` part in `[sys]`.
+  - PC (WSL): `misc/sysgate_check/run.sh` PASS, 300 seeds x 4000 slices,
+    now 3 modes per seed (gate off, gate, gate + batch): the same trace in
+    all three; 169263 batches (512502 slices), 27245 runs fell back; the
+    closed-form TMU plan against the slice loop on the live state, 32.4M
+    checks, 0 differ. Also PASS with STALL=1 and RACEFIX=1. New guest
+    actions: k slices in one sync past the plan (events land anywhere in a
+    run the batch tries), a countdown that ends exactly on a slice end, a
+    list IRQ pending in such a run, TCNT writes a few steps from underflow.
+    The check now registers the Scheduler's G2-DMA end (`aica_sb_Init`).
+    `mutate.py`: 63 of 63 planted bugs fail (30 of 5.36, 33 of the batch).
+- 5.43 JIT SQ MISS "+ LA STEPS" (candidate 2). JIT SPEED -> JIT SQ MISS has
+  a 4th value (`JitSqMiss=3`), set before boot.
+  - `sqla_class` (`ps3/ps3_jit_sqla.h`) takes a `steps` flag: `mov.x
+    Rm,@-Rn`, `fmov FRm,@-Rn` and `add #imm,Rn` pass when they move the
+    followed register. Nothing else changes; `sts.l`/`stc.l X,@-Rn` and
+    `@Rm+` loads still stop the scan. The guess only picks the store's
+    shape, as before.
+  - The race loop: 8C0873B4 (7 stores through R6, ends at `fschg`) runs
+    into 8C0873CA = `mov.l R7,@-R6; dt R0; bf.s; pref @R6` (the dump of
+    `run_prof.txt`). The scan now passes the first op and hits the PREF in
+    the delay slot. Matt's `nullDC.cfg` has `sqmiss=2` (the profile run),
+    so level 3 is one step up.
+  - Log: `[ta-split] ... sqla=` (look-ahead store sites) and `sqcold`.
+  - PC (WSL): `misc/sqla_check/run.sh` PASS, seeds 1 and 7: the class for
+    all 1048576 (opcode, register) pairs in both modes against the opcode
+    list (with steps exactly 5120 pairs change, all to "pass"; `gen.py` now
+    also gives the registers an opcode only moves by a constant), 2M
+    random scans per mode, the Looney Tunes words and block as directed
+    cases. `mutate.py`: 35 of 35 planted bugs fail.
+- 5.44 RAM SQ Direct (candidate 3). VIDEO / DEBUG -> "RAM SQ Direct"
+  (`RamSqDirect`), live.
+  - `do_sqw_nommu` (`ps3/ps3_rend.cpp`): a flush whose QACR area is 3
+    copies its 32 bytes to `mem_b[dest & 0x00FFFFE0]` (the address the JIT
+    fastmem uses) and counts `sq_mem`; no call, no stack frame (checked in
+    the disassembly: 4 `ld`, 4 `std`). The sampled probe call takes the
+    same copy, so `ram ns` times the new path.
+  - Old path kept when the cached interpreter has blocks
+    (`g_sh4_cached_live`, set where `s_tables_init` is set): then
+    `sh4_cached_invalidate_range` must run. Under the JIT it is false.
+  - Log: `[ta-split] ... direct= ramsq=`.
+  - PC (WSL): `misc/ramsq_check/run.sh` (new) PASS, 4M random flushes: the
+    SQ flush code cut from `ps3_rend.cpp` against the old chain cut from
+    `sh4_sqw.h`, `sh4_mem.cpp` (`WriteMemBlock_nommu_ptr`) and `_vmem.cpp`
+    (`_vmem_GetBlockPtr`, RAM mapped as `sh4_mem.cpp` maps it), each side
+    on its own 16 MB: the same RAM image, the same TA / VRAM / MMIO calls,
+    `sq_mem` and census counts; 1.08M flushes took the direct path (no
+    block write call), 0.54M RAM flushes the old chain (toggle off or
+    cached interpreter), 25548 through the probe. `mutate.py`: 18 of 18
+    planted bugs fail.
+- 5.37 `fschg` without a sync or a block end (candidate 4). JIT SPEED ->
+  JIT FSCHG has a 3rd value "+ NO BLOCK END" (`JitFschg=2`), set before
+  boot.
+  - Decoder (`dc/sh4/rec_v2/decoder.cpp`): at level 2 `fschg` is the `xor`
+    on FPSCR and the decoder's own SZ flip, as in Flycast. No
+    `shop_sync_fpscr`, no `dec_End`. Levels 0 and 1 emit what they did.
+  - `old_fpscr` then keeps a stale SZ. Its readers: `UpdateFPSCR` (FR only)
+    and JIT FRCHG's `emit_frchg_test`, which at level 2 leaves SZ out
+    (`oris` 0x10, `xoris` 0x30; no record form, no wrapped mask). The swap
+    path stores the whole FPSCR into `old_fpscr`.
+  - Nothing in the backend reads SZ per block (checked: only the decoder
+    reads `state.cpu.FSZ64`, per op). JIT DEAD VALUES keeps the `xor`:
+    FPSCR is live at the block end and at every interpreter fallback.
+  - Effect on the race loop: 8C0873A6, 8C0873B4 and 8C0873CA become one
+    block. Its 7 stores then see the PREF in their own block (JIT SQ
+    STORES), so 5.43 is not needed for this loop when 5.37 is on.
+  - PC (WSL): `misc/fschg_check/run.sh` (new) PASS: the handler cut from
+    `decoder.cpp` on a mock decoder state, levels 0-3, in and out of a
+    delay slot, both SZ values; `mutate.py` 11 of 11. `misc/frpref_check`
+    PASS (1000073 checks): the SZ-free test's 6 words against ppu-as, and
+    on the PPC64 model: FR alone or FR + SZ changed -> the inline swap,
+    `old_fpscr` = FPSCR; anything else (SZ alone too) -> the C path with
+    the state untouched; `mutate.py` 29 of 29, all on the model alone.
+  - Not checked on the PC: a whole block decoded across an `fschg` (the
+    real decoder does not build there). The HW run is the test.
+- Other PC checks run again after the edits: `g2dma_check` ALL PASS,
+  `tr4_check` PASS, `bump_check` PASS, `spevb_check` PASS (3000 scenes),
+  `spepix_check` PASS.
+- Link: `.got` 0xCEA0, 0 `r2off`, the old warnings only
+  (`g_jit_blocks_entered`, the unused `fm_*`).
+- New `[jitcfg]` line: `gbatch= ramsq= fschg=`; `sqmiss=` is in the long
+  line as before.
+- Baseline for the HW run: `run1_off.txt` (2026-10-08 ~20:40, scratchpad
+  of session 898d8ac1; package of 19:22; Accuracy FAST, `sysgate=2`,
+  `sqmiss=2`, `dve=1`, `greuse=1`, `dyn_ic=2`, `hotblocks=0`; gate runs
+  28K/s, 27.9K of them at the medium tick): 127 race windows,
+  SPEED 100.0%, RPS 26.5, `[stall]` sys 80 ms/s, sleep 63 ms/s; `[sys]`
+  tmu 12.5, pvr 18.1, aicadma 3.8, gate 4.3, plan 13.0 ms/s; `ram ns`
+  write ~125; 3.74M cold store entries/s at 8C0873B4 (profile run).
+  Estimates (% of the SH4 thread in the race): 5.42 ~3, 5.43 ~1.4, 5.44
+  ~1.6-2, 5.37 ~1.
+- HW run 2026-10-10 15:27-15:37 (package of 14:26; `ps3log_step2_run1.txt`,
+  cut as `lt_step2.txt` and `ct_step2.txt`; `step2cmp.py`, `ctcmp.py`,
+  scratchpad of session fda9f847). `[jitcfg]` of both boots: `sqmiss=3`,
+  `gbatch=1 ramsq=1 fschg=2`, the rest as the baselines. No fault line,
+  two clean XMB exits. The four settings were ON together, so the gain
+  is not split per setting.
+  - Looney Tunes, one race, against `run1_off.txt`. 78 race windows (the
+    pause screen left out): SPEED 100.00% (99.99%), RPS 26.4 (26.5),
+    full-speed windows 94% (81%), `[stall]` sleep 99.5 ms/s (63.2), sys
+    72.6 (80.0). Sleep by load: 10-20K 159 (118), 20-25K 93 (68), 25-30K
+    87 (28), 30K+ 51 (20); 30K+ full-speed windows 96% (64%). 60 fps
+    scenes (6 windows): SPEED 99.8% (95.3%), RPS 59.8 (53.9).
+  - `[gate]`: 27.8K of 28.1K runs/s batched (83K of 111.5K slices/s),
+    `miss=0`. `[sys]` ms/s: tmu 5.3 (12.5), pvr 7.0 (18.1), aicadma 1.9
+    (3.8), gate 1.3 (4.3), plan 11.6 (13.0), quiet 14.8 (new): 538 ns per
+    batch, more than planned. The slice that is left costs more per call
+    (tmu 187 ns, pvr 247): it is the one after the medium tick, so the
+    old averages hid ~87 and ~135 ns warm slices. Leads, not built: the
+    3 statics between `spg_slices_quiet` and `spg_slices_run` (store
+    then load), the `%` per line, the plan (still 413 ns).
+  - RAM flush: write 23 ns (128), whole flush 156 ns (259), path 0.89%
+    (1.75%). SQ store sites: `sqst=380 sqla=3` (296 and 3): with 5.37 the
+    vertex loop is one block, so its stores are in-block sites; 5.43
+    added no site in this game.
+  - The pause screen before the exit runs at 85-90% (7 windows, vt
+    constant, 7.6-7.9M DYN_IC `rts` misses/s). Not new: `lt_spepix.txt`
+    (2026-10-08) has the same windows at 83-87%. A lead for later: the
+    return stack for `rts`.
+  - Crazy Taxi, against `ct_b1.txt` (2026-10-08, the same `[jitcfg]` but
+    `sqmiss=2`). Windows at 6K+ (217 against 177): SPEED 99.96% (99.81%),
+    full-speed windows 98% (90%), sleep 203.6 ms/s (140.6), sys 61.3
+    (65.4). Sleep by load: 6-9K 277 (219), 9-12K 187 (125), 12K+ 73 (28);
+    12K+ SPEED 99.65% (97.81%), full-speed 87% (43%). Same-load VPS +0.1%
+    (at 60 in both); 13K+ bins +1.1 to +5.3% (few windows). Batch 27.7K
+    of 28.4K runs/s, `miss=0`. `sqst=411 sqla=57` (371 and 105).
+- HW steps (package of 14:26):
+  1. Install. The install keeps `nullDC.cfg`. SH4 Clock 200. On the main
+     menu, before the boot: JIT SPEED -> SYS GATE BATCH ON, JIT SQ MISS
+     + LA STEPS, JIT FSCHG + NO BLOCK END; VIDEO / DEBUG -> RAM SQ Direct
+     ON, JIT C-Calls ON, JIT HOTBLOCKS OFF. The rest as now.
+  2. UDP listener on port 18194, only when Matt says so.
+  3. Looney Tunes: the intro FMV, then one full race (3 minutes or more).
+     Look at the geometry (the vertex loop's stores change shape), the
+     sound and the frame pace.
+  4. Crazy Taxi: a dense drive of 2 minutes (same-load VPS), then the XMB
+     exit.
+  5. Log: `[jitcfg] ... sqmiss=3` and `[jitcfg] gbatch=1 ramsq=1 fschg=2`;
+     `[gate]` `batch runs=` near `runs=`, `miss=` small; `[sys]` tmu, pvr,
+     aicadma, gate and plan below the baseline, `quiet` new; `[stall]` sys
+     below 80 ms/s and sleep above 63 ms/s in the race; `ram ns` write
+     below 125; `sqcold` and `sqla=`; SPEED and RPS against the baseline.
+  6. On a fault: RAM SQ Direct OFF in the SELECT menu (live). Then one boot
+     each with JIT FSCHG ON, JIT SQ MISS + LOOK-AHEAD, SYS GATE BATCH OFF.
+  7. For the gain of each setting alone (if Matt wants it): one boot per
+     setting ON with the other three OFF.
+
+**Step 1, done: the Looney Tunes race is SH4-bound (Matt 2026-10-08: "Let's work
 with the The Looney Tunes race being SH4-bound.", then "Profile + 2
 probes"). Step 1 done 2026-10-08: the race profile and both probes ran on
 HW (package of 20:57, which also holds a JIT link fix, HW confirmed).
-NEXT: Step 2, Matt picks one or more of the four candidates at the end of
-this block ("Next steps"; Matt 2026-10-08: "Can you save them in the
-OPTIMIZATION_PLAN.md as next steps?"). Nothing of Step 2 is built.** The
+Step 2 = the four candidates at the end of this block ("Next steps"; Matt
+2026-10-08: "Can you save them in the OPTIMIZATION_PLAN.md as next
+steps?"): all four built 2026-10-10, the block above.** The
 agreed order (the open item below): faster SH4 thread on the race first,
 then an SH4 Clock above 200 MHz. At 21:10 this session's UDP listener
 (PID 24700, `ps3log_lt_run1.txt`) still held port 18194.
@@ -97,7 +701,8 @@ then an SH4 Clock above 200 MHz. At 21:10 this session's UDP listener
   - Then FP blocks of 27-92 SH4 ops at 8C0688xx-8C069xxx and 8C089xxx
     (transforms; 8C06997E runs 4 ftrv with 64 XMTRX loads from the
     context).
-- NEXT STEPS (Step 2 candidates, not built; Matt picks). Estimates are % of
+- NEXT STEPS (Step 2 candidates; all four built 2026-10-10 as 5.42, 5.43,
+  5.44 and 5.37, see the top block). Estimates are % of
   the SH4 thread in the race; together ~7-8%. With the ~6% the race now
   sleeps, that is room for an SH4 Clock of ~215-225 MHz (Step 3). The plan
   rule holds: own toggle each, default OFF until HW validated, SH4 Clock
@@ -149,7 +754,8 @@ then an SH4 Clock above 200 MHz. At 21:10 this session's UDP listener
   - Step 3 (after Step 2): let SH4 Clock go above 200 MHz (`ps3_menu.cpp`
     range 150-200 today). Check first whether TMU time scales with the
     clock (the TMU counts SH4 cycles, so game timers may run fast); HW:
-    race RPS and SPEED at 210-230 MHz.
+    race RPS and SPEED at 210-230 MHz. Built 2026-10-10 as 5.45, HW
+    tested and closed the same day (the top of section 0).
 - From the old logs (no new run; `racesplit.py`, scratchpad of session
   898d8ac1), race windows at vt >= 10K: `lt_spepix.txt` (61 windows, cut
   from `ps3log_spepix_run1.txt`) and `lt_on.txt` (262 windows). SPEED
@@ -1096,6 +1702,9 @@ reads or waits in the race), not the render thread, not the sound SPUs.
   frames/s, 2- and 3-refresh frames, SH4 thread idle ~7%. Matt: "The faster
   JIT in one of the plans sounds fine." (JIT work on the race code, then an
   SH4 Clock above 200 MHz; the menu stops at 200.)
+- 2026-10-10: both done (Steps 2 and 3, the top of section 0). The race is
+  at SPEED 100% at 200 MHz and the stutter stays; a higher SH4 Clock is
+  not the answer (Matt). The item stays open, cause not known.
 - 2026-10-08, later: active. Step 1 (profile + 2 probes) built, package of
   19:22; see the top of section 0.
 - Stutters (Matt 2026-10-07, with SPE Build ON: "very smooth. But there are
@@ -1369,15 +1978,18 @@ Frame: built, default OFF, not run on HW (expected gain none); BLOCKED
   ppu-as and a PPC64 model); `mutate.py` 30 of 30 planted bugs fail.
 - Start a UDP listener only when Matt says so.
 
-**Open, separate (Matt 2026-10-06: "let's keep this as an open, separated
-issue"): Rayman 2 draws level surfaces untextured.** US GDI, first level:
+**Closed (Matt 2026-10-10: "Rayman 2 is closed."), fixed by 3j Bump Maps
+(HW SUCCESS 2026-10-08). Was open, separate (Matt 2026-10-06: "let's keep
+this as an open, separated issue"): Rayman 2 draws level surfaces
+untextured.** US GDI, first level:
 large level polygons show only smooth vertex-colour gradients; Rayman and
 the far tree backdrop are textured. The same with JIT Div32 OLD and FIXED
 (5.38 HW). Log: `blacktex=0`, no YUV, palette or stride textures, mip and
 VQ textures in use, modifier volumes (52 tris), W up to 1e9, 50 Hz mode.
 Not tried yet: Strip Merge OFF and Vertex Arrays OFF (both live).
 2026-10-08: the logs point to its bump maps (PixelFmt 4, TR list), which we
-draw as opaque white. Fix item: 3j in section 3 (Matt). No HW test yet.
+draw as opaque white. Fix item: 3j in section 3 (Matt). HW SUCCESS
+2026-10-08, default ON (the 3j block above).
 
 **Done: 5.38 JIT DIV32 (OPTIMIZATION_POTENTIAL P19; Matt 2026-10-06: "do
 5.38"), HW SUCCESS, default FIXED since the package of 21:02 (Matt: "Yes,
@@ -2013,9 +2625,9 @@ not caused by S3 (5.12 S3 runs 2-3).
 |---|---|
 | 2.1 YUV reset on STARTRENDER | `[x]` HW, no visible change |
 | 2.2 AICA EG rate + loop fixes | `[x]` HW, echo unchanged, no regression |
-| 2.3 DSP | PARKED: Matt wants a PPC DSP JIT |
+| 2.3 DSP | `[x]` done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07, default ON; P20 G2-G4 open, bundle 5 (section 7) |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
-| 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04 |
+| 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04; now 6.3, `[ ]`, section 6 is parked |
 | 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) merged, open; bundle 4 (section 7) |
 | 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open); the P57 RM verify is in bundle 8 (section 7) |
 | 3e background vertex order | dropped, our code has no such fault |
@@ -2023,7 +2635,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
 | 3a fog, 3b offset colour, 3j bump maps | 3a, 3b OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
-| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart OPEN; P47, P21, P23 (TOC fields) merged; bundle 2 (section 7) |
+| 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart: P47, P21, P23 (TOC fields), P61, P62 built 2026-10-10 in bundle 2 (section 0), HW SUCCESS 2026-10-10, default ON in source |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
 work is section 5, SH4-side speed.
@@ -2039,8 +2651,8 @@ All changes are uncommitted in the working tree. Matt commits.
 | 1 | YUV converter reset on STARTRENDER | 1-2 lines | FMV correctness |
 | 2 | AICA `EG_EffRate` and loop fixes | small | sound correctness, maybe the ChuChu echo |
 | 4 | Strip merging + inf-vertex drop | large | draw calls in dense scenes |
-| 3 | DSP - PARKED by Matt, 2026-09-23: wants a PPC DSP JIT | large | DSP effects (reverb, echo) |
-| P | ARM7 clock (`arm_sh4_bias`) - PARKED by Matt, 2026-09-23 | small | ChuChu echo, slow SFX |
+| 3 | DSP - done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07 | large | DSP effects (reverb, echo) |
+| P | ARM7 clock (`arm_sh4_bias`) - moved to 6.3 on 2026-10-04 (section 6, parked) | small | ChuChu echo, slow SFX |
 
 ---
 
@@ -2107,8 +2719,11 @@ All changes are uncommitted in the working tree. Matt commits.
   use 2 (2267 ticks); Flycast uses 512 (`ARM_CYCLES_PER_SAMPLE`).
   Our sound driver CPU runs 2.3x slower than Flycast and 10x slower than nullDC.
 
-### 2.3 DSP  `[ ]`  PARKED
+### 2.3 DSP  `[x]`  done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07
 
+- 2026-10-07: done. 5.13 A3 (the DSP in the SPU sound) is HW SUCCESS and
+  default ON with SPE DSP JIT ON since the package of 03:41. Left: P20
+  G2-G4, bundle 5 (section 7).
 - 2026-09-29: see 5.13. The SPE AICA plan runs caique's measured DSP on an
   SPE, which may replace the PPC DSP JIT. Matt's decision.
 - 2026-10-03 (Matt): the DSP JIT is now 5.13 A1b, a recompiler on the SPU.
@@ -2179,7 +2794,7 @@ All changes are uncommitted in the working tree. Matt commits.
     SPEED 68.9% average over 72 s. The Soul Calibur inf item in
     `dc-depth-range-findings` is closed.
 
-### 2.5 ARM7 clock  `[ ]`  PARKED
+### 2.5 ARM7 clock  moved to 6.3 on 2026-10-04 (`[ ]`, section 6 is parked)
 
 - Parked by Matt on 2026-09-23. Do not build until he asks.
 - Lead: see the 2.2 HW result. `arm_sh4_bias` = 20 (`plugs/vbaARM/arm7.h:20`)
@@ -2316,6 +2931,10 @@ Status 2026-09-23 (all big-endian checked):
     (`core/imgread/common.cpp`, `common.h`).
   - HW check: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player,
     Crazy Taxi loading.
+  - 2026-10-10: built in bundle 2 (section 0): "GD Status" (P21), "GD
+    Position" (P47), "TOC Fields" (P23), with "CD-DA Rules" (P61) and
+    "GET_SCD Q Data" (P62). HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy
+    Taxi), all default ON in source (Matt).
   - 2026-10-07: 3h is part of bundle 2 (section 7), with the other GD-ROM
     items and the parked 5.34 CD-DA misses.
 - 3j, added 2026-10-08 (Matt: "Sure, add the bump mapping to one of
@@ -2417,7 +3036,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.24 | PPE codegen seen in the review (not Minicast): `mfcr` -> `mfocrf`, int/float moves through memory | `[x]` HW, default ON since the package of 13:49 (Matt); built + PC tested 2026-10-05 (Matt: "Go with 5.24"): JIT SPEED "JIT MFOCRF" and "JIT FPUL MOVES"; ppe_check PASS, 22/22 mutants fail; package of 13:01; HW 2026-10-05 (JIT SQ MISS + LOOK-AHEAD ON too): Crazy Taxi log clean, same-load VPS +1.2% vs `run527b` (same settings without 5.24, about the noise); Sonic Adventure clean, speed equal within noise (95% of dense windows at full speed) |
 | 5.25 | Wait-loop idle skip (Crazy Taxi 0C15A658-0C15A67E, from 5.18) | `[x]` option a + safety (Matt 2026-10-05), JIT SPEED "JIT IDLE SKIP", default OFF; HW 2026-10-05 (package 00:45): Crazy Taxi +3.0% same-load VPS, Sonic Adventure 30 -> 20 frames/s (work loop skipped); fix with a register-hash check, package of 01:13: HW Crazy Taxi +3.0% same-load VPS (dense 57.1), work loops no longer skip; Sonic not rechecked; default ON since the package of 01:27 (Matt) |
 | 5.26 | T for `bt.s`/`bf.s` kept in a register (the jcond load-hit-store, ~1.9M/s, from 5.18) | `[x]` HW, no gain, default ON since the package of 10:13 (Matt); option a (Matt 2026-10-05), JIT SPEED "JIT T COPY", default OFF; built + PC tested 2026-10-05 (tcopy_check PASS, 18/18 mutants fail), package of 09:28; HW boot 1 2026-10-05 (Crazy Taxi): clean, miss=0, same-load VPS -0.1% (no measurable gain); Sonic Adventure clean (30 fps outside heavy scenes); Soul Calibur clean (render-bound as before) |
-| 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
+| 5.27 | Store-queue stores JIT SQ STORES misses (0.88M slow-path entries/s, from 5.18) | `[x]` HW, default + LA STEPS since the package of 15:49 on 2026-10-10 (5.43, Matt); before: default OFF (Matt 2026-10-05: "It's fine for now"); both options (Matt 2026-10-05): JIT SPEED "JIT SQ MISS" OFF / SLOW PATH / + LOOK-AHEAD, default OFF; built + PC tested 2026-10-05 (sqstore_check and sqla_check PASS; 12/12 and 26/26 mutants fail), package of 11:19; HW 2026-10-05 (Crazy Taxi): logs clean, same-load VPS +1.7% (SLOW PATH), +0.9% (+ LOOK-AHEAD, best in heavy scenes; Matt: "much better") against `run526a` |
 | 5.28 | Larger SH4 code cache (6 MB was a Wii size; Sonic Adventure refills it every 44-55 s) | `[x]` HW, default 24 MB since the package of 19:08 (Matt); built 2026-10-05 (Matt picked it): EMULATION "JIT Code Cache" 6 MB / 12 MB / 24 MB, array 24 MB, `bl` reach 27549 KB of 32768; package of 17:08; HW 2026-10-05 at 24 MB: Sonic Adventure no full clear in 157 s of play (6 MB: 3), cache 7.8 MB, dense SPEED 99.7% (99.6%); Crazy Taxi same-load VPS -0.2% (noise) |
 | 5.29 | JIT FRCHG: an FPSCR sync that only flips FR swaps the pinned bank inline (~140K full syncs/s in dense Crazy Taxi) | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (frpref_check PASS, 23/23 mutants fail), VIDEO / DEBUG "JIT FRCHG"; package of 20:40; HW 2026-10-05 (one boot with 5.30): clean, sync_fpscr 187K/s -> 2.4K/s, same load -0.6% against `run516` (noise) |
 | 5.30 | JIT PREFETCH: a `pref` outside the store queue prefetches its RAM line with `dcbt` | `[x]` HW, no gain, default OFF; built + PC tested 2026-10-05 (same check), VIDEO / DEBUG "JIT PREFETCH"; package of 20:40; HW with 5.29 (one boot): clean, 174 sites, no gain; whether it costs a little is open |
@@ -2427,11 +3046,15 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.34 | GD-ROM Async (OPTIMIZATION_POTENTIAL P3): DMA reads on a worker thread, + CD-DA read-ahead | `[x]` HW SUCCESS 2026-10-06 (Matt), default + CD-DA since the package of 18:19 (Matt); CD-DA miss stalls known, parked; built + PC tested 2026-10-06 (gdasync_check ALL PASS, 17/17 mutants fail), EMULATION "GD-ROM Async" OFF / DATA / + CD-DA, default OFF; package of 17:35; HW 2026-10-06: DATA Crazy Taxi gd read on the SH4 thread 50 -> 0 ms/s, full-speed dense windows 70-77% -> 95% (Matt: "very, very smooth"), Sonic "ran better"; + CD-DA missed after loops, fixed in the package of 18:10: ChuChu 99.4% hits, 11 misses of 24-85 ms each; merged 2026-10-06, open: P22 (DMA rules), P9 (GD-ROM DMA clamp); with the CD-DA misses in bundle 2 (section 7) |
 | 5.35 | JIT EXIT (P6): an XMB exit returns from the JIT loop, the flash is saved | `[x]` HW SUCCESS 2026-10-06 (Matt), default ON since the package of 18:19 (Matt); built + PC tested 2026-10-06 (exit_check PASS, 10/10 mutants fail), EMULATION "JIT Exit", default OFF; package of 17:35; HW 2026-10-06: four clean XMB exits, the flash saved and loaded on the next boot |
 | 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[!]` blocked 2026-10-07 (Matt), not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
-| 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[ ]` merged 2026-10-06; ~10 lines, touches 5.29's `emit_frchg_test`; gain expected at noise level; bundle 8 (section 7) |
+| 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10 (Matt: "Resume with the next steps."; Looney Tunes race Step 2, candidate 4): JIT SPEED "JIT FSCHG" has a 3rd value "+ NO BLOCK END" (`JitFschg=2`), default was ON (level 1); fschg_check PASS (11/11 mutants fail), frpref_check PASS (29/29); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0); merged 2026-10-06; bundle 8 (section 7) |
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
 | 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]`; bundle 8 (section 7) |
 | 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first; bundle 8 (section 7) |
 | 5.41 | VBlank pacing: a 30 fps game's frames reach the screen 1 or 3 refreshes apart (Sonic Adventure "choppy" at SPEED 100%) | `[x]` done 2026-10-08, no felt change (Matt: "It seemed the same, actually. But It's fine."), Frame Hold default OFF; step 1 a `[vid]` refresh count, built 2026-10-07, package of 22:56; HW 2026-10-07: Sonic judder confirmed (1/3 pairs for ~85 s of each ~190 s drift cycle), Looney Tunes mostly the game's own 2/3 cadence, Crazy Taxi clean; step 2 (b) Frame Hold (Matt's pick) built + PC tested 2026-10-07, package of 23:42; HW 2026-10-07: Sonic only 2s at RPS 30 (1 drift slip), Crazy Taxi unchanged, ~23 ms more delay (section 0) |
+| 5.42 | SYS GATE BATCH: the slices the gate skipped run as one step per module, the TMU plan in closed form (Looney Tunes race Step 2, candidate 1) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10 (Matt: "Resume with the next steps."): JIT SPEED "SYS GATE BATCH" (`SysGateBatch`); sysgate_check PASS in 3 modes (63/63 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
+| 5.43 | JIT SQ MISS "+ LA STEPS": the look-ahead passes `@-Rn` stores and `add #imm,Rn` on the store's base register (candidate 2) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10: 4th value of JIT SQ MISS (`JitSqMiss=3`); sqla_check PASS (35/35 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
+| 5.44 | RAM SQ Direct: a store-queue flush to main RAM is a 32-byte copy inside `do_sqw_nommu` (candidate 3) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10: VIDEO / DEBUG "RAM SQ Direct" (`RamSqDirect`), live; ramsq_check PASS (18/18 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
+| 5.45 | SH4 Clock above 200 MHz: the SH4 gets clock/200 times the cycles per slice, the modules keep 200 MHz time (Looney Tunes race Step 3) | `[x]` closed 2026-10-10 (Matt: "Keep at 200 MHz. Clearly not the right approach on this issue."), default 200; built + PC tested 2026-10-10 (Matt: "CPU cycles per slice", limit 250 MHz): EMULATION "SH4 Clock" 150-250, default 200, set before boot; clock_check PASS (22/22 mutants fail); package of 16:30; HW Looney Tunes race: logs clean, 28.0 frames per emulated second at 220 and 28.2 at 250 (26.4 at 200), SPEED 97.5% and 86.6% (100.0%); Matt: 220 "basically the same", "250 feels worse" (section 0) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
@@ -2443,8 +3066,9 @@ Tex Slot Hash (P16) defaults to ON since the package of 23:46 on 2026-10-06 (Mat
 Depth Float (P18) defaults to ON since the package of 01:01 on 2026-10-07 (Matt: "Yes, absolutely!").
 AICA Race Fix, ARM7 Reset Fix, CA Clamp, SPE AICA DSP and SPE DSP JIT ON default to ON since the package of 03:41 on 2026-10-07 (Matt: "mark this on by default").
 SPE Build (5.12 #2) defaults to ON since the package of 18:36 on 2026-10-07; SPE Tex Hash (5.12 #3) since the package of 22:35 on 2026-10-07 (Matt: "Yes, I want it by default.").
-YUV Conv Fast (P43, bundle 1) defaults to ON in source since 2026-10-08, not packaged yet (Matt: "Yes, thanks."); VRAM Direct, LMMODE and FB Write Watch stay OFF.
-Bump Maps (3j) defaults to ON in source since 2026-10-08, not packaged yet (Matt: "keep them on by default").
+YUV Conv Fast (P43, bundle 1) defaults to ON in source since 2026-10-08, in the packages since 14:26 on 2026-10-10 (Matt: "Yes, thanks."); VRAM Direct, LMMODE and FB Write Watch stay OFF.
+Bump Maps (3j) defaults to ON in source since 2026-10-08, in the packages since 14:26 on 2026-10-10 (Matt: "keep them on by default").
+SYS GATE BATCH (5.42), JIT SQ MISS + LA STEPS (5.43), RAM SQ Direct (5.44) and JIT FSCHG + NO BLOCK END (5.37) are default ON since the package of 15:49 on 2026-10-10 (Matt: "keep the settings default on since they seem to be mostly massive wins.").
 ARM7 JIT level 5 is the default since 2026-09-23 (Matt).
 Vertex Arrays are default ON since 2026-09-23 (Matt: geometry correct).
 Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
@@ -4445,7 +5069,8 @@ clock by VPS.
     - Against `OPTIMIZATION_POTENTIAL.md`: its C-call rates match (timeslice,
       getcode, area-0 writes). Its section 4 says idle skip has nothing to
       take; item 1 shows otherwise. It does not list sync_fpscr.
-- 5.19 SH4 Clock below 150. The option allows 150-200 MHz (`ps3_menu.cpp`).
+- 5.19 SH4 Clock below 150. The option allows 150-250 MHz (`ps3_menu.cpp`;
+  200-250 since 5.45).
   A lower floor (e.g. 120-140) buys VPS, but the guest gets fewer cycles per
   frame, so heavy scenes drop more of the game's own frames (already at 150:
   dense 46.6 fps at 54.8 VPS). Last resort, Matt's call.
@@ -6597,6 +7222,10 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   both are the same. Cost: one multiply per timeslice (<0.05%).
 - HW test: ChuChu menu at SH4 150, SH4 against EFF; Crazy Taxi and Soul
   Calibur for regressions.
+- 2026-10-10: the defect is for 150-195 MHz only. Above 200 MHz (5.45)
+  the modules keep 200 MHz time, so the TMU is exact there. An EFF form
+  must also keep the SYS GATE closed forms (5.36, 5.42): they need the
+  same TMU cycles in every slice, so no carried remainder.
 - Merged 2026-10-06 (`OPTIMIZATION_POTENTIAL.md` P11 + P57, open):
   - P11: TCNT is updated once per timeslice (`UpdateTMU_chan()`), so a read
     inside the slice sees an old count. Flycast `b31f92f8e` adds the cycles
@@ -6788,13 +7417,13 @@ for the function.
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
 | 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF |
-| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34 | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[ ]` |
+| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt) | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; not packaged; Disc Swap and the GDI rows not tested on HW yet |
 | 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[ ]` |
 | 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[ ]` |
 | 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[ ]` (section 6 is parked) |
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[ ]` |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
-| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d) | correctness; speed at noise level | `[ ]` |
+| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d) | correctness; speed at noise level | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
 | 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
 | 10 | Maple | P29, P9 SB_MDST, P13, P37 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game | `[ ]` |
 | 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note) | 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
@@ -6838,7 +7467,7 @@ Main gains:
   Adventure intro FMV (`[stall] dma`, SPEED), dense Crazy Taxi (same-load
   VPS), the Looney Tunes intro FMV.
 
-### Bundle 2: GD-ROM and disc images  `[ ]`
+### Bundle 2: GD-ROM and disc images  `[x]` HW SUCCESS 2026-10-10, every row default ON in source (section 0)
 
 - Items: 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp,
   the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23
@@ -6902,7 +7531,7 @@ Main gains:
   (every format, mip and VQ case, random VRAM). HW: Crazy Taxi roads and
   Sonic Adventure floors at a distance (`[ps3gl] mip uploads` above 0,
   render `busy`); Rayman 2 (mip and VQ textures in use; its untextured
-  surfaces are a separate open item).
+  surfaces are closed, 3j).
 
 ### Bundle 4: TA decode and draw rules  `[ ]`
 
@@ -7080,8 +7709,9 @@ Main gains:
 - Today: SPG already builds "FPS: x / SPEED: y%" (`rend_set_fps_text()`),
   and `SetFpsText()` in `ps3/ps3_rend.cpp` is empty.
 - Gain: SPEED on the TV without the UDP listener (Matt starts it only when
-  he says so). A PNG of the 4:3 viewport for image faults (open: the
-  untextured Rayman 2 surfaces). No cost when OFF; one RSX wait per shot.
+  he says so). A PNG of the 4:3 viewport for image faults (the
+  untextured Rayman 2 surfaces are closed, 3j). No cost when OFF; one RSX
+  wait per shot.
 - Byte order: a big-endian A8R8G8B8 word is the bytes A, R, G, B: write
   bytes 1-3 (P51).
 - HW: any game: the text in the left pillarbox bar, a PNG under

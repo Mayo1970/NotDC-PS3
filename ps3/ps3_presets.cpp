@@ -7,7 +7,7 @@
 #define CFG_SECT "ps3"
 
 int g_accuracy_preset      = 0;   // 0 fast, 1 balanced, 2 accurate
-int g_sh4_clock_preset     = 200; // effective SH4 MHz, 150..200
+int g_sh4_clock_preset     = 200; // SH4 MHz, 150..250; above 200 only the SH4's cycles per slice grow
 int g_sh4_cached_preset    = 0;   // 0 plain SH4 interpreter, 1 cached (threaded)
 int g_sched_preset         = 0;
 int g_dma_fix_preset       = 1;
@@ -50,6 +50,7 @@ int g_jit_ifb_lomask       = 0;
 int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thread
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_ta_sq_direct_preset  = 1;   // 1 = a PREF to TA polygon data runs one flat store function (5.17, HW)
+int g_ram_sq_direct_preset = 1;   // 1 = a PREF to main RAM copies its 32 bytes straight into the RAM image (5.44, HW)
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_frame_hold_preset    = 0;   // 1 = a frame under 60 fps flips on the PS3 vsync of its emulated vblank (5.41 b)
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
@@ -62,7 +63,7 @@ int g_vram_direct_preset   = 0;   // 1 = SQ/DMA runs on the 32-bit VRAM bus map 
 int g_lmmode_preset        = 0;   // 1 = SQ and ch2 DMA to 0x11/0x13 take the bus SB_LMMODE0/1 selects (P7)
 int g_fb_watch_preset      = 0;   // 1 = a 32-bit VRAM write into the shown frame presents it at vblank (P26)
 int g_bump_map_preset      = 1;   // 1 = bump-map texels and the offset colour drawn by a bump program (plan 3j, HW)
-int g_jit_fschg_preset     = 1;   // 1 = fschg skips the UpdateFPSCR() call
+int g_jit_fschg_preset     = 2;   // 1 = fschg skips the UpdateFPSCR() call, 2 also no sync and no block end (5.37, HW)
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
 int g_jit_tfwd_preset      = 1;   // 1 = T passed from compare to branch in a register
@@ -74,7 +75,8 @@ int g_jit_dve_preset       = 0;   // 1 = ops whose results are never read are dr
 int g_jit_cycle_check_preset = 2; // 0 old, 1 exit out of line, 2 also no poll on forward-only ends (5.22, HW)
 int g_jit_idle_skip_preset = 1;   // 1 = an idle loop turn with no store or register change ends the timeslice (5.25, HW)
 int g_jit_tcopy_preset     = 1;   // 1 = the last T writer before bt.s/bf.s also copies T into the jcond register (5.26, HW)
-int g_jit_sq_miss_preset   = 0;   // 1 = SQ test first in a store's cold path, 2 also the look-ahead guess (5.27)
+int g_jit_sq_miss_preset   = 3;   // 1 = SQ test first in a store's cold path, 2 also the look-ahead guess (5.27),
+                                  // 3 the look-ahead also passes constant steps of the base register (5.43, HW)
 int g_jit_mfocrf_preset    = 1;   // 1 = compares read CR0 with mfocrf, not the microcoded mfcr (5.24, HW)
 int g_jit_fpul_moves_preset = 1;  // 1 = flds, fsts, ftrc, float with one trip through memory less (5.24, HW)
 int g_jit_dyn_ic_preset    = 1;   // 1 = jsr/jmp exits test their first target inline (DYN_IC), 2 also rts (5.3, HW)
@@ -84,8 +86,24 @@ int g_jit_prefetch_preset  = 0;   // 1 = a pref outside the store queue prefetch
 int g_jit_guard_reuse_preset = 0; // 1 = a memory op whose base passed its check earlier in the block skips it (5.31)
 int g_jit_exit_preset      = 1;   // 1 = an XMB exit returns from the JIT loop and saves the flash (5.35 = P6, HW)
 int g_sys_gate_preset      = 2;   // 1 = the slice-end update runs only when due, 2 also without the block lookup (5.36, HW)
+int g_sys_gate_batch_preset = 1;  // 1 = the slices the gate skipped run as one step per module (5.42, HW)
 int g_ta_peak_frame_preset = 0;   // 1 = the TA peak stat is noted per frame, not per TA record (5.36)
 int g_gd_async_preset      = 2;   // disc reads on a worker thread: 1 data, 2 also a CD-DA read-ahead (5.34 = P3, HW)
+// Bundle 2 (plan section 7), the GD-ROM page: 0 is the old path in every one. Default ON since 2026-10-10 (Matt).
+int g_gd_status_preset     = 2;   // 1 = a data read stops CD-DA (P21 step 1), 2 = also Flycast dev's status timing (step 2, HW)
+int g_gd_position_preset   = 2;   // 1 = REQ_STAT sends the FAD, track and control/ADR from the TOC, 2 = GET_SCD format 0 too (P47, HW)
+int g_gd_scd_q_preset      = 1;   // 1 = GET_SCD format 1 is 14 bytes of Q data, replies stop at the asked length (P62, HW)
+int g_cdda_rules_preset    = 1;   // 1 = Flycast's CD-DA end, resume and repeat rules (P61, HW)
+int g_toc_fields_preset    = 1;   // 1 = TOC entries with ADR 1, a data lead-out, the GD low-density lead-out after track 2 (P23, HW)
+int g_gd_speed_preset      = 1;   // 1 = GD-DMA paced at 1.8 MB/s, a last small chunk at 25 MB/s (P22, HW)
+int g_gd_dma_fix_preset    = 1;   // 1 = SB_GDLEN 0 is 32 MB, a DMA longer than its read stops at the read's end (P22, P9, HW)
+int g_cdda_miss_preset     = 2;   // 1 = the CD-DA read-ahead starts at CD_PLAY, 2 = a ring miss also plays silence (5.34, HW)
+int g_gd_cmd_fix_preset    = 1;   // 1 = unknown ATA, EXEC_DIAG, slave drive, CD_READ2 length and length clamps as Flycast (P22, HW)
+int g_gd_set_mode_preset   = 1;   // 1 = SET_MODE writes at its byte offset, not at twice it (P48, HW)
+int g_sector_2340_preset   = 1;   // 1 = a 2340-byte read gets the raw sector from byte 12, not zeros (P9, HW)
+int g_gdi_parser_preset    = 1;   // 1 = GDI track names in quotes, REQ_SES session 2 at track 3 (P23)
+int g_gdi_paths_preset     = 1;   // 1 = a '\' in a GDI track path opens as '/' (P57)
+int g_disc_swap_preset     = 1;   // 1 = TRIANGLE in the SELECT menu changes the disc (P34)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
 int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
@@ -143,6 +161,7 @@ static const CfgItem s_items[] = {
 	{ "RenderThread",  &g_render_thread_preset },
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "TaSqDirect",    &g_ta_sq_direct_preset },
+	{ "RamSqDirect",   &g_ram_sq_direct_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "FrameHold",     &g_frame_hold_preset },
 	{ "StripMerge",    &g_strip_merge_preset },
@@ -177,8 +196,23 @@ static const CfgItem s_items[] = {
 	{ "JitGuardReuse", &g_jit_guard_reuse_preset },
 	{ "JitExit",       &g_jit_exit_preset },
 	{ "SysGate",       &g_sys_gate_preset },
+	{ "SysGateBatch",  &g_sys_gate_batch_preset },
 	{ "TaPeakFrame",   &g_ta_peak_frame_preset },
 	{ "GdAsync",       &g_gd_async_preset },
+	{ "GdStatus",      &g_gd_status_preset },
+	{ "GdPosition",    &g_gd_position_preset },
+	{ "GdScdQ",        &g_gd_scd_q_preset },
+	{ "CddaRules",     &g_cdda_rules_preset },
+	{ "TocFields",     &g_toc_fields_preset },
+	{ "GdSpeed",       &g_gd_speed_preset },
+	{ "GdDmaFix",      &g_gd_dma_fix_preset },
+	{ "CddaMiss",      &g_cdda_miss_preset },
+	{ "GdCmdFix",      &g_gd_cmd_fix_preset },
+	{ "GdSetMode",     &g_gd_set_mode_preset },
+	{ "Sector2340",    &g_sector_2340_preset },
+	{ "GdiParser",     &g_gdi_parser_preset },
+	{ "GdiPaths",      &g_gdi_paths_preset },
+	{ "DiscSwap",      &g_disc_swap_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -237,25 +271,59 @@ static const CfgItem s_snd_items[] = {
 };
 #define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
 
-void ps3_sndcfg_print(const char* when, bool always)
+// Every GD-ROM setting: GD-ROM Async and the bundle 2 rows (plan section 7).
+static const CfgItem s_gd_items[] = {
+	{ "GdAsync",       &g_gd_async_preset },
+	{ "GdStatus",      &g_gd_status_preset },
+	{ "CddaRules",     &g_cdda_rules_preset },
+	{ "GdPosition",    &g_gd_position_preset },
+	{ "GdScdQ",        &g_gd_scd_q_preset },
+	{ "TocFields",     &g_toc_fields_preset },
+	{ "CddaMiss",      &g_cdda_miss_preset },
+	{ "GdSpeed",       &g_gd_speed_preset },
+	{ "GdDmaFix",      &g_gd_dma_fix_preset },
+	{ "GdCmdFix",      &g_gd_cmd_fix_preset },
+	{ "GdSetMode",     &g_gd_set_mode_preset },
+	{ "Sector2340",    &g_sector_2340_preset },
+	{ "GdiParser",     &g_gdi_parser_preset },
+	{ "GdiPaths",      &g_gdi_paths_preset },
+	{ "DiscSwap",      &g_disc_swap_preset },
+};
+#define GD_ITEMS (sizeof(s_gd_items) / sizeof(s_gd_items[0]))
+
+// One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
+static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
+                      bool always)
 {
-	static int last[SND_ITEMS];
-	static bool printed;
-	bool same = printed;
-	for (u32 i = 0; i < SND_ITEMS; i++)
-		same = same && last[i] == *s_snd_items[i].val;
+	bool same = *printed;
+	for (u32 i = 0; i < count; i++)
+		same = same && last[i] == *items[i].val;
 	if (same && !always)
 		return;
 
 	char buf[512];
-	int n = snprintf(buf, sizeof(buf), "[sndcfg] %s:", when);
-	for (u32 i = 0; i < SND_ITEMS && n < (int)sizeof(buf); i++)
+	int n = snprintf(buf, sizeof(buf), "[%s] %s:", tag, when);
+	for (u32 i = 0; i < count && n < (int)sizeof(buf); i++)
 	{
-		last[i] = *s_snd_items[i].val;
-		n += snprintf(buf + n, sizeof(buf) - n, " %s=%d", s_snd_items[i].key, last[i]);
+		last[i] = *items[i].val;
+		n += snprintf(buf + n, sizeof(buf) - n, " %s=%d", items[i].key, last[i]);
 	}
-	printed = true;
+	*printed = true;
 	printf("%s\n", buf);
+}
+
+void ps3_sndcfg_print(const char* when, bool always)
+{
+	static int last[SND_ITEMS];
+	static bool printed;
+	cfg_print("sndcfg", s_snd_items, SND_ITEMS, last, &printed, when, always);
+}
+
+void ps3_gdcfg_print(const char* when, bool always)
+{
+	static int last[GD_ITEMS];
+	static bool printed;
+	cfg_print("gdcfg", s_gd_items, GD_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {
@@ -371,8 +439,25 @@ int get_jit_prefetch_preset()  { return g_jit_prefetch_preset; }
 int get_jit_guard_reuse_preset() { return g_jit_guard_reuse_preset; }
 int get_jit_exit_preset()      { return g_jit_exit_preset; }
 int get_sys_gate_preset()      { return g_sys_gate_preset; }
+int get_sys_gate_batch_preset() { return g_sys_gate_batch_preset; }
+int get_ram_sq_direct_preset() { return g_ram_sq_direct_preset; }
 int get_ta_peak_frame_preset() { return g_ta_peak_frame_preset; }
 int get_gd_async_preset()      { return g_gd_async_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 2: read at each use by dc/gdrom and plugs/ImgReader.
+int get_gd_status_preset()     { return g_gd_status_preset; }
+int get_gd_position_preset()   { return g_gd_position_preset; }
+int get_gd_scd_q_preset()      { return g_gd_scd_q_preset; }
+int get_cdda_rules_preset()    { return g_cdda_rules_preset; }
+int get_toc_fields_preset()    { return g_toc_fields_preset; }
+int get_gd_speed_preset()      { return g_gd_speed_preset; }
+int get_gd_dma_fix_preset()    { return g_gd_dma_fix_preset; }
+int get_cdda_miss_preset()     { return g_cdda_miss_preset; }
+int get_gd_cmd_fix_preset()    { return g_gd_cmd_fix_preset; }
+int get_gd_set_mode_preset()   { return g_gd_set_mode_preset; }
+int get_sector_2340_preset()   { return g_sector_2340_preset; }
+int get_gdi_parser_preset()    { return g_gdi_parser_preset; }
+int get_gdi_paths_preset()     { return g_gdi_paths_preset; }
+int get_disc_swap_preset()     { return g_disc_swap_preset; }
 int get_jit_fmov_preset()      { return 0; }
 int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }

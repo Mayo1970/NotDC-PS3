@@ -1,5 +1,5 @@
-// Host-only check for plans 5.29 and 5.30: ps3_jit_frchg.h and ps3_jit_pref.h against ppu-as words
-// (frpref_words.inc), then on a PPC64 model against the old paths. Not part of the PS3 build.
+// Host-only check for plans 5.29, 5.30 and 5.37's SZ-free test: ps3_jit_frchg.h and ps3_jit_pref.h against ppu-as
+// words (frpref_words.inc), then on a PPC64 model against the old paths. Not part of the PS3 build.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -44,7 +44,7 @@ static u64 rnd64()
 // The driver's layout: context in r30, xf[n] at 4n, fr[n] at 0x40 + 4n, fpscr and old_fpscr as below; FR0-FR15 in
 // f14-f29; the fast path's scratch is r3, r4, f0-f7 and CR0.
 static const u32 CTX = 30, XF_OFS = 0, FR_OFS = 0x40, FPSCR_OFS = 0x11C, OLD_OFS = 0x128, CTX_SIZE = 0x140;
-static const u32 FR_BIT = 1u << 21, PIN0 = 14;
+static const u32 FR_BIT = 1u << 21, SZ_BIT = 1u << 20, PIN0 = 14;
 static const u64 CTX_BASE = 0x20000000ull;
 
 // Power ISA "Load Floating-Point Single": the word to the double format, SNaN payloads kept.
@@ -139,6 +139,7 @@ struct Cpu
 				break;
 			}
 			case 15: r[d] = (a ? r[a] : 0) + ((u64)simm << 16); break;
+			case 25: r[a] = r[d] | ((u64)(x & 0xFFFF) << 16); break;
 			case 16:
 			{
 				if (x & 3) { fault("bc with AA or LK"); break; }
@@ -263,10 +264,10 @@ static bool only_changed(const Cpu& a, const Cpu& b, u32 gprs, u32 fprs, u32 cr_
 }
 
 // The driver's sequence, the C path stood in for by one word: returns the index of that word (the bne target).
-static u32 emit_frchg_seq()
+static u32 emit_frchg_seq(bool sz_free)
 {
 	g_n = 0;
-	emit_frchg_test(3, 4, CTX, FPSCR_OFS, OLD_OFS);
+	emit_frchg_test(3, 4, CTX, FPSCR_OFS, OLD_OFS, sz_free);
 	ppc_label* full = ppc_CreateLabel();
 	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
 	emit_frchg_swap(3, CTX, OLD_OFS, XF_OFS, PIN0);
@@ -281,10 +282,11 @@ static u32 emit_frchg_seq()
 
 static void test_words()
 {
-	emit_frchg_seq();
+	emit_frchg_seq(false);
 	emit_pref_dcbt(4, 3, 0x1234);
 	emit_pref_dcbt(6, 5, 0x7EFF);
 	emit_pref_dcbt(12, 31, 0x0001);
+	emit_frchg_test(3, 4, CTX, FPSCR_OFS, OLD_OFS, true);
 	const u32 want = (u32)(sizeof(k_ref) / sizeof(k_ref[0]));
 	check(g_n == want, "words", "count differs from ppu-as");
 	for (u32 i = 0; i < g_n && i < want; i++)
@@ -295,9 +297,9 @@ static void test_words()
 	}
 }
 
-// FR alone changed: the new code must leave what the old flush, ChangeFP() swap and reload leave in f14-f29,
-// xf[] and old_fpscr, and touch nothing else but its scratch (the fr[] slots stay as they were).
-static void test_frchg_fast(u32 iters)
+// FR alone changed: f14-f29, xf[] and old_fpscr as the old flush, ChangeFP() swap and reload leave them; nothing else
+// but the scratch changes (fr[] slots stay). sz_free (plan 5.37): the same when SZ differs too; old_fpscr takes it.
+static void test_frchg_fast(u32 iters, bool sz_free)
 {
 	for (u32 t = 0; t < iters; t++)
 	{
@@ -305,7 +307,8 @@ static void test_frchg_fast(u32 iters)
 		fresh(c);
 		const u32 old = (u32)rnd64();
 		c.mem[CTX_BASE + OLD_OFS] = old;
-		c.mem[CTX_BASE + FPSCR_OFS] = old ^ FR_BIT;
+		const u32 now = old ^ FR_BIT ^ ((sz_free && (t & 1)) ? SZ_BIT : 0);
+		c.mem[CTX_BASE + FPSCR_OFS] = now;
 		u32 xf_new[16];
 		u64 fr_new[16];
 		for (u32 i = 0; i < 16; i++)
@@ -314,22 +317,22 @@ static void test_frchg_fast(u32 iters)
 			xf_new[i] = stfs_conv(c.f[PIN0 + i], undef);
 			fr_new[i] = lfs_conv(c.mem[CTX_BASE + XF_OFS + 4 * i]);
 		}
-		const u32 full_at = emit_frchg_seq();
+		const u32 full_at = emit_frchg_seq(sz_free);
 		Cpu before = c;
 		const u32 end = c.run(g_code, g_n, full_at);
-		bool same = end == g_n && c.mem[CTX_BASE + OLD_OFS] == (old ^ FR_BIT) && c.pf.empty();
+		bool same = end == g_n && c.mem[CTX_BASE + OLD_OFS] == now && c.pf.empty();
 		for (u32 i = 0; i < 16; i++)
 			same = same && c.f[PIN0 + i] == fr_new[i] && c.mem[CTX_BASE + XF_OFS + 4 * i] == xf_new[i];
 		char d[96];
-		snprintf(d, sizeof(d), "old=%08X: left at %u of %u (C path at %u)", old, end, g_n, full_at);
+		snprintf(d, sizeof(d), "old=%08X now=%08X: left at %u of %u (C path at %u)", old, now, end, g_n, full_at);
 		check(!c.bad && same && only_changed(before, c, (1u << 3) | (1u << 4), 0xFFu | (0xFFFFu << PIN0), 0xF0000000u, true),
-		      "frchg fast", c.bad ? c.why : d);
+		      sz_free ? "frchg fast, SZ free" : "frchg fast", c.bad ? c.why : d);
 	}
 }
 
 // Anything else (no change, or FR with other bits, or other bits alone): straight to the C path with only r3, r4
-// and CR0 changed, so UpdateFPSCR() sees the state it saw before.
-static void test_frchg_full(u32 iters)
+// and CR0 changed, so UpdateFPSCR() sees the state it saw before. sz_free: SZ alone, and SZ with no FR, also go there.
+static void test_frchg_full(u32 iters, bool sz_free)
 {
 	for (u32 t = 0; t < iters; t++)
 	{
@@ -338,17 +341,19 @@ static void test_frchg_full(u32 iters)
 		const u32 old = (u32)rnd64();
 		u32 diff;
 		do
-			diff = (t % 3) == 0 ? 0 : (t % 3) == 1 ? FR_BIT | (1u << (rnd64() % 32)) : (u32)rnd64();
-		while (diff == FR_BIT);
+			diff = (t % 4) == 0 ? 0 : (t % 4) == 1 ? FR_BIT | (1u << (rnd64() % 32)) : (t % 4) == 2 ? (u32)rnd64() :
+			       SZ_BIT | ((rnd64() & 1) ? 0 : 1u << (rnd64() % 32));
+		while ((sz_free ? diff & ~SZ_BIT : diff) == FR_BIT);
 		c.mem[CTX_BASE + OLD_OFS] = old;
 		c.mem[CTX_BASE + FPSCR_OFS] = old ^ diff;
-		const u32 full_at = emit_frchg_seq();
+		const u32 full_at = emit_frchg_seq(sz_free);
 		Cpu before = c;
 		const u32 end = c.run(g_code, g_n, full_at);
 		char d[96];
 		snprintf(d, sizeof(d), "old=%08X diff=%08X: left at %u, C path at %u", old, diff, end, full_at);
 		const bool kept = only_changed(before, c, (1u << 3) | (1u << 4), 0, 0xF0000000u, false);
-		check(!c.bad && end == full_at && c.pf.empty() && kept, "frchg full", c.bad ? c.why : d);
+		check(!c.bad && end == full_at && c.pf.empty() && kept, sz_free ? "frchg full, SZ free" : "frchg full",
+		      c.bad ? c.why : d);
 	}
 }
 
@@ -384,8 +389,10 @@ int main(int argc, char** argv)
 	const bool model_only = argc > 2 && !strcmp(argv[2], "model");
 	if (!model_only)
 		test_words();
-	test_frchg_fast(iters);
-	test_frchg_full(iters);
+	test_frchg_fast(iters, false);
+	test_frchg_full(iters, false);
+	test_frchg_fast(iters, true);
+	test_frchg_full(iters, true);
 	test_pref(iters);
 	printf("%s: %d checks, %d failures\n", g_fail ? "FAIL" : "PASS", g_checks, g_fail);
 	return g_fail ? 1 : 0;

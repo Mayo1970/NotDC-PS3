@@ -5,6 +5,9 @@
 #include "ioctl.h"
 #include "os_base.h"
 
+extern "C" int get_sector_2340_preset();   // P9
+extern "C" int get_toc_fields_preset();    // P23
+
 u32 NullDriveDiscType;
 DriveIF* CurrDrive;
 DriveIF drives[]=
@@ -117,12 +120,71 @@ bool ConvertSector(u8* in_buff , u8* out_buff , int from , int to,int sector)
 			memcpy(out_buff,&in_buff[0],2352);
 		}
 		break;
+	case 2340:
+		// P9 (Reicast ConvertSector): header, subheader and data are the raw sector after its 12 sync bytes.
+		if (get_sector_2340_preset() && from==2352)
+			memcpy(out_buff,&in_buff[12],2340);
+		else
+			printf("Sector convertion from %d to %d not supported \n", from , to);
+		break;
 	default :
 		printf("Sector convertion from %d to %d not supported \n", from , to);
 		break;
 	}
 
 	return true;
+}
+
+// P47: each track's start, control and ADR and each area's lead-out, taken when the image opens.
+static struct { u32 fad; u8 ctrl, adr; } s_trk[99];
+static u32 s_trk_n, s_trk_areas, s_trk_lead[2];
+
+static void drive_tracks_build()
+{
+	s_trk_n=0;
+	if (!CurrDrive)
+		return;
+	memset(s_trk,0xFF,sizeof(s_trk));
+	s_trk_areas=CurrDrive->GetDiscType()==GdRom ? 2 : 1;
+	for (u32 a=0;a<s_trk_areas;a++)
+	{
+		TocInfo toc;
+		CurrDrive->GetToc(&toc,a ? DoubleDensity : SingleDensity);
+		s_trk_lead[a]=toc.LeadOut.FAD;
+		for (u32 t=toc.FistTrack;t>=1 && t<=toc.LastTrack && t<=99;t++)
+		{
+			if (toc.tracks[t-1].Control==0xFF)
+				continue;
+			s_trk[t-1].fad=toc.tracks[t-1].FAD;
+			s_trk[t-1].ctrl=toc.tracks[t-1].Control;
+			s_trk[t-1].adr=toc.tracks[t-1].Addr;
+			if (t>s_trk_n)
+				s_trk_n=t;
+		}
+	}
+}
+
+// 0xAA (the lead-out) when no track holds the FAD. On a GD-ROM, tracks 3 and up end at the second lead-out.
+u32 GetDriveTrackNumber(u32 fad,u32* elapsed)
+{
+	u32 track=0xAA;
+	*elapsed=0;
+	// Tracks ascend, so the last one that starts at or before the FAD holds it.
+	for (u32 t=0;t<s_trk_n;t++)
+		if (s_trk[t].ctrl!=0xFF && s_trk[t].fad<=fad && fad<s_trk_lead[(s_trk_areas==2 && t>=2) ? 1 : 0])
+			track=t+1;
+	if (track!=0xAA)
+		*elapsed=fad-s_trk[track-1].fad;
+	return track;
+}
+
+void GetDriveTrackAdrAndControl(u32 track,u8* adr,u8* ctrl)
+{
+	*adr=*ctrl=0;
+	if (track<1 || track>s_trk_n || s_trk[track-1].ctrl==0xFF)
+		return;
+	*ctrl=s_trk[track-1].ctrl;
+	*adr=s_trk[track-1].adr | ((*ctrl&4) ? 0 : 1);   // Flycast: Q data type 1 on audio tracks
 }
 
 bool InitDrive_(char* fn)
@@ -146,6 +208,7 @@ bool InitDrive_(char* fn)
 
 			CurrDrive=&drives[i];
 			CurrDrive->Inited=true;
+			drive_tracks_build();
 			printf("Using %s \n",CurrDrive->name);
 			return true;
 		}
@@ -198,6 +261,7 @@ void TermDrive()
 		CurrDrive->Term();
 		CurrDrive=0;
 	}
+	s_trk_n=0;
 }
 
 
@@ -224,14 +288,24 @@ u32 CreateTrackInfo_se(u32 ctrl,u32 addr,u32 tracknum)
 	return *(u32*)p;
 }
 
+// P23 (Flycast 1cadd4e92, 59480ea5a): ADR 1 in every used entry (V-Rally 2, Eldorado Gate); 0xFF is unused.
+static u32 toc_adr(const TocTrackInfo& t)
+{
+	return (get_toc_fields_preset() && t.Control!=0xFF) ? 1 : t.Addr;
+}
+
 void ConvToc(u32* to,TocInfo* from)
 {
-	to[99]=CreateTrackInfo_se(from->tracks[from->FistTrack-1].Control,from->tracks[from->FistTrack-1].Addr,from->FistTrack);
-	to[100]=CreateTrackInfo_se(from->tracks[from->LastTrack-1].Control,from->tracks[from->LastTrack-1].Addr,from->LastTrack);
-	to[101]=CreateTrackInfo(from->LeadOut.Control,from->LeadOut.Addr,from->LeadOut.FAD);
+	to[99]=CreateTrackInfo_se(from->tracks[from->FistTrack-1].Control,toc_adr(from->tracks[from->FistTrack-1]),from->FistTrack);
+	to[100]=CreateTrackInfo_se(from->tracks[from->LastTrack-1].Control,toc_adr(from->tracks[from->LastTrack-1]),from->LastTrack);
+	// P23: the lead-out is a data entry with ADR 1, whatever the reader stored.
+	if (get_toc_fields_preset())
+		to[101]=CreateTrackInfo(4,1,from->LeadOut.FAD);
+	else
+		to[101]=CreateTrackInfo(from->LeadOut.Control,from->LeadOut.Addr,from->LeadOut.FAD);
 	for (int i=0;i<99;i++)
 	{
-		to[i]=CreateTrackInfo(from->tracks[i].Control,from->tracks[i].Addr,from->tracks[i].FAD);
+		to[i]=CreateTrackInfo(from->tracks[i].Control,toc_adr(from->tracks[i]),from->tracks[i].FAD);
 	}
 }
 

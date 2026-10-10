@@ -240,6 +240,18 @@ s32 aica_dma_slices_to_event(s32 ts, s32 max)
     return max;
 }
 
+// Plan 5.42: no deferred G2-DMA end in the next n slices; aica_dma_slices_run then counts them down in one step.
+bool aica_dma_slices_quiet(s32 ts, s32 n)
+{
+    return aica_dma_delay_cycles <= 0 || aica_dma_delay_cycles > ts * n;
+}
+
+void aica_dma_slices_run(s32 ts, s32 n)
+{
+    if (aica_dma_delay_cycles > 0)
+        aica_dma_delay_cycles -= ts * n;
+}
+
 // SCHED preset: deadline-scheduler callback for the deferred G2-DMA completion.
 static int aica_dma_end_cb(int tag, int sch_cycl, int jitter)
 {

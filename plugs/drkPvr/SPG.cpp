@@ -494,6 +494,76 @@ s32 spg_slices_to_event(s32 ts, s32 max)
     return max;
 }
 
+// Plan 5.42: the line state that n event-free slices leave, from spg_slices_quiet for spg_slices_run.
+static s32 s_quiet_ctr;
+static u32 s_quiet_line, s_quiet_lines;
+
+static inline bool spg_count_quiet(s32 cycles, s32 run)
+{
+    return cycles <= 0 || cycles > run;
+}
+
+// Plan 5.42: true when the next n slices end no countdown and reach no event line. Changes nothing the update reads.
+bool spg_slices_quiet(s32 ts, s32 n)
+{
+    const s32 run = ts * n;
+    if (s_list_irq_active || !spg_count_quiet(render_end_pending_cycles, run) ||
+        !spg_count_quiet(render_isp_pending_cycles, run) || !spg_count_quiet(render_tsp_pending_cycles, run) ||
+        !spg_count_quiet(render_vd_pending_cycles, run))
+        return false;
+
+    s32 c = spg_ScanlineSh4CycleCounter;
+    u32 line = spg_CurrentScanline, lines = 0;
+    if (c - run >= spg_LineSh4Cycles)
+        c -= run;   // no line ends in the run
+    else
+    {
+        const bool every = EXIT_HOST_POLL();
+        for (s32 i = 0; i < n; i++)
+        {
+            c -= ts;
+            if (c < spg_LineSh4Cycles)
+            {
+                line = (line + 1) % spg_ScanlineCount;
+                c += spg_LineSh4Cycles;
+                if (every || spg_event_line(line))
+                    return false;
+                lines++;
+            }
+        }
+    }
+    s_quiet_ctr = c;
+    s_quiet_line = line;
+    s_quiet_lines = lines;
+    return true;
+}
+
+// Plan 5.42: those n slices as one step, right after a true spg_slices_quiet(ts, n).
+void spg_slices_run(s32 ts, s32 n)
+{
+    const s32 run = ts * n;
+    spg_ScanlineSh4CycleCounter = s_quiet_ctr;
+    if (s_quiet_lines)
+    {
+        spg_CurrentScanline = s_quiet_line;
+        // One word store: the field flips once per line, as in libPvr_UpdatePvr.
+        SPG_STATUS_type st;
+        st.full = SPG_STATUS.full;
+        st.fieldnum = SPG_CONTROL.interlace ? ((st.fieldnum ^ s_quiet_lines) & 1) : 0;
+        st.vsync    = spg_InVblank;
+        st.scanline = s_quiet_line;
+        SPG_STATUS.full = st.full;
+    }
+    if (render_end_pending_cycles > 0)
+        render_end_pending_cycles -= run;
+    if (render_isp_pending_cycles > 0)
+        render_isp_pending_cycles -= run;
+    if (render_tsp_pending_cycles > 0)
+        render_tsp_pending_cycles -= run;
+    if (render_vd_pending_cycles > 0)
+        render_vd_pending_cycles -= run;
+}
+
 // The skipped slices hold no event line (spg_slices_to_event), so they move only the line and the field.
 u32 spg_read_status()
 {

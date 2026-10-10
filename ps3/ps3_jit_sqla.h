@@ -4,12 +4,13 @@
 
 enum { SQLA_STOP, SQLA_PASS, SQLA_DELAY, SQLA_HIT };
 
-// What op means for a scan that follows Rn: HIT is pref @Rn, PASS cannot write Rn or switch banks, DELAY is
-// a delayed branch (its slot runs next), STOP is anything else, unknown encodings included.
-static inline int sqla_class(u32 op, u32 n)
+// For a scan that follows Rn: HIT = pref @Rn, PASS = no Rn write or bank switch, DELAY = a delayed branch (its slot
+// runs next), STOP = the rest. steps (plan 5.43): mov.x Rm,@-Rn, fmov FRm,@-Rn, add #imm,Rn move Rn by a constant: PASS.
+static inline int sqla_class(u32 op, u32 n, bool steps = false)
 {
 	const u32 rn = (op >> 8) & 15, rm = (op >> 4) & 15, lo = op & 15;
 	const int wn  = rn == n ? SQLA_STOP : SQLA_PASS;			// writes Rn
+	const int sn  = (rn == n && !steps) ? SQLA_STOP : SQLA_PASS;	// moves Rn by a constant
 	const int wnm = (rn == n || rm == n) ? SQLA_STOP : SQLA_PASS;	// writes Rn and Rm
 	const int w0  = n == 0 ? SQLA_STOP : SQLA_PASS;			// writes R0
 	switch (op >> 12)
@@ -37,7 +38,7 @@ static inline int sqla_class(u32 op, u32 n)
 	case 0x2:
 		if (lo <= 2) return SQLA_PASS;				// mov.x Rm,@Rn
 		if (lo == 3) return SQLA_STOP;
-		if (lo <= 6) return wn;					// mov.x Rm,@-Rn
+		if (lo <= 6) return sn;					// mov.x Rm,@-Rn
 		if (lo == 7 || lo == 8 || lo == 0xC || lo >= 0xE) return SQLA_PASS;	// div0s tst cmp/str mulu muls
 		return wn;						// and xor or xtrct
 	case 0x3:
@@ -60,7 +61,7 @@ static inline int sqla_class(u32 op, u32 n)
 		return lo == 0xF ? wnm : SQLA_STOP;			// mac.w; ldc, lds.l, sts.l, stc.l stop
 	case 0x5: return wn;						// mov.l @(disp,Rm),Rn
 	case 0x6: return (lo >= 4 && lo <= 6) ? wnm : wn;		// @Rm+ forms also write Rm
-	case 0x7: return wn;						// add #imm,Rn
+	case 0x7: return sn;						// add #imm,Rn
 	case 0x8:
 		switch (rn)
 		{
@@ -78,7 +79,7 @@ static inline int sqla_class(u32 op, u32 n)
 	case 0xD: case 0xE: return wn;				// mov.l @(disp,PC),Rn, mov #imm,Rn
 	default:
 		if (lo == 0x9) return rm == n ? SQLA_STOP : SQLA_PASS;	// fmov @Rm+,FRn
-		if (lo == 0xB) return wn;				// fmov FRm,@-Rn
+		if (lo == 0xB) return sn;				// fmov FRm,@-Rn
 		if (lo == 0xF) return SQLA_STOP;
 		if (lo != 0xD) return SQLA_PASS;
 		if (rm == 0xC || rm == 0xD) return SQLA_STOP;
@@ -90,14 +91,14 @@ static inline int sqla_class(u32 op, u32 n)
 
 // From pc, up to SQLA_SCAN_OPS ops; a delayed branch's slot is the last op scanned. Main RAM only, so the
 // read has no side effect.
-static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32))
+static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32), bool steps = false)
 {
 	if ((pc & 1) || (pc & 0x1C000000) != 0x0C000000)
 		return false;
 	bool slot = false;
 	for (int k = 0; k < SQLA_SCAN_OPS; k++, pc += 2)
 	{
-		const int c = sqla_class(rd16(pc), n);
+		const int c = sqla_class(rd16(pc), n, steps);
 		if (c == SQLA_HIT)
 			return true;
 		if (c == SQLA_STOP || slot)
@@ -109,7 +110,7 @@ static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32))
 
 // The store's base register keeps its value to the block end (steps by an immediate aside) and a static
 // successor PREFs through it. It only picks the shape: emit_sq_store still tests the address.
-static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u32))
+static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u32), bool steps = false)
 {
 	const shil_opcode& st = block->oplist[i];
 	if (!st.rs1.is_r32i() || st.rs1._reg > reg_r15)
@@ -129,9 +130,9 @@ static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u
 	{
 	case BET_Cond_0:
 	case BET_Cond_1:
-		return sqla_scan(block->BranchBlock, n, rd16) || sqla_scan(block->NextBlock, n, rd16);
+		return sqla_scan(block->BranchBlock, n, rd16, steps) || sqla_scan(block->NextBlock, n, rd16, steps);
 	case BET_StaticJump:
-		return sqla_scan(block->BranchBlock, n, rd16);
+		return sqla_scan(block->BranchBlock, n, rd16, steps);
 	default:
 		return false;
 	}

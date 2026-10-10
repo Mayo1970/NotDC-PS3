@@ -75,6 +75,11 @@ void plugins_Term();
 	void FASTCALL libGDR_GetToc(u32* toc,u32 area);
 	u32 FASTCALL libGDR_GetDiscType();
 	void FASTCALL libGDR_GetSessionInfo(u8* pout,u8 session);
+	// P47: the track that holds a FAD (0xAA: none) and the FADs since its start; its ADR and control.
+	u32 FASTCALL libGDR_GetTrackNumber(u32 fad,u32* elapsed);
+	void FASTCALL libGDR_GetTrackAdrAndControl(u32 track,u8* adr,u8* ctrl);
+	// P34: closes the image and opens the next one; false leaves the drive with no disc.
+	bool libGDR_SwapDisc(const char* path);
 
 
 //ExtDev

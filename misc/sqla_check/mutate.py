@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Plan 5.27 (WSL): plants one bug at a time in a copy of ps3_jit_sqla.h; run.sh must FAIL on each.
+# Plans 5.27 and 5.43 (WSL): plants one bug at a time in a copy of ps3_jit_sqla.h; run.sh must FAIL on each.
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -9,7 +9,7 @@ TMP = '/tmp/sqlamut/ps3_jit_sqla.h'
 MUTANTS = [
     ('pref field from rm', 'if (rm == 8) return rn == n ? SQLA_HIT', 'if (rm == 8) return rm == n ? SQLA_HIT'),
     ('fmov @Rm+ checks rn', 'if (lo == 0x9) return rm == n ? SQLA_STOP : SQLA_PASS;', 'if (lo == 0x9) return wn;'),
-    ('pre-dec stores pass', 'if (lo <= 6) return wn;', 'if (lo <= 6) return SQLA_PASS;'),
+    ('pre-dec stores pass', 'if (lo <= 6) return sn;', 'if (lo <= 6) return SQLA_PASS;'),
     ('mov @Rm+ ignores Rm', 'case 0x6: return (lo >= 4 && lo <= 6) ? wnm : wn;', 'case 0x6: return wn;'),
     ('R0 writers pass', 'const int w0  = n == 0 ? SQLA_STOP : SQLA_PASS;', 'const int w0  = SQLA_PASS;'),
     ('wnm checks rn only', 'const int wnm = (rn == n || rm == n) ? SQLA_STOP : SQLA_PASS;', 'const int wnm = wn;'),
@@ -33,10 +33,31 @@ MUTANTS = [
     ('rd ignored', '(o.rd.is_r32i() && o.rd._reg == n && !step) || ', ''),
     ('immediate base', 'if (!st.rs1.is_r32i() || st.rs1._reg > reg_r15)', 'if (st.rs1._reg > reg_r15)'),
     ('static call scanned', '\tcase BET_StaticJump:\n', '\tcase BET_StaticCall:\n\tcase BET_StaticJump:\n'),
-    ('fall-through ignored', 'return sqla_scan(block->BranchBlock, n, rd16) || sqla_scan(block->NextBlock, n, rd16);',
-     'return sqla_scan(block->BranchBlock, n, rd16);'),
-    ('taken path ignored', 'return sqla_scan(block->BranchBlock, n, rd16) || sqla_scan(block->NextBlock, n, rd16);',
-     'return sqla_scan(block->NextBlock, n, rd16);'),
+    ('fall-through ignored',
+     'return sqla_scan(block->BranchBlock, n, rd16, steps) || sqla_scan(block->NextBlock, n, rd16, steps);',
+     'return sqla_scan(block->BranchBlock, n, rd16, steps);'),
+    ('taken path ignored',
+     'return sqla_scan(block->BranchBlock, n, rd16, steps) || sqla_scan(block->NextBlock, n, rd16, steps);',
+     'return sqla_scan(block->NextBlock, n, rd16, steps);'),
+    # Plan 5.43: the steps
+    ('steps always on', 'const int sn  = (rn == n && !steps) ? SQLA_STOP : SQLA_PASS;',
+     'const int sn  = SQLA_PASS;'),
+    ('steps never on', 'const int sn  = (rn == n && !steps) ? SQLA_STOP : SQLA_PASS;', 'const int sn  = wn;'),
+    ('steps pass every Rn writer', 'const int wn  = rn == n ? SQLA_STOP : SQLA_PASS;',
+     'const int wn  = (rn == n && !steps) ? SQLA_STOP : SQLA_PASS;'),
+    ('post-increment loads are steps', 'case 0x6: return (lo >= 4 && lo <= 6) ? wnm : wn;',
+     'case 0x6: return (lo >= 4 && lo <= 6) ? ((rn == n || (rm == n && !steps)) ? SQLA_STOP : SQLA_PASS) : wn;'),
+    ('add Rm,Rn is a step', '\t\treturn wn;\t\t\t\t\t\t// div1 sub subc subv add addc addv',
+     '\t\treturn sn;\t\t\t\t\t\t// div1 sub subc subv add addc addv'),
+    ('mov #imm,Rn is a step', '\tcase 0xD: case 0xE: return wn;\t\t\t\t// mov.l @(disp,PC),Rn',
+     '\tcase 0xD: return wn;\n\tcase 0xE: return sn;\t\t\t\t// mov.l @(disp,PC),Rn'),
+    ('scan drops the steps flag', 'const int c = sqla_class(rd16(pc), n, steps);',
+     'const int c = sqla_class(rd16(pc), n);'),
+    ('static jump scan drops the steps flag',
+     '\tcase BET_StaticJump:\n\t\treturn sqla_scan(block->BranchBlock, n, rd16, steps);',
+     '\tcase BET_StaticJump:\n\t\treturn sqla_scan(block->BranchBlock, n, rd16);'),
+    ('fall-through scan drops the steps flag', '|| sqla_scan(block->NextBlock, n, rd16, steps);',
+     '|| sqla_scan(block->NextBlock, n, rd16);'),
 ]
 
 def main():

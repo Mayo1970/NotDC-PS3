@@ -6,7 +6,7 @@
 #include <stdlib.h>	// malloc — JIT_HOTBLOCKS lazily allocates its block table
 #include <stdarg.h>	// va_list — JIT_HOTBLOCKS batches its log lines
 #include "dc/sh4/sh4_opcode_list.h"
-#include "dc/sh4/sh4_interpreter.h"	// sh4_GetTimeslice — preset-latched timeslice
+#include "dc/sh4/sh4_interpreter.h"	// sh4_GetCpuTimeslice — preset-latched cycle budget per slice
 
 #include "dc/sh4/sh4_registers.h"
 #include "dc/sh4/ccn.h"
@@ -268,8 +268,8 @@ extern "C" int get_jit_fsqrt_preset();
 // JIT_CR0 preset: a block-ending compare leaves its answer in CR0 for the exit branch (see emit_t_to_cr0).
 extern "C" int get_jit_cr0_preset();
 
-// JIT_FSCHG preset (ps3_presets.cpp): fschg only flips FPSCR.SZ, so shop_sync_fpscr just
-// keeps old_fpscr in step and skips the UpdateFPSCR() call (and its mtfsfi).
+// JIT_FSCHG preset (ps3_presets.cpp): fschg only flips FPSCR.SZ, so shop_sync_fpscr just keeps old_fpscr in step
+// and skips the UpdateFPSCR() call (and its mtfsfi). 2 (plan 5.37): the decoder emits no sync and no block end.
 extern "C" int get_jit_fschg_preset();
 
 // JIT_FMOV preset: FPU_PIN's direct lfs/stfs on the fastmem shapes. A separate switch from fpu_pin, since
@@ -2844,7 +2844,8 @@ static void gr_prepare(DecodedBlock* block)
 		{
 			k=GR_RAM;
 			if (o.op==shop_writem && get_jit_sq_store_preset() && (o.flags==4 || o.flags==8) &&
-			    (sq_store_guess(block,i) || (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16))))
+			    (sq_store_guess(block,i) ||
+			     (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16,get_jit_sq_miss_preset()>=3))))
 				k=GR_SQ;
 		}
 		s_gr_kind[i]=k;
@@ -3383,14 +3384,14 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 					c.vmem_tier=1;
 
-					// 5.27 JIT SQ MISS: 2 also looks for the PREF in the static successors, 1 puts the SQ test first
-					// in the cold path of the other 32-bit and pair stores.
+					// 5.27 JIT SQ MISS: 2 also looks for the PREF in the static successors (3, plan 5.43: past constant
+					// steps of the base too), 1 puts the SQ test first in the cold path of the other 32-bit and pair stores.
 					const int sqm=get_jit_sq_miss_preset();
 					const bool sq_size=op->flags==4 || op->flags==8;
 					bool sq_guess=get_jit_sq_store_preset() && sq_size && sq_store_guess(block,i);
 					bool sq_la=false;
 					if (!sq_guess && sqm>=2 && get_jit_sq_store_preset() && sq_size)
-						sq_guess=sq_la=sqla_guess(block,i,sqla_read16);
+						sq_guess=sq_la=sqla_guess(block,i,sqla_read16,sqm>=3);
 
 					// JIT GUARD REUSE (plan 5.31): an earlier check of this base register stands in for this one.
 					const u8 gr=gr_role(s_gr,(u32)i);
@@ -4306,7 +4307,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			{
 				// JIT FRCHG (plan 5.29): only FR changed -> inline bank swap; any other change takes the C path.
 				emit_frchg_test(ppc_rarg0, ppc_rarg1, ppc_contex, Sh4cntx.offset(reg_fpscr),
-				                (u32)SH4CTX_OFS_OLD_FPSCR);
+				                (u32)SH4CTX_OFS_OLD_FPSCR, get_jit_fschg_preset()>=2);
 				ppc_label* full=ppc_CreateLabel();
 				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne full
 				emit_frchg_swap(ppc_rarg0, ppc_contex, (u32)SH4CTX_OFS_OLD_FPSCR, Sh4cntx.offset(reg_xf_0),
@@ -4560,6 +4561,8 @@ extern "C" int get_jit_ifb_lomask();
 extern "C" int get_jit_code_cache_preset();
 extern "C" int get_jit_exit_preset();
 extern "C" int get_sys_gate_preset();
+extern "C" int get_sys_gate_batch_preset();
+extern "C" int get_ram_sq_direct_preset();
 extern "C" int get_ta_peak_frame_preset();
 
 // P6 JIT EXIT, latched when the main loop is emitted: the loop can return to C on a stop request.
@@ -4591,6 +4594,9 @@ static void ps3_jit_dump_toggles()
 	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset(), get_jit_code_cache_preset(),
 	       get_jit_frchg_preset(), get_jit_prefetch_preset(), get_jit_guard_reuse_preset(),
 	       get_jit_exit_preset(), get_sys_gate_preset(), get_ta_peak_frame_preset());
+	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d\n", get_sys_gate_batch_preset(),
+	       get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(), sh4_GetTimeslice(),
+	       sh4_GetCpuTimeslice());
 }
 
 void ngen_mainloop()
@@ -4640,9 +4646,9 @@ void ngen_mainloop()
 			// Same, for the FPU_PIN preset's fr[0..15] -> f14..f29 (no-op if off).
 			reg_reload_all_fpu();
 
-			// Cycle budget per timeslice from the accuracy preset (1792/896/448), the same s_timeslice that
-			// UpdateSystem_no_event() advances TMU/PVR by; baked in once per session.
-			const s32 jit_timeslice = sh4_GetTimeslice();
+			// Cycle budget per timeslice, baked in once per session: the accuracy preset's slice (1792/896/448), times
+			// clock/200 with an SH4 Clock above 200 MHz. UpdateSystem advances TMU/PVR by the plain slice.
+			const s32 jit_timeslice = sh4_GetCpuTimeslice();
 
 			//cycles
 			ppc_li(ppc_cycles,jit_timeslice);

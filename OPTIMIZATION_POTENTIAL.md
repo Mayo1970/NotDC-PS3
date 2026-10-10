@@ -785,7 +785,7 @@ Adventure intro FMV, `[stall] dma`.
     double precision is not fully pipelined (Cell documentation; not
     measured here).
 
-### P9 Hangs on rare input  `[ ]` GD-ROM DMA part merged: plan 5.34
+### P9 Hangs on rare input  `[~]` GD-ROM DMA clamp ("GD DMA Fix") and 2340-byte sectors built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; the rest open
 
 None of these messages appears in the logs of past sessions (461 scratchpad
 text files checked). Each fix is 1-4 lines.
@@ -1066,7 +1066,7 @@ DSP JIT ON. Crazy Taxi, Sonic Adventure, ChuChu Rocket, Looney Tunes. Read the
 `dsp jit` line (`slow=`, `bad=`), SPU busy and SPEED/VPS. Listen for reverb,
 for voices that were missing, and for old echo after a scene change (G2).
 
-### P21 CD-DA during data reads, GD-ROM status timing  `[ ]` merged: plan 3h
+### P21 CD-DA during data reads, GD-ROM status timing  `[x]` "GD Status" (steps 1 and 2) built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; merged: plan 3h
 
 - Step 1 (1 line): SPI_CD_READ stops CD-DA.
   - Flycast master `core/hw/gdrom/gdromv3.cpp:752` (`cdda.status = NoInfo`;
@@ -1098,7 +1098,7 @@ for voices that were missing, and for old echo after a scene change (G2).
   - The change is 2 days old in dev and already needed one regression fix.
 - HW check: ChuChu Rocket and Looney Tunes CD-DA, Crazy Taxi loading.
 
-### P22 GD-ROM command hangs and DMA rules  `[ ]` DMA part merged: plan 5.34
+### P22 GD-ROM command hangs and DMA rules  `[x]` "GD Command Fix", "GD DMA Fix", "GD-ROM Speed" (default REAL) built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source
 
 More hangs on rare input (P9 has the first five). Flycast
 `core/hw/gdrom/gdromv3.cpp` against ours (`dc/gdrom/gdromv3.cpp`):
@@ -1128,7 +1128,7 @@ More hangs on rare input (P9 has the first five). Flycast
   loads as slow as on a Dreamcast.
 - About 30-40 lines. No byte-order issue. Low risk.
 
-### P23 TOC fields and the GDI parser  `[ ]` TOC fields merged: plan 3h
+### P23 TOC fields and the GDI parser  `[~]` "TOC Fields" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; "GDI Parser" default ON, no HW test yet
 
 - GDI parser (`plugs/ImgReader/iso9660.cpp`):
   - :174 reads each line with `fscanf("%d %d %d %d %s %d")`. A quoted file
@@ -1440,7 +1440,7 @@ nullAICA only (SPE AICA Sound OFF):
 - HW check: Crazy Taxi roads and Sonic Adventure floors at a distance;
   `[ps3gl] mip uploads` above 0; render `busy` against the last run.
 
-### P47 GD-ROM REQ_STAT position bytes  `[ ]` merged: plan 3h
+### P47 GD-ROM REQ_STAT position bytes  `[x]` "GD Position" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; merged: plan 3h
 
 - Ours (`dc/gdrom/gdromv3.cpp:653-678`): `stat[5..7]` =
   `cdda.CurrAddr.B0`, `B1`, `B2`. The union (:127-136) puts B0-B2 on the
@@ -1464,7 +1464,7 @@ nullAICA only (SPE AICA Sound OFF):
 - Value: which software reads these bytes is unverified.
 - HW check: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player.
 
-### P48 GD-ROM SET_MODE writes at twice the offset  `[ ]`
+### P48 GD-ROM SET_MODE writes at twice the offset  `[x]` "SET_MODE Fix" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source
 
 - Ours: SPI_SET_MODE keeps the byte offset (`dc/gdrom/gdromv3.cpp:638-641`),
   then `gds_process_set_mode` copies to `gd_data_0x11[set_mode_offset*2]`
@@ -1544,7 +1544,7 @@ Flycast's RTT games).
 - About 15 lines, plus the two missing modes. Endian-neutral: the pack
   works on host words.
 
-### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[ ]` RM verify merged: plan 3d; TMU test: plan 6.4
+### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify merged: plan 3d; TMU test: plan 6.4
 
 - GDI track paths with a backslash. Flycast's fixture
   `tests/files/test_gdis/a/cs.gdi` names `tracks\cs01.bin`. Ours
@@ -1705,7 +1705,7 @@ Flycast's RTT games).
 - Risk: medium (the present path, Frame Hold, SPE Draw). Of the named
   games only Quake III is in Matt's set.
 
-### P61 CD-DA play limits and resume rules  `[ ]`
+### P61 CD-DA play limits and resume rules  `[x]` "CD-DA Rules" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source
 
 - Flycast `e44ed4a8e` (2020-03, "gdrom: don't resume cdda if not playing.
   stop if cur > end") and the CD-DA part of `959b6344b` (2020-06). No game
@@ -1737,7 +1737,7 @@ Flycast's RTT games).
   union of P47). HW: ChuChu Rocket and Looney Tunes CD-DA (pause, resume,
   looping tracks), the BIOS CD player. Bundle 2.
 
-### P62 GET_SCD format 1: Q data layout and length  `[ ]` extends P47
+### P62 GET_SCD format 1: Q data layout and length  `[x]` "GET_SCD Q Data" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; extends P47
 
 - Ours, the format 1 branch of SPI_GET_SCD
   (`dc/gdrom/gdromv3.cpp:911-939`): `subc = &subc_info[5]` with
@@ -2016,7 +2016,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   render thread (needs a sleep); VPS stops measuring speed; runs are no longer
   deterministic. Matt's call, as a pacing option.
 
-### P34 Disc swap  `[ ]`
+### P34 Disc swap  `[~]` "Disc Swap" built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet
 
 - Flycast: `core/imgread/common.cpp:148-154` (openLid) and :351-380
   (insertDisk: BUSY with sense 2/04/01, then after 1 s sense 6 / ASC 0x28);

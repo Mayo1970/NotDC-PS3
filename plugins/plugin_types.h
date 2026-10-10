@@ -95,16 +95,17 @@ struct plugin_interface
 
 #define SH4_CLOCK (200*1000*1000) // 200 Mhz (nominal Dreamcast SH4 clock)
 
-// SH4 Clock preset (ps3_presets.cpp), 150..200 MHz (200 = SH4_CLOCK): timing (SPG, arm_aica, RTC, DMA) divides by
-// SH4_CLOCK_EFF, so an underclock gives the host headroom and the DC runs slower; a call, so menu changes apply now.
+// SH4 Clock preset (ps3_presets.cpp), 150..250 MHz. Up to 200 the time bases (SPG, arm_aica, RTC, DMA) divide by
+// SH4_CLOCK_EFF. Above 200 they stay at 200 and the SH4 gets more cycles per timeslice (sh4_GetCpuTimeslice).
 #ifdef __cplusplus
 extern "C" {
 #endif
-int get_sh4_clock_preset(void); // effective SH4 clock in MHz (150..200)
+int get_sh4_clock_preset(void); // SH4 Clock setting in MHz (150..250)
 #ifdef __cplusplus
 }
 #endif
-#define SH4_CLOCK_EFF ((u32)(get_sh4_clock_preset() * 1000000))
+static inline int sh4_clock_eff_mhz(void) { int mhz = get_sh4_clock_preset(); return mhz < 200 ? mhz : 200; }
+#define SH4_CLOCK_EFF ((u32)(sh4_clock_eff_mhz() * 1000000))
 
 enum ndc_error_codes
 {

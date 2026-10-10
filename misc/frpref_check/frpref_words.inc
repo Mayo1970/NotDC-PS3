@@ -66,4 +66,10 @@ static const u32 k_ref[] = {
 	0x57EC023Eu,	// clrlwi  r12,r31,8
 	0x3D8C0001u,	// addis   r12,r12,1
 	0x7C00622Cu,	// dcbt    r0,r12
+	0x807E011Cu,	// lwz     r3,284(r30)
+	0x809E0128u,	// lwz     r4,296(r30)
+	0x7C642278u,	// xor     r4,r3,r4
+	0x64840010u,	// oris    r4,r4,16
+	0x6C840030u,	// xoris   r4,r4,48
+	0x28040000u,	// cmplwi  r4,0
 };
