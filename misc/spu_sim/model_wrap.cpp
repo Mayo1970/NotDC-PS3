@@ -115,4 +115,8 @@ void F(stepc)(void* h) { ((M*)h)->step_control(); }
 uint8_t* F(ram)(void* h) { return ((M*)h)->ram; }
 uint64_t F(samples)(void* h) { return ((M*)h)->samples; }
 void F(live)(void* h, uint32_t* l) { ((M*)h)->live_stats(l[0], l[1], l[2], l[3]); }
+#ifdef HAVE_ADVANCE
+void F(set_mono)(void* h, int on) { ((M*)h)->mono_half = on != 0; }   // P31 Mono Mix Fix
+void F(set_gain)(void* h, uint32_t g) { ((M*)h)->out_gain = g; }       // plan 6.6 SPE AICA Gain, in 1/256
+#endif
 }

@@ -8,7 +8,14 @@
 
 #define ARM_CMDS 4096   // command ring entries, a power of two
 
-enum { ARM_CMD_MU = 1, ARM_CMD_WR, ARM_CMD_RD, ARM_CMD_CDDA, ARM_CMD_RESET, ARM_CMD_FLUSH };
+// Plan 6.6 SYNC: b = the wave RAM byte the SH4 is about to write, c = 1 for a G2 DMA. CFG: b = ARM_CFG_* (live).
+enum { ARM_CMD_MU = 1, ARM_CMD_WR, ARM_CMD_RD, ARM_CMD_CDDA, ARM_CMD_RESET, ARM_CMD_FLUSH, ARM_CMD_SYNC, ARM_CMD_CFG };
+#define ARM_CFG_SYNC  1u   // "SPE AICA Sync": the hazard map marks the slots' play points
+#define ARM_CFG_BLOCK 2u   // + BLOCK SYNC: the first hit of a 64-sample block syncs with no test
+#define ARM_CFG_ALL   4u   // + SAMPLE SYNC: each sample with a hit syncs with no test
+
+// ArmEcho.hz_res after a SYNC: nothing to wait for; the sound SPU caught up; over the block's limit; sync is off
+enum { ARM_HZ_NONE, ARM_HZ_SYNCED, ARM_HZ_MISS, ARM_HZ_DEAD };
 
 // MU flags: Arm7Batch in bits 0-4, the arm7_speed stage in 5-6, Idle Skip SAFE in 7
 #define ARM_MU_BATCH(f) ((f) & 31u)
@@ -52,13 +59,18 @@ typedef struct
 	// [aicafix]: slices extended, SH4 interrupts raised under AICA Race Fix; ARM7 resets and stale latches under
 	// ARM7 Reset Fix; CA reads and clamps under CA Clamp
 	volatile uint32_t races, raises, resets, stale, ca_reads, ca_clamped;
-	uint32_t pad[2];
+	volatile uint32_t hz_res;   // plan 6.6: ARM_HZ_* of the last SYNC command
+	uint32_t pad[1];
 } __attribute__((aligned(128))) ArmEcho;
 
-// ArmSetup flags: the Looney Tunes fixes (OPTIMIZATION_PLAN 6.5, P44, P31), set before boot
+// ArmSetup flags, set before boot: the Looney Tunes fixes (OPTIMIZATION_PLAN 6.5, P44, P31), then bundle 5
 #define ARM_SETUP_RACE_FIX  1u
 #define ARM_SETUP_RESET_FIX 2u
 #define ARM_SETUP_CA_CLAMP  4u
+#define ARM_SETUP_LFORE     8u    // P31: LFORE stays set after a write to the LFO register
+#define ARM_SETUP_RING      16u   // P20 G2: the sound SPU's DSP ring (up to 32K words) mirrors wave RAM
+#define ARM_SETUP_RING64    32u   // P20 G3: so does a 64K-word ring, through its line cache
+#define ARM_SETUP_DSPRD     64u   // P20 G4: a read of TEMP, MEMS, MIXS or EFREG asks the sound SPU
 
 typedef struct
 {
@@ -66,5 +78,6 @@ typedef struct
 	uint32_t aram_ea;        // PS3 aica_ram: DC byte a at host byte a ^ 3
 	uint32_t aica_bell_ea, aica_echo_ea, aica_log_ea;   // the sound SPU's AicaBell, AicaEcho, AicaShared::log
 	uint32_t flags;          // ARM_SETUP_*
-	uint32_t pad[26];
+	uint32_t hz_ea;          // AicaHz (spe_aica.h): the hazard map and counts this SPU puts
+	uint32_t pad[25];
 } __attribute__((aligned(128))) ArmSetup;

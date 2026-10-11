@@ -104,7 +104,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
 | P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults; "Depth Float" HW SUCCESS 2026-10-07, default ON |
 | P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | = plan 5.38, HW SUCCESS 2026-10-06, default FIXED |
-| P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict) |
+| P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict); G2-G4 built 2026-10-11, bundle 5 (plan section 0); G2 ran on HW with no fault, default ON; G3, G4 HW not run |
 | P21 | CD-DA during data reads, GD-ROM status timing | bug | Hydro Thunder, NFL Blitz 2001, Cool Boarders Burrrn, Ms. Pac-Man, Bust-a-Move 4 | 1 line, then ~60 | merged: plan 3h |
 | P22 | GD-ROM command hangs and DMA rules | bug | Pro Pinball Trilogy, WSB 2K2, Sakura Taisen 3 | ~30-40 lines | DMA part merged: plan 5.34; commands: extends P9; corrects section 4 |
 | P23 | TOC fields and the GDI parser | bug | GDI sets, V-Rally 2, Eldorado Gate | ~25 lines | TOC fields merged: plan 3h; GDI parser: new |
@@ -115,7 +115,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P28 | SPG timing: field bit, HBlank modes | bug | interlaced games (unknown) | small | new |
 | P29 | Maple reply timing and commands | bug | Geist Force, Silent Scope | ~40 lines | corrects section 4 |
 | P30 | P4 mirrors and operand-cache RAM banks | bug | NHL 2K2 | ~15 lines | new |
-| P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | CA clamp merged: plan 6.5; rest: plan 2.2, 6.8 |
+| P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | CA clamp merged: plan 6.5; Mono and LFORE built 2026-10-11, bundle 5 (plan section 0), HW not run; rest: plan 2.2, 6.8 |
 | P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | mac.w merged: plan 5.3 `JitMac`; fneg: new |
 | P33 | ELF loader: segments first | bug | homebrew .elf | ~30 lines | new |
 | P34 | Disc swap | feature | Shenmue, Skies of Arcadia, Grandia II, D2, RE Code Veronica | ~150 lines | corrects section 4 |
@@ -970,7 +970,7 @@ Games affected: unknown for each.
 - About 60 lines. PC check first: port `div32_test.cpp` plus random cases
   into a `misc/*_check`, against the interpreter.
 
-### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[ ]` merged: plan 5.13 A3
+### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[~]` merged: plan 5.13 A3; G1 done; G2-G4 built 2026-10-11 as "DSP Ring RAM", "DSP Ring 64K" and "DSP Reg Reads", bundle 5 (plan section 0); DSP Ring RAM ran on HW 2026-10-11 with no fault (PSO), default ON; the other two OFF, HW not run
 
 Missing DSP in the default setup:
 - Default setup: SPE AICA Sound ON, SPE AICA DSP OFF
@@ -1312,7 +1312,7 @@ Each one is small and needs no shader.
 - About 15 lines. Only the RAM offset changes; storage stays the same. Low
   risk. NHL 2K2 itself not checked.
 
-### P31 AICA register details  `[ ]` CA clamp merged: plan 6.5
+### P31 AICA register details  `[~]` CA clamp merged: plan 6.5 (done); "Mono Mix Fix" and "LFORE Keep" built 2026-10-11, bundle 5 (plan section 0), rows OFF, HW not run
 
 Default path (SPE AICA Sound ON):
 - CA clamp. The LEA-3 clamp of plan 2.2 (Flycast `788cbfb64`: VC 2K sports

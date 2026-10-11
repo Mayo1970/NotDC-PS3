@@ -1,5 +1,6 @@
 #include "arm_mem.h"
 #include "arm7.h"
+#include "ps3/ps3_aica_spe.h"
 
 u8 *arm_aica_ram;
 //Set to true when aica interrupt is pending
@@ -85,10 +86,8 @@ void arm_term_mem()
 	
 }
 
-//00000000~007FFFFF @DRAM_AREA* 
-//00800000~008027FF @CHANNEL_DATA 
-//00802800~00802FFF @COMMON_DATA 
-//00803000~00807FFF @DSP_DATA 
+//00000000~007FFFFF @DRAM_AREA*, 00800000~008027FF @CHANNEL_DATA,
+//00802800~00802FFF @COMMON_DATA, 00803000~00807FFF @DSP_DATA
 
 template<int sz,typename T>
 T fastcall ReadMemArm(u32 addr)
@@ -103,10 +102,8 @@ T fastcall ReadMemArm(u32 addr)
             {
                 case 4:
                 {
-                    // ARM7DI unaligned LDR: read the *aligned* word containing
-                    // the address, then rotate right by (addr&3)*8. This is the
-                    // hardware behavior; a plain byte-gather from the unaligned
-                    // offset gives the wrong result (and failed the LDR_* tests).
+                    // ARM7DI unaligned LDR: the aligned word that holds the address, rotated right by (addr&3)*8,
+                    // as on hardware. A byte-gather from the unaligned offset is wrong (it failed the LDR_* tests).
                     u32 aligned = addr & ~3u;
                     u32 word = *(u32*)&arm_aica_ram[aligned & ARAM_MASK];
                     u32 rot  = (addr & 3) * 8;
@@ -138,6 +135,9 @@ void fastcall WriteMemArm(u32 addr,T data)
 	addr&=0x00FFFFFF;
 	if (addr<0x800000)
 	{
+		// Plan 6.6, PPU twin: an ARM7 store waits when the sound SPU has yet to play that byte (the ARM7 JIT's
+		// inline stores do not pass here).
+		aram_hz_write(addr&ARAM_MASK, 2);
         if (addr&(sz-1)){
             //printf("ARM unal wr %d %08x\n",sz,addr);
             switch (sz)
@@ -145,7 +145,7 @@ void fastcall WriteMemArm(u32 addr,T data)
                 case 4:
                     u8 t[4];
                     t[3]=data>>24; t[2]=data>>16; t[1]=data>>8; t[0]=data;
-                    
+
                     int i;
                     for(i=0;i<4;++i)
                         arm_aica_ram[((addr+i)^3)&ARAM_MASK]=t[i];

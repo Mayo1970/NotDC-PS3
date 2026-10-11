@@ -13,6 +13,389 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-11)
 
+**Done: the Crazy Taxi crackle (F2, 6.6). HW SUCCESS 2026-10-11 with SPE
+AICA Sync at + SAMPLE SYNC (HW run 4; Matt, menus: "At +SAMPLE seems to
+work well? No crunch."; in the drive: "Pretty good!", then "Fully
+gone."). Verdict (Matt 2026-10-11): "Let's set it as default." So + SAMPLE
+SYNC is the default since the package of 18:46 on 2026-10-11
+(`build/notdc_ps3.pkg`, 1525296 bytes; it differs from the package of
+16:55, the one of HW run 4, only in this default). Matt's `nullDC.cfg`
+has the level from his run. The missed tests were the cause, not the
+clipping. The two levels came as the quick proof of the missed tests
+(step (b) of HW run 2; Matt after HW run 3: "Yes, go with b"). The row is
+OFF / ON / + BLOCK SYNC / + SAMPLE SYNC, live. Not built, not needed now:
+step (a), the test on the SH4 thread (it only removes the SH4 wait of
+1-5% of wall, which no SPEED figure shows). + BLOCK SYNC is not tested on
+HW. SPE AICA Gain stays at 100%. The listener runs (Matt: "Start it."),
+into `ps3log_b5_run2.txt`.**
+- HW run 4, ~18:36, the package of 16:55, Crazy Taxi, + SAMPLE SYNC from
+  boot, SPE AICA Gain 100%, SH4 Clock 200 (`ps3log_b5_run2.txt` from line
+  386809; `synclog.py` in the scratchpad lists the windows). Clean XMB
+  exit, `bad=0`, timeouts 0, no fault line.
+  - Drive (23 windows): `miss/s` 0 in every window, `tests/s` 0, 61-99
+    syncs/s (average 77), sync wait 119-285 us, SH4 wait 1.1-4.6% of wall
+    (average 2.6%). Hits 330-2240/s, less than at ON (4000-7800/s): the
+    map is made again with lag 0 after each sync, so it marks fewer pages.
+  - SPEED by vertices per render: below 11K 99.95-100.04% (182 s); 11-13K
+    100.2% (22 s, lowest 99.7%); 13K+ 97.6% (13 s, lowest 92.4%, 5 s
+    below 97%). HW run 2 at ON: 100.3% and 98.0%. No cost that this log
+    can show; the 13K+ sets are too short to tell 0.4 points.
+  - The output still clips: `clip/s` 20-99 in most drive windows, `peak`
+    125-167%, and Matt hears no crackle. So the clipping is not audible
+    as a crackle, and the reading of HW run 3 that the high peaks are the
+    crackle itself was wrong: the mix is that loud.
+  - Sound SPU busy 17-22%, ARM7 SPU 23-26%.
+  - A boot before it (from line 12569) has no test data: 45 s of game,
+    then 26 minutes in the SELECT menu, then a reset into the BIOS (360K
+    `[vmem] Write16 to unmapped` lines in 19 s) and the exit. Matt: "I did
+    something wrong, sorry."
+  - After the run, Matt: "Fully gone. Let's set it as default."
+- + BLOCK SYNC (`SpeAicaSync=2`): the first write into a marked page in a
+  64-sample block syncs with no test. Other writes at that sample pass
+  free; writes at other samples of the block are a `miss`, as before.
+  This is step (b) as offered.
+- + SAMPLE SYNC (`SpeAicaSync=3`): each sample with a write into a marked
+  page syncs, no test, no limit per block. Added because a burst of
+  writes can go over 2-3 samples (not measured): + BLOCK SYNC then still
+  misses the later ones, and a crackle that stays would prove nothing.
+  With this level `miss` stays at 0, so the proof is clean.
+- Where: `hz_write` in `ps3/spu/spe_arm7.cpp` (ARM_CFG_BLOCK, ARM_CFG_ALL
+  in the CFG command), `arm_spe_hz_hit` in `ps3/ps3_arm_spe.cpp` (level 2
+  asks once per block, level 3 at each sample with a hit), and the PPU
+  twin's copy in `ps3/ps3_aica_spe.cpp`.
+- Cost, estimate only: one sync is ~240 us of SH4 wait in the logs; a
+  drive has ~55 blocks/s with hits, so 1-2% of wall at + BLOCK SYNC and
+  up to 3 times that at + SAMPLE SYNC. `[aram-hz]` shows it: `syncs/s`,
+  `sync wait`, `sh4 wait % of wall`; `tests/s` reads 0 at both levels.
+- PC (WSL): `misc/arm7spe_check` has 9 new seeds (148-151 + BLOCK SYNC,
+  180-190 + SAMPLE SYNC; the harness is the PPU and the sound SPU): the
+  log, the map, the counts and the answers equal the x86 reference. Two
+  planted bugs fail (+ SAMPLE SYNC as + BLOCK SYNC; the levels as ON).
+- HW steps (package of 16:55; SPE AICA Gain back at 100%; SH4 Clock 200):
+  1. Crazy Taxi, a dense drive, SPE AICA Sync ON: 60 s, note the crackles.
+  2. SELECT menu, AUDIO: + SAMPLE SYNC (live). 60 s. Crackle gone: the
+     missed tests are the cause, and step (a) is the fix without the cost.
+     Crackle still there with `miss/s` at 0: the cause is somewhere else.
+  3. If it is gone: + BLOCK SYNC for 60 s, to see if the cheaper level is
+     enough.
+  4. Log: `syncs/s`, `miss/s`, `sh4 wait`, SPEED by vertices.
+
+**HW run 3 done, no verdict yet: SPE AICA Gain, the SPU output gain that
+6.6 names as its next step (Matt 2026-10-11, after HW run 2 below: "My
+bet's on the output clipping."). The row works, but the log does not
+support clipping as the cause of the crackle that is left (HW run 3
+below). A 7th row at the end of the AUDIO page: 50% to 100% in steps of
+5, live, default 100% (no change). The package of 15:36 on 2026-10-11 has
+it (`build/notdc_ps3.pkg`, 1525680 bytes). Matt's last level in the run
+was 65%. The listener runs since HW run 2 (Matt: "Start it."), into
+`ps3log_b5_run2.txt`.**
+- HW run 3, 2026-10-11 ~16:08, the package of 15:36, Crazy Taxi, SPE AICA
+  Sync ON, SH4 Clock 200 (`ps3log_b5_run2.txt` from line 7221;
+  `gainlog.py` in the scratchpad lists the windows). Levels: 80% from
+  boot (menus only), 100% (2 windows, menu), 90% (3 drive windows), 70%
+  (9), 60% (2), 65% (4). Clean XMB exit, no fault line, timeouts 0.
+  - Matt: "The crackles get weaker once I reach 65-60%."
+  - `peak` (before the gain): 68-77% in the menu, 110-181% in the drive.
+  - Clipped samples in the drive: HW run 2 at 100%: 5-60/s, up to 130.
+    This run: 90%: under 3 per window (`clip/s` 0/0); 70%: 0-2/s; 65%:
+    0-3/s; 60%: 0. So from 100% to 70% the clipping fell by about 98%,
+    and Matt heard no change before 65-60%.
+  - Reading (not proven then; HW run 4 above confirms the first part):
+    the clipping is not the cause. A crackle made by the clamp stops when
+    the clamp stops; this one only gets weaker, as every sound does at a
+    lower level. The second part was wrong: the peaks up to 181% are not
+    the crackle itself (HW run 4 has such peaks and no crackle).
+  - The other candidate of HW run 2 stands: miss/s 2400-6300 in the
+    drive (writes into marked pages with no test), tests ~220/s, 5
+    hazards found. SH4 wait 0.03-4.9% of wall.
+  - SPEED: no cost seen (the gain is 2 multiplies per sample on the SPU).
+  - Offered: step (b) of HW run 2 as a quick proof (one sync per block
+    that has a hit, no test), then (a) if it proves the cause. Matt
+    2026-10-11: "Yes, go with b". Built (above).
+- What it does: the sound SPU multiplies each output sample by the level
+  (in 1/256: 90% = 230, -0.93 dB) after MVOL and DAC18B and before the
+  16-bit clamp (`AicaModel::out_gain`, in `final_mix` and `run`). nullAICA
+  does the same with its fixed Volume of 90, so 90% is nullAICA's level at
+  an even MVOL step. SPE AICA Sound only; nullAICA's mixer is not changed.
+- Live path: the PPU writes the level into the sound SPU's bell line
+  (`AicaBell::gain`, `gain_tick` in `ps3/ps3_aica_spe.cpp`, at each CHECK);
+  the SPU reads it at each wake, before the next batch of records
+  (`am_batch`). No record, no twin: the same with SPE ARM7 ON or OFF. The
+  key is `SpeAicaGain` in `nullDC.cfg` [ps3]; `[sndcfg]` shows it.
+- Log, on the `[aica-spe] sound` line: `gain=` (the row), `peak=` (the
+  loudest output sample of the ~5 s window before the gain, 100% = full
+  scale), and `clip/s` as before (counted after the gain). No clip when
+  peak x gain is below 100%: the level to pick is 100 / peak.
+- PC (WSL), all PASS: `misc/spu_sim/run_ring.sh` has 3 new runs on the real
+  SPU image (a fixed level; a change at half the run; the same with the
+  DSP): every frame equal to the x86 model with the same level, clip 43 ->
+  7 at 230 in the mix scenario (peak 124%). The 40 older runs of that
+  script, `run.sh`, `run_dsp.sh`, `diff_seeds.sh` (`diff_adv`, `diff_a3`,
+  8 seeds), `misc/hz_check` (8 seeds), `misc/arm7spe_check` (37 seeds),
+  `misc/a2_check`, `misc/a3_check`: as before.
+- LS: sound SPU image end 0x3D9D0 (was 0x3D7D0); stack use 4.8 KB in the
+  simulator, 4.9 KB spare (was 5.4). ARM7 SPU end 0x36770, no change.
+  Link: `.got` 0xD458, no warning.
+- HW steps (package of 15:36; an install keeps `nullDC.cfg`; SPE AICA Sync
+  ON, SH4 Clock 200):
+  1. Crazy Taxi, a dense drive, SPE AICA Gain at 100%: about 60 s, note
+     the crackles.
+  2. SELECT menu, AUDIO, last row: SPE AICA Gain 90% (live). 60 s.
+  3. If it still crackles: 80%, then 70%.
+  4. Log: `clip/s`, `gain=`, `peak=` per window. The crackle gone with
+     `clip/s` at 0: clipping was the cause. The crackle still there with
+     `clip/s` at 0: it is the missed tests of HW run 2, step (a) there.
+
+**Bundle 5, AICA RAM coherency (section 7; Matt 2026-10-11: "We now work
+on bundle 5."): SPE AICA Sync (6.6) is HW SUCCESS 2026-10-11 in the Crazy
+Taxi main menu (Matt: "With AICA Sync ON the sound is fixed."), and DSP
+Ring RAM (P20 G2) ran with no fault in Phantasy Star Online (Matt: "PSO is
+okay"). Verdict (Matt 2026-10-11): "If they ran with no fault place them
+ON then." So SPE AICA Sync and DSP Ring RAM are ON by default since the
+package of 15:02 on 2026-10-11 (`build/notdc_ps3.pkg`, 1524720 bytes; it
+differs from the package of 04:16, the one of HW run 1, only in these two
+defaults). Matt's `nullDC.cfg` has both ON, and Mono Mix Fix ON, from his
+run. The other 4 rows stay OFF: Mono Mix Fix ran in Looney Tunes and PSO
+with no word on it; DSP Ring 64K, DSP Reg Reads and LFORE Keep are not on
+HW yet. Matt's picks
+before the build (asked once): all four items (6.6, P20 G2 + G3, P20 G4,
+P31 Mono + LFORE), and for 6.6 the hazard test on a page map that the twin
+makes. 6 new rows at the end of the AUDIO page. The package of 04:16 was
+also the first one with 3k's default (TR Triangle Sort at + OPAQUE DEPTH).
+An install keeps `nullDC.cfg`.**
+- Open after HW run 1, not bundle 5 items:
+  - Looney Tunes: the balance of voices and music is wrong (Matt: "Voices
+    and music is just unbalanced."), with every row of the run ON or OFF.
+    Parked by Matt 2026-10-11: "We'll investigate the Looney Tunes stuff
+    later on."
+    Which one is too loud is not known. A lead from the code, not
+    measured: the voices reach the output only through the DSP (EFREG at
+    EFSDL / EFPAN) and the music is CD audio (EXTS); caique marks both
+    output levels as not verified on a console (P20, "Output stage").
+  - The SPU output clips: Crazy Taxi drive up to 55 samples/s, one ChuChu
+    Rocket window ~1300/s. 6.6 names the cause (0.9-1.4 dB louder than
+    nullAICA) and the next step (an SPU output gain). Built 2026-10-11 as
+    SPE AICA Gain (above), HW not run.
+  - The cost of Sync in a dense Crazy Taxi drive: measured in HW run 2
+    (below), no SPEED loss.
+- HW run 2, 2026-10-11 ~15:10, the package of 04:16 (the one installed),
+  Crazy Taxi drive, SH4 Clock 200 (`ps3log_b5_run2.txt`, same scratchpad).
+  Rows of the boot: SPE AICA Sync ON, DSP Ring RAM OFF, Mono Mix Fix OFF,
+  TR Triangle Sort OFF (Matt's file). Sync went OFF twice for 1-2 s.
+  - Matt: "The audio crackle with the settings you saw in the log happens
+    but It's much less prevalent now. Not entirely gone, though."
+  - SPEED with Sync ON, by vertices per render: below 11K 100.0-100.2%
+    (210 s); 11-13K 100.3% (25 s, lowest 99.5%); 13K+ 98.0% (14 s, lowest
+    91.8% at 19.9K). The boots of 2026-10-10 without Sync and with the
+    same TR Triangle Sort OFF: 11-13K 99.8-100.1%, 13K+ 97.4-99.5%. So
+    Sync costs no SPEED that this log can show. SH4 wait for the tests
+    0.1-4.6% of wall per window, about 1% on average.
+  - Why the crackle is not all gone, from the log: in the drive the SH4
+    writes 4000-7800 times/s into marked pages. The limit of 4 tests per
+    block lets about 220 tests/s through (so ~55 blocks/s have hits: one
+    burst of ~100 writes per frame, inferred). The other 96% are `miss`
+    (4000-7600/s), with no test and no sync. The tests found 15 hazards
+    in the drive; how many the missed writes hold is not counted. In the
+    menu the bursts are small, so most hazards got their test: that is
+    why the menu sounded fixed.
+  - Second candidate, not separable in this log: the SPU output clips in
+    the drive in 33 of 48 windows, up to 130/120 samples/s.
+  - The steps offered after the run: (a) the SH4 thread tests a write
+    against the slots' spans itself (the twin sends a table per CHECK), so
+    only a likely hazard asks the ARM7 SPU: no limit on tests, and less
+    SH4 wait than now; (b) a quick rule: after 4 tests without a hazard in
+    a block, one sync without a test, ~55 syncs/s in a drive, ~2% of wall
+    (estimate); (c) the SPU output gain of 6.6, as a row of its own.
+  - Matt 2026-10-11: "My bet's on the output clipping." So (c) is built
+    (SPE AICA Gain, above). (a) and (b) are not built.
+- HW run 1, 2026-10-11 ~14:00, the package of 04:16, Crazy Taxi, SH4 Clock
+  200 (`ps3log_b5_run1.txt`, scratchpad of session 01bbad3e).
+  - Boot 1: Matt's `nullDC.cfg` had SPE AICA Sound OFF (`SpeAicaSound=0`,
+    cause not known), so nullAICA played and SPE ARM7 stayed off. Matt:
+    "With it off it works properly." `nullAICA clip 0/0`. No test of 6.6.
+  - Boot 2: SPE AICA Sound ON (DSP, DSP JIT and SPE ARM7 ON), main menu
+    with music. Sync OFF, Matt: "Cracks are about 3-4 within 10 secs."
+    Sync ON from the SELECT menu, Matt: "With AICA Sync ON the sound is
+    fixed."
+  - Log, Sync ON, 15 windows of ~5 s: SH4 writes into marked pages 236/s
+    (no DMA, no ARM7 store); 28 exact tests/s; 15 hazards in all, 13 of
+    them in one window, each 64-255 positions behind the twin's play
+    point, each with one sync (53-154 us of sound SPU wait); `miss` 202/s
+    (hits over the block's limit, not tested); timeouts 0; no fault line.
+    So the cause 6.6 gave is the right one, and the writer is the SH4.
+  - Not the cause: clipping. `clip/s` 0/0 in every menu window (2/0 and
+    5/4 in two windows before the menu).
+  - Cost: SH4 wait for the tests 1.0% of wall on average, 4.9% in the
+    worst window. SPEED stayed at 100% (the menu leaves the SH4 spare
+    time). About 1 test in 100 finds a hazard, and each test waits ~0.4 ms
+    for the ARM7 SPU.
+  - Then a drive of ~30 s with Sync ON (4.5-12.5K vertices per render,
+    one second above 11K). Matt: "It worked fine". SPEED 99.3-100.7% in
+    every second, clean XMB exit. Per 5 s window: SH4 writes into marked
+    pages 1400-4600/s, 140-217 tests/s, hazards 0.6-5.4/s, `miss` up to
+    4342/s, SH4 wait 1.4-4.0% of wall, timeouts 0. A dense drive (11-13K)
+    with Sync ON is not measured yet.
+  - New fact: the SPU output clips in the drive: `clip/s` 34/16, 31/25,
+    54/55 in its three windows (0/0 in the menu). No word from Matt on it.
+    6.6 names the cause (the SPU path is 0.9-1.4 dB louder than nullAICA)
+    and the next step (an SPU output gain).
+  - Boot 3, ChuChu Rocket, Sync ON (kept in `nullDC.cfg`). Matt: "ChuChu
+    still has the slowed sound cues issue" (F1, section 6, parked: no row
+    of bundle 5 targets it). Log: 0 hazards, 0 DSP register reads; one
+    window with `clip/s` 1269/1320, the others 0/0.
+  - Boot 4, Looney Tunes, Sync + DSP Ring RAM + Mono Mix Fix ON (Matt
+    before the boot: "Looney Tunes also had weird audio balances"; after
+    it: "The Looney Tunes balance is still wrong." Open: which part is
+    too loud or too quiet is not known yet; no row of bundle 5 changed
+    it). Log: 6 hazards, all from G2 DMA writes (2 under 16 positions, 4
+    under 64), each with a sync; the ring is idle (0 lines in, 0 out: the
+    DSP program has 2 live steps and no ring access, so DSP Ring RAM
+    cannot change the load echo here); `clip/s` 0/0; SPEED 100.1%, 15 s at
+    11K+ vertices at 100.4%; sound SPU busy 4.8%.
+  - Boot 5, Phantasy Star Online Ver. 2, the same rows, 241 s. Matt: "PSO
+    is okay." Log: DSP
+    Ring RAM is in use: 7680 ring lines loaded, 3.04M written back (~18
+    per CHECK, as planned for a real program), no guest write into the
+    ring, `slow=0`, `bad=0`; sound SPU busy 18.4% (max 23.0%; no boot
+    without the row in this log to compare). 22 hazards from SH4 writes
+    (16 under 64 positions, 6 under 256), each with a sync; SH4 wait 1.75%
+    of wall (max 4.0%); SPEED 99.98%, 28 s at 11K+ at 100.0%.
+  - All boots: timeouts 0, no fault line, clean XMB exits, 0 DSP register
+    reads (DSP Reg Reads has no use in these 4 games). The log cannot show
+    if a game sets MONO, so it does not tell if Mono Mix Fix acted.
+- Why 6.6 changed: 6.6 put the hazard test on the PPU, with the PPU twin's
+  CA. With SPE ARM7 ON (the default since 2026-10-05) the PPU runs no twin:
+  the twin is on the ARM7 SPU. So the twin makes a map of wave RAM, and the
+  SH4 thread tests its writes against the map.
+- The rows (options page 2, AUDIO; the key is in `nullDC.cfg` [ps3]). All
+  need SPE AICA Sound; the DSP rows need SPE AICA DSP too. `[sndcfg]` shows
+  the six keys.
+  - SPE AICA Sync (`SpeAicaSync`, 6.6): OFF / ON, live. A wave RAM write
+    waits for the sound SPU when a slot has yet to play that byte. Since
+    the package of 16:55 also + BLOCK SYNC and + SAMPLE SYNC (top of this
+    section).
+  - DSP Ring RAM (`DspRingRam`, P20 G2): OFF / ON, set before boot. The
+    sound SPU's DSP ring (up to 32K words) is wave RAM for the guest too,
+    both ways.
+  - DSP Ring 64K (`DspRing64K`, P20 G3): OFF / ON, set before boot. DSP
+    writes of a 64K-word ring, and TABLE writes past the ring, reach wave
+    RAM.
+  - DSP Reg Reads (`DspRegRead`, P20 G4): OFF / ON, set before boot. A read
+    of TEMP, MEMS, MIXS or EFREG (0x4000-0x45BF) returns the DSP's value.
+  - Mono Mix Fix (`AicaMonoFix`, P31): OFF / ON, set before boot. MONO
+    output is (L + R) / 2 (Flycast 136ce267d), in the SPU model and in
+    nullAICA's mixer.
+  - LFORE Keep (`AicaLfore`, P31): OFF / ON, set before boot. A write to
+    the LFO register leaves LFORE set (Flycast 27fd0d426; caique keeps it).
+    Only the register read-back changes.
+- 6.6, how it works:
+  - The map: 1 KB, one bit per 256 bytes of wave RAM. At each CHECK (64
+    samples) the twin marks, for each slot that plays, the bytes from the
+    sound SPU's play point (its lag + 8 samples behind the twin's CA) to
+    256 samples ahead. Loops wrap; a slot with LEA at or below LSA, or with
+    CA past LEA, gets all its positions. The model does it
+    (`AicaModel::hz_mark`, `hz_hit` in `plugs/caiqueAICA/aica_model.cpp`).
+  - The SH4 thread tests each wave RAM write (`aram_hz_write` in
+    `libAICA_WriteMem_aica_ram`; a G2 DMA goes the same way). A hit sends
+    `ARM_CMD_SYNC` and waits for the ARM7 SPU. That SPU makes the exact
+    test of 6.6 (`hz_hit`: the byte is between the sound SPU's play point
+    and the twin's). Only then it sends `AICA_OP_SYNC` and waits for the
+    sound SPU, which plays up to that sample, then drops its cache. Then
+    the write lands. The ARM7 SPU tests its own stores the same way
+    (`aram_store`).
+  - Limits per 64-sample block: 4 exact tests, 1 sync. More are counted as
+    `miss`. After a sync, other writes at the same sample pass free. The
+    SH4 also asks when it is more than 192 samples ahead of the map
+    (`stale`).
+  - No answer from the sound SPU in 50 ms (PPU twin: 100 ms): sync goes
+    off for the session (`timeouts`).
+  - Always on, as 6.6 says: the sound SPU drops its wave RAM cache at the
+    start of each batch of records.
+- P20 G2: while a DSP program is set, the LS ring is a copy of the ring in
+  wave RAM. The SPU loads it when the program, RBP or RBL changes. At each
+  CHECK it writes back the lines (128 bytes) that the round's MWT steps
+  wrote (worked out from the program: MADRS + MDEC_CT; an ADRS-relative
+  step marks 2048 words each way). A guest write into the ring syncs first
+  (the ring's pages are on the map), then goes to the SPU as an
+  `AICA_OP_RING` record, and the SPU loads those lines again.
+- P20 G3: a DSP write through the line cache marks the line; the SPU puts
+  it back before the line leaves the cache (at each CHECK, at a sync, when
+  another line takes its place).
+- P20 G4: a read sends `AICA_OP_DSPRD` and waits for the sound SPU's value
+  (one sync per read). With the row OFF the reads are only counted.
+- Where it runs: the twin's side is in `ps3/spu/spe_arm7.cpp` (SPE ARM7 ON)
+  and again in `ps3/ps3_aica_spe.cpp` for the PPU twin (SPE ARM7 OFF); the
+  SH4 side is in `ps3/ps3_arm_spe.cpp`; the sound SPU's in
+  `ps3/spu/spe_aica_model.cpp`, `spe_aica_ram.h`, `spe_aica.c`.
+- Cost. Rows OFF: one byte test per SH4 wave RAM write and per ARM7 store.
+  Sync: bound by the limits (689 syncs/s at most); 6.6 expects 0.01-0.3%.
+  PC, sound SPU, with random DSP programs (much more ring traffic than a
+  game: 160 ring lines written back per block): DSP Ring RAM +3.8 points
+  of real time (48.4 -> 52.2%), DSP Ring 64K +1.3 points.
+- Logs: `[aram-hz]` every ~5 s while a row is on or a count moved (map
+  pages, hits by writer sh4 / dma / arm, tests, hazards with their distance
+  behind the play point, ring hits and records, syncs/s, miss/s, timeouts,
+  sync wait, SH4 wait % of wall, DSP register reads by sh4 / arm, ring and
+  cache lines of the SPU); `clip/s=L/R` on the `[aica-spe] sound` line;
+  `nullAICA clip L/R` on the `[aicafix]` line. The count of DSP register
+  reads works with every row OFF: it tells if a game reads them at all.
+- PC (WSL), all PASS:
+  - New `misc/hz_check/run.sh`: the map and the exact test against the
+    wave RAM bytes that a second model's render pass reads. 8 seeds, 18.7K
+    tests, 700M reads, none missed; 1.10-1.25 pages marked per page needed.
+    `mutate.py`: 24 of 24 planted bugs fail.
+  - New `misc/spu_sim/run_ring.sh`: the real sound SPU image. Scenarios
+    ring, ringrand, ring64, ringwrap in the 3 DSP modes (30 runs): guest
+    writes into the ring behind SYNC, RING records, DSP register reads,
+    program and ring changes. Every frame equal to a model whose ring is
+    plain RAM, wave RAM equal after each CHECK, every read equal. Also
+    mono (fix on and off) and the old scenarios with MVOL set.
+  - `misc/arm7spe_check`: 15 new seeds (100-131, the rows as bits) with the
+    harness as PPU and as sound SPU: the log (SYNC, RING, DSPRD records and
+    their samples), the map, the counts and the answers equal the x86
+    reference. The 22 old seeds as before.
+  - `misc/aicactl_check`: 64 seeds (LFORE Keep is seed bit 5; the DSP read
+    hook on both sides).
+  - As before: `misc/spu_sim/run.sh` and `run_dsp.sh`, `diff_seeds.sh`
+    (`diff_adv` and `diff_a3`, 8 seeds), `misc/a2_check`, `misc/a3_check`,
+    `misc/dspjit_check`, `misc/g2dma_check`, `misc/arm7spu_check`.
+- A fact found on the way: the old `run_a2` scenarios never set MVOL, so
+  their frames were all silent (the frame compare was empty). With MVOL
+  set (in `run_ring.sh`) every frame is equal: the SPU sound path holds on
+  real audio.
+- Not under a PC check: the PPU twin's copy of the code (SPE ARM7 OFF); the
+  SH4 thread's part (`arm_spe_hz_hit`, the stale rule); DMA order on the
+  real MFC (the simulator completes a DMA at once).
+- Known limits:
+  - A slot that stops inside the lag window has no mark for its last
+    bytes. A slot whose loop end moves below its CA walks back in steps;
+    the map does not cover that walk once it is over.
+  - SPE ARM7 OFF with the ARM7 JIT: the JIT's inline stores are not
+    tested (SH4, DMA and interpreter stores are). With Sound Thread ON the
+    rows do nothing.
+  - A guest write into the ring that gets no sync (over the block's limit)
+    wins over DSP writes not yet written back to that 128-byte line.
+  - A slot that plays from the ring's memory sees DSP output up to one
+    block late.
+- LS: sound SPU image end 0x3D7D0 (was 0x3C750); stack use 4.8 KB in the
+  simulator, 5.4 KB spare (was 9.6). ARM7 SPU end 0x36770, 39 KB spare.
+- Link: `.got` 0xD440, no warning.
+- HW steps (package of 04:16; SH4 Clock 200; the other rows as they are):
+  1. AUDIO page: the 6 new rows OFF. Boot Crazy Taxi, go to the main menu
+     with music, SPEED at 99.5% or more.
+  2. 60 s with SPE AICA Sync OFF: count the crackles per 10 s.
+  3. SELECT menu, SPE AICA Sync ON (live): 60 s, count again. Then OFF for
+     30 s.
+  4. Log: `[aram-hz]` (hits by writer, hazards, syncs/s, miss/s, SH4 wait),
+     `clip/s` on the `sound` line. If ON still crackles with hazards at 0
+     and clip above 0: the next step is an SPU output gain (6.6).
+  5. One boot per other row, ON: DSP Ring RAM in Crazy Taxi (the reverb
+     must sound the same; ring lines in / out, `spu busy`) and at a Looney
+     Tunes load (the echo); DSP Ring 64K only with a game whose `dsp jit`
+     line shows `slow=` above 0; DSP Reg Reads only if `dsp reads/s` is
+     above 0 with the row OFF; Mono Mix Fix with a game set to mono (Sega
+     Bass Fishing if Matt has it); LFORE Keep: no audible change expected.
+
 **Done: 3k, TR Triangle Sort, with 4 levels (Matt 2026-10-11, at the
 bundle 4 verdict: "Build it next"; then, after HW run 2, "Two more
 levels"). HW SUCCESS 2026-10-11 at + OPAQUE DEPTH in Rayman 2 ("They look
@@ -3286,7 +3669,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 |---|---|
 | 2.1 YUV reset on STARTRENDER | `[x]` HW, no visible change |
 | 2.2 AICA EG rate + loop fixes | `[x]` HW, echo unchanged, no regression |
-| 2.3 DSP | `[x]` done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07, default ON; P20 G2-G4 open, bundle 5 (section 7) |
+| 2.3 DSP | `[x]` done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07, default ON; P20 G2 (DSP Ring RAM) ran on HW 2026-10-11 with no fault (PSO), default ON since the package of 15:02; G3, G4 built, rows OFF, HW not run (section 0) |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04; now 6.3, `[ ]`, section 6 is parked |
 | 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) built 2026-10-11 as "TR Volumes", default OFF, no HW test yet (bundle 4, section 0) |
@@ -3384,7 +3767,9 @@ All changes are uncommitted in the working tree. Matt commits.
 
 - 2026-10-07: done. 5.13 A3 (the DSP in the SPU sound) is HW SUCCESS and
   default ON with SPE DSP JIT ON since the package of 03:41. Left: P20
-  G2-G4, bundle 5 (section 7).
+  G2-G4: built 2026-10-11 in bundle 5. G2 (DSP Ring RAM) ran on HW with no
+  fault, default ON since the package of 15:02; G3 and G4: rows OFF, HW not
+  run (section 0).
 - 2026-09-29: see 5.13. The SPE AICA plan runs caique's measured DSP on an
   SPE, which may replace the PPC DSP JIT. Matt's decision.
 - 2026-10-03 (Matt): the DSP JIT is now 5.13 A1b, a recompiler on the SPU.
@@ -7579,7 +7964,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test); bundle 7 (section 7) |
 | 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (open), P31 (CA clamp, done); P24 in bundle 6 (section 7) |
-| 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[ ]`; bundle 5 (section 7) |
+| 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
 | 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | - |
 
@@ -7958,7 +8343,16 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     hardware reads LEA at a one-shot end, so the clamp is Flycast's
     workaround, not hardware behaviour.
 
-### 6.6 SPE AICA Sync (Crazy Taxi crackle)  `[ ]`
+### 6.6 SPE AICA Sync (Crazy Taxi crackle)  `[x]` HW SUCCESS 2026-10-11, default + SAMPLE SYNC since the package of 18:46 (section 0)
+
+- Built on 2026-10-11 with one change (Matt's pick): with SPE ARM7 ON the PPU has no twin, so the twin makes a
+  page map of the wave RAM near each play point and the SH4 thread tests its writes on it; the exact test below
+  runs on the twin. Section 0 has the build. The text below is the plan of 2026-10-04.
+- The clipping step (the last line of the HW test below) is built on 2026-10-11 as the row SPE AICA Gain, after
+  HW run 2 (Matt: "My bet's on the output clipping."). HW run 3: the log does not support clipping as the cause.
+  Then two levels without the test, + BLOCK SYNC and + SAMPLE SYNC, as a proof of the missed tests (Matt: "Yes, go
+  with b"). HW run 4: + SAMPLE SYNC removes the crackle of the drive (Matt: "Fully gone."), default since the
+  package of 18:46. Section 0 has both.
 
 - Cause (Matt: SPE AICA Sound OFF clean, ON crackles):
   - The PPU publishes records at each 64-sample CHECK
@@ -8090,7 +8484,7 @@ for the function.
 | 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt) | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet |
 | 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[x]` HW SUCCESS 2026-10-10 (Crazy Taxi, Sonic Adventure; section 0): P45, P52 and the P25 VQ formats, 4 rows on the TEXTURES page; default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (Matt); not packaged (the package of 22:06 has them OFF); VQ Formats not tested by a game that needs it; the P25 trilinear weights left out and P1 steps 2-3 dropped (Matt) |
 | 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt) | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
-| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[ ]` (section 6 is parked) |
+| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[ ]` |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
 | 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d) | correctness; speed at noise level | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
@@ -8238,8 +8632,12 @@ Main gains:
   then SPE Draw ON for the image. HW: Crazy Taxi, Sonic Adventure, Soul
   Calibur; the named games only if Matt has them.
 
-### Bundle 5: AICA RAM coherency  `[ ]`  (section 6 is parked)
+### Bundle 5: AICA RAM coherency  `[~]` HW runs 1-4 2026-10-11: SPE AICA Sync SUCCESS (default + SAMPLE SYNC), DSP Ring RAM no fault (default ON); 4 rows OFF (section 0)
 
+- Built (Matt's picks, 2026-10-11): every item below, as the rows SPE AICA Sync, DSP Ring RAM, DSP Ring 64K, DSP
+  Reg Reads, Mono Mix Fix and LFORE Keep at the end of the AUDIO page. The hazard test of 6.6 moved to a page
+  map that the twin makes (the ARM7 SPU, or the PPU twin with SPE ARM7 OFF): with SPE ARM7 ON the PPU knows no
+  CA. The text below is the plan of 2026-10-07.
 - Items: 6.6 (SPE AICA Sync), P20 G2-G4 (5.13: the DSP ring in wave RAM,
   64K-word rings, live DSP register reads), P31 (Mono halving, LFORE).
 - Shared part: one hook on guest wave RAM writes. A write inside a live

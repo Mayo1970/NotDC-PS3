@@ -19,6 +19,10 @@ extern "C" int get_cdda_preset();
 extern "C" int get_aica_race_fix_preset();
 extern "C" int get_arm7_reset_fix_preset();
 extern "C" int get_aica_ca_clamp_preset();
+extern "C" int get_spe_aica_dsp_preset();
+extern "C" int get_spe_aica_sync_preset();
+extern "C" int get_dsp_reg_read_preset();
+extern "C" int get_aica_lfore_preset();
 void FASTCALL gdrom_get_cdda(s16* sector);   // dc/gdrom/gdromv3.cpp
 bool aica_sh4_irq_apply(bool on);            // plugs/nullAICA/aica.cpp
 extern u64 AicaTicks;
@@ -48,6 +52,12 @@ static s16 s_sector[AICA_CDDA_WORDS];
 
 static u64 s_win_t0, s_wait_ticks;
 static u32 s_reads, s_writes, s_lag_waits, s_lag_max;
+
+// Section 7, bundle 5 (6.6, P20 G2): the SPU twin's hazard map and counts; the SH4 thread tests its writes on it.
+static AicaHz s_hz;
+static u32 s_hz_ppu[6];   // this window: map hits by the SH4, by a G2 DMA, with a stale map; requests, misses, wait ticks
+static u32 s_hz_synced_at, s_hz_blk, s_hz_reqs, s_cfg_sent;
+static bool s_hz_ring;    // a DSP ring row is on: the SPU keeps the map even with SPE AICA Sync off
 
 static inline const volatile ArmEcho* echo() { return &s_echo; }
 
@@ -164,6 +174,16 @@ void arm_spe_update(u32 cycles, u32 samples)
 		}
 		s_cdda_index += 2;
 	}
+	const int lvl = get_spe_aica_sync_preset();
+	const u32 cfg = lvl <= 0 ? 0 : ARM_CFG_SYNC | (lvl == 2 ? ARM_CFG_BLOCK : lvl >= 3 ? ARM_CFG_ALL : 0);
+	if (cfg != s_cfg_sent)   // the row is live
+	{
+		s_cfg_sent = cfg;
+		ArmCmd* f = cmd_slot();
+		f->op = ARM_CMD_CFG;
+		f->b = cfg;
+		cmd_push();
+	}
 	int stage = get_arm7_speed_preset(), batch = get_arm7_batch_preset();
 	stage = stage < 0 ? 0 : stage > 3 ? 3 : stage;
 	batch = batch < 0 ? 0 : batch > 16 ? 16 : batch;
@@ -176,6 +196,8 @@ void arm_spe_update(u32 cycles, u32 samples)
 	cmd_push();
 	const u32 before = s_now;
 	s_now += samples;
+	// The map covers AICA_HZ_FWD samples after the twin's last one; past that the SH4 cannot rely on it.
+	g_aram_hz_stale = g_aram_hz && (cfg || s_hz_ring) && s_now - *(volatile u32*)&s_hz.map_sample > AICA_HZ_STALE;
 	if ((before ^ s_now) & ~(AICA_BLOCK - 1u))   // a block of 64 samples ended: ps3aica_step's pacing point
 		ps3aica_pace(s_now & ~(AICA_BLOCK - 1u));
 	aica_sh4_irq_apply(echo()->irq != 0);
@@ -214,6 +236,45 @@ void arm_spe_write(u32 addr, u32 data, u32 size)
 	s_writes++;
 	if (a >= 0x28B4 && a < 0x28C0 && !s_dead && wait_tail(s_head))
 		aica_sh4_irq_apply(echo()->irq != 0);
+}
+
+void arm_spe_hz_hit(u32 addr, u32 src)
+{
+	s_hz_ppu[src]++;
+	if (g_aram_hz_stale)
+		s_hz_ppu[2]++;
+	if (s_dead || s_now == s_hz_synced_at)   // synced at this sample: the sound SPU has no sample left to play
+		return;
+	if ((s_now >> 6) != s_hz_blk)
+	{
+		s_hz_blk = s_now >> 6;
+		s_hz_reqs = 0;
+	}
+	// Level 2 asks once per block (that hit syncs with no test), level 3 at each sample with a hit
+	const int lvl = get_spe_aica_sync_preset();
+	if (s_hz_reqs >= AICA_HZ_TESTS && lvl < 3)
+	{
+		s_hz_ppu[4]++;
+		return;
+	}
+	s_hz_reqs = lvl == 2 ? AICA_HZ_TESTS : s_hz_reqs + 1;
+	s_hz_ppu[3]++;
+	const u64 t0 = gettime();
+	ArmCmd* c = cmd_slot();
+	c->op = ARM_CMD_SYNC;
+	c->b = addr;
+	c->c = src;
+	cmd_push();
+	if (!wait_tail(s_head))
+		return;
+	s_hz_ppu[5] += (u32)(gettime() - t0);
+	__asm__ volatile("lwsync" ::: "memory");
+	const u32 res = echo()->hz_res;
+	if (res == ARM_HZ_SYNCED)
+		s_hz_synced_at = s_now;
+	else if (res == ARM_HZ_DEAD)   // the sound SPU did not answer the twin: no more requests
+		g_aram_hz = 0;
+	g_aram_hz_stale = g_aram_hz && s_now - *(volatile u32*)&s_hz.map_sample > AICA_HZ_STALE;
 }
 
 void arm_spe_aram_all()
@@ -261,9 +322,19 @@ bool arm_spe_init(u8* aica_ram)
 	s_setup.ring_ea = (u32)(uintptr_t)s_ring;
 	s_setup.aram_ea = (u32)(uintptr_t)aica_ram;
 	ps3aica_spe_eas(&s_setup.aica_bell_ea, &s_setup.aica_echo_ea, &s_setup.aica_log_ea);
+	const u32 af = ps3aica_setup_flags();
+	s_hz_ring = (af & (AICA_SETUP_RING | AICA_SETUP_RING64)) != 0;
 	s_setup.flags = (get_aica_race_fix_preset() ? ARM_SETUP_RACE_FIX : 0) |
 	                (get_arm7_reset_fix_preset() ? ARM_SETUP_RESET_FIX : 0) |
-	                (get_aica_ca_clamp_preset() ? ARM_SETUP_CA_CLAMP : 0);
+	                (get_aica_ca_clamp_preset() ? ARM_SETUP_CA_CLAMP : 0) |
+	                (get_aica_lfore_preset() ? ARM_SETUP_LFORE : 0) | ((af & AICA_SETUP_RING) ? ARM_SETUP_RING : 0) |
+	                ((af & AICA_SETUP_RING64) ? ARM_SETUP_RING64 : 0) |
+	                (get_dsp_reg_read_preset() && get_spe_aica_dsp_preset() ? ARM_SETUP_DSPRD : 0);
+	memset(&s_hz, 0, sizeof(s_hz));
+	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
+	s_setup.hz_ea = (u32)(uintptr_t)&s_hz;
+	s_hz_synced_at = s_hz_blk = s_cfg_sent = ~0u;
+	s_hz_reqs = 0;
 	s_head = s_tail_seen = s_rd_seq = 0;
 	s_dead = false;
 	g_arm_spe_dlo = 0xFFFF;
@@ -311,6 +382,7 @@ bool arm_spe_init(u8* aica_ram)
 		return false;
 	}
 	g_arm_spe = true;
+	g_aram_hz = s_hz.map;
 	s_win_t0 = gettime();
 	printf("[arm7spe] SPU thread up: ARM7, nullAICA registers and the caique control twin on the SPU;"
 	       " SPU LS used %u of 256 KB\n", echo()->ls_end >> 10);
@@ -322,6 +394,8 @@ void arm_spe_term()
 	if (!s_up)
 		return;
 	g_arm_spe = false;
+	g_aram_hz = 0;
+	g_aram_hz_stale = false;
 	__asm__ volatile("lwsync" ::: "memory");
 	s_bell.quit = 1;
 	if (!wait_state(ARM_SPE_STATE_EXITED, ps3_timebase_hz / 10))
@@ -377,4 +451,6 @@ void arm_spe_stats(double)
 	l = c;
 	s_reads = s_writes = s_lag_waits = s_lag_max = 0;
 	s_wait_ticks = 0;
+	ps3aica_hz_print(&s_hz, w, s_hz_ppu);
+	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
 }

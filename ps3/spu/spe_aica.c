@@ -19,6 +19,11 @@ void am_reset(void);
 void am_write(uint32_t sample, uint32_t off, uint32_t val);
 uint32_t am_check(uint32_t sample, void* snap);
 void am_cdda(uint32_t sample, uint32_t val);
+void am_batch(uint32_t gain, uint32_t peak_seq);
+void am_sync(uint32_t sample);
+void am_ring(uint32_t sample, uint32_t lo, uint32_t hi);
+uint32_t am_dsp_read(uint32_t sample, uint32_t off);
+void am_hz_stats(uint32_t* out);
 void am_snd_flush(void);
 void am_snd_stats(uint32_t* out);
 uint32_t am_samples(void);
@@ -46,6 +51,7 @@ static void put_echo(void)
 	am_prof((uint32_t*)echo.prof);
 	am_dsp_stats((uint32_t*)&echo.dsp_flags);
 	am_snd_stats((uint32_t*)&echo.snd_frames);
+	am_hz_stats((uint32_t*)echo.clip);
 	mfc_put((void*)&echo, echo_ea, sizeof(echo), TAG_ECHO, 0, 0);
 	wait_tag(TAG_ECHO);
 }
@@ -94,6 +100,15 @@ static uint32_t run_recs(uint32_t t, uint32_t head)
 				am_cdda(r->sample, r->val);
 			else if (r->op == AICA_OP_RESET)
 				am_reset();
+			else if (r->op == AICA_OP_SYNC)
+			{
+				am_sync(r->sample);
+				echo.sync = r->val;
+			}
+			else if (r->op == AICA_OP_RING)
+				am_ring(r->sample, r->val & 0xFFFF, r->val >> 16);
+			else if (r->op == AICA_OP_DSPRD)
+				echo.dsp_rd = (r->val << 16) | (am_dsp_read(r->sample, r->off) & 0xFFFF);
 		}
 		t += n;
 		echo.tail = t;
@@ -136,6 +151,7 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_shared)
 		if (head != tail)
 		{
 			const uint32_t t0 = spu_read_decrementer();
+			am_batch(bell.gain, bell.peak_seq);
 			tail = run_recs(tail, head);
 			echo.busy += t0 - spu_read_decrementer();
 			continue;

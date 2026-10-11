@@ -18,7 +18,13 @@
 #define AICA_CDDA_WORDS  1176
 #define AICA_CDDA_SILENT 0xFFFFFFFFu
 
-enum { AICA_OP_WRITE, AICA_OP_CHECK, AICA_OP_RESET, AICA_OP_CDDA };
+enum
+{
+	AICA_OP_WRITE, AICA_OP_CHECK, AICA_OP_RESET, AICA_OP_CDDA,
+	AICA_OP_SYNC,    // plan 6.6: val = request number; the SPU writes its wave RAM changes back, drops its cache, answers
+	AICA_OP_RING,    // P20 G2: val = first | last << 16, the wave RAM lines (128 bytes) the guest wrote in the DSP ring
+	AICA_OP_DSPRD    // P20 G4: off = DSP register, val = request number; the SPU answers with the register's value
+};
 
 // WRITE: off, val = 16-bit register value. CHECK: val = check number, hash = PPU snapshot hash. CDDA: val = cdda slot
 // or AICA_CDDA_SILENT. sample = PPU samples run when the record was made; the SPU steps to it before applying.
@@ -35,7 +41,9 @@ typedef struct
 {
 	volatile uint32_t head;  // records written to the log
 	volatile uint32_t quit;
-	uint32_t pad[30];
+	volatile uint32_t gain;      // plan 6.6 "SPE AICA Gain", live: output level in 1/256, 0 = none
+	volatile uint32_t peak_seq;  // a new value starts a new AicaEcho::peak window
+	uint32_t pad[28];
 } __attribute__((aligned(128))) AicaBell;
 
 // 5.13 A1b DSP recompiler. Modes: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check.
@@ -81,8 +89,18 @@ typedef struct
 	volatile uint32_t phase;      // LS copy only, for a stall dump: 1 generated code, 2 interpreter, 3 compile, 4 self-test
 	volatile uint32_t snd_frames, snd_drops;   // 5.13 A2: 48 kHz frames written to the ring; dropped, the ring was full
 	volatile uint32_t cdda;       // CD-DA records applied
-	uint32_t pad[31];
+	volatile uint32_t sync;       // plan 6.6: the last SYNC request done
+	volatile uint32_t dsp_rd;     // P20 G4: DSPRD request << 16 | the register value; one word, so never half an answer
+	volatile uint32_t clip[2];    // plan 6.6: output samples clamped, left and right
+	volatile uint32_t ring_in, ring_out, line_out;   // P20 G2/G3: ring lines loaded, written back; cache lines written back
+	volatile uint32_t peak;      // plan 6.6: the largest |output sample| before the gain in this peak window (32768 = full)
+	uint32_t pad[23];
 } __attribute__((aligned(128))) AicaEcho;
+
+// AicaSetup.flags, set before boot
+#define AICA_SETUP_RING   1u   // P20 G2: the LS copy of the DSP ring (up to 32K words) mirrors wave RAM
+#define AICA_SETUP_RING64 2u   // P20 G3: DSP writes through the line cache (64K-word ring, TABLE) reach wave RAM
+#define AICA_SETUP_MONO   4u   // P31: MONO output is (L + R) / 2
 
 typedef struct
 {
@@ -91,8 +109,30 @@ typedef struct
 	uint32_t snd;      // 5.13 A2: the SPU makes the sound into ps3_audio.cpp's ring
 	uint32_t ring_ea, ring_frames, wr_ea, rd_ea, w0;   // ring (2 floats a frame), ring_wr, ring_rd, ring_wr at boot
 	uint32_t snd_dsp;  // 5.13 A3: the sound runs the DSP (dsp_mode); A2 alone plays without it
-	uint32_t pad[23];
+	uint32_t flags;    // AICA_SETUP_*
+	uint32_t pad[22];
 } __attribute__((aligned(128))) AicaSetup;
+
+// Plan 6.6: the hazard map (bit 7 first, one bit per 256 bytes of wave RAM) and the samples it must cover
+#define AICA_HZ_MAP     1024
+#define AICA_HZ_MARGIN  8      // extra samples behind a play point
+#define AICA_HZ_FWD     256    // samples ahead: one block, and the SH4's lead over the twin
+#define AICA_HZ_STALE   192    // the SH4 is further ahead of the map than this: every wave RAM write asks
+#define AICA_HZ_TESTS   4      // exact tests per 64-sample block; one sync per block
+
+// The twin's map and counts (the ARM7 SPU puts the block, the PPU reads it; or the PPU's own with its twin)
+typedef struct
+{
+	uint8_t map[AICA_HZ_MAP];
+	uint32_t map_sample;                // the twin's sample count when it made the map
+	uint32_t tests[3], hazards[3];      // exact tests, and hits on a slot's span, by writer: SH4, G2 DMA, ARM7
+	uint32_t near[4];                   // those hits by positions behind the play point: < 16, < 64, < 256, more
+	uint32_t ring_hits, ring_recs;      // writes into the DSP ring; RING records sent
+	uint32_t syncs, miss, timeouts, wait_ticks;   // miss: a hazard or a test over the block's limit
+	uint32_t arm_hits;                  // ARM7 stores into a marked page
+	uint32_t dsp_rd[2];                 // reads of DSP registers 0x4000-0x45BF by the SH4 and by the ARM7
+	uint32_t pad[12];
+} __attribute__((aligned(128))) AicaHz;
 
 // One CD-DA sector, 128-byte aligned for the SPU's DMA
 typedef struct

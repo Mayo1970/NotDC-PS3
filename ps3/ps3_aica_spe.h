@@ -20,3 +20,25 @@ void ps3aica_cdda(const s16* sector, bool silent);
 void ps3aica_spe_eas(u32* bell, u32* echo, u32* log);
 void ps3aica_pace(u32 now);
 u32 ps3aica_cdda_slot(const s16* sector, u32 ord);
+
+// OPTIMIZATION_PLAN section 7, bundle 5 (6.6 SPE AICA Sync, P20 G2-G4): guest wave RAM writes and DSP register
+// reads that must meet the sound SPU at their sample.
+extern u8* g_aram_hz;         // the twin's page map (spu/spe_aica.h AicaHz), null while no SPU plays
+extern bool g_aram_hz_stale;  // SPE ARM7: the SH4 is too far ahead of the map, so every write asks
+extern u32 g_aram_hz_dma;     // 1 while a G2 DMA copies: the [aram-hz] writer
+extern u32 g_aram_ring_base, g_aram_ring_len;   // PPU twin: the DSP ring the sound SPU mirrors (len 0 = none)
+void aram_hz_hit(u32 addr, u32 src);            // src: 0 SH4, 1 G2 DMA, 2 ARM7
+void ps3aica_ring_wrote(u32 addr);
+u16 ps3aica_dsp_read(u32 reg, u32 cpu, u16 old);   // cpu: 0 SH4, 1 ARM7; old = nullAICA's copy of the register
+// Sound mode, before a store to wave RAM byte addr (< 2 MB): waits for the sound SPU when it has yet to play it.
+static inline void aram_hz_write(u32 addr, u32 src)
+{
+	if (g_aram_hz && (g_aram_hz_stale || (g_aram_hz[addr >> 11] & (0x80u >> ((addr >> 8) & 7)))))
+		aram_hz_hit(addr, src);
+	if (((addr - g_aram_ring_base) & 0x1FFFFFu) < g_aram_ring_len)
+		ps3aica_ring_wrote(addr);
+}
+// The AICA_SETUP_* flags the sound SPU got; the ARM7 SPU's twin must use the same (ps3_arm_spe.cpp).
+u32 ps3aica_setup_flags();
+// [aram-hz] every ~5 s while a bundle 5 row is on or a DSP register was read: hz = the twin's counts (AicaHz).
+void ps3aica_hz_print(const void* hz, double w, const u32* ppu);

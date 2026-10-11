@@ -21,6 +21,7 @@ extern "C" int get_sh4_clock_preset() { return 200; }
 extern "C" int get_dma_fix_preset() { return g_dmafix; }
 extern "C" int get_sched_preset() { return g_sched; }
 extern "C" int get_aica_race_fix_preset() { return g_race; }
+u32 g_aram_hz_dma;   // plan 6.6: set around the copy; must be 0 again after every start
 static u32 g_msgbox;
 int msgboxf(const char*, unsigned int, ...) { g_msgbox++; return 0; }
 u32 libAICA_ReadMem_aica_reg(u32, u32) { return 0; }

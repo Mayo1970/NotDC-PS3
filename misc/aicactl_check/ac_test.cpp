@@ -3,6 +3,8 @@
 #include <spu_intrinsics.h>
 #include <spu_mfcio.h>
 #include "types.h"
+static void ac_dsp_read_t(uint32_t a);   // P20 G4: the port's side of a DSP register read
+#define AC_DSP_READ(a) ac_dsp_read_t(a)
 #include "aica_ctl.h"
 
 // ---- the reference ----
@@ -48,6 +50,15 @@ extern "C" int get_aica_race_fix_preset() { return g_race; }
 extern "C" int get_aica_ca_clamp_preset() { return g_clamp; }
 extern "C" int get_arm7_reset_fix_preset() { return 0; }
 u32 g_arm_races, g_arm_resets, g_arm_stale;
+// Plan section 7, bundle 5: seed bit 5 is LFORE Keep (P31); the wave RAM hooks of 6.6 are not under test here
+static int g_lfore;
+extern "C" int get_aica_lfore_preset() { return g_lfore; }
+extern "C" int get_aica_mono_fix_preset() { return 0; }
+u8* g_aram_hz;
+bool g_aram_hz_stale;
+u32 g_aram_hz_dma, g_aram_ring_base, g_aram_ring_len;
+void aram_hz_hit(u32, u32) {}
+void ps3aica_ring_wrote(u32) {}
 void g2dma_take(u32 out[7]) { for (int i = 0; i < 7; i++) out[i] = 0; }
 void arm_spe_fix_take(u32 out[6]) { for (int i = 0; i < 6; i++) out[i] = 0; }
 bool arm_reset_latch();   // arm_mem.cpp
@@ -67,7 +78,7 @@ static void FASTCALL ref_cancel(HollyInterruptID i) { g_istext &= ~(1u << (u8)i)
 
 // ---- twin and CD-DA calls, side 0 the reference, side 1 the port ----
 struct Hook { u32 kind, a, b, c, d, steps; };
-struct Side { Hook log[64]; u32 n, steps, mon_n; };
+struct Side { Hook log[64]; u32 n, steps, mon_n, dsp_n; };
 static Side g_hs[2];
 
 static void hook(int s, u32 kind, u32 a, u32 b, u32 c, u32 d)
@@ -91,6 +102,18 @@ u16 ps3aica_read_mon(u32 reg, bool keep_lp)
 	return (u16)mon_value(g_hs[0], reg, keep_lp);
 }
 void ps3aica_step() { g_hs[0].steps++; }
+// P20 G4: both sides ask for TEMP, MEMS, MIXS or EFREG at the same reads and store the same made-up answer
+static u32 dsp_value(Side& h, u32 reg) { return (((h.dsp_n++ * 0x9E3779B1u) >> 16) ^ (reg * 13)) & 0xFFFF; }
+u16 ps3aica_dsp_read(u32 reg, u32, u16)
+{
+	hook(0, 'D', reg, 0, 0, 0);
+	return (u16)dsp_value(g_hs[0], reg);
+}
+static void ac_dsp_read_t(u32 a)
+{
+	hook(1, 'D', a, 0, 0, 0);
+	ac_wr16((a & 0x7FFC) + 2, dsp_value(g_hs[1], a));
+}
 void ps3aica_cdda(const s16*, bool silent) { hook(0, 'C', silent, 0, 0, 0); }
 void arm_avoid_race() { hook(0, 'X', 0, 0, 0, 0); }
 
@@ -245,6 +268,7 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 	g_mute = (int)((seed >> 2) & 1);
 	g_race = (int)((seed >> 3) & 1);
 	g_clamp = (int)((seed >> 4) & 1);
+	g_lfore = (int)((seed >> 5) & 1);
 	aica_reg = s_reg_ref;
 	aica_ram_l = s_aram;
 	ref_aica_params(s_aram, &g_istext, ref_raise, ref_cancel);
@@ -256,6 +280,7 @@ int main(uint64_t seed, uint64_t nops, uint64_t rep_ea)
 	ac_init();
 	ac.race_fix = (u32)g_race;
 	ac.ca_clamp = (u32)g_clamp;
+	ac.lfore_keep = (u32)g_lfore;
 	g_rep.status = 1;
 	int bad = compare(0, 1);
 

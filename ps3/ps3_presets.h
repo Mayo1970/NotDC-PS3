@@ -132,6 +132,13 @@ extern int g_spe_aica_snd_preset;
 extern int g_spe_aica_dsp_preset;
 extern int g_sound_thread_preset;
 extern int g_spe_arm7_preset;
+extern int g_spe_aica_sync_preset;
+extern int g_dsp_ring_ram_preset;
+extern int g_dsp_ring_64k_preset;
+extern int g_dsp_reg_read_preset;
+extern int g_aica_mono_fix_preset;
+extern int g_aica_lfore_preset;
+extern int g_spe_aica_gain_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 
 // cfgOpen() must have run first.

@@ -7,6 +7,8 @@
 #include "aica_model.h"
 #include "spe_aica.h"
 #include "spe_arm7.h"
+static void ac_dsp_read(uint32_t a);
+#define AC_DSP_READ(a) ac_dsp_read(a)
 #include "aica_ctl.h"
 
 #define TAG_CMD  1
@@ -53,6 +55,12 @@ static uint32_t line_tag[LINES];   // DC line address | 1
 static uint8_t stage[STAGE_N][16] __attribute__((aligned(16)));
 static uint32_t stage_i;
 
+// Plan 6.6 / P20 G2 (the code is after the log's): the hazard map and counts, and the DSP ring the sound SPU mirrors
+static AicaHz hz;
+static uint32_t ring_base, ring_len;   // in wave RAM bytes; len 0 = no ring
+static void hz_arm_store(uint32_t a);
+static void ring_wrote(uint32_t lo, uint32_t hi);
+
 static void aram_invalidate_all(void) { memset(line_tag, 0, sizeof(line_tag)); }
 
 // lo..hi: DC line numbers (address >> 7) the SH4 wrote
@@ -82,8 +90,11 @@ static inline uint8_t* aram_line(uint32_t a)
 }
 
 // h: host byte offset, n = 1 or 4 (aligned). Write-through: a cached copy changes too; the bytes go out at once.
+// Plan 6.6: a store to a marked page first asks if the sound SPU has yet to play that byte.
 static void aram_store(uint32_t h, uint32_t v, uint32_t n)
 {
+	if (__builtin_expect(hz.map[h >> 11] & (0x80 >> ((h >> 8) & 7)), 0))
+		hz_arm_store(n == 1 ? h ^ 3 : h);
 	const uint32_t la = h & 0x1FFF80u, i = (la >> 7) & (LINES - 1);
 	uint8_t* p = line_tag[i] == (la | 1) ? &line_data[i][h & 127] : &stage[stage_i++ & (STAGE_N - 1)][h & 15];
 	if (n == 1)
@@ -92,6 +103,8 @@ static void aram_store(uint32_t h, uint32_t v, uint32_t n)
 		*(uint32_t*)p = v;
 	mfc_putf(p, setup.aram_ea + h, n, TAG_MEM, 0, 0);
 	st.puts++;
+	if (__builtin_expect(((h - ring_base) & 0x1FFFFFu) < ring_len, 0))
+		ring_wrote(h >> 7, h >> 7);
 }
 
 // ── ARM7 memory (arm_mem.cpp ReadMemArm / WriteMemArm) ──
@@ -247,7 +260,7 @@ static void log_room(void)
 	}
 }
 
-static void push(uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
+static void push_at(uint32_t sample, uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
 {
 	if (log_dead)
 	{
@@ -264,7 +277,7 @@ static void push(uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
 		}
 	}
 	AicaRec* r = &recs[rec_n++];
-	r->sample = s_now;
+	r->sample = sample;
 	r->op = op;
 	r->pad = 0;
 	r->off = off;
@@ -278,7 +291,240 @@ static void push(uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
 		flush_recs();
 }
 
+// P20 G2: the wave RAM lines the guest wrote in the ring since the last RING record, and the first write's sample
+static uint32_t ring_plo = 1, ring_phi, ring_pt;
+
+static void ring_wrote(uint32_t lo, uint32_t hi)
+{
+	if (ring_phi < ring_plo)
+	{
+		ring_plo = lo;
+		ring_phi = hi;
+		ring_pt = s_now;
+		return;
+	}
+	if (lo < ring_plo)
+		ring_plo = lo;
+	if (hi > ring_phi)
+		ring_phi = hi;
+}
+
+// A waiting RING record goes first: the sound SPU must reload those lines before it plays on.
+static void push(uint8_t op, uint16_t off, uint32_t val, uint32_t hash)
+{
+	if (__builtin_expect(ring_phi >= ring_plo, 0))
+	{
+		const uint32_t v = ring_plo | ring_phi << 16;
+		ring_plo = 1;
+		ring_phi = 0;
+		hz.ring_recs++;
+		push_at(ring_pt, AICA_OP_RING, 0, v, 0);
+	}
+	push_at(s_now, op, off, val, hash);
+}
+
 static void catch_up(void) { M->advance(s_now - (uint32_t)M->samples, false, 0); }
+
+// ── Plan 6.6 SPE AICA Sync, P20 G2-G4: the exact test, the sync with the sound SPU, DSP register reads ──
+
+#define HZ_WAIT_MAX (79800u * 50)   // 50 ms without an answer; the PPU gives this SPU 100 ms
+static uint32_t hz_live;                  // ARM_CFG_*, from the PPU
+static uint32_t hz_synced_at = ~0u;       // the sample the sound SPU last caught up to
+static uint32_t hz_blk = ~0u, hz_tests, hz_syncs, hz_seq, hz_rd_seq, s_in_arm;
+static bool hz_dead, hz_dirty;            // the sound SPU did not answer: sync is off; counts wait for a put
+
+static void aecho_get(void)
+{
+	mfc_get(&aecho, setup.aica_echo_ea, sizeof(aecho), TAG_AECHO, 0, 0);
+	wait_tag(TAG_AECHO);
+}
+
+// The map: the slots' play points while "SPE AICA Sync" is on, and the DSP ring. lag = samples the sound SPU is behind.
+static void hz_map(int32_t lag)
+{
+	wait_tag(TAG_MEM);   // the last put of the block is done: its LS copy can change
+	catch_up();
+	memset(hz.map, 0, sizeof(hz.map));
+	if (!hz_dead)
+	{
+		if (hz_live)
+			M->hz_mark(hz.map, (uint32_t)(lag < 0 ? 0 : lag) + AICA_HZ_MARGIN, AICA_HZ_FWD);
+		for (uint32_t p = ring_base >> 8, n = ring_len >> 8; n; n--, p++)
+			hz.map[(p & 8191) >> 3] |= (uint8_t)(0x80 >> (p & 7));
+	}
+	hz.map_sample = s_now;
+	mfc_putf(&hz, setup.hz_ea, sizeof(hz), TAG_MEM, 0, 0);
+	hz_dirty = false;
+}
+
+static void hz_remap(void)
+{
+	aecho_get();
+	hz_map((int32_t)(s_now - aecho.samples));
+}
+
+// At each CHECK: a new map while a row that uses it is on (the PPU counts on its date), else the counts if they moved
+static void hz_tick(void)
+{
+	if (ring_len)   // the sound SPU wrote its ring back by now: cached ring lines are old
+		for (uint32_t i = 0; i < LINES; i++)
+			if (line_tag[i] && (((line_tag[i] & ~1u) - ring_base) & 0x1FFFFFu) < ring_len)
+				line_tag[i] = 0;
+	if (hz_live || (setup.flags & (ARM_SETUP_RING | ARM_SETUP_RING64)))
+		hz_remap();
+	else if (hz_dirty)
+	{
+		wait_tag(TAG_MEM);
+		mfc_putf(&hz.map_sample, setup.hz_ea + AICA_HZ_MAP, sizeof(hz) - AICA_HZ_MAP, TAG_MEM, 0, 0);
+		hz_dirty = false;
+	}
+}
+
+// The ring the sound SPU mirrors, after a write to RBP/RBL or to the DSP program
+static void ring_update(void)
+{
+	uint32_t base, bytes;
+	const bool on = M->ring_range(base, bytes) && (setup.flags & (bytes <= 65536 ? ARM_SETUP_RING : ARM_SETUP_RING64));
+	const uint32_t len = on ? bytes : 0;
+	if (len == ring_len && (!len || base == ring_base))
+		return;
+	ring_base = base;
+	ring_len = len;
+	hz_remap();
+}
+
+// The SH4 wrote lines lo..hi: the part in the ring goes to the sound SPU (all of it when the ring wraps wave RAM)
+static void ring_sh4(uint32_t lo, uint32_t hi)
+{
+	const uint32_t rb = ring_base >> 7, re = rb + (ring_len >> 7) - 1;
+	if (re < (2u << 20) / 128)
+	{
+		if (lo < rb)
+			lo = rb;
+		if (hi > re)
+			hi = re;
+		if (lo > hi)
+			return;
+	}
+	ring_wrote(lo, hi);
+}
+
+// Publishes, then waits for the sound SPU's answer to request `want` (a SYNC, or a DSPRD). No answer: sync goes off.
+static bool snd_answer(uint32_t want, bool rd)
+{
+	publish();
+	const uint32_t t0 = spu_read_decrementer();
+	for (;;)
+	{
+		aecho_get();
+		if (rd ? (aecho.dsp_rd >> 16) == (want & 0xFFFF) : aecho.sync == want)
+			break;
+		if (t0 - spu_read_decrementer() > HZ_WAIT_MAX)
+		{
+			hz.timeouts++;
+			hz_dead = true;
+			hz_map(0);
+			return false;
+		}
+	}
+	hz.wait_ticks += t0 - spu_read_decrementer();
+	log_tail_seen = aecho.tail;
+	return true;
+}
+
+// 0 = no hazard; 1 = a slot has yet to play byte a on the sound SPU; 2 = a is in the mirrored ring
+static uint32_t hz_test(uint32_t a, uint32_t src)
+{
+	hz.tests[src]++;
+	hz_dirty = true;
+	if (((a - ring_base) & 0x1FFFFFu) < ring_len)
+	{
+		hz.ring_hits++;
+		return 2;
+	}
+	if (!hz_live)
+		return 0;
+	aecho_get();
+	const int32_t lag = (int32_t)(s_now - aecho.samples);
+	if (lag <= 0)
+		return 0;
+	catch_up();
+	const int32_t d = M->hz_hit(a, (uint32_t)lag + AICA_HZ_MARGIN);
+	if (d < 0)
+		return 0;
+	hz.hazards[src]++;
+	hz.near[d < 16 ? 0 : d < 64 ? 1 : d < 256 ? 2 : 3]++;
+	return 1;
+}
+
+// A write to byte a of a marked page at this sample (src: 0 SH4, 1 G2 DMA, 2 ARM7). Returns ARM_HZ_*.
+// The exact test, then one sync per 64-sample block at most; ARM_CFG_BLOCK and ARM_CFG_ALL sync with no test.
+static uint32_t hz_write(uint32_t a, uint32_t src)
+{
+	if (hz_dead || log_dead)
+		return ARM_HZ_DEAD;
+	if (s_now == hz_synced_at)
+		return ARM_HZ_SYNCED;
+	if ((s_now >> 6) != hz_blk)
+	{
+		hz_blk = s_now >> 6;
+		hz_tests = hz_syncs = 0;
+	}
+	if (hz_live & (ARM_CFG_BLOCK | ARM_CFG_ALL))   // no test: the hit syncs; BLOCK keeps one sync per block
+	{
+		hz_dirty = true;
+		if (hz_syncs && !(hz_live & ARM_CFG_ALL))
+		{
+			hz.miss++;
+			return ARM_HZ_MISS;
+		}
+	}
+	else
+	{
+		if (hz_tests >= AICA_HZ_TESTS)
+		{
+			hz.miss++;
+			hz_dirty = true;
+			return ARM_HZ_MISS;
+		}
+		hz_tests++;
+		if (!hz_test(a, src))
+			return ARM_HZ_NONE;
+		if (hz_syncs)   // one sync per block: this hazard stays
+		{
+			hz.miss++;
+			return ARM_HZ_MISS;
+		}
+	}
+	hz_syncs = 1;
+	push(AICA_OP_SYNC, 0, ++hz_seq, 0);
+	if (log_dead || !snd_answer(hz_seq, false))
+		return ARM_HZ_DEAD;
+	hz.syncs++;
+	hz_synced_at = s_now;
+	hz_map(0);
+	return ARM_HZ_SYNCED;
+}
+
+static void hz_arm_store(uint32_t a)
+{
+	hz.arm_hits++;
+	hz_dirty = true;
+	hz_write(a, 2);
+}
+
+// P20 G4: nullAICA's register copy gets the DSP's value from the sound SPU before the read returns it
+static void ac_dsp_read(uint32_t a)
+{
+	hz.dsp_rd[s_in_arm]++;
+	hz_dirty = true;
+	if (!(setup.flags & ARM_SETUP_DSPRD) || hz_dead || log_dead)
+		return;
+	const uint32_t off = a & 0x7FFC;
+	push(AICA_OP_DSPRD, (uint16_t)off, ++hz_rd_seq, 0);
+	if (!log_dead && snd_answer(hz_rd_seq, true))
+		ac_wr16(off + 2, aecho.dsp_rd & 0xFFFF);
+}
 
 // The upper halfword of a 32-bit slot holds no register; a byte write keeps the other byte nullAICA had.
 static void ac_twin_write(uint32_t off, uint32_t data, uint32_t size, uint32_t old16)
@@ -294,6 +540,8 @@ static void ac_twin_write(uint32_t off, uint32_t data, uint32_t size, uint32_t o
 	catch_up();
 	M->write(off, val);
 	push(AICA_OP_WRITE, (uint16_t)off, val, 0);
+	if ((off == 0x2804 || (off >= 0x3400 && off < 0x3C00)) && (setup.flags & (ARM_SETUP_RING | ARM_SETUP_RING64)))
+		ring_update();
 }
 
 static uint32_t ac_twin_mon(uint32_t reg, int keep_lp)
@@ -317,6 +565,7 @@ static void ac_twin_step(void)
 	push(AICA_OP_CHECK, 0, s_checks, caique::AicaModel::snap_hash(s_snap));
 	s_checks++;
 	st.checks++;
+	hz_tick();
 }
 
 // CD-DA: the PPU read the sector at this sample and queued its slot before the MediumUpdate.
@@ -364,7 +613,9 @@ static void run_mu(const ArmCmd* c)
 		st.ticks += ticks;
 	}
 	cpu.idle_pref = (uint8_t)ARM_MU_SAFE(c->flags);
+	s_in_arm = 1;
 	a7_run(&cpu, ticks);
+	s_in_arm = 0;
 deferred:
 	for (uint32_t n = c->a; n; n--)
 		ac_timestep();
@@ -373,9 +624,20 @@ deferred:
 static void run_cmd(const ArmCmd* c)
 {
 	if (c->dhi >= c->dlo)
+	{
 		aram_invalidate(c->dlo, c->dhi);
+		if (ring_len)
+			ring_sh4(c->dlo, c->dhi);
+	}
 	switch (c->op)
 	{
+	case ARM_CMD_SYNC:
+		st.hz_res = hz_write(c->b & 0x1FFFFFu, c->c ? 1 : 0);
+		break;
+	case ARM_CMD_CFG:
+		hz_live = c->b & (ARM_CFG_SYNC | ARM_CFG_BLOCK | ARM_CFG_ALL);
+		hz_remap();
+		break;
 	case ARM_CMD_MU:
 		run_mu(c);
 		break;
@@ -446,6 +708,7 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_setup)
 	ac_init();
 	ac.race_fix = (setup.flags & ARM_SETUP_RACE_FIX) != 0;
 	ac.ca_clamp = (setup.flags & ARM_SETUP_CA_CLAMP) != 0;
+	ac.lfore_keep = (setup.flags & ARM_SETUP_LFORE) != 0;
 	a7_init(&cpu, (setup.flags & ARM_SETUP_RESET_FIX) != 0);
 	M->init();
 	M->reset();

@@ -188,6 +188,10 @@ struct AicaModel {
     uint64_t coll_need;       /* slots whose claim the program reads: even steps with MWT or MRD */
     uint64_t adv_s0;          /* the round's first sample and its MDEC_CT */
     uint32_t adv_mdec0;
+    bool mono_half;           /* P31: MONO output is (L + R) / 2 (Flycast 136ce267d); init() clears it, reset() keeps it */
+    uint32_t clip[2];         /* plan 6.6: output samples final_mix() clamped, left and right */
+    uint32_t out_gain;        /* plan 6.6: output level in 1/256 before the clamp, 0 = none; init() clears it, reset() keeps it */
+    uint32_t peak;            /* the largest |output| final_mix() saw before out_gain; the user clears it */
 
     AicaModel();
     ~AicaModel();
@@ -210,6 +214,13 @@ struct AicaModel {
     void advance(uint32_t n, bool render, int32_t *mix);
     void dsp_sample(uint32_t i);   /* 5.13 A3: sample i of that round: MIXS_bank, the claims, the DSP; EXTS set first */
     void final_mix(int32_t l, int32_t r);   /* run()'s output stage after the slots: EXTS, EFREG, MONO, MVOL, DAC18B */
+    /* Plan 6.6, control state only. hz_mark: sets in a 1 KB map (bit 7 first, 256 bytes a bit) the wave RAM each
+     * fetching slot reads from `back` samples before its play point to `fwd` samples after it. */
+    void hz_mark(uint8_t *map, uint32_t back, uint32_t fwd) const;
+    /* Samples from byte a to the nearest play point that has yet to pass it within `back` samples; -1 = none */
+    int32_t hz_hit(uint32_t a, uint32_t back) const;
+    /* P20 G2: the DSP ring (masked base, bytes); false while no MPRO word is set */
+    bool ring_range(uint32_t &base, uint32_t &bytes) const;
 
     uint16_t r(uint32_t off) const { return reg[(off & 0x7FFF) >> 2]; }
     uint16_t chr(int ch, uint32_t o) const { return reg[(0x80 * ch + o) >> 2]; }
@@ -248,6 +259,8 @@ struct AicaModel {
     uint32_t slot_fast_dsp(int ch, uint32_t i, const AdvCtx &x, int32_t *mix, uint32_t &rendered);
     uint32_t slot_ctl_fast(int ch, uint32_t i, const AdvCtx &x, uint32_t &rendered);
     uint32_t lfsr_at(const AdvCtx &x, uint32_t i);
+    struct HzSpan { uint32_t lo, hi; int32_t d; };   /* sample positions; d = samples from hi back to the play point */
+    int hz_spans(int ch, uint32_t back, uint32_t fwd, HzSpan *s) const;
     uint32_t sa_addr(int ch) const;
     int fmt(int ch) const;
 #ifdef CAIQUE_RAM_HOOKS

@@ -117,6 +117,12 @@ u32 FASTCALL aica_ReadMem_reg(u32 addr, u32 size)
         else
             rw.irq_rd++;
     }
+    else if (a >= 0x4000 && a < 0x45C0 && g_aica_spe_snd)
+    {
+        // P20 G4: TEMP, MEMS, MIXS and EFREG live in the sound SPU's DSP
+        u16* r = (u16*)&aica_reg[(a & 0x7FFC) | 2];
+        *r = ps3aica_dsp_read(a, g_arm7_in_run, *r);
+    }
 
     if (size == 1)
         return ReadReg<1>(addr & 0x7FFF);

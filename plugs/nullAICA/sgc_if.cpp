@@ -44,6 +44,9 @@ SampleType mixr;
 // MutePcm16 preset (default OFF): silences every 16-bit PCM channel at KEY_ON.
 // Per-game hack for ChuChu Rocket's echoey 16-bit sounds; also mutes music/voices.
 extern "C" int get_mute_pcm16_preset();
+extern "C" int get_aica_lfore_preset();      // P31, plan section 7 bundle 5
+extern "C" int get_aica_mono_fix_preset();
+u32 g_aica_clip[2];                          // output samples the nullAICA mixer clamped, left and right
 #define MUTE_PCM16_FIX() (get_mute_pcm16_preset() != 0)
 
 // AicaKyonb (plan 6.1, live): 1 = the chip never clears KYONB, as on hw (caique-rtl NOTES "Loops and key events"),
@@ -811,7 +814,8 @@ struct ChannelEx
             lfo.alfo_calc(this);
             lfo.plfo_calc(this);
         }
-        ccd->LFORE = 0;
+        if (!get_aica_lfore_preset())   // P31 "LFORE Keep" (Flycast 27fd0d426): the hardware does not clear it
+            ccd->LFORE = 0;
     }
     void UpdateDSPMIX()
     {
@@ -1576,10 +1580,12 @@ void AICA_Sample()
         }
     }
 
-    // Mono
+    // Mono; P31 "Mono Mix Fix" (Flycast 136ce267d) halves the sum
     if (CommonData->Mono)
     {
         mixl += mixr;
+        if (get_aica_mono_fix_preset())
+            mixl >>= 1;
         mixr = mixl;
     }
 
@@ -1614,6 +1620,8 @@ void AICA_Sample()
         mixr = FPs(mixr, 2);
     }
 
+    g_aica_clip[0] += (u32)(mixl + 32768) > 65535u;   // plan 6.6: for the [aicafix] line
+    g_aica_clip[1] += (u32)(mixr + 32768) > 65535u;
     clip16(mixl);
     clip16(mixr);
 

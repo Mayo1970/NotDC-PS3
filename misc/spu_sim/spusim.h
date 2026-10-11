@@ -48,6 +48,8 @@ typedef struct
 	uint32_t* brmiss;   // mispredicts per instruction word, or null
 	uint64_t pen;       // mispredict penalty still to charge to pen_pc
 	uint32_t pen_pc;
+	// The harness sets stack_floor to the image's _end: stack_low is then the lowest store above it (stack depth)
+	uint32_t stack_floor, stack_low;
 	int fault;
 	char msg[256];
 } SpuSim;

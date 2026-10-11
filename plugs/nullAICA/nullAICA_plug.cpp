@@ -4,6 +4,7 @@
 #include "nullAICA.h"
 #include "aica.h"
 #include "aica_mem.h"
+#include "ps3/ps3_aica_spe.h"
 #include "ps3/ps3_arm_spe.h"
 
 // Shared AICA wave RAM (set in init_mem() from aica_params.aica_ram).
@@ -71,6 +72,7 @@ u32 libAICA_ReadMem_aica_ram(u32 addr, u32 size)
 void libAICA_WriteMem_aica_ram(u32 addr, u32 data, u32 size)
 {
     addr &= AICA_RAM_MASK;
+    aram_hz_write(addr, g_aram_hz_dma);   // plan 6.6: first, so the lines below belong to the command after a sync
     if (g_arm_spe)
         arm_spe_aram_written(addr);
     if (size == 1)

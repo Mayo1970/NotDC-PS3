@@ -4,9 +4,12 @@
 // First: types.h defines a RAM_SIZE macro that would break the model's RAM_SIZE member.
 #include "plugs/caiqueAICA/aica_model.h"
 #include "ps3_aica_spe.h"
+#include "ps3_arm_spe.h"
+#include "ps3_sndthr.h"
 #include "ps3_spe.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <string.h>
 #include <malloc.h>
 #include <new>
@@ -21,6 +24,14 @@ extern "C" int get_spe_aica_preset();
 extern "C" int get_spe_aica_snd_preset();
 extern "C" int get_spe_aica_dsp_preset();
 extern "C" int get_spe_dsp_jit_preset();
+extern "C" int get_spe_arm7_preset();
+extern "C" int get_sound_thread_preset();
+extern "C" int get_spe_aica_sync_preset();
+extern "C" int get_dsp_ring_ram_preset();
+extern "C" int get_dsp_ring_64k_preset();
+extern "C" int get_dsp_reg_read_preset();
+extern "C" int get_aica_mono_fix_preset();
+extern "C" int get_spe_aica_gain_preset();
 // ps3_audio.cpp
 void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now);
 u64 ps3_audio_spu_wait(u32 end);
@@ -55,6 +66,17 @@ static bool s_snd_dsp;   // and with the DSP (A3): the dsp jit line stays
 static u32 s_w0;         // ring_wr when the SPU started
 static u32 s_cdda_rec[AICA_CDDA_SLOTS], s_cdda_n;   // per slot: 1 + the record that last used it (5.15: its CD-DA number)
 
+// Section 7, bundle 5 (6.6, P20 G2-G4). With SPE ARM7 the twin is on that SPU (ps3_arm_spe.cpp); else it is s_m here.
+u8* g_aram_hz;
+bool g_aram_hz_stale;
+u32 g_aram_hz_dma, g_aram_ring_base, g_aram_ring_len;
+static u32 s_setup_flags;          // AICA_SETUP_* the sound SPU got
+static bool s_dsp_rd;              // DSP Reg Reads
+static AicaHz s_hz;                // the PPU twin's map and counts
+static u32 s_hz_ppu[6];            // map hits by the SH4 and by a G2 DMA; the rest is the ARM7 SPU mode's
+static u32 s_hz_synced_at = ~0u, s_hz_blk = ~0u, s_hz_tests, s_hz_syncs, s_hz_seq, s_hz_rd_seq;
+static u32 s_ring_plo = 1, s_ring_phi, s_ring_pt;   // ring lines the guest wrote since the last RING record, first sample
+
 // The PPU never runs the render pass; these only satisfy the link (and read aica_ram if it ever does).
 uint8_t caique_rd8(uint32_t a) { return s_aram[a ^ 3]; }
 uint16_t caique_rd16(uint32_t a) { return (uint16_t)(s_aram[a ^ 3] | (s_aram[(a + 1) ^ 3] << 8)); }
@@ -77,6 +99,17 @@ static bool wait_echo_state(u32 want, u64 budget_ticks)
 }
 
 static void stats(u64 now);
+
+// "SPE AICA Gain" (live): the percent as 1/256 into the bell line, which the sound SPU reads at each wake
+static u32 s_gain_pct = 100;
+static void gain_tick()
+{
+	const int pct = get_spe_aica_gain_preset();
+	s_gain_pct = pct < 1 || pct >= 100 ? 100 : (u32)pct;
+	const u32 g = s_gain_pct == 100 ? 0 : (s_gain_pct * 256 + 50) / 100;
+	if (g != s_bell.gain)
+		s_bell.gain = g;
+}
 
 static void publish()
 {
@@ -140,7 +173,7 @@ static void snd_fail(const char* why)
 }
 
 // A full log: the check stops at once, so the game never waits for it; the sound waits for the SPU.
-static void push(u8 op, u16 off, u32 val, u32 hash)
+static void push_at(u32 sample, u8 op, u16 off, u32 val, u32 hash)
 {
 	if (s_head - s_tail_seen >= AICA_LOG && s_head - (s_tail_seen = echo()->tail) >= AICA_LOG)
 	{
@@ -162,7 +195,7 @@ static void push(u8 op, u16 off, u32 val, u32 hash)
 		s_tail_seen = echo()->tail;
 	}
 	AicaRec* r = &s_shared.log[s_head & (AICA_LOG - 1)];
-	r->sample = s_now;
+	r->sample = sample;
 	r->op = op;
 	r->pad = 0;
 	r->off = off;
@@ -173,12 +206,187 @@ static void push(u8 op, u16 off, u32 val, u32 hash)
 		publish();
 }
 
+// P20 G2: a waiting RING record goes first, so the sound SPU reloads those lines before it plays on.
+static void push(u8 op, u16 off, u32 val, u32 hash)
+{
+	if (s_ring_phi >= s_ring_plo)
+	{
+		const u32 v = s_ring_plo | s_ring_phi << 16;
+		s_ring_plo = 1;
+		s_ring_phi = 0;
+		s_hz.ring_recs++;
+		push_at(s_ring_pt, AICA_OP_RING, 0, v, 0);
+	}
+	push_at(s_now, op, off, val, hash);
+}
+
 // Batched control pass: the samples since the last write or CHECK, slot by slot (5.13 A2 high voices).
 static void catch_up()
 {
 	const u32 n = s_now - (u32)s_m->samples;
 	s_m->advance(n, false, 0);
 	s_ctl_samples += n;
+}
+
+// ── Bundle 5 with the PPU twin: what spu/spe_arm7.cpp's hz code does, on this thread (no sound thread) ──
+
+// The map: the slots' play points while SPE AICA Sync is on, and the DSP ring. lag = samples the SPU is behind.
+static void hz_map(s32 lag)
+{
+	catch_up();
+	memset(s_hz.map, 0, sizeof(s_hz.map));
+	if (get_spe_aica_sync_preset())
+		s_m->hz_mark(s_hz.map, (u32)(lag < 0 ? 0 : lag) + AICA_HZ_MARGIN, AICA_BLOCK);
+	for (u32 p = g_aram_ring_base >> 8, n = g_aram_ring_len >> 8; n; n--, p++)
+		s_hz.map[(p & 8191) >> 3] |= (u8)(0x80 >> (p & 7));
+	s_hz.map_sample = s_now;
+}
+
+// The ring the sound SPU mirrors, after a write to RBP/RBL or to the DSP program
+static void ring_update()
+{
+	u32 base, bytes;
+	const bool on = s_m->ring_range(base, bytes) && (s_setup_flags & (bytes <= 65536 ? AICA_SETUP_RING : AICA_SETUP_RING64));
+	const u32 len = on ? bytes : 0;
+	if (len == g_aram_ring_len && (!len || base == g_aram_ring_base))
+		return;
+	g_aram_ring_base = base;
+	g_aram_ring_len = len;
+	hz_map((s32)(s_now - echo()->samples));
+}
+
+void ps3aica_ring_wrote(u32 addr)
+{
+	const u32 l = addr >> 7;
+	if (s_ring_phi < s_ring_plo)
+	{
+		s_ring_plo = s_ring_phi = l;
+		s_ring_pt = s_now;
+		return;
+	}
+	if (l < s_ring_plo)
+		s_ring_plo = l;
+	if (l > s_ring_phi)
+		s_ring_phi = l;
+}
+
+// Publishes, then spins (no sleep) until the sound SPU has answered request `want` (a SYNC, or a DSPRD).
+static bool snd_answer(u32 want, bool rd)
+{
+	publish();
+	const u64 t0 = gettime();
+	while (rd ? (echo()->dsp_rd >> 16) != (want & 0xFFFF) : echo()->sync != want)
+		if (gettime() - t0 > ps3_timebase_hz / 10)
+		{
+			s_hz.timeouts++;
+			snd_fail("no answer to a sync in 100 ms");
+			return false;
+		}
+	s_hz.wait_ticks += (u32)(gettime() - t0);
+	return true;
+}
+
+// 0 = no hazard; 1 = a slot has yet to play byte a on the sound SPU; 2 = a is in the mirrored ring
+static u32 hz_test(u32 a, u32 src)
+{
+	s_hz.tests[src]++;
+	if (((a - g_aram_ring_base) & 0x1FFFFFu) < g_aram_ring_len)
+	{
+		s_hz.ring_hits++;
+		return 2;
+	}
+	if (!get_spe_aica_sync_preset())
+		return 0;
+	const s32 lag = (s32)(s_now - echo()->samples);
+	if (lag <= 0)
+		return 0;
+	catch_up();
+	const s32 d = s_m->hz_hit(a, (u32)lag + AICA_HZ_MARGIN);
+	if (d < 0)
+		return 0;
+	s_hz.hazards[src]++;
+	s_hz.near[d < 16 ? 0 : d < 64 ? 1 : d < 256 ? 2 : 3]++;
+	return 1;
+}
+
+// A write to byte a of a marked page at this sample: the exact test, then one sync per 64-sample block at most.
+// Sync level 2: the block's first hit syncs with no test. Level 3: each sample with a hit syncs.
+static void hz_write(u32 a, u32 src)
+{
+	if (src == 2)
+		s_hz.arm_hits++;
+	else
+		s_hz_ppu[src]++;
+	if (s_now == s_hz_synced_at)
+		return;
+	if ((s_now >> 6) != s_hz_blk)
+	{
+		s_hz_blk = s_now >> 6;
+		s_hz_tests = s_hz_syncs = 0;
+	}
+	const int lvl = get_spe_aica_sync_preset();
+	if (lvl >= 2)   // no test: the hit syncs; level 2 keeps one sync per block
+	{
+		if (s_hz_syncs && lvl == 2)
+		{
+			s_hz.miss++;
+			return;
+		}
+	}
+	else
+	{
+		if (s_hz_tests >= AICA_HZ_TESTS)
+		{
+			s_hz.miss++;
+			return;
+		}
+		s_hz_tests++;
+		if (!hz_test(a, src))
+			return;
+		if (s_hz_syncs)   // one sync per block: this hazard stays
+		{
+			s_hz.miss++;
+			return;
+		}
+	}
+	s_hz_syncs = 1;
+	push(AICA_OP_SYNC, 0, ++s_hz_seq, 0);
+	if (!g_aica_spe_snd || !snd_answer(s_hz_seq, false))
+		return;
+	s_hz.syncs++;
+	s_hz_synced_at = s_now;
+	hz_map(0);
+}
+
+void aram_hz_hit(u32 addr, u32 src)
+{
+	if (g_arm_spe)
+		arm_spe_hz_hit(addr, src);
+	else
+		hz_write(addr, src);
+}
+
+// P20 G4 with the PPU twin: TEMP, MEMS, MIXS or EFREG from the sound SPU's DSP at this sample; old = nullAICA's copy
+u16 ps3aica_dsp_read(u32 reg, u32 cpu, u16 old)
+{
+	s_hz.dsp_rd[cpu]++;
+	if (!s_dsp_rd || g_snd_thread)
+		return old;
+	push(AICA_OP_DSPRD, (u16)(reg & 0x7FFC), ++s_hz_rd_seq, 0);
+	if (!g_aica_spe_snd || !snd_answer(s_hz_rd_seq, true))
+		return old;
+	return (u16)echo()->dsp_rd;
+}
+
+u32 ps3aica_setup_flags() { return s_setup_flags; }
+
+// At each CHECK, PPU twin on the SH4 thread: the map follows the play points; the first call arms the write hook.
+static void hz_tick()
+{
+	const bool use = get_spe_aica_sync_preset() || g_aram_ring_len;
+	if (use || g_aram_hz)
+		hz_map((s32)(s_now - echo()->samples));
+	g_aram_hz = use ? s_hz.map : 0;
 }
 
 // The upper halfword of a 32-bit slot holds no register; a byte write keeps the other byte nullAICA had.
@@ -196,6 +404,9 @@ void ps3aica_write(u32 off, u32 data, u32 size, u16 old16)
 	catch_up();
 	s_m->write(off, val);
 	push(AICA_OP_WRITE, (u16)off, val, 0);
+	if ((off == 0x2804 || (off >= 0x3400 && off < 0x3C00)) && (s_setup_flags & (AICA_SETUP_RING | AICA_SETUP_RING64)) &&
+	    !g_snd_thread)
+		ring_update();
 	s_writes++;
 	s_ctl_ticks += gettime() - t0;
 }
@@ -217,6 +428,9 @@ void ps3aica_step()
 	s_snap_check[i] = s_checks;
 	push(AICA_OP_CHECK, 0, s_checks, caique::AicaModel::snap_hash(s_snaps[i]));
 	s_checks++;
+	gain_tick();
+	if (g_aica_spe_snd && !g_snd_thread)
+		hz_tick();
 	s_ctl_ticks += gettime() - t0;
 	// Sound mode pacing: the frames of every sample run so far must fit the ring (the SPU drops what does not).
 	if (g_aica_spe_snd)
@@ -281,6 +495,7 @@ void ps3aica_pace(u32 now)
 	const u64 t0 = gettime();
 	if (t0 - s_win_t0 >= 5 * ps3_timebase_hz)
 		stats(t0);
+	gain_tick();
 	if (g_aica_spe_snd)
 		s_ring_wait_ticks += ps3_audio_spu_wait(s_w0 + frames_for(now) - echo()->snd_drops);
 }
@@ -395,6 +610,42 @@ static void print_dsp_test(const volatile AicaEcho* e)
 	}
 }
 
+// [aram-hz], every ~5 s while a bundle 5 row is on or a count moved. hzp = the twin's AicaHz; ppu = this window's
+// map hits by the SH4, by a G2 DMA, with a stale map, then requests, misses and wait ticks (SPE ARM7 only).
+void ps3aica_hz_print(const void* hzp, double w, const u32* ppu)
+{
+	static AicaHz last, h;   // static: the type is 128-aligned
+	static u32 l_ring[3];
+	memcpy(&h, hzp, sizeof(h));
+	const volatile AicaEcho* e = echo();
+	const u32 ring[3] = {e->ring_in, e->ring_out, e->line_out};
+	const bool on = get_spe_aica_sync_preset() || (s_setup_flags & (AICA_SETUP_RING | AICA_SETUP_RING64)) || s_dsp_rd;
+	const bool moved = memcmp(h.tests, last.tests, sizeof(h) - offsetof(AicaHz, tests)) != 0;
+	if (on || moved)
+	{
+		u32 pages = 0;
+		for (u32 i = 0; i < AICA_HZ_MAP; i++)
+			pages += (u32)__builtin_popcount(h.map[i]);
+		const u32 syncs = h.syncs - last.syncs, wait = h.wait_ticks - last.wait_ticks;
+		const double us = 1e6 / (double)ps3_timebase_hz, tw = (double)ps3_timebase_hz * w / 100.0;
+		printf("[aram-hz] sync=%d ring=%d ring64=%d dsprd=%d | map pages %u | hits/s sh4 %.0f dma %.0f arm %.0f stale %.0f"
+		       " | tests/s %.0f/%.0f/%.0f hazards/s %.1f/%.1f/%.1f near <16:%u <64:%u <256:%u more:%u"
+		       " | ring hits/s %.0f recs/s %.0f | syncs/s %.1f miss/s %.1f timeouts %u | sync wait %.0f us avg, sh4 wait"
+		       " %.2f%% of wall | dsp reads/s sh4 %.0f arm %.0f | spu ring lines in %u out %u cache out %u\n",
+		       get_spe_aica_sync_preset(), (s_setup_flags & AICA_SETUP_RING) != 0, (s_setup_flags & AICA_SETUP_RING64) != 0,
+		       (int)s_dsp_rd, pages, ppu[0] / w, ppu[1] / w, (h.arm_hits - last.arm_hits) / w, ppu[2] / w,
+		       (h.tests[0] - last.tests[0]) / w, (h.tests[1] - last.tests[1]) / w, (h.tests[2] - last.tests[2]) / w,
+		       (h.hazards[0] - last.hazards[0]) / w, (h.hazards[1] - last.hazards[1]) / w,
+		       (h.hazards[2] - last.hazards[2]) / w, h.near[0] - last.near[0], h.near[1] - last.near[1],
+		       h.near[2] - last.near[2], h.near[3] - last.near[3], (h.ring_hits - last.ring_hits) / w,
+		       (h.ring_recs - last.ring_recs) / w, syncs / w, (h.miss - last.miss + ppu[4]) / w, h.timeouts,
+		       syncs ? wait * us / syncs : 0.0, (g_arm_spe ? ppu[5] : wait) / tw, (h.dsp_rd[0] - last.dsp_rd[0]) / w,
+		       (h.dsp_rd[1] - last.dsp_rd[1]) / w, ring[0] - l_ring[0], ring[1] - l_ring[1], ring[2] - l_ring[2]);
+	}
+	last = h;
+	memcpy(l_ring, ring, sizeof(l_ring));
+}
+
 // Every ~5 s of wall time, from the sample step.
 static void stats(u64 now)
 {
@@ -433,14 +684,24 @@ static void stats(u64 now)
 	}
 	if (s_snd_req)
 	{
-		static u32 l_frames, l_cdda;
-		const u32 frames = e->snd_frames, cdda = e->cdda;
+		static u32 l_frames, l_cdda, l_clip[2];
+		const u32 frames = e->snd_frames, cdda = e->cdda, clip[2] = {e->clip[0], e->clip[1]};
+		// peak: the window's loudest sample before the gain, 100% = full scale; peak x gain above 100% clips
 		printf("[aica-spe] sound %s: frames/s=%.0f drops=%u cdda/s=%.1f reads/s=%.0f"
-		       " | ppu wait %% of wall: ring %.1f spu %.1f\n",
+		       " | ppu wait %% of wall: ring %.1f spu %.1f | clip/s=%.0f/%.0f gain=%u%% peak=%.1f%%\n",
 		       g_aica_spe_snd ? "SPU" : "nullAICA", (frames - l_frames) / w, e->snd_drops, (cdda - l_cdda) / w,
-		       s_reads / w, s_ring_wait_ticks / tw, s_spu_wait_ticks / tw);
+		       s_reads / w, s_ring_wait_ticks / tw, s_spu_wait_ticks / tw, (clip[0] - l_clip[0]) / w,
+		       (clip[1] - l_clip[1]) / w, s_gain_pct, e->peak * 100.0 / 32768.0);
+		s_bell.peak_seq = s_bell.peak_seq + 1;
 		l_frames = frames;
 		l_cdda = cdda;
+		l_clip[0] = clip[0];
+		l_clip[1] = clip[1];
+	}
+	if (g_aica_spe_snd && !g_arm_spe)   // with SPE ARM7 the twin's counts are that SPU's: arm_spe_stats prints
+	{
+		ps3aica_hz_print(&s_hz, w, s_hz_ppu);
+		memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
 	}
 	if (!s_snd_req || s_snd_dsp)   // the DSP runs in the A1 check and in A3; A2 plays without it
 		printf("[aica-spe] dsp jit %s: compiles=%u fails=%u odd=%u code=%u words live=%u/128 slow=%u | checks=%u bad=%u"
@@ -497,6 +758,8 @@ bool ps3aica_init(u8* aica_ram)
 
 	s_bell.head = 0;
 	s_bell.quit = 0;
+	s_bell.gain = s_bell.peak_seq = 0;
+	gain_tick();
 	s_head = s_pub = s_tail_seen = s_checks = s_bad_seen = s_dbad_seen = s_now = 0;
 	memset(s_live, 0, sizeof(s_live));
 	s_live_n = 0;
@@ -521,6 +784,21 @@ bool ps3aica_init(u8* aica_ram)
 		su.snd = 1;
 		su.snd_dsp = snd_dsp;
 	}
+	// Bundle 5. The ring rows need the twin on the SH4 thread or on the ARM7 SPU: not with the sound thread.
+	const bool twin_ok = get_spe_arm7_preset() || !get_sound_thread_preset();
+	s_setup_flags = get_aica_mono_fix_preset() ? AICA_SETUP_MONO : 0;
+	if (snd_dsp && twin_ok)
+		s_setup_flags |= (get_dsp_ring_ram_preset() ? AICA_SETUP_RING : 0) | (get_dsp_ring_64k_preset() ? AICA_SETUP_RING64 : 0);
+	s_shared.setup.flags = s_setup_flags;
+	s_dsp_rd = snd_dsp && get_dsp_reg_read_preset() != 0;
+	memset(&s_hz, 0, sizeof(s_hz));
+	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
+	s_hz_synced_at = s_hz_blk = ~0u;
+	s_hz_tests = s_hz_syncs = s_hz_seq = s_hz_rd_seq = s_ring_phi = 0;
+	s_ring_plo = 1;
+	g_aram_hz = 0;
+	g_aram_hz_stale = false;
+	g_aram_ring_base = g_aram_ring_len = 0;
 
 	sysSpuThreadAttribute tattr;
 	sysSpuThreadAttributeInitialize(tattr);
@@ -557,6 +835,10 @@ bool ps3aica_init(u8* aica_ram)
 	else
 		printf("[aica-spe] SPU thread up: caique control on the PPU, full model on the SPU, check every %u samples;"
 		       " dsp jit %s\n", AICA_BLOCK, k_mode[s_shared.setup.dsp_mode & AICA_DSPF_MODE]);
+	if (s_setup_flags || s_dsp_rd)
+		printf("[aica-spe] bundle 5 in use: dsp ring ram %d, ring 64k %d, dsp reg reads %d, mono fix %d\n",
+		       (s_setup_flags & AICA_SETUP_RING) != 0, (s_setup_flags & AICA_SETUP_RING64) != 0, (int)s_dsp_rd,
+		       (s_setup_flags & AICA_SETUP_MONO) != 0);
 	return true;
 }
 
@@ -566,6 +848,8 @@ void ps3aica_term()
 		return;
 	g_aica_spe_on = false;
 	g_aica_spe_snd = false;
+	g_aram_hz = 0;
+	g_aram_ring_len = 0;
 	__asm__ volatile("lwsync" ::: "memory");
 	s_bell.quit = 1;
 	if (!wait_echo_state(AICA_STATE_EXITED, ps3_timebase_hz / 10))

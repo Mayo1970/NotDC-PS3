@@ -12,6 +12,7 @@
 
 extern "C" int get_dma_fix_preset();
 extern "C" int get_aica_race_fix_preset();
+extern u32 g_aram_hz_dma;   // ps3/ps3_aica_spe.cpp: 1 while the G2 DMA copies
 
 // G2 DMA counters for [aicafix] (plan 6.5), taken by g2dma_take().
 static struct { u32 starts, bytes, busy, noaden, irqrd, dup, end31, star, stag, len; } s_g2;
@@ -310,11 +311,13 @@ void Write_SB_ADST(u32 data)
     // Transfer must be 4-byte aligned
     len &= ~3u;
 
+    g_aram_hz_dma = 1;   // plan 6.6: the [aram-hz] line names the writer
     for (u32 i = 0; i < len; i += 4)
     {
         u32 word = ReadMem32_nommu(src + i);
         WriteMem32_nommu(dst + i, word);
     }
+    g_aram_hz_dma = 0;
 
     s_g2.starts++;
     s_g2.bytes += len;

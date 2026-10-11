@@ -215,6 +215,7 @@ uint32_t spusim_load_elf(SpuSim* s, const char* path)
 	fclose(f);
 	const uint32_t entry = be32(e + 24), phoff = be32(e + 28), shoff = be32(e + 32);
 	const uint16_t phentsize = be16(e + 42), phnum = be16(e + 44), shentsize = be16(e + 46), shnum = be16(e + 48);
+	uint32_t top = 0;
 	for (int i = 0; i < phnum; i++)
 	{
 		const uint8_t* p = e + phoff + i * phentsize;
@@ -224,7 +225,11 @@ uint32_t spusim_load_elf(SpuSim* s, const char* path)
 		if (va + msz > sizeof(s->ls)) { free(e); return 0; }
 		memcpy(s->ls + va, e + off, fsz);
 		memset(s->ls + va + fsz, 0, msz - fsz);
+		if (va + msz > top)
+			top = va + msz;
 	}
+	s->stack_floor = (top + 15) & ~15u;   // the image's end: stores above it are the stack
+	s->stack_low = sizeof(s->ls);
 	s_nsyms = 0;
 	for (int i = 0; i < shnum; i++)
 	{
@@ -277,6 +282,8 @@ static SpuQ ld(const SpuSim* s, uint32_t a)
 static void st(SpuSim* s, uint32_t a, const SpuQ* q)
 {
 	a &= LSLR & ~15u;
+	if (a >= s->stack_floor && a < s->stack_low)
+		s->stack_low = a;
 	for (int i = 0; i < 4; i++)
 	{
 		uint8_t* p = s->ls + a + 4 * i;
@@ -423,6 +430,7 @@ void spusim_init(SpuSim* s, SpuEaFn ea, void* ctx)
 	s->dma_lat = 500;
 	s->prev_pc = 0xFFFFFFFFu;
 	s->prev_rt = -1;
+	s->stack_floor = s->stack_low = 0x40000;
 }
 
 void spusim_llr_lost(SpuSim* s)

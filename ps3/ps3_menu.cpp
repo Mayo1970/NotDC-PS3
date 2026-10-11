@@ -318,6 +318,7 @@ static const char* k_passes[]    = { "OFF", "ON", "+ TR DEPTH", NULL };
 static const char* k_tileclip[]  = { "OFF", "INSIDE", "+ OUTSIDE", NULL };
 static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEPTH", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
+static const char* k_aicasync[]  = { "OFF", "ON", "+ BLOCK SYNC", "+ SAMPLE SYNC", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -416,6 +417,20 @@ static Option s_audio[] = {
 	  "An ARM7 reset enters SVC mode and clears the FIQ latch. Set before boot." },
 	{ "CA Clamp",        &g_aica_ca_clamp_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Channel position reads stop at LEA-3 with SPE AICA too. Set before boot." },
+	{ "SPE AICA Sync",   &g_spe_aica_sync_preset, OPT_CHOICE, k_aicasync,  0, 0,0,0, NULL,
+	  "A wave RAM write waits for the sound SPE (6.6). + levels sync with no test. Live." },
+	{ "DSP Ring RAM",    &g_dsp_ring_ram_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The SPE's DSP delay ring is shared with wave RAM, both ways (P20). Set before boot." },
+	{ "DSP Ring 64K",    &g_dsp_ring_64k_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "64K-word DSP rings and table writes reach wave RAM (P20). Set before boot." },
+	{ "DSP Reg Reads",   &g_dsp_reg_read_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TEMP, MEMS, MIXS and EFREG reads return the DSP's values (P20). Set before boot." },
+	{ "Mono Mix Fix",    &g_aica_mono_fix_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Mono output is (L + R) / 2, not L + R (P31, Sega Bass Fishing). Set before boot." },
+	{ "LFORE Keep",      &g_aica_lfore_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The LFO reset bit stays set after a write, as on hardware (P31). Set before boot." },
+	{ "SPE AICA Gain",   &g_spe_aica_gain_preset, OPT_RANGE,  NULL,        0, 50,100,5, "%d%%",
+	  "SPE AICA Sound output level. Below 100% leaves room before clipping (6.6). Live." },
 };
 
 static Option s_video[] = {
@@ -1087,7 +1102,7 @@ static int* const k_live_opts[] = {
 	&g_int_clamp_preset, &g_face_reset_preset, &g_tr_volumes_preset, &g_volume_cap_preset, &g_ta_bad_rec_preset,
 	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
-	&g_core_reset_preset, &g_tr_tri_sort_preset,
+	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
 };
 
 #define MAX_INGAME_OPTS 192

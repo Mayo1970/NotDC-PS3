@@ -18,6 +18,7 @@ typedef struct
 	uint32_t smp;              // g_aica_smp
 	uint32_t race_fix, ca_clamp;   // AICA Race Fix and CA Clamp, set by the includer after ac_init
 	uint32_t raises, ca_reads, ca_clamped, stale;   // [aicafix]: ac_race calls, CA reads, clamped, stale latches
+	uint32_t lfore_keep;           // P31 "LFORE Keep" (Flycast 27fd0d426), set by the includer after ac_init
 } AicaCtl;
 
 static AicaCtl ac;
@@ -184,6 +185,10 @@ static uint32_t ac_read(uint32_t addr, uint32_t size)
 	const uint32_t a = addr & 0x7FFF, sz = size == 1 ? 1 : 2;
 	if (a >= 0x2800 && a < 0x2818)
 		ac_read_common(a, sz == 1);
+#ifdef AC_DSP_READ   // P20 G4: the includer refreshes TEMP, MEMS, MIXS or EFREG from the DSP before the read
+	else if (a >= 0x4000 && a < 0x45C0)
+		AC_DSP_READ(a);
+#endif
 	return ac_rd(a, sz);
 }
 
@@ -193,7 +198,7 @@ static void ac_chan_write8(uint32_t chan, uint32_t off)
 	uint8_t* c = &ac.reg[chan * 0x80];
 	if (off == 0x01)
 		c[0x02] &= 0x7F;   // KYONEX
-	else if (off == 0x1C || off == 0x1D)
+	else if ((off == 0x1C || off == 0x1D) && !ac.lfore_keep)
 		c[0x1E] &= 0x7F;   // LFORE
 }
 

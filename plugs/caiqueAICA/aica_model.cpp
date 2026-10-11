@@ -67,6 +67,8 @@ void AicaModel::init() {
     ram = (uint8_t *)calloc(RAM_SIZE, 1);
 #endif
     no_dsp = false;
+    mono_half = false;
+    out_gain = 0;
     reset();
 }
 
@@ -109,6 +111,8 @@ void AicaModel::reset() {
     memset(adv_busw, 0, sizeof adv_busw);
     adv_s0 = 0;
     adv_mdec0 = 0;
+    clip[0] = clip[1] = 0;
+    peak = 0;
     stops_pending = 0;
     keys_live = false;
     quiet = rsilent = fetching = 0;
@@ -1038,10 +1042,11 @@ void AicaModel::run(bool render) {
         volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
     uint16_t c0 = r(0x2800);
-    if (c0 & 0x8000) { mixl += mixr; mixr = mixl; }
+    if (c0 & 0x8000) { mixl += mixr; if (mono_half) mixl >>= 1; mixr = mixl; }
     mixl = send_level(mixl, c0 & 0xF);
     mixr = send_level(mixr, c0 & 0xF);
     if (c0 & 0x100) { mixl >>= 2; mixr >>= 2; }
+    if (out_gain) { mixl = (mixl * (int32_t)out_gain) >> 8; mixr = (mixr * (int32_t)out_gain) >> 8; }
     outL = (int16_t)clampi(mixl, -32768, 32767);
     outR = (int16_t)clampi(mixr, -32768, 32767);
     CAIQUE_PROF_AT(5, 0);
@@ -1096,12 +1101,113 @@ void AicaModel::final_mix(int32_t mixl, int32_t mixr) {
         if (v & 0xF00) volpan(EFREG[i], (v >> 8) & 0xF, v & 0x1F, mixl, mixr);
     }
     uint16_t c0 = r(0x2800);
-    if (c0 & 0x8000) { mixl += mixr; mixr = mixl; }
+    if (c0 & 0x8000) { mixl += mixr; if (mono_half) mixl >>= 1; mixr = mixl; }
     mixl = send_level(mixl, c0 & 0xF);
     mixr = send_level(mixr, c0 & 0xF);
     if (c0 & 0x100) { mixl >>= 2; mixr >>= 2; }
+    const uint32_t al = (uint32_t)(mixl < 0 ? -mixl : mixl), ar = (uint32_t)(mixr < 0 ? -mixr : mixr);
+    if (al > peak) peak = al;
+    if (ar > peak) peak = ar;
+    if (out_gain) { mixl = (mixl * (int32_t)out_gain) >> 8; mixr = (mixr * (int32_t)out_gain) >> 8; }
+    clip[0] += (uint32_t)(mixl + 32768) > 65535u;
+    clip[1] += (uint32_t)(mixr + 32768) > 65535u;
     outL = (int16_t)clampi(mixl, -32768, 32767);
     outR = (int16_t)clampi(mixr, -32768, 32767);
+}
+
+/* Plan 6.6: the sample positions slot ch plays from `back` samples before CA to `fwd` after it, up to 3 spans */
+int AicaModel::hz_spans(int ch, uint32_t back, uint32_t fwd, HzSpan *s) const {
+    const Slot &c = slot[ch];
+    if (!c.enabled || fmt(ch) == 4) return 0;
+    uint32_t rate = (c.update_rate >> 4) + 1;   /* CA steps per sample in 1/1024, rounded up */
+    if ((chr(ch, 0x1C) >> 5) & 7) rate += (rate >> 3) + 1;   /* PLFO: 1/8 more at most */
+    auto steps = [rate](uint32_t n) {
+        const uint32_t v = (((n > 4095 ? 4095 : n) * rate) >> 10) + 2;
+        return v > 0x10000 ? 0x10000u : v;
+    };
+    /* an ADPCM stream tests the loop end on CA & ~3 (stream_step): up to 3 positions past LEA */
+    const uint32_t s3 = fmt(ch) == 3 ? 4 : 0, db = steps(back) + s3, df = steps(fwd) + s3;
+    const uint32_t P = c.CA, LSA = c.LSA, LEA = s3 ? (c.LEA + 3) & ~3u : c.LEA;
+    const bool lp = (chr(ch, 0x00) >> 9) & 1;   /* LPCTL */
+    uint32_t lo = P > db ? P - db : 0, hi = P + df;
+    int n = 1;
+    if (c.LEA <= LSA || P > LEA) {   /* no plain 0..LEA walk (tests/sgc_loop) */
+        if (lp) { lo = 0; hi = 0xFFFF; }   /* the loop end can move CA at every step: any position */
+        else {   /* CA can wrap at 0xFFFF, either way */
+            if (hi > 0xFFFF) { s[n].lo = 0; s[n].hi = hi - 0x10000; s[n].d = (int32_t)P - (int32_t)hi; hi = 0xFFFF; n++; }
+            if (P < db) { s[n].lo = 0x10000 - (db - P); s[n].hi = 0xFFFF; s[n].d = (int32_t)P + 1; n++; }
+        }
+    } else if (lp) {
+        const uint32_t len = LEA - LSA;
+        bool all = false;
+        if (hi > LEA) {   /* past the loop end: the lap goes on from LSA */
+            const uint32_t over = hi - LEA;
+            hi = LEA;
+            if (over >= len) all = true;
+            else { s[n].lo = LSA; s[n].hi = LSA + over; s[n].d = -(int32_t)(LEA - P + over); n++; }
+        }
+        if (c.in_loop && P >= LSA && P - LSA < db) {   /* before the loop start: the end of the lap before */
+            const uint32_t rem = db - (P - LSA);
+            if (rem >= len) all = true;
+            else { s[n].lo = LEA - rem; s[n].hi = LEA; s[n].d = (int32_t)(P - LSA); n++; }
+        }
+        if (all) { if (lo > LSA) lo = LSA; hi = LEA; n = 1; }
+    } else if (hi > LEA) hi = LEA;   /* one-shot: the fetch stops at LEA */
+    s[0].lo = lo;
+    s[0].hi = hi;
+    s[0].d = (int32_t)P - (int32_t)hi;
+    return n;
+}
+
+/* The bytes (not masked) that hold positions lo..hi + 1 of a slot at sa: PCM16, PCM8, ADPCM nibbles */
+static inline void hz_bytes(int f, uint32_t sa, uint32_t lo, uint32_t hi, uint32_t &b0, uint32_t &b1) {
+    if (f == 0) { b0 = sa + 2 * lo; b1 = sa + 2 * hi + 3; }
+    else if (f == 1) { b0 = sa + lo; b1 = sa + hi + 1; }
+    else { b0 = sa + (lo >> 1); b1 = sa + ((hi + 1) >> 1); }
+}
+
+void AicaModel::hz_mark(uint8_t *map, uint32_t back, uint32_t fwd) const {
+    for (int ch = 0; ch < 64; ch++) {
+        HzSpan s[3];
+        const int n = hz_spans(ch, back, fwd, s);
+        const int f = fmt(ch);
+        const uint32_t sa = sa_addr(ch);
+        for (int k = 0; k < n; k++) {
+            uint32_t b0, b1;
+            hz_bytes(f, sa, s[k].lo, s[k].hi, b0, b1);
+            uint32_t p = b0 >> 8, cnt = (b1 >> 8) - p + 1;
+            if (cnt > 8192) cnt = 8192;
+            for (; cnt; cnt--, p++) map[(p & 8191) >> 3] |= (uint8_t)(0x80 >> (p & 7));
+        }
+    }
+}
+
+int32_t AicaModel::hz_hit(uint32_t a, uint32_t back) const {
+    int32_t best = -1;
+    for (int ch = 0; ch < 64; ch++) {
+        HzSpan s[3];
+        const int n = hz_spans(ch, back, 0, s);
+        const int f = fmt(ch);
+        const uint32_t sa = sa_addr(ch);
+        for (int k = 0; k < n; k++) {
+            uint32_t b0, b1;
+            hz_bytes(f, sa, s[k].lo, s[k].hi, b0, b1);
+            const uint32_t o = (a - b0) & (RAM_SIZE - 1);
+            if (o > b1 - b0) continue;
+            const uint32_t x = s[k].lo + (f == 0 ? o >> 1 : f == 1 ? o : o << 1);
+            int32_t d = s[k].d + (int32_t)(s[k].hi - x);
+            if (d < 0) d = 0;
+            if (best < 0 || d < best) best = d;
+        }
+    }
+    return best;
+}
+
+bool AicaModel::ring_range(uint32_t &base, uint32_t &bytes) const {
+    const uint16_t rbpl = r(0x2804);
+    base = ((rbpl & 0xFFF) * 2048u) & (RAM_SIZE - 1);
+    bytes = 16384u << ((rbpl >> 13) & 3);
+    return mpro_nz != 0;
 }
 
 void AicaModel::advance(uint32_t n, bool render, int32_t *mix) {

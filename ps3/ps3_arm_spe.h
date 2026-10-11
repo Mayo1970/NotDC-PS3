@@ -26,3 +26,6 @@ void arm_spe_aram_all();   // ARAM changed as a whole (reset)
 void arm_spe_reset();      // armReset
 void arm_spe_flush();      // arm_FlushCode
 void arm_spe_stats(double wall_s);   // SPG stats block, once per second; prints [arm7spe] every ~5 s
+// Plan 6.6: the SH4 is about to write wave RAM byte addr of a marked page (src 1 = a G2 DMA). Asks the twin, and
+// waits when the sound SPU has yet to play that byte.
+void arm_spe_hz_hit(u32 addr, u32 src);

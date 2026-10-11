@@ -302,6 +302,7 @@ void g2dma_take(u32 out[7]);                          // dc/aica/aica_if.cpp
 void arm_spe_fix_take(u32 out[6]);                    // ps3/ps3_arm_spe.cpp
 extern u32 g_arm_races, g_arm_resets, g_arm_stale;    // vbaARM/arm7.cpp
 extern u32 g_aicafix_ca_reads, g_aicafix_ca_clamped;  // sgc_if.cpp
+extern u32 g_aica_clip[2];                            // sgc_if.cpp, plan 6.6: the mixer's clamped samples
 extern "C" int get_arm7_reset_fix_preset();
 extern "C" int get_aica_ca_clamp_preset();
 
@@ -332,8 +333,11 @@ void aica_fix_dump(double wall_s)
         g_arm_races = g_aicafix_raises = g_arm_resets = g_arm_stale = g_aicafix_ca_reads = g_aicafix_ca_clamped = 0;
     }
     printf("[aicafix] race %d reset %d clamp %d | g2 starts %u %u KB busy %u noaden %u irqrd %u dup %u end31 %u"
-           " | sh4 irq raises %u slices extended %u | arm7 resets %u stale latch %u | ca reads %u clamped %u\n",
-           race, rst, clamp, g[0], g[1] >> 10, g[2], g[3], g[4], g[5], g[6], s[1], s[0], s[2], s[3], s[4], s[5]);
+           " | sh4 irq raises %u slices extended %u | arm7 resets %u stale latch %u | ca reads %u clamped %u"
+           " | nullAICA clip %u/%u\n",
+           race, rst, clamp, g[0], g[1] >> 10, g[2], g[3], g[4], g[5], g[6], s[1], s[0], s[2], s[3], s[4], s[5],
+           g_aica_clip[0], g_aica_clip[1]);
+    g_aica_clip[0] = g_aica_clip[1] = 0;
 }
 
 // ---- Main loop ----

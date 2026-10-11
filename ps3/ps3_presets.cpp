@@ -144,6 +144,16 @@ int g_spe_aica_snd_preset  = 1;   // 1 = that SPU model makes the sound; nullAIC
 int g_spe_aica_dsp_preset  = 1;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3, HW)
 int g_sound_thread_preset  = 0;   // 1 = ARM7 and AICA on their own PPU thread (5.14)
 int g_spe_arm7_preset      = 1;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15, HW)
+// OPTIMIZATION_PLAN section 7, bundle 5: a row is off until it is cleared on hardware.
+// 1 = a wave RAM write waits for the sound SPU when a slot has yet to play that byte (6.6); 2 and 3 = with no
+// test, at the first hit of a block or at each sample with a hit (3: HW, the Crazy Taxi crackle)
+int g_spe_aica_sync_preset = 3;
+int g_dsp_ring_ram_preset  = 1;   // 1 = the SPU's DSP ring mirrors wave RAM, both ways (P20 G2, HW)
+int g_dsp_ring_64k_preset  = 0;   // 1 = DSP writes of a 64K-word ring and TABLE writes reach wave RAM (P20 G3)
+int g_dsp_reg_read_preset  = 0;   // 1 = a read of TEMP, MEMS, MIXS or EFREG returns the DSP's value (P20 G4)
+int g_aica_mono_fix_preset = 0;   // 1 = MONO output is (L + R) / 2, as Flycast 136ce267d (P31)
+int g_aica_lfore_preset    = 0;   // 1 = LFORE stays set after a write, as Flycast 27fd0d426 and caique (P31)
+int g_spe_aica_gain_preset = 100; // SPE AICA Sound output level in percent before the 16-bit clamp; 100 = none (6.6 clipping)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -275,6 +285,13 @@ static const CfgItem s_items[] = {
 	{ "SpeAicaDsp",    &g_spe_aica_dsp_preset },
 	{ "SoundThread",   &g_sound_thread_preset },
 	{ "SpeArm7",       &g_spe_arm7_preset },
+	{ "SpeAicaSync",   &g_spe_aica_sync_preset },
+	{ "DspRingRam",    &g_dsp_ring_ram_preset },
+	{ "DspRing64K",    &g_dsp_ring_64k_preset },
+	{ "DspRegRead",    &g_dsp_reg_read_preset },
+	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
+	{ "AicaLfore",     &g_aica_lfore_preset },
+	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
 };
 
 void ps3_presets_load(void)
@@ -313,6 +330,13 @@ static const CfgItem s_snd_items[] = {
 	{ "SpeAicaDsp",    &g_spe_aica_dsp_preset },
 	{ "SoundThread",   &g_sound_thread_preset },
 	{ "SpeArm7",       &g_spe_arm7_preset },
+	{ "SpeAicaSync",   &g_spe_aica_sync_preset },
+	{ "DspRingRam",    &g_dsp_ring_ram_preset },
+	{ "DspRing64K",    &g_dsp_ring_64k_preset },
+	{ "DspRegRead",    &g_dsp_reg_read_preset },
+	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
+	{ "AicaLfore",     &g_aica_lfore_preset },
+	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
 };
 #define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
 
@@ -382,7 +406,7 @@ static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* las
 	if (same && !always)
 		return;
 
-	char buf[512];
+	char buf[640];
 	int n = snprintf(buf, sizeof(buf), "[%s] %s:", tag, when);
 	for (u32 i = 0; i < count && n < (int)sizeof(buf); i++)
 	{
@@ -512,6 +536,15 @@ int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
 int get_aica_race_fix_preset() { return g_aica_race_fix_preset; }
 int get_arm7_reset_fix_preset() { return g_arm7_reset_fix_preset; }
 int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 5. SPE AICA Sync is read at each MediumUpdate; the rest once in InitAica.
+int get_spe_aica_sync_preset() { return g_spe_aica_sync_preset; }
+int get_dsp_ring_ram_preset()  { return g_dsp_ring_ram_preset; }
+int get_dsp_ring_64k_preset()  { return g_dsp_ring_64k_preset; }
+int get_dsp_reg_read_preset()  { return g_dsp_reg_read_preset; }
+int get_aica_mono_fix_preset() { return g_aica_mono_fix_preset; }
+int get_aica_lfore_preset()    { return g_aica_lfore_preset; }
+// OPTIMIZATION_PLAN 6.6, the clipping step: read at each CHECK.
+int get_spe_aica_gain_preset() { return g_spe_aica_gain_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
