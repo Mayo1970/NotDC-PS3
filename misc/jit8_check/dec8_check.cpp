@@ -22,12 +22,11 @@ static struct
 	struct { bool has_readm, has_writem, has_fpu; } info;
 } state;
 
-static int g_pr_moves, g_rm_any, g_idle_rule, g_fpu_dn, g_verify_fails;
+static int g_pr_moves, g_rm_any, g_idle_rule, g_verify_fails;
 static bool g_pure;
 extern "C" int get_jit_pr_moves_preset() { return g_pr_moves; }
 extern "C" int get_jit_rm_any_preset() { return g_rm_any; }
 extern "C" int get_jit_idle_rule_preset() { return g_idle_rule; }
-extern "C" int get_fpu_dn_preset() { return g_fpu_dn; }
 static u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static bool idle_turn_is_pure(const DecodedBlock&) { return g_pure; }
 // The shape of types.h's macro: an if with a block, so an else after it does not parse.
@@ -205,19 +204,17 @@ static void test_rm()
 
 static void test_host_fpscr()
 {
-	for (g_fpu_dn = 0; g_fpu_dn < 2; g_fpu_dn++)
-		for (u32 rm = 0; rm < 4; rm++)
-			for (u32 dn = 0; dn < 2; dn++)
-			{
-				fpscr.RM = rm;
-				fpscr.DN = dn;
-				g_field7 = -1;
-				g_field7_sets = 0;
-				host_fpscr();
-				// Field 7 = XE, NI, RN: toward zero for RM 1, else nearest; NI only with the row and DN.
-				const int want = (rm == 1 ? 1 : 0) | (g_fpu_dn && dn ? 4 : 0);
-				check(g_field7 == want && g_field7_sets == 1, "host FPSCR", rm, dn, (u32)g_field7);
-			}
+	for (u32 rm = 0; rm < 4; rm++)
+		for (u32 dn = 0; dn < 2; dn++)
+		{
+			fpscr.RM = rm;
+			fpscr.DN = dn;
+			g_field7 = -1;
+			g_field7_sets = 0;
+			host_fpscr();
+			// Field 7 = XE, NI, RN: toward zero for RM 1, else nearest. NI never: 5.40 is closed, the row is gone.
+			check(g_field7 == (rm == 1 ? 1 : 0) && g_field7_sets == 1, "host FPSCR", rm, dn, (u32)g_field7);
+		}
 }
 
 int main()

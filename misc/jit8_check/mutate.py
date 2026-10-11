@@ -22,7 +22,6 @@ L1 = 'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock
 SELF = 'if (block.BranchBlock==block.start && idle_rule<2)'
 SYSC = 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)'
 PURE = 'block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);'
-NI = 'const bool ni=fpscr.DN && get_fpu_dn_preset();'
 RMV = '\t\tif (!get_jit_rm_any_preset())\n\t\t{\n\t\t\tverify(fpu_cfg.RM<2);\n\t\t}\n\t\telse if (fpu_cfg.RM>=2)\n'
 
 MUTANTS = [
@@ -99,13 +98,10 @@ MUTANTS = [
     (DEC, 'billed count takes equal cycles', 'if (block.cycles>plain_cycles)', 'if (block.cycles>=plain_cycles)'),
     (DEC, 'ip.bin bill changed', 'block.cycles*=15;', 'block.cycles*=5;'),
 
-    (REG, 'NI without the row', NI, 'const bool ni=fpscr.DN;'),
-    (REG, 'NI without DN', NI, 'const bool ni=get_fpu_dn_preset();'),
-    (REG, 'NI drops round to zero', '"mtfsfi 7,5"', '"mtfsfi 7,4"'),
-    (REG, 'NI as XE', '"mtfsfi 7,4"', '"mtfsfi 7,8"'),
-    (REG, 'NI in the round to zero form only', '\t\telse if (ni)\n', '\t\telse if (false)\n'),
+    (REG, 'nearest sets NI', '"mtfsfi 7,0"', '"mtfsfi 7,4"'),
+    (REG, 'round to zero sets NI', '"mtfsfi 7,1"', '"mtfsfi 7,5"'),
     (REG, 'RM 1 as nearest', '"mtfsfi 7,1"', '"mtfsfi 7,0"'),
-    (REG, 'RM 2 and 3 toward zero', 'if (fpscr.RM==1)\n\t\t{', 'if (fpscr.RM>=1)\n\t\t{'),
+    (REG, 'RM 2 and 3 toward zero', 'if (fpscr.RM==1)\n\t\t\t__asm__', 'if (fpscr.RM>=1)\n\t\t\t__asm__'),
 
     (DRV, 'driver: MACL takes the high word', 'ppc_sh_store(ppc_rarg6,op->rd);', 'ppc_sh_store(ppc_rarg7,op->rd);'),
     (DRV, 'driver: mac scratch is SR.status', 'ppc_rarg2,ppc_rarg3,ppc_rarg5);', 'ppc_rarg2,ppc_rarg3,ppc_rarg4);'),
@@ -113,7 +109,7 @@ MUTANTS = [
     (DRV, 'driver: bcache without its row', '\t\tif (get_bcache_preset())\n\t\t{\n', '\t\tif (true)\n\t\t{\n'),
     (PRE, 'presets: bcache getter fixed', '{ return g_jit_bcache_preset; }', '{ return 0; }'),
     (PRE, 'presets: idle rule default X3', 'int g_jit_idle_rule_preset = 0;', 'int g_jit_idle_rule_preset = 1;'),
-    (PRE, 'presets: FPU DN default ON', 'int g_fpu_dn_preset        = 0;', 'int g_fpu_dn_preset        = 1;'),
+    (PRE, 'presets: bcache default OFF', 'int g_jit_bcache_preset    = 1;', 'int g_jit_bcache_preset    = 0;'),
 ]
 
 # The same results on the model through another instruction: only the ppu-as words catch it.

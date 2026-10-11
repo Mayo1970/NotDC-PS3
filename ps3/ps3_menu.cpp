@@ -557,9 +557,7 @@ static Option s_jit[] = {
 	{ "JIT RM 2/3",      &g_jit_rm_any_preset,    OPT_CHOICE, k_rmany,     0, 0,0,0, NULL,
 	  "ACCEPT: FPSCR.RM 2 or 3 runs as round to nearest, no hang (P57). Set before boot." },
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
-	  "Cycle bill of small read+branch blocks; lower = more SH4 work (P71). Set before boot." },
-	{ "FPU DN",          &g_fpu_dn_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "FPSCR.DN also sets the PPU's NI bit: denormals as zero (5.40). Set before boot." },
+	  "X3 BACKWARD: more frames in some games, slower in others (P71). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

@@ -38,11 +38,11 @@ put('bcache_struct.inc', cut(read('dc/sh4/rec_v2/blockmanager.h'), 'struct Block
 put('bcache_mirror.inc', cut(read('dc/sh4/rec_v2/blockmanager.cpp'), 'static inline void bcache_mirror(',
                              '\n}\n', 'bcache_mirror', True))
 
-# SetFloatStatusReg()'s PS3 branch, each mtfsfi as a call the check counts.
+# SetFloatStatusReg()'s PS3 branch, each mtfsfi as a call the check counts. 5.40 is closed: no NI form is left.
 CELL = '#elif HOST_CPU==CPU_PPC_CELL\n'
 host = cut(read('dc/sh4/sh4_registers.cpp'), CELL, '#endif', 'SetFloatStatusReg')[len(CELL):]
 host, n = re.subn(r'__asm__ volatile\("mtfsfi 7,(\d+)" ::: "memory"\);', r'host_field7(\1);', host)
-if n != 4 or '__asm__' in host:
+if n != 2 or '__asm__' in host:
     sys.exit('FAIL cut: SetFloatStatusReg: %d mtfsfi forms' % n)
 put('fpscr_host.inc', host)
 
@@ -67,13 +67,11 @@ LINES = [
      'int g_jit_bcache_preset    = 1;'),
     ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_jit_pr_moves_preset  = 0;'),
     ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_jit_rm_any_preset    = 0;'),
-    ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_jit_idle_rule_preset = 0;'),
-    ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_fpu_dn_preset        = 0;'),
+    ('ps3/ps3_presets.cpp', 'JIT IDLE RULE defaults to X30 (Matt 2026-10-12)', 'int g_jit_idle_rule_preset = 0;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_bcache_preset()        { return g_jit_bcache_preset; }'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_rm_any_preset()    { return g_jit_rm_any_preset; }'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }'),
-    ('ps3/ps3_presets.cpp', 'getter', 'int get_fpu_dn_preset()        { return g_fpu_dn_preset; }'),
     ('dc/sh4/sh4_registers.cpp', 'the host FPSCR follows RM and DN',
      '\tif ((old_rm!=fpscr.RM) || (old_dn!=fpscr.DN) || (old_rm==0xFF )|| (old_dn==0xFF))\n'),
 ]

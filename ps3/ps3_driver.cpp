@@ -332,7 +332,6 @@ static u32 s_frchg_sites, s_pref_sites;
 extern "C" int get_jit_idle_rule_preset();
 extern "C" int get_jit_pr_moves_preset();
 extern "C" int get_jit_rm_any_preset();
-extern "C" int get_fpu_dn_preset();
 extern u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static u32 s_bcache_sites, s_mac_sites;
 
@@ -4617,8 +4616,8 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
-	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d fpudn=%d\n", get_jit_idle_rule_preset(),
-	       get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_fpu_dn_preset());
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d\n", get_jit_idle_rule_preset(), get_jit_pr_moves_preset(),
+	       get_jit_rm_any_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each

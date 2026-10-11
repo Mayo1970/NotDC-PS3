@@ -128,7 +128,7 @@ MUTANTS = [
     ('TMU Clock not in the live list', M, '&g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,',
      '&g_g2_dma_read_preset, &g_spg_field_bit_preset,'),
     ('TMU Clock is EFF by default', P, 'int g_tmu_clock_preset     = 0;', 'int g_tmu_clock_preset     = 1;'),
-    ('TMU Fine TCNT is off by default', P, 'int g_tmu_fine_tcnt_preset = 1;', 'int g_tmu_fine_tcnt_preset = 0;'),
+    ('TMU Fine TCNT is on by default', P, 'int g_tmu_fine_tcnt_preset = 0;', 'int g_tmu_fine_tcnt_preset = 1;'),
 ]
 
 def main():

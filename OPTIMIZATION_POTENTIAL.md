@@ -113,7 +113,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | merged: plan section 0, parked Soul Calibur faults; also 5.12 SPE list #4, TArender.MD TR5 item 3 |
 | P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | merged: plan section 0, parked Soul Calibur faults; TArender.MD TR5 item 1: "the A/B was not run" |
 | P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06, default + CD-DA; CD-DA miss stalls known, parked |
-| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | CLOSED 2026-10-11 (Matt), no effect: NI does nothing on the PPE (`[ni]` probe, HW); "FPU DN" stays OFF; merged: plan 5.40; extends RESEARCH.MD 3e |
+| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | CLOSED 2026-10-11 (Matt), no effect: NI does nothing on the PPE (`[ni]` probe, HW); "FPU DN" row removed 2026-10-12 (Matt); merged: plan 5.40; extends RESEARCH.MD 3e |
 | P5 | Small speed items | speed | <= 1% each | small to medium | merged: plan 5.36; bind scan is 5.10 (not chosen) |
 | P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06, default ON; EMU_TERM still never runs |
 | P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | merged: plan 5.17 (with P55) |
@@ -180,7 +180,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple: bundle 10; GD-ROM: bundle 2; G2: bundle 6 |
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 11 |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
-| P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
+| P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
 | P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | bundle 14; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
 | P73 | Small render-thread items (4) | speed | fewer draws and copies (not measured) | 4-30 lines each | bundle 14; plan 3k's parked "cheaper first pass"; counters first |
 | P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there |
@@ -457,7 +457,7 @@ scratchpad of session 8112eaf0, after 5.33), `[stall] gd read` is 77.4,
 28.6 ms), and the SH4 thread never sleeps. That is 1.5-13% of the SH4
 thread. P3 stays parked (Matt 2026-10-05).
 
-### P4 FPSCR.DN -> PPC NI bit  `[x]` CLOSED 2026-10-11 (Matt), no effect: the `[ni]` boot probe on HW shows NI = 1 changes no value and no time on the PPE (plan section 0); row "FPU DN" stays OFF; merged: plan 5.40
+### P4 FPSCR.DN -> PPC NI bit  `[x]` CLOSED 2026-10-11 (Matt), no effect: the `[ni]` boot probe on HW shows NI = 1 changes no value and no time on the PPE (plan section 0); row "FPU DN" removed from source 2026-10-12 (Matt); merged: plan 5.40
 
 - Ours: `SetFloatStatusReg()` (`dc/sh4/sh4_registers.cpp:89-96`) sets only the
   rounding mode (`mtfsfi 7,RM`).
@@ -753,7 +753,7 @@ Adventure intro FMV, `[stall] dma`.
   all were VRAM: about 0.5% of the SH4 thread (estimate). Count the
   VRAM-direct blocks in `[ta-split]` first.
 
-### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[~]` built 2026-10-11, bundle 8 (plan section 0): row "JIT PR MOVES", default OFF, without fneg (P32 not done); no HW run yet (a Looney Tunes run compiled no PR=1 move: that game has none); PR=1 FPU ops in the old logs: Space Channel 5, Quake3.cdi, Rayman 2; merged: plan 5.39
+### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[~]` built 2026-10-11, bundle 8 (plan section 0): row "JIT PR MOVES", default OFF, without fneg (P32 not done); HW 2026-10-12 (Quake3.cdi): 20 sites compiled, no fault in the log, no word on the image, the row stays OFF (a Looney Tunes run compiled no PR=1 move: that game has none); PR=1 FPU ops in the old logs: Space Channel 5, Quake3.cdi, Rayman 2; merged: plan 5.39
 
 - Flycast `62085539a` (2022, `core/hw/sh4/dyna/decoder.cpp:660-667`): with
   PR=1 every FPU op falls back to the interpreter, except fmov, flds, fsts
@@ -765,7 +765,7 @@ Adventure intro FMV, `[stall] dma`.
 - Value: none seen. The Crazy Taxi census (plan 5.0) has no FPU op among
   the fallbacks. Build it only if a PR=1 game shows up in `[IFB]`.
 
-### P71 The x30 idle rule bills work blocks  `[~]` built 2026-10-11, bundle 8 (plan section 0): row "JIT IDLE RULE" X30 / X3 BACKWARD / OFF, default X30; HW 2026-10-11 at X3 BACKWARD (Looney Tunes): the race draws 29.95 frames per emulated second (26.4), but SPEED is 60.9% and the wall rate 18.2 (Matt: "It runs much worse"); the host cost is x1.64, not the +14% below; OFF: the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X3 BACKWARD in Sonic Adventure: 29.69 frames/s (28.65), 14K+ scenes 29.6 (26.3), SPEED 100% (Matt: "VERY smooth"): Sonic has the spare host time that Looney Tunes lacks; X3 BACKWARD in Phantasy Star Online: its 20 fps scene at 30.0 frames/s, SPEED 100%; X30 stays the global default, a per-game level is open
+### P71 The x30 idle rule bills work blocks  `[x]` HW 2026-10-11 and 12, verdict Matt 2026-10-12: default X30, X3 BACKWARD stays as a level for the games that gain (Phantasy Star Online, Sonic Adventure); what is left is the plan's list "more friendly for other users" (section 7, Bundle 8). Built 2026-10-11, bundle 8 (plan section 0): row "JIT IDLE RULE" X30 / X3 BACKWARD / OFF, default X30; HW 2026-10-11 at X3 BACKWARD (Looney Tunes): the race draws 29.95 frames per emulated second (26.4), but SPEED is 60.9% and the wall rate 18.2 (Matt: "It runs much worse"); the host cost is x1.64, not the +14% below; OFF: the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X3 BACKWARD in Sonic Adventure: 29.69 frames/s (28.65), 14K+ scenes 29.6 (26.3), SPEED 100% (Matt: "VERY smooth"): Sonic has the spare host time that Looney Tunes lacks; X3 BACKWARD in Phantasy Star Online: its 20 fps scene at 30.0 frames/s, SPEED 100%; X30 stays the global default, a per-game level is open
 
 - Ours: the "Small-n-simple idle loop detector" of the decoder
   (`dc/sh4/rec_v2/decoder.cpp:1316-1351`). A block with fewer than 6
@@ -1086,7 +1086,7 @@ Games affected: unknown for each.
   (`plugs/drkPvr/SPG.cpp:84`), so our scissor must scale the clip the same
   way.
 
-### P11 TMU TCNT inside the timeslice  `[x]` built 2026-10-11 as "TMU Fine TCNT", bundle 7 (plan section 0); HW run 2026-10-11 (ChuChu Rocket: boot, load and menu, no fault), default ON since the package of 22:16 (Matt); no run with a game in play; merged: plan 6.4
+### P11 TMU TCNT inside the timeslice  `[x]` built 2026-10-11 as "TMU Fine TCNT", bundle 7 (plan section 0); HW run 2026-10-11 (ChuChu Rocket: boot, load and menu, no fault), default ON since the package of 22:16 (Matt); **default OFF again in source since 2026-10-12 (Matt)**: about 95 ns per TCNT read, Quake3.cdi 10-17 SPEED points slower with it (plan section 0, bundle 8 runs 15 and 17); merged: plan 6.4
 
 - Flycast `b31f92f8e` ("sh4: increase timers resolution", issue #2093: lack
   of randomness in Soul Calibur) reads TCNT with the cycles spent inside the

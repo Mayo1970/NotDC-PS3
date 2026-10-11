@@ -41,9 +41,9 @@ has $M 2 '&g_hblank_irq_preset'
 has $M 1 '&g_tmu_fine_tcnt_preset'
 has $M 1 '&g_vblank_int_reset_preset'
 P=ps3/ps3_presets.cpp
-# The defaults (Matt, 2026-10-11): ON, but TMU Clock, which has no HW run.
+# The defaults (Matt): the SPG rows ON (2026-10-11); TMU Clock OFF, no HW run; TMU Fine TCNT OFF (2026-10-12, speed).
 has $P 1 'int g_tmu_clock_preset     = 0;'
-has $P 1 'int g_tmu_fine_tcnt_preset = 1;'
+has $P 1 'int g_tmu_fine_tcnt_preset = 0;'
 has $P 1 'int g_spg_field_bit_preset = 1;'
 has $P 1 'int g_hblank_irq_preset    = 1;'
 has $P 1 'int g_vblank_int_reset_preset = 1;'
