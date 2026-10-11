@@ -13,6 +13,8 @@ extern "C" int get_x_scaler_preset();
 // Plan section 7, bundle 4 (P10): TA List Regs and Core Reset.
 extern int g_ta_list_regs_preset;
 extern int g_core_reset_preset;
+// Plan section 7, bundle 7 (P28): SPG_VBLANK_INT's reset value as Flycast (SCANINT2 at line 21, not 336).
+extern int g_vblank_int_reset_preset;
 
 u8 regs[RegSize];
 
@@ -36,6 +38,7 @@ static bool spg_plan_reg(u32 addr)
 	switch (addr)
 	{
 		case FB_R_CTRL_addr:
+		case SPG_HBLANK_INT_addr:
 		case SPG_VBLANK_INT_addr:
 		case SPG_CONTROL_addr:
 		case SPG_LOAD_addr:
@@ -198,7 +201,7 @@ void Regs_Reset(bool Manual)
 	REVISION            = 0x00000011;
 	SOFTRESET           = 0x00000007;
 	SPG_HBLANK_INT.full = 0x031D0000;
-	SPG_VBLANK_INT.full = 0x01500104;
+	SPG_VBLANK_INT.full = g_vblank_int_reset_preset ? 0x00150104 : 0x01500104;
 	FPU_PARAM_CFG       = 0x0007DF77;
 	HALF_OFFSET         = 0x00000007;
 	ISP_FEED_CFG        = 0x00402000;

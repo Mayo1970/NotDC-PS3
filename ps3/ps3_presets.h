@@ -141,6 +141,11 @@ extern int g_aica_lfore_preset;
 extern int g_spe_aica_gain_preset;
 extern int g_g2_dma_small_preset;
 extern int g_g2_dma_read_preset;
+extern int g_tmu_clock_preset;
+extern int g_tmu_fine_tcnt_preset;
+extern int g_spg_field_bit_preset;
+extern int g_hblank_irq_preset;
+extern int g_vblank_int_reset_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 
 // cfgOpen() must have run first.
@@ -154,3 +159,5 @@ void ps3_gdcfg_print(const char* when, bool always);
 void ps3_texcfg_print(const char* when, bool always);
 // [rendcfg] line: the RENDERER page's rows, the same way.
 void ps3_rendcfg_print(const char* when, bool always);
+// [timecfg] line: the TIMING page's rows, the same way.
+void ps3_timecfg_print(const char* when, bool always);

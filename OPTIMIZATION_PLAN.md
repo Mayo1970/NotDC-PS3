@@ -13,6 +13,201 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-11)
 
+**Done but TMU Clock: bundle 7, Time base (section 7; Matt 2026-10-11: "We
+will now work at bundle 7."). HW runs 1 and 2 on 2026-10-11 (Crazy Taxi,
+ChuChu Rocket; below). Verdict (Matt 2026-10-11): "Keep them as default,
+they seem harmless." So TMU Fine TCNT ON, SPG Field Bit FRAME, HBlank IRQ
+MODES and VBLANK INT Reset FLYCAST are the defaults in source since
+2026-10-11 (`ps3/ps3_presets.cpp`) and in the package of 22:16
+(`build/notdc_ps3.pkg`, 1528496 bytes; Matt 2026-10-11 after the source
+change: "Place them on by default?", read as the package too). It differs
+from the package of 21:15 only in these four defaults. Matt's `nullDC.cfg`
+holds the rows ON from his runs. "Them" is read as the four rows he ran. TMU Clock stays SH4: it has no HW run,
+because it acts only below SH4 Clock 200 and Matt keeps 200. TMU Fine TCNT
+is the default with one run of 57 s (boot, load and a menu), no game in
+play. Open: 6.4's HW test (SH4 Clock 150), if Matt wants it.**
+
+**The build: five rows on a new options
+page, TIMING (page 8), all at the old path in the package of 21:15
+on 2026-10-11 (`build/notdc_ps3.pkg`, 1528496 bytes). Matt's picks
+before the build (2026-10-11, asked once): all four items (6.4; P11 with
+the TimerTest; P28's field bit and HBlank modes; P28's reset value); a TCNT
+read inside a slice gives the value only (UNF and the IRQ stay at the slice
+end); TimerTest "smallTCOR" stays as it is; a new page TIMING, not the
+EMULATION page. The same package has one source edit that is not from this
+session: `g_speed_limiter_preset` 0 -> 1 in `ps3/ps3_presets.cpp` (21:09);
+an install keeps `nullDC.cfg`, so it acts on a new install only.**
+- The rows (the key is in `nullDC.cfg` [ps3]; the first value is the old
+  path):
+
+  | Row | Key | Values | Acts | Default in source |
+  |---|---|---|---|---|
+  | TMU Clock | `TmuClock` | SH4 / EFF | live | SH4 (0), no HW run |
+  | TMU Fine TCNT | `TmuFineTcnt` | OFF / ON | next boot, dynarec only | ON (1) |
+  | SPG Field Bit | `SpgFieldBit` | LINE / FRAME | live | FRAME (1) |
+  | HBlank IRQ | `HblankIrq` | VBLANK / MODES | live | MODES (1) |
+  | VBLANK INT Reset | `VblankIntReset` | OLD / FLYCAST | next boot | FLYCAST (1) |
+
+- TMU Clock EFF (6.4): below SH4 Clock 200 a slice counts x 200 / clock in
+  the TMU, so the timers keep 50 MHz of Pclk per emulated second. **At SH4
+  Clock 200 and above it changes nothing: its HW test needs SH4 Clock
+  150.** The TMU now counts in 1/4096 SH4 cycle (`TMU_FRAC` 12,
+  `dc/sh4/tmu.cpp`) in every mode. The slice's count is scaled once, with
+  no carried remainder, so each slice has the same count and the SYS GATE's
+  closed forms (5.36, 5.42) hold. Rate error at 150 MHz: 0.14 ppm or less.
+  The rate is latched at a slice update (`tmu_clock_latch()`).
+- TMU Fine TCNT (P11, Flycast `b31f92f8e`): a TCNT read adds the SH4
+  cycles run inside the slice. The JIT stores `ppc_cycles` in
+  `Sh4cntx.jit_cycles` (`emit_cycles_store()`, `ps3/ps3_driver.cpp`, 6
+  places): before each cold memory C call, before each interpreter
+  fallback, at the loop entry, at each slice end and on both RESUME paths.
+  A block takes its cycles at its entry, so the resolution is one block, as
+  in Flycast. The read works on a copy: an underflow inside the slice
+  gives the reloaded count; UNF and the interrupt come at the slice end
+  (Matt's pick). A write that changes a channel (TCNT, TSTR, a new TCR
+  prescaler) first commits the cycles run so far (`tmu_commit()`), so a
+  write and a read in one slice measure the time between them. A commit
+  can set UNF. The interpreter engines keep the slice resolution. With
+  SH4 Clock above 200 the SH4's longer slice is scaled to the module slice.
+- SPG Field Bit FRAME (P28): `SPG_STATUS.fieldnum` flips once per frame, at
+  line 0, as Flycast `spg.cpp:158-163`; LINE flips on each line. HBlank IRQ
+  MODES (P28): mode 0 raises `holly_HBLank` at `SPG_HBLANK_INT`'s compare
+  line, mode 2 on each line, modes 1 and 3 never (Flycast `spg.cpp:140-155`);
+  VBLANK raises one at each vblank. With the reset value (mode 0, line 0)
+  MODES moves the interrupt from the vblank line to line 0. A write to
+  `SPG_HBLANK_INT` now syncs the SYS GATE (both values). VBLANK INT Reset
+  FLYCAST: `SPG_VBLANK_INT` resets to 0x00150104 (SCANINT2 at line 21, not
+  336); the BIOS writes the register.
+- Log: `[timecfg]` at boot and at a menu close (SH4Clock, Accuracy and the
+  5 keys). `[jitcfg]` has `finetcnt=`. `[tmu]` in the 1 s block, only with
+  TMU Fine TCNT on or a rate that is not x1: the rate, TCNT reads/s, those
+  with cycles inside a slice (and their average), commits/s. `[spg]`, only
+  with one of the two SPG rows on: field flips/s, HBlank interrupts/s and
+  the game's mode and compare line.
+- PC (WSL), all on the real `tmu.cpp`, `SPG.cpp`, `regs.cpp` and
+  `sh4_interpreter.cpp`:
+  - Rows OFF: 24 timelines of `misc/sysgate_check` give the same trace,
+    byte for byte, as the sources before the bundle. The new TMU step
+    equals the old one count by count (7 clock and row sets, 48000
+    slices each, TCOR down to 0).
+  - `misc/sysgate_check` takes the rows from the environment (`TMUEFF=1`
+    with `CLOCK=150`, `FINE=1`, `FIELD=1`, `HBLANK=1`); its guest also
+    writes `SPG_HBLANK_INT`. PASS: 300 of 300 timelines equal in the 3
+    gate modes with the rows OFF, and with each of 7 row sets (FINE; FIELD;
+    HBLANK; TMUEFF at 150; all four at 150; FINE at 250; FINE with
+    RACEFIX, G2SMALL and STALL). Its `mutate.py`: 63 of 63 planted bugs
+    fail (2 patterns follow the new TMU text).
+  - New `misc/timebase_check` (`run.sh`, `mutate.py`): each row and all
+    rows against the three gate modes; Flycast's TimerTest; TCNT against a
+    model that counts step by step in continuous time (reads, TCNT, TSTR,
+    TCR and TCOR writes at random cycles, slice ends with a block's
+    overshoot, clocks 150 to 250, both TMU Clock values, the three gate
+    modes and slices); the TMU rate; the SPG rows; 24 source-line checks
+    for the code that does not build on the PC. PASS: 7776305 checks, with
+    0 of about 8300 TCNT reads per run different from the model (row OFF:
+    60 to 75% differ). Its `mutate.py`: 62 of 62 planted bugs fail. One of
+    them needed a directed case: a write past a slice end, then slices the
+    gate skips, then a write early in a slice (the batch must not run over
+    the committed part; `tmu_slices_quiet_run()` refuses it).
+  - `misc/clock_check` PASS (2878 checks, 7 source lines), its `mutate.py`
+    22 of 22; `misc/g2dma_check` ALL PASS (1280 runs); `misc/div32_check`
+    PASS (it builds `sh4_registers.h`, which has the new `jit_cycles`).
+- Flycast's TimerTest on our slices (27 asserts), with TMU Fine TCNT ON:
+  22 pass as written (init 10 of 10, precision 8 of 9, underflow 4 of 4).
+  1 of precision is the UNF flag, which comes at the slice end. smallTCOR
+  0 of 4: TCOR 2 underflows more than once inside one slice, where ours
+  takes a modulo and Flycast clamps (left as it is, Matt). With the row
+  OFF: 16 of 27 (precision 5 of 9, underflow 1 of 4), as the plan said.
+- Seen, not changed: at an underflow ours and Flycast both go to TCOR - 1,
+  so a period is TCOR counts. The SH7750 manual loads TCOR, so the period
+  is TCOR + 1 there (from memory of the manual, not checked on HW).
+- HW steps as planned before the runs (package of 21:15; one row per run).
+  The runs below did not follow them: the three SPG rows ran together, and
+  TMU Fine TCNT ran on top of them:
+  1. Crazy Taxi, SH4 Clock 200, rows OFF, 60 s: the baseline, and
+     `[timecfg] boot:` in the log.
+  2. SELECT menu, TIMING: SPG Field Bit FRAME (live). `[spg]` shows
+     `field flips` (about 60/s when interlaced). Any image or speed fault?
+  3. SPG Field Bit back to LINE, HBlank IRQ MODES (live). `[spg]` shows
+     `hblank irq` and the game's mode and line. Any fault?
+  4. TMU Fine TCNT ON, then boot again (it is a next-boot row). Check
+     `finetcnt=1` on `[jitcfg]` and the `[tmu]` line. Crazy Taxi, Sonic
+     Adventure and Soul Calibur (not for speed; Flycast issue #2093 was its
+     randomness).
+  5. VBLANK INT Reset FLYCAST, then boot the BIOS and one game: no change
+     is expected.
+  6. ChuChu Rocket at SH4 Clock 200 (Matt 2026-10-11: "Also keep ChuChu
+     Rocket at 200."), so no SH4 Clock 150 run. At 200 TMU Clock EFF
+     changes nothing and `[tmu]` shows `rate x1.0000`: the run checks the
+     other rows on ChuChu Rocket, and TMU Clock EFF stays without a HW test.
+- Listener (Matt 2026-10-11 21:47: "Boot the Listener. I'll test Crazy
+  Taxi."): the listener of the bundle 5 session still runs (pid 6248) and
+  owns port 18194, so no second one was started. The log is
+  `ps3log_b5_run2.txt` (scratchpad of session 01bbad3e); the application
+  start of this test is at line 408307. Its banner (`NotDC Oct 11 2026
+  19:14:58`) does not name the package: a launch from the package of 21:15
+  prints `[timecfg] boot:` and `finetcnt=` on `[jitcfg]`.
+- HW run 1, 2026-10-11 21:48, Crazy Taxi, the package of 21:15, SH4 Clock
+  200 (`ps3log_b5_run2.txt`, lines 408307-414765; `runlog.py` in the
+  scratchpad of session e70b315a reads a run). Matt: "Crazy Taxi is done."
+  (no fault reported). `[timecfg] boot: SH4Clock=200 Accuracy=0 TmuClock=0
+  TmuFineTcnt=0 SpgFieldBit=1 HblankIrq=1 VblankIntReset=1`: the three SPG
+  rows ON from boot in one run, the two TMU rows OFF. So SPG Field Bit
+  FRAME, HBlank IRQ MODES and VBLANK INT Reset FLYCAST ran together; no
+  run has one of them alone.
+  - 294 s, clean XMB exit (JIT EXIT), no fault line (13 lines of the usual
+    kind: I-cache invalidations, one unimplemented register read per boot).
+  - `[spg] field flips 60/s | hblank irq 60/s (mode 0, line 0)` in 196 of
+    199 windows (50/s in the BIOS). The compare line is 37 in 3 windows at
+    boot, so the BIOS or the game writes `SPG_HBLANK_INT`. With mode 0 the
+    row raises one interrupt per frame, as the old path, at another line.
+  - SPEED in the drive (181 windows, NTSC 480i): 5-11K vertices 100.02%
+    (79 windows), 11-13K 100.08% (22), 13K+ 96.73% (16 windows, 16-21K
+    vertices, lowest 85.02%). The 13K+ dips are the known dense scenes
+    (HW run 4 of bundle 5: 97.6%); no base run of the same scenes, so the
+    log shows no cost and proves none. The 6.38% window is the SELECT menu.
+  - Matt set TR Triangle Sort 3 -> 0 in the SELECT menu at line 410075; his
+    `nullDC.cfg` now holds 0.
+  - `[gate]` medians: runs 28341/s, `tmu` 0, `spg` 266: Crazy Taxi's
+    timers do not underflow in play, and the log has no TCNT read count
+    with TMU Fine TCNT off.
+- HW run 2, 2026-10-11 21:54, ChuChu Rocket, the package of 21:15, SH4
+  Clock 200 (same log, lines 414766-418589, two application sessions).
+  Matt: "Went to the menu. Closing now." (no fault reported).
+  - Session 1 (lines 415353-416654): `TmuFineTcnt=0`, the three SPG rows
+    ON. 20 windows, up to the BIOS and the load; Matt set TMU Fine TCNT in
+    the SELECT menu and left through the XMB (clean).
+  - Session 2 (lines 416769-418589): `[timecfg] boot: ... TmuFineTcnt=1
+    SpgFieldBit=1 HblankIrq=1 VblankIntReset=1` and `finetcnt=1` on
+    `[jitcfg]`. First HW run of TMU Fine TCNT: the BIOS, the load and
+    about 15 s of the game's menu (0.11K vertices); no stage. 57 s, clean
+    XMB exit (JIT EXIT), no fault line.
+  - The row acts: `[tmu]` in all 44 windows, and each TCNT read has cycles
+    inside a slice (the two counts are equal in every window). The average
+    position is 790-990 cycles of the 1792-cycle slice in 42 windows (the
+    middle, as a read at a random point gives), so the JIT's stores hold
+    real counts. ChuChu Rocket reads TCNT 360/s in its menu (6 per frame)
+    and 300/s in the BIOS; the boot and the load have bursts of 6.5K to
+    133.6K reads/s (wait loops on TCNT). Commits (TMU writes inside a
+    slice): 13/s, 3/s and 3/s in three windows of the boot, 0 after.
+  - SPEED 99.85% on average. The 83.90% window is the change from PAL to
+    NTSC (50.29 vblanks against 59.95), not a slow window. `[spg]` 60/s
+    in the menu, mode 0, line 0.
+  - Not shown by this run: a stage, and a game in play with the row ON.
+    The sound fault F1 of ChuChu Rocket (section 6, parked): no word from
+    Matt on it in this run.
+- Verdict and defaults, 2026-10-11 (Matt, asked what he saw and whether to
+  run a game in play: "Keep them as default, they seem harmless."):
+  `g_tmu_fine_tcnt_preset`, `g_spg_field_bit_preset`, `g_hblank_irq_preset`
+  and `g_vblank_int_reset_preset` are 1 in `ps3/ps3_presets.cpp`;
+  `g_tmu_clock_preset` stays 0. Packaged at 22:16 (only
+  `ps3_presets.cpp` compiled again). An install keeps
+  `nullDC.cfg`, so a source default reaches a new install only. The source
+  lines of `misc/timebase_check/run.sh` hold the new defaults (PASS, 7776305
+  checks and 24 lines); its `mutate.py`: 63 of 63 planted bugs fail (a
+  wrong default of TMU Clock and of TMU Fine TCNT are two of them).
+  `misc/sysgate_check` keeps its rows OFF unless the environment sets them.
+
 **PARKED by Matt 2026-10-11 ("Let's park this for now. I will test it
 with Bangai-O and Nomad Soul later on."): bundle 6, G2 DMA (section 7;
 Matt 2026-10-11: "Work on bundle 6."). HW run 1 done, no fix for the
@@ -8046,7 +8241,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
 | 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
-| 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test); bundle 7 (section 7) |
+| 6.4 TMU Clock EFF | every game at SH4 150 | `[~]` built 2026-10-11 as "TMU Clock" SH4 / EFF, bundle 7 (section 0), default SH4, no HW run (Matt keeps SH4 Clock 200, where EFF changes nothing); merged 2026-10-06: P11 (built as "TMU Fine TCNT", HW run 2026-10-11, default ON in source), P57 (TMU test, in `misc/timebase_check`) |
 | 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (built 2026-10-11 as "G2 DMA Small", bundle 6, default OFF; HW run 1: no fix for F1 in ChuChu Rocket), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
@@ -8345,8 +8540,11 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   At 512: about 18% and 27-36%.
 - HW test: as 6.1.
 
-### 6.4 TMU Clock EFF  `[ ]`
+### 6.4 TMU Clock EFF  `[~]` built 2026-10-11, bundle 7, default SH4, no HW run: Matt keeps SH4 Clock 200 (section 0)
 
+- Built 2026-10-11: the row TMU Clock SH4 / EFF on the TIMING page, live.
+  EFF scales a slice's count once (x 200 / clock, 12 fraction bits), with
+  no carried remainder. The text below is the plan of 2026-10-04.
 - Defect: `UpdateTMU(s_timeslice)` gets raw SH4 cycles
   (`dc/sh4/sh4_interpreter.cpp:313, 334`), and `dc/sh4/tmu.cpp:145-147`
   assumes 4 SH4 cycles per Pclk at 200 MHz. Every other time base uses
@@ -8578,7 +8776,7 @@ with GOALS.md G11. Nothing of this is built.
 | 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt); P79 and P80 added 2026-10-11, open | image fixes in 8 named games and KOS homebrew; no render-thread hang; P79: punch-through edges, P80: trapezoid sprites | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
 | 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE; P81 and P82's EXTS read-back added 2026-10-11, open | the Crazy Taxi crackle (F2); the DSP ring in wave RAM; P81: a probe for the Looney Tunes balance and the SPU clipping | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later |
-| 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
+| 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[~]` HW runs 1-2 2026-10-11 (Crazy Taxi, ChuChu Rocket; section 0): 5 rows on a new TIMING page; TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset ran with no fault and are default ON (Matt: "Keep them as default, they seem harmless."), in the packages since 22:16 (the package of 21:15 has them OFF); TMU Clock stays SH4, no HW run: EFF needs SH4 Clock 150 to act and Matt keeps 200; TMU Fine TCNT has no run with a game in play; PC checks PASS (`misc/timebase_check`) |
 | 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
 | 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
 | 10 | Maple | P29, P9 SB_MDST, P13, P37; P84's stick dead zone added 2026-10-11 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game; a smooth analog stick | `[ ]` |
@@ -8808,8 +9006,15 @@ Main gains:
   sends 512-byte ones, above the limit; Crazy Taxi sends none; section 0,
   corrected 2026-10-11); Bangai-O and Nomad Soul only if Matt has them.
 
-### Bundle 7: Time base  `[ ]`
+### Bundle 7: Time base  `[~]` HW runs 1-2 2026-10-11, 4 rows default ON since the package of 22:16 (Matt); TMU Clock SH4, no HW run (section 0)
 
+- Built (Matt's picks, 2026-10-11): every item below, as the rows TMU
+  Clock, TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset on a
+  new TIMING page. The TimerTest is in `misc/timebase_check`. Not as the
+  text below says: 6.4 has no carried remainder (a fixed-point slice count);
+  the "underflow" case passes, "smallTCOR" does not (ours takes a modulo
+  where Flycast clamps; left as it is). The text below is the plan of
+  2026-10-07.
 - Items: 6.4 (TMU Clock EFF, with P11 and P57's TMU test), P28 (the SPG
   field bit, HBlank IRQ modes, the SPG_VBLANK_INT reset value).
 - Shared code: the 5.36 SYS GATE. TCNT reads add the skipped slices

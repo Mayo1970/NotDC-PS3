@@ -1086,7 +1086,7 @@ Games affected: unknown for each.
   (`plugs/drkPvr/SPG.cpp:84`), so our scissor must scale the clip the same
   way.
 
-### P11 TMU TCNT inside the timeslice  `[ ]` merged: plan 6.4
+### P11 TMU TCNT inside the timeslice  `[x]` built 2026-10-11 as "TMU Fine TCNT", bundle 7 (plan section 0); HW run 2026-10-11 (ChuChu Rocket: boot, load and menu, no fault), default ON since the package of 22:16 (Matt); no run with a game in play; merged: plan 6.4
 
 - Flycast `b31f92f8e` ("sh4: increase timers resolution", issue #2093: lack
   of randomness in Soul Calibur) reads TCNT with the cycles spent inside the
@@ -1484,7 +1484,7 @@ Each one is small and needs no shader.
   StartRender, as `using_autosort` does (:1089). About 30 lines in both
   decoders; both lists share the MAX_MODVOL / MAX_MODTRI caps.
 
-### P28 SPG timing: field bit, HBlank modes  `[ ]`
+### P28 SPG timing: field bit, HBlank modes  `[x]` built 2026-10-11 as "SPG Field Bit", "HBlank IRQ" and "VBLANK INT Reset", bundle 7 (plan section 0); HW runs 2026-10-11 (Crazy Taxi, ChuChu Rocket, the three rows together, no fault), default ON since the package of 22:16 (Matt)
 
 - Field bit: ours flips `SPG_STATUS.fieldnum` on every scanline when
   interlaced (`plugs/drkPvr/SPG.cpp:247`, inside the per-scanline block of
@@ -1778,7 +1778,7 @@ Flycast's RTT games).
 - About 15 lines, plus the two missing modes. Endian-neutral: the pack
   works on host words.
 
-### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify merged: plan 3d; TMU test: plan 6.4
+### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify merged: plan 3d; TMU test: built 2026-10-11 in `misc/timebase_check`, bundle 7 (plan section 0)
 
 - GDI track paths with a backslash. Flycast's fixture
   `tests/files/test_gdis/a/cs.gdi` names `tracks\cs01.bin`. Ours
@@ -2819,8 +2819,9 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   2025-01).
   - Today's set is 4,176 lines (modem 1,343, regs 701, v42 1,166 + 227,
     v42bis 428 + 197, internal.h 114). Stage 1 is about 1,460 lines + ~150
-    of socket code; V.42 later adds ~2,700. GOALS.md G11 step 1 asks for
-    `v42.cpp` and `v42bis.cpp` from the start.
+    of socket code; V.42 later adds ~2,700. GOALS.md G11 step 1 asked for
+    `v42.cpp` and `v42bis.cpp` from the start; it has the two stages
+    since 2026-10-11.
   - The cost: `98dfb4c32` removed five per-game code patches that the old
     modem needed (The Next Tetris US, Bomberman Online, Outtrigger US,
     Gundam Federation vs. Zeon, Propeller Arena; `core/cheats.cpp`) and
@@ -2893,7 +2894,8 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - The device name. Flycast's full controller reports "Dreamcast PantherDC
   Controller" (`core/hw/maple/maple_devs.cpp:1680-1724`, the name at
   :1718; `09b27ddd5`, 2025-08-13: "Fixes KISS: Psycho Circus"). GOALS.md
-  G12 cites only `4d5ced1ce`. So at least one game checks the name.
+  G12 cited only `4d5ced1ce` (it has the name since 2026-10-11). So at
+  least one game checks the name.
 - The edits in ours: `dc/maple/maple_devs.cpp:161` `w32(0xfe060f00)` ->
   0xffff3f00 (bits 12 and 13 are X2 and Y2); :172 the name (exactly 30
   characters, it fits `wstr`); :213 and :215 `w8(0x80)` -> X2 and Y2 (the
@@ -2942,8 +2944,9 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   `sysProcessExit`. Low value. Also: an RTC write calls `SaveSettings()`
   for a value that the next boot never loads (`dc/aica/aica_if.cpp:101`,
   `nullDC.cpp:235`).
-- GOALS.md G10 step 4 ("Every exit to the XMB takes the 3 s fallback") is
-  out of date: P6 is done (plan 5.35).
+- GOALS.md G10 step 4 ("Every exit to the XMB takes the 3 s fallback")
+  was out of date: P6 is done (plan 5.35). Updated 2026-10-11, with G11,
+  G12 and G13.
 - A default question for G13 step 5: Flycast ships 1 controller plugged
   (`core/cfg/option.cpp:216-221`), ours Players 4
   (`ps3/ps3_presets.cpp:30`). No fault known.

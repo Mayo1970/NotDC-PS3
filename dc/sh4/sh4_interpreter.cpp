@@ -548,6 +548,27 @@ void sys_gate_install()
 	tmu_gate_install();
 }
 
+// ---- P11 TMU Fine TCNT ----
+// The JIT stores its cycle count in Sh4cntx.jit_cycles; the TMU reads how far the slice has run.
+bool g_slice_part_on;
+
+s32 sys_slice_part_slow()
+{
+	const s32 in = s_cpu_timeslice - Sh4cntx.jit_cycles;
+	if (in <= 0)
+		return 0;
+	// SH4 Clock above 200: the SH4's longer slice is one module slice.
+	return s_cpu_timeslice == s_timeslice ? in : (s32)((s64)in * s_timeslice / s_cpu_timeslice);
+}
+
+// By the JIT main loop, once, before the first block runs.
+void sys_slice_part_install()
+{
+	g_slice_part_on = true;
+	Sh4cntx.jit_cycles = s_cpu_timeslice;
+	tmu_gate_install();
+}
+
 // [sys] line: ms/s per part (the sampled runs scaled to all runs, one mftb per stamp taken out), then ns per call.
 static void sys_probe_stats(double secs)
 {

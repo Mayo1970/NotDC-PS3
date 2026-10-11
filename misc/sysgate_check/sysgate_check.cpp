@@ -46,6 +46,12 @@ extern "C" int get_speed_limiter_preset() { return 0; }
 extern "C" int get_x_scaler_preset()      { return 1; }
 extern "C" int get_sh4_cached_preset()    { return 0; }
 extern "C" int get_sh4_clock_preset()     { return s_clock; }   // misc/clock_check moves it
+// Bundle 7 rows: TMUEFF (with CLOCK=150), FINE, FIELD and HBLANK in the environment turn one on;
+// misc/timebase_check moves them.
+static int s_tmu_eff, s_fine, s_field, s_hblank;
+extern "C" int get_tmu_clock_preset()     { return s_tmu_eff; }
+extern "C" int get_spg_field_bit_preset() { return s_field; }
+extern "C" int get_hblank_irq_preset()    { return s_hblank; }
 
 // ---- the trace: what the guest can see, stamped with the slice end it follows ----
 static u32 g_slice;
@@ -72,9 +78,16 @@ void gdrom_spinup_tick(u32 c) { (void)c; }
 void maple_Update(u32 c)   { tr("maple %u", c); }
 double os_GetSeconds() { return 0.0; }
 
+// Per normal interrupt bit: the raises and the line of the last one, for misc/timebase_check.
+static u32 g_holly_n[32], g_holly_line[32];
 static void holly_raise(HollyInterruptID id)
 {
 	tr("holly %d", (int)id);
+	if ((id >> 8) == 0)
+	{
+		g_holly_n[id & 31]++;
+		g_holly_line[id & 31] = spg_CurrentScanline;
+	}
 	InterruptPend(sh4_IRL_9, 1);
 }
 pvr_init_params PVRPARAMS = { holly_raise, 0 };
@@ -253,6 +266,10 @@ static void guest_action(bool gate, int& isr_wait)
 			forced_slices(gate, 2 + (y >> 4) % 4);
 		}
 		break;
+	case 26:
+		// Bundle 7: the HBlank compare line and mode 0..3 (HBlank IRQ MODES reads them)
+		libPvr_WriteReg(PVR + SPG_HBLANK_INT_addr, (x % 300) | ((y & 3) << 12), 4);
+		break;
 	case 21: case 22:
 		// a sync with no write after it: the plan made before it must still hold
 		sys_sync();
@@ -298,10 +315,26 @@ static void plan_check()
 	}
 }
 
+// TMU Fine TCNT (FINE): the SH4 cycles run inside the slice, as the JIT stores them; a slice end has used the
+// slice up, plus a block's overshoot. The draws are the same in every mode.
+static s32 g_in;
+static void fine_step(bool end)
+{
+	if (!s_fine)
+		return;
+	const s32 cs = sh4_GetCpuTimeslice();
+	if (end)
+		g_in = (s32)rnd(96);
+	else
+		g_in += (s32)rnd((u32)cs / 3);
+	Sh4cntx.jit_cycles = cs - g_in;
+}
+
 // The JIT main loop's slice end: every slice with the gate off, only at the due count with it on.
 static void slice_end(bool gate, int& isr_wait)
 {
 	g_slice++;
+	fine_step(true);
 	plan_check();
 	int pend;
 	if (!gate)
@@ -337,12 +370,18 @@ static std::string run(const Scen& sc, int mode)
 	Sh4_ApplyAccuracyPreset();
 	if (gate)
 		sys_gate_install();
+	if (s_fine)
+		sys_slice_part_install();
+	g_in = 0;
 	int isr_wait = 0;
 	for (u32 i = 0; i < sc.slices; i++)
 	{
 		const u32 acts = rnd(4);
 		for (u32 k = 0; k < acts; k++)
+		{
+			fine_step(false);
 			guest_action(gate, isr_wait);
+		}
 		slice_end(gate, isr_wait);
 	}
 	// The end state, with the skipped slices run.
@@ -434,6 +473,12 @@ int main(int argc, char** argv)
 {
 	const u32 seeds = argc > 1 ? (u32)atoi(argv[1]) : 300;
 	const u32 slices = argc > 2 ? (u32)atoi(argv[2]) : 4000;
+	s_tmu_eff = getenv("TMUEFF") != 0;
+	s_fine = getenv("FINE") != 0;
+	s_field = getenv("FIELD") != 0;
+	s_hblank = getenv("HBLANK") != 0;
+	if (getenv("CLOCK"))
+		s_clock = atoi(getenv("CLOCK"));
 	boot();
 	u32 fails = 0, runs = 0;
 	size_t lines = 0;

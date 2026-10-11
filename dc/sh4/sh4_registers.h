@@ -40,6 +40,9 @@ struct Sh4Context
 	s32 sys_elapsed;
 	s32 sys_due;
 
+	// P11 TMU Fine TCNT: the JIT's cycles left in the slice, stored before a C memory call and at each slice end.
+	s32 jit_cycles;
+
 	u32 offset(u32 sh4_reg);
 	u32 offset(Sh4RegType sh4_reg) { return offset((u32)sh4_reg); }
 };

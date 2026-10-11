@@ -319,6 +319,10 @@ static const char* k_tileclip[]  = { "OFF", "INSIDE", "+ OUTSIDE", NULL };
 static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEPTH", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_aicasync[]  = { "OFF", "ON", "+ BLOCK SYNC", "+ SAMPLE SYNC", NULL };
+static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
+static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
+static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
+static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -630,6 +634,20 @@ static Option s_renderer[] = {
 	  "Auto-sorted translucent polygons sort per triangle. 3 ways to write depth (3k)." },
 };
 
+// Plan section 7, bundle 7: one row per item; the first value is the old path.
+static Option s_timing[] = {
+	{ "TMU Clock",       &g_tmu_clock_preset,     OPT_CHOICE, k_tmuclock,  0, 0,0,0, NULL,
+	  "EFF: below SH4 Clock 200 the timers keep real time (6.4). No change at 200. Live." },
+	{ "TMU Fine TCNT",   &g_tmu_fine_tcnt_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A timer read counts the cycles run inside the slice (P11, Dynarec). Set before boot." },
+	{ "SPG Field Bit",   &g_spg_field_bit_preset, OPT_CHOICE, k_fieldbit,  0, 0,0,0, NULL,
+	  "FRAME: the interlace field bit flips once per frame, not on each line (P28). Live." },
+	{ "HBlank IRQ",      &g_hblank_irq_preset,    OPT_CHOICE, k_hblank,    0, 0,0,0, NULL,
+	  "MODES: at the compare line or on each line, as the game sets it (P28). Live." },
+	{ "VBLANK INT Reset", &g_vblank_int_reset_preset, OPT_CHOICE, k_vbireset, 0, 0,0,0, NULL,
+	  "FLYCAST: SPG_VBLANK_INT starts at 0x00150104, not 0x01500104 (P28). Set before boot." },
+};
+
 static Option s_controls[] = {
 	{ "Players",         &g_player_count,         OPT_RANGE,  NULL,        0, 1,4,1, "%d",
 	  "Maple ports the emulator creates. Pad N drives Dreamcast port N." },
@@ -652,6 +670,7 @@ static Page s_opt_pages[] = {
 	{ "GD-ROM",        s_gdrom, (int)(sizeof(s_gdrom) / sizeof(s_gdrom[0])) },
 	{ "TEXTURES",      s_textures, (int)(sizeof(s_textures) / sizeof(s_textures[0])) },
 	{ "RENDERER",      s_renderer, (int)(sizeof(s_renderer) / sizeof(s_renderer[0])) },
+	{ "TIMING",        s_timing, (int)(sizeof(s_timing) / sizeof(s_timing[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1107,7 +1126,8 @@ static int* const k_live_opts[] = {
 	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
 	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
-	&g_g2_dma_small_preset, &g_g2_dma_read_preset,
+	&g_g2_dma_small_preset, &g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,
+	&g_hblank_irq_preset,
 };
 
 #define MAX_INGAME_OPTS 192
@@ -1284,6 +1304,7 @@ void ps3_menu_ingame(void)
 		ps3_gdcfg_print("menu", false);
 		ps3_texcfg_print("menu", false);
 		ps3_rendcfg_print("menu", false);
+		ps3_timecfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1371,5 +1392,6 @@ int ps3_menu_run(void)
 	ps3_gdcfg_print("boot", true);
 	ps3_texcfg_print("boot", true);
 	ps3_rendcfg_print("boot", true);
+	ps3_timecfg_print("boot", true);
 	return 1;
 }

@@ -1,18 +1,5 @@
-/*
-
-config.cpp implements the configuration system of the emulator (nullDC.cfg)
-It manages loading, storing, overriding, and saving configuration values from an INI-style config file (nullDC.cfg), command-line parameters, and internal defaults.
-
-The file supports:
-
-- sections and key/value entries
-- virtual (command-line) values that override file values without being saved
-- read-only internal values (paths, emulator info)
-- automatic creation and saving of the config file
-
-It provides an API to load and save string and integer settings and ensures consistent configuration handling across the emulator.
-
-*/
+// Configuration system (NotDC.cfg): INI-style sections and key/value entries, loaded, overridden and saved here.
+// Virtual (command-line) values override the file and are not saved; the emu:* values are read-only.
 
 #define _CRT_SECURE_NO_DEPRECATE (1)
 //#include <windows.h>
@@ -114,9 +101,7 @@ struct ConfigSection
 		}
 
 		verify(!(c->flags&(CEM_VIRTUAL|CEM_READONLY)));
-		//Virtual
-		//Virtual | ReadOnly
-		//Save
+		//Valid eflags : Virtual, Virtual | ReadOnly, or Save
 		if (eflags & CEM_VIRTUAL)
 		{
 			verify(!(eflags & CEM_SAVE));
@@ -256,43 +241,10 @@ void EXPORT_CALL cfgSaveStr(const wchar * Section, const wchar * Key, const wcha
 }
 //New config code
 
-/*
-	I want config to be realy flexible .. so , here is the new implementation :
-	
-	Functions :
-	cfgLoadInt	: Load an int , if it does not exist save the default value to it and return it
-	cfgSaveInt	: Save an int
-	cfgLoadStr	: Load a str , if it does not exist save the default value to it and return it
-	cfgSaveStr	: Save a str
-	cfgExists	: Returns true if the Section:Key exists. If Key is null , it retuns true if Section exists
+// cfgLoad* : return the value, save the default first if the key is missing. cfgSave* : save. cfgExists : test Section[:Key].
+// -cfg section:key=value is virtual, written only after a cfgSave*. emu:AppPath/PluginPath/DataPath/FullName/ShortName/Name are read-only.
 
-	Config parameters can be readed from the config file , and can be given at the command line
-	-cfg section:key=value -> defines a value at command line
-	If a cfgSave* is made on a value defined by command line , then the command line value is replaced by it
-
-	cfg values set by command line are not writen to the cfg file , unless a cfgSave* is used
-
-	There are some special values , all of em are on the emu namespace :)
-
-	These are readonly :
-
-	emu:AppPath		: Returns the path where the emulator is stored
-	emu:PluginPath	: Returns the path where the plugins are loaded from
-	emu:DataPath	: Returns the path where the bios/data files are
-
-	emu:FullName	: str,returns the emulator's name + version string (ex."nullDC v1.0.0 Private Beta 2 built on {datetime}")
-	emu:ShortName	: str,returns the emulator's name + version string , short form (ex."nullDC 1.0.0pb2")
-	emu:Name		: str,returns the emulator's name (ex."nullDC")
-
-	These are read/write
-	emu:Caption		: str , get/set the window caption
-*/
-
-///////////////////////////////
-/*
-**	This will verify there is a working file @ ./szIniFn
-**	- if not present, it will write defaults
-*/
+// Makes sure there is a working cfg file; if not present, it writes the defaults.
 struct vitem
 {
 	string s;
@@ -316,7 +268,7 @@ bool cfgOpen()
 	free(tmpPath);
 
 	if (cfgPath[0]==0)
-		sprintf(cfgPath,"%snullDC.cfg", appPath);
+		sprintf(cfgPath,"%sNotDC.cfg", appPath);
 
 	sprintf(dataPath,"%sdata/", appPath);
 	sprintf(pluginPath,"%splugins/", appPath);
@@ -407,12 +359,8 @@ bool cfgOpen()
 	return true;
 }
 
-//Implementations of the interface :)
-//Section must be set
-//If key is 0 , it looks for the section
-//0 : not found
-//1 : found section , key was 0
-//2 : found section & key
+//Section must be set; a 0 Key looks for the section only.
+//Returns 0 : not found, 1 : found section (Key was 0), 2 : found section & key
 s32 cfgExists(const wchar * Section, const wchar * Key)
 {
 	if (Section==0)

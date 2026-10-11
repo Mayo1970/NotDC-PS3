@@ -24,6 +24,8 @@ extern "C" int get_g2_dma_small_preset() { return getenv("G2SMALL") != 0; }
 extern "C" int get_g2_dma_read_preset() { return 0; }
 // Named by regs.cpp since bundle 4 and by aica_if.cpp since bundle 5; the presets at their source defaults.
 int g_core_reset_preset = 1, g_ta_list_regs_preset = 1;
+// Bundle 7: regs.cpp's reset value row. OLD here, so the timelines keep their lines; timebase_check moves it.
+int g_vblank_int_reset_preset;
 u32 g_aram_hz_dma;
 void aica_fix_dump(double s) { (void)s; }
 bool g_fb_dirty;

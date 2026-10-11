@@ -35,3 +35,10 @@ s32  sh4_GetTimeslice();
 void sys_gate_install();
 void tmu_gate_install();
 void sys_gate_stats(double secs);
+
+// P11 TMU Fine TCNT: SH4 cycles run inside the current slice, in module time. 0 unless the JIT stores its count.
+extern bool g_slice_part_on;
+s32  sys_slice_part_slow();
+static inline s32 sys_slice_part() { return g_slice_part_on ? sys_slice_part_slow() : 0; }
+void sys_slice_part_install();
+void tmu_stats(double secs);

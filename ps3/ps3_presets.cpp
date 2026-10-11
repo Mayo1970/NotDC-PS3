@@ -14,7 +14,7 @@ int g_dma_fix_preset       = 1;
 int g_x_scaler_preset      = 1;
 int g_mute_pcm16_preset    = 0;
 int g_cdda_preset          = 1;
-int g_speed_limiter_preset = 0;
+int g_speed_limiter_preset = 1;
 int g_render_delay_preset  = 0;
 int g_arm7_speed_preset    = 0;   // clock divider stage, ~10 MHz >> stage
 int g_arm7_batch_preset    = 4;
@@ -157,6 +157,13 @@ int g_spe_aica_gain_preset = 100; // SPE AICA Sound output level in percent befo
 // OPTIMIZATION_PLAN section 7, bundle 6: a row is off until it is cleared on hardware.
 int g_g2_dma_small_preset  = 0;   // 1 = an AICA G2 DMA of 512 SH4 cycles or less ends in its start call (P24)
 int g_g2_dma_read_preset   = 0;   // 1 = an AICA G2 DMA with SB_ADDIR 1 copies wave RAM to system RAM (P9)
+// OPTIMIZATION_PLAN section 7, bundle 7: 0 is the old path. Default ON since 2026-10-11 (Matt) but TMU Clock,
+// which has no HW run (it acts only below SH4 Clock 200).
+int g_tmu_clock_preset     = 0;   // 1 = below SH4 Clock 200 the TMU counts at the real Pclk rate, not the SH4's (6.4)
+int g_tmu_fine_tcnt_preset = 1;   // 1 = a TCNT read adds the cycles run inside the slice; the JIT stores them (P11, HW)
+int g_spg_field_bit_preset = 1;   // 1 = the SPG_STATUS field bit flips once per frame, at line 0 (P28, HW)
+int g_hblank_irq_preset    = 1;   // 1 = the HBlank IRQ follows SPG_HBLANK_INT: mode 0 at its line, mode 2 on each (P28, HW)
+int g_vblank_int_reset_preset = 1; // 1 = SPG_VBLANK_INT resets to 0x00150104, as Flycast (P28, HW)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -297,6 +304,11 @@ static const CfgItem s_items[] = {
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
+	{ "TmuClock",      &g_tmu_clock_preset },
+	{ "TmuFineTcnt",   &g_tmu_fine_tcnt_preset },
+	{ "SpgFieldBit",   &g_spg_field_bit_preset },
+	{ "HblankIrq",     &g_hblank_irq_preset },
+	{ "VblankIntReset", &g_vblank_int_reset_preset },
 };
 
 void ps3_presets_load(void)
@@ -403,6 +415,18 @@ static const CfgItem s_rend_items[] = {
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 
+// The bundle 7 rows (plan section 7), in the TIMING page's order, after the two settings they depend on.
+static const CfgItem s_time_items[] = {
+	{ "SH4Clock",      &g_sh4_clock_preset },
+	{ "Accuracy",      &g_accuracy_preset },
+	{ "TmuClock",      &g_tmu_clock_preset },
+	{ "TmuFineTcnt",   &g_tmu_fine_tcnt_preset },
+	{ "SpgFieldBit",   &g_spg_field_bit_preset },
+	{ "HblankIrq",     &g_hblank_irq_preset },
+	{ "VblankIntReset", &g_vblank_int_reset_preset },
+};
+#define TIME_ITEMS (sizeof(s_time_items) / sizeof(s_time_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -450,6 +474,13 @@ void ps3_rendcfg_print(const char* when, bool always)
 	static int last[REND_ITEMS];
 	static bool printed;
 	cfg_print("rendcfg", s_rend_items, REND_ITEMS, last, &printed, when, always);
+}
+
+void ps3_timecfg_print(const char* when, bool always)
+{
+	static int last[TIME_ITEMS];
+	static bool printed;
+	cfg_print("timecfg", s_time_items, TIME_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {
@@ -555,6 +586,12 @@ int get_spe_aica_gain_preset() { return g_spe_aica_gain_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 6: read at each G2 DMA start by dc/aica/aica_if.cpp.
 int get_g2_dma_small_preset()  { return g_g2_dma_small_preset; }
 int get_g2_dma_read_preset()   { return g_g2_dma_read_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 7: TMU Clock at each slice update, Fine TCNT once by the JIT main loop,
+// the two SPG rows on each line.
+int get_tmu_clock_preset()     { return g_tmu_clock_preset; }
+int get_tmu_fine_tcnt_preset() { return g_tmu_fine_tcnt_preset; }
+int get_spg_field_bit_preset() { return g_spg_field_bit_preset; }
+int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

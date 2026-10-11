@@ -22,6 +22,15 @@ extern "C" int get_x_scaler_preset();
 extern "C" int get_render_delay_preset();
 #define RENDER_DELAY() (get_render_delay_preset() != 0)
 
+// Plan section 7, bundle 7 (P28, Flycast spg.cpp): the field bit flips once per frame; the HBlank IRQ follows
+// SPG_HBLANK_INT. Off: a flip on each line, one HBlank IRQ at vblank.
+extern "C" int get_spg_field_bit_preset();
+extern "C" int get_hblank_irq_preset();
+#define FIELD_PER_FRAME() (get_spg_field_bit_preset() != 0)
+#define HBLANK_MODES()    (get_hblank_irq_preset() != 0)
+// [spg] line counts, printed while one of the two rows is on.
+static u32 s_st_field, s_st_hblank;
+
 // IFB_PROBE breakdown (ps3_driver.cpp); silent when the preset is off, shares the 1 s stats block.
 extern "C" void ifb_probe_dump(double seconds);
 // JIT HOTBLOCKS (ps3_driver.cpp, plan 5.18); vt_k is the stats line's vt, which marks dense windows.
@@ -268,11 +277,26 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
         if (SPG_VBLANK.vbend == spg_CurrentScanline)
             spg_InVblank = 0;
 
-        // Interlaced field toggle
-        SPG_STATUS.fieldnum = SPG_CONTROL.interlace ? (~SPG_STATUS.fieldnum & 1) : 0;
+        // Interlaced field toggle: on each line, or (SPG Field Bit FRAME) at line 0 only.
+        if (!FIELD_PER_FRAME() || spg_CurrentScanline == 0)
+        {
+            SPG_STATUS.fieldnum = SPG_CONTROL.interlace ? (~SPG_STATUS.fieldnum & 1) : 0;
+            s_st_field += SPG_CONTROL.interlace;
+        }
 
         SPG_STATUS.vsync   = spg_InVblank;
         SPG_STATUS.scanline = spg_CurrentScanline;
+
+        // HBlank IRQ MODES: mode 0 at the compare line, mode 2 on each line; mode 1 is not emulated (Flycast).
+        if (HBLANK_MODES())
+        {
+            const u32 mode = SPG_HBLANK_INT.hblank_int_mode;
+            if (mode == 2 || (mode == 0 && SPG_HBLANK_INT.line_comp_val == spg_CurrentScanline))
+            {
+                params.RaiseInterrupt(holly_HBLank);
+                s_st_hblank++;
+            }
+        }
 
         // Start of vblank
         if (SPG_VBLANK.vbstart == spg_CurrentScanline)
@@ -280,8 +304,9 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
             spg_VblankCount++;
             spg_VblankCountTotal++;
 
-            // Note: holly_HBLank is actually VBlank on real HW — HBlank not yet emulated
-            params.RaiseInterrupt(holly_HBLank);
+            // HBlank IRQ VBLANK (old): one HBlank interrupt per frame, raised here.
+            if (!HBLANK_MODES())
+                params.RaiseInterrupt(holly_HBLank);
 
             rend_vblank();
 
@@ -395,6 +420,12 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 snd_thread_stats();
                 arm_spe_stats(tdiff);
                 sys_gate_stats(tdiff);
+                tmu_stats(tdiff);
+                if (FIELD_PER_FRAME() || HBLANK_MODES())
+                    printf("[spg] field flips %.0f/s | hblank irq %.0f/s (mode %u, line %u)\n", s_st_field / tdiff,
+                           s_st_hblank / tdiff, (u32)SPG_HBLANK_INT.hblank_int_mode,
+                           (u32)SPG_HBLANK_INT.line_comp_val);
+                s_st_field = s_st_hblank = 0;
 #endif
                 snd_unlock();
                 stall_pop();
@@ -465,9 +496,17 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
 // Plan 5.36: lines with an effect beyond SPG_STATUS (interrupts, the vblank edges and the work at vbstart).
 static inline bool spg_event_line(u32 line)
 {
+    if (HBLANK_MODES() && SPG_HBLANK_INT.hblank_int_mode == 0 && line == SPG_HBLANK_INT.line_comp_val)
+        return true;
     return line == SPG_VBLANK_INT.vblank_in_interrupt_line_number ||
            line == SPG_VBLANK_INT.vblank_out_interrupt_line_number ||
            line == SPG_VBLANK.vbstart || line == SPG_VBLANK.vbend;
+}
+
+// Every line is an event: the host exit poll counts lines, HBlank mode 2 interrupts on each.
+static inline bool spg_every_line()
+{
+    return EXIT_HOST_POLL() || (HBLANK_MODES() && SPG_HBLANK_INT.hblank_int_mode == 2);
 }
 
 static inline s32 spg_slices_to_count(s32 cycles, s32 ts, s32 max)
@@ -489,7 +528,7 @@ s32 spg_slices_to_event(s32 ts, s32 max)
         if (s_list_irq_active & (1u << i))
             max = s_list_irq_cycles[i] <= 0 ? 1 : spg_slices_to_count(s_list_irq_cycles[i], ts, max);
 
-    const bool every = EXIT_HOST_POLL();
+    const bool every = spg_every_line();
     s32 c = spg_ScanlineSh4CycleCounter;
     u32 line = spg_CurrentScanline;
     for (s32 n = 1; n < max; n++)
@@ -508,7 +547,7 @@ s32 spg_slices_to_event(s32 ts, s32 max)
 
 // Plan 5.42: the line state that n event-free slices leave, from spg_slices_quiet for spg_slices_run.
 static s32 s_quiet_ctr;
-static u32 s_quiet_line, s_quiet_lines;
+static u32 s_quiet_line, s_quiet_lines, s_quiet_wraps;   // wraps: passes of line 0, for SPG Field Bit FRAME
 
 static inline bool spg_count_quiet(s32 cycles, s32 run)
 {
@@ -525,12 +564,12 @@ bool spg_slices_quiet(s32 ts, s32 n)
         return false;
 
     s32 c = spg_ScanlineSh4CycleCounter;
-    u32 line = spg_CurrentScanline, lines = 0;
+    u32 line = spg_CurrentScanline, lines = 0, wraps = 0;
     if (c - run >= spg_LineSh4Cycles)
         c -= run;   // no line ends in the run
     else
     {
-        const bool every = EXIT_HOST_POLL();
+        const bool every = spg_every_line();
         for (s32 i = 0; i < n; i++)
         {
             c -= ts;
@@ -541,12 +580,14 @@ bool spg_slices_quiet(s32 ts, s32 n)
                 if (every || spg_event_line(line))
                     return false;
                 lines++;
+                wraps += line == 0;
             }
         }
     }
     s_quiet_ctr = c;
     s_quiet_line = line;
     s_quiet_lines = lines;
+    s_quiet_wraps = wraps;
     return true;
 }
 
@@ -558,10 +599,15 @@ void spg_slices_run(s32 ts, s32 n)
     if (s_quiet_lines)
     {
         spg_CurrentScanline = s_quiet_line;
-        // One word store: the field flips once per line, as in libPvr_UpdatePvr.
+        // One word store: the field flips once per line, or once per pass of line 0, as in libPvr_UpdatePvr.
         SPG_STATUS_type st;
         st.full = SPG_STATUS.full;
-        st.fieldnum = SPG_CONTROL.interlace ? ((st.fieldnum ^ s_quiet_lines) & 1) : 0;
+        if (!FIELD_PER_FRAME())
+            st.fieldnum = SPG_CONTROL.interlace ? ((st.fieldnum ^ s_quiet_lines) & 1) : 0;
+        else if (s_quiet_wraps)
+            st.fieldnum = SPG_CONTROL.interlace ? ((st.fieldnum ^ s_quiet_wraps) & 1) : 0;
+        if (SPG_CONTROL.interlace)
+            s_st_field += FIELD_PER_FRAME() ? s_quiet_wraps : s_quiet_lines;
         st.vsync    = spg_InVblank;
         st.scanline = s_quiet_line;
         SPG_STATUS.full = st.full;
@@ -594,7 +640,8 @@ u32 spg_read_status()
         {
             line = (line + 1) % spg_ScanlineCount;
             c += spg_LineSh4Cycles;
-            st.fieldnum = SPG_CONTROL.interlace ? (~st.fieldnum & 1) : 0;
+            if (!FIELD_PER_FRAME() || line == 0)
+                st.fieldnum = SPG_CONTROL.interlace ? (~st.fieldnum & 1) : 0;
             st.vsync    = spg_InVblank;
             st.scanline = line;
         }

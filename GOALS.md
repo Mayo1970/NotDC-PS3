@@ -2,7 +2,7 @@
 
 Base: copy of `nullDC4Wii` (upstream folder stays untouched).
 Toolchain: PSL1GHT, Docker image `ps3dev-latest:latest` (ppu-gcc 7.2), run by `./build.sh`.
-TITLE_ID: `NULLDC000`. Data root: `/dev_hdd0/data/NullDC/` (BIOS in `data/`). VMU saves: `/dev_hdd0/savedata/vmu/`. Debug: UDP log only.
+TITLE_ID: `NOTDC0000`, title NotDC (`NULLDC000` and `/dev_hdd0/data/NullDC/` before 2026-10-06). Data root: `/dev_hdd0/data/NotDC/` (BIOS in `data/`). VMU saves: `/dev_hdd0/savedata/vmu/`. Debug: UDP log only.
 References: `ioQuake3-PS3` (RSX, audio, pad, PKG rules), `xashPS3` (vid/snd/in/sys under `engine/platform/ps3`).
 Video reuse: RSX init/flip from `xashPS3/engine/platform/ps3/vid_ps3.c` and `ioQuake3-PS3/code/sys/ps3_glimp.c`;
 GL 1.1 to RSX layer `ps3gl` (`xashPS3/3rdparty/ps3gl`, `ioQuake3-PS3/code/gl`) as the base for the renderer.
@@ -12,8 +12,8 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
-Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state) and
-`OPTIMIZATION_POTENTIAL.md` (P1-P15).
+Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
+as bundles 1-15) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
 
 ## G1 - `_PS3` build links and packages  `[x]` (HW 2026-09-18: boots, UDP log OK, clean XMB exit, ~194 MB free heap)
 1. Add a PSL1GHT `Makefile` in the project root. Build in Docker with `./build.sh [pkg|self|clean]`.
@@ -230,30 +230,49 @@ section 5. The steps below are the cached interpreter (OFF by default), kept as 
 
 Done on HW: SPE Draw (the TA decode on an SPU, plan 5.12 S3; default ON), SPE AICA Sound (the AICA sound on an SPU,
 plan 5.13 A2) and SPE ARM7 (the ARM7 and the AICA registers on an SPU, plan 5.15); the last two default ON since
-2026-10-05. Open: SPE AICA DSP (plan 5.13 A3, HW tested, Matt's verdict pending); texture decode and the rest of
-the plan 5.12 list (shelved).
+2026-10-05. Update 2026-10-11, from `ps3/ps3_presets.cpp`: also default ON in the source are SPE AICA DSP with the
+DSP recompiler (plan 5.13 A3), SPE Build (5.12 #2), SPE Tex Hash (#3), SPE Tex Decode (#4), SPE FB Convert (#5) and
+SPE AICA Sync at + SAMPLE SYNC (plan 6.6). Plan section 0 has the HW state of each.
 
 ## G10 - Release hardening  `[ ]`
 1. Memory ceiling probe, allocation checks, pad hot-plug. VMU saves on HDD `[x]` (HW 2026-10-04,
    `/dev_hdd0/savedata/vmu/`).
 2. Long soak test (command buffer wrap, memory creep).
-3. Open from G7: the DS3 `user_controls.cfg` remap (deferred by Matt).
-4. Every exit to the XMB takes the 3 s fallback (`OPTIMIZATION_POTENTIAL.md` P6).
+3. Open from G7: the DS3 `user_controls.cfg` remap (deferred by Matt). It needs a table of `[ps3]` keys, not a port:
+   Reicast's INI form is 212 lines (`OPTIMIZATION_POTENTIAL.md` section 4, sixth review).
+4. XMB exit `[x]`: JIT EXIT (`OPTIMIZATION_POTENTIAL.md` P6 = plan 5.35, HW SUCCESS 2026-10-06, default ON) gives a
+   clean exit. Left: the 3 s forced path skips the flash save (P85, plan bundle 15).
+5. Stick dead zone: each axis is cut alone below 20, with no rescale. Flycast uses a radial dead zone with a rescale
+   (P84, plan bundle 10).
 
 ## G11 - Online play (modem)  `[ ]` (added 2026-10-07 at Matt's request)
 No DreamPi box needed: the emulator replaces the phone line, the modem and the DreamPi in software, as Flycast does.
 Reference: Flycast `core/hw/modem/` and `core/network/`.
-1. Modem chip: port Flycast `modem.cpp`, `v42.cpp` and `v42bis.cpp` into `plugs/nullExtDev/nullExtDev.cpp` (a stub
-   today). Area 0 `0x600000-0x6007FF` and `RaiseInterrupt` are already wired to the plugin. The game's modem driver
-   uses V.42/V.42bis, so the emulator decodes them back to plain PPP bytes.
+1. Modem chip, into `plugs/nullExtDev/nullExtDev.cpp` (a stub today), in two stages (2026-10-11,
+   `OPTIMIZATION_POTENTIAL.md` P83):
+   a. Stage 1, no V.42: the modem of Flycast `df2bdfc9b` (`modem.cpp` 764 lines + `modem_regs.h`; the Reicast
+      design). It reports V.23, so the game's driver sends raw PPP bytes. Flycast ran online this way from 2018 to
+      2025-12, DCNet included. About 1,460 lines + ~150 of socket code. Not checked: that today's DCNet servers
+      still accept a stream without V.42.
+   b. Stage 2: `v42.cpp` and `v42bis.cpp` (about 2,700 lines more; today's full set is 4,176). The Next Tetris,
+      Bomberman Online, Outtrigger, Gundam Federation vs. Zeon, Propeller Arena, Power Smash and Pro Yakyuu Team
+      need it.
+   Area 0 `0x600000-0x6007FF` and `RaiseInterrupt` are already wired to the plugin. `libExtDevice_Update()` has no
+   caller: call it from MediumUpdate. The build has `-fno-exceptions`: `v42bis.cpp` throws, and the hang-up of
+   Flycast `bc3b8c71d` needs a return code.
 2. Big endian: Flycast `modem_regs.h` uses `u8` bitfields, which GCC on PPC orders the other way. Give each register
-   struct a big-endian layout.
+   struct a big-endian layout. More traps (P83): the V.42 frame check and `MEDA` are read as `u16`, two register
+   structs do not fill their bytes, and the DCNet finder magic is copied in host order.
 3. Network end (Matt picks at goal start):
    a. DCNet: one TCP socket to `dcnet.flyca.st:7654` carries the raw modem bytes (plain pipe, no handshake,
-      `core/network/dcnet.cpp`). No IP stack on the PS3. Depends on Flyinghead's free service.
+      `core/network/dcnet.cpp`). No IP stack on the PS3. Depends on Flyinghead's free service. The access-point
+      finder (UDP port 7655) is optional; port 7656 serves three games (P70).
    b. Local PPP: port `core/network/picoppp.cpp` (picoTCP), DNS `dns.flyca.st`. No outside service, more work
       (per-game port lists, UPnP, Alien Front Online address fix).
-   Both: replace asio and `std::thread` with a PPU thread and PSL1GHT sockets.
+   Both: replace asio and `std::thread` with a PPU thread and PSL1GHT sockets. For 3b a BSD-socket base exists
+   (Reicast `picoppp.cpp`, 834 lines; picoTCP builds for a big-endian host with `-DPICO_BIGENDIAN`).
+   Both: the dial-up account must be in the flash (the ISP blocks 0x80-0xEA, about 80 lines in `dc/flash_fix.cpp`,
+   P83). Flycast also writes a random console ID for network games (P85, plan bundle 15).
 4. Optional, later: broadband adapter (`core/hw/bba/bba.cpp`, `rtl8139c.cpp`); fewer games support it.
 5. HW test: a modem game dials, connects and reaches its revived server.
 
@@ -263,9 +282,12 @@ Quake III Arena, Unreal Tournament, Star Wars Episode I Racer, Vigilante 8, KISS
 Today the pad reports one stick (`0xfe060f00` in `dc/maple/maple_devs.cpp`), always sends X2/Y2 as 0x80, and the
 DS3 right stick is not read.
 Reference: Flycast `FullController` in `core/hw/maple/maple_devs.cpp` (commit 4d5ced1ce, "Panther DC/Full Controller").
-1. `ps3/ps3_input.cpp`: read `ANA_R_H`/`ANA_R_V` into per-port X2/Y2 values, with the left stick's dead zone.
+The exact edits are in `OPTIMIZATION_POTENTIAL.md` P84 (2026-10-11).
+1. `ps3/ps3_input.cpp`: read `ANA_R_H`/`ANA_R_V` into per-port X2/Y2 values, with the left stick's dead zone. Build
+   P84's radial dead zone first (plan bundle 10), so both sticks get it.
 2. `dc/maple/maple_cfg.cpp`: copy them into `pjs.joy[PJAI_X2]`/`pjs.joy[PJAI_Y2]`.
-3. `dc/maple/maple_devs.cpp`: add the full controller. It reports `0xffff3f00` (6 axes, all buttons) and sends X2/Y2
+3. `dc/maple/maple_devs.cpp`: add the full controller. It reports `0xffff3f00` (6 axes, all buttons) and the name
+   "Dreamcast PantherDC Controller" (Flycast `09b27ddd5`, which fixed KISS: Psycho Circus), and sends X2/Y2
    in the last two condition bytes. Keep the `0xF901` kcode mask in `maple_cfg.cpp`: the triggers also set C/D in
    `ps3_input.cpp`, so without it each trigger press is also a C or D press.
 4. CONTROLS > Controller: add "FULL (2 STICKS)". STANDARD PAD stays the default and keeps its capability word, so
@@ -284,7 +306,8 @@ would lock in an old build's values where nobody can see them.
 4. After the reset, the hidden keys still load from `nullDC.cfg`, so a hand edit can turn off a feature that breaks
    one game.
 5. Settle the defaults first. Open on 2026-10-08: YUV Block Decode is OFF in the source; SPE Tex Decode and SPE FB
-   Convert have one HW run.
+   Convert have one HW run. Also open on 2026-10-11 (P85, plan bundle 15): a new flash boots in Japanese (Flycast:
+   English), and Players is 4 where Flycast plugs 1 controller.
 6. Visible rows (recommended 2026-10-08, Matt confirms at goal start): SH4 Clock, Speed Limiter, Frame Drop, CD Audio,
    and CONTROLS > Players and Controller. G12 adds FULL (2 STICKS) to Controller; keep the G11 online row visible if
    G11 adds one. On 2026-10-08 the menu has 83 option rows on 4 pages and 2 on CONTROLS.

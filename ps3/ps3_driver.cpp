@@ -2135,6 +2135,15 @@ static void fm_emit_addr(u32 rT,u32 areg,u32 sz)
 		ppc_xori(rT,rT,4-sz);
 }
 
+// P11 TMU Fine TCNT, latched with the main loop: the cycle count goes to the context before a C memory call
+// and at each slice end, so a TMU handler sees how far the slice has run.
+static bool s_fine_tcnt;
+static void emit_cycles_store()
+{
+	if (s_fine_tcnt)
+		ppc_stw(ppc_cycles,ppc_contex,(u32)offsetof(Sh4Context,jit_cycles));
+}
+
 // Cold paths: the fast path falls through past one not-taken branch; FlushCold() emits each ColdFrag after
 // ngen_End, patches the forward branch to it, and ends it with `b done` back into the block.
 struct ColdFrag
@@ -2334,6 +2343,8 @@ static u32 FlushCold(u32* cold_ctr)
 			ppc_bx(c.done,0);        // table hit -> join
 			mmio->MarkLabel();       // table miss falls into the call below
 		}
+
+		emit_cycles_store();             // P11: every path below is a C call
 
 		if (c.kind==0)                   // --- read scalar: ReadMem(addr)->rrv0 ---
 		{
@@ -3596,6 +3607,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ppc_sh_store(ppc_rarg0,reg_nextpc);
 				}
 				ppc_li(ppc_rarg0,op->rs3._imm);
+				emit_cycles_store();		// P11: the handler may read or write a TMU register
 				ppc_call_c(OpDesc[op->rs3._imm]->oph);
 
 				if (br.fpu)
@@ -4439,6 +4451,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		{
 			// SYS GATE + RESUME: with no event due, enter the block again here, as bm_GetCode would.
 			ppc_call(loop_gate);
+			emit_cycles_store();	// P11: the next slice's count
 			ppc_jump((void*)rv);
 		}
 		else
@@ -4564,6 +4577,7 @@ extern "C" int get_sys_gate_preset();
 extern "C" int get_sys_gate_batch_preset();
 extern "C" int get_ram_sq_direct_preset();
 extern "C" int get_ta_peak_frame_preset();
+extern "C" int get_tmu_fine_tcnt_preset();
 
 // P6 JIT EXIT, latched when the main loop is emitted: the loop can return to C on a stop request.
 static bool s_jit_exit;
@@ -4594,9 +4608,9 @@ static void ps3_jit_dump_toggles()
 	       get_jit_mfocrf_preset(), get_jit_fpul_moves_preset(), get_jit_code_cache_preset(),
 	       get_jit_frchg_preset(), get_jit_prefetch_preset(), get_jit_guard_reuse_preset(),
 	       get_jit_exit_preset(), get_sys_gate_preset(), get_ta_peak_frame_preset());
-	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d\n", get_sys_gate_batch_preset(),
-	       get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(), sh4_GetTimeslice(),
-	       sh4_GetCpuTimeslice());
+	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
+	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
+	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
 }
 
 void ngen_mainloop()
@@ -4613,6 +4627,9 @@ void ngen_mainloop()
 		s_ta_peak_frame=get_ta_peak_frame_preset()!=0;
 		if (s_sys_gate)
 			sys_gate_install();
+		s_fine_tcnt=get_tmu_fine_tcnt_preset()!=0;
+		if (s_fine_tcnt)
+			sys_slice_part_install();
 
 		loop_code=(void(*)())emit_GetCCPtr();
 		{
@@ -4652,6 +4669,7 @@ void ngen_mainloop()
 
 			//cycles
 			ppc_li(ppc_cycles,jit_timeslice);
+			emit_cycles_store();
 
 			//and pc!
 			ppc_sh_load(ppc_next_pc,reg_nextpc);
@@ -4669,6 +4687,7 @@ void ngen_mainloop()
 			//next_pc _MUST_ be on ram since update system uses it for interrupt processing
 			ppc_sh_store(ppc_next_pc,reg_nextpc);
 			ppc_addi(ppc_cycles,ppc_cycles,jit_timeslice);	//add cycles (preset-latched timeslice)
+			emit_cycles_store();	// P11: before the gate's branch, so a skipped update still has the new count
 
 			// SYS GATE: count the slice end; with no event due, look up the block and go on (r11, r12 are free).
 			const u32 gate_elapsed=(u32)offsetof(Sh4Context,sys_elapsed);
@@ -4726,6 +4745,7 @@ void ngen_mainloop()
 				loop_gate=emit_GetCCPtr();
 				emit_gate_resume(ppc_contex,ppc_cycles,jit_timeslice,ppc_r11,ppc_r12,gate_elapsed,gate_due,
 				                 ppc_next_pc,Sh4cntx.offset(reg_nextpc));
+				emit_cycles_store();
 				ppc_jump(loop_update);
 			}
 
