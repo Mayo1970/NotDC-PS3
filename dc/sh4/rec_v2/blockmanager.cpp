@@ -36,7 +36,7 @@ ALIGN(32) BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 static inline void bcache_mirror(u32 idx, DynarecBlock* b)
 {
 	bm_bcache[idx].addr = b->addr;
-	bm_bcache[idx].code = b->code;
+	bm_bcache[idx].code = (u32)(uintptr_t)b->code;
 }
 
 extern u32 rdv_FailedToFindBlock_pc;

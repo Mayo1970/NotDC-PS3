@@ -146,6 +146,12 @@ extern int g_tmu_fine_tcnt_preset;
 extern int g_spg_field_bit_preset;
 extern int g_hblank_irq_preset;
 extern int g_vblank_int_reset_preset;
+// Bundle 8 (plan section 7), the JIT items.
+extern int g_jit_bcache_preset;
+extern int g_jit_pr_moves_preset;
+extern int g_jit_rm_any_preset;
+extern int g_jit_idle_rule_preset;
+extern int g_fpu_dn_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 
 // cfgOpen() must have run first.

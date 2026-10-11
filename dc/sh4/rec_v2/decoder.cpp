@@ -50,6 +50,14 @@ void DecodedBlock::Setup(u32 rpc)
 }
 
 DecodedBlock block;
+
+// Plan section 7, bundle 8. JIT RM 2/3 (P57), JIT PR MOVES (5.39), JIT IDLE RULE (P71): 0 x30, 1 Reicast's x3, 2 none.
+extern "C" int get_jit_rm_any_preset();
+extern "C" int get_jit_pr_moves_preset();
+extern "C" int get_jit_idle_rule_preset();
+// Since boot, for the [jit8] line: PR=1 moves kept native, blocks the idle rule billed, blocks with RM 2 or 3.
+u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
+
 struct
 {
 	NextDecoderOperation NextOp;
@@ -84,7 +92,13 @@ struct
 		cpu.FPR64=fpu_cfg.PR;
 		cpu.FSZ64=fpu_cfg.SZ;
 		cpu.RoundToZero=fpu_cfg.RM==1;
-		verify(fpu_cfg.RM<2);
+		// P57: WinCE games set RM 3. With JIT RM 2/3 it compiles as round to nearest, as SetFloatStatusReg() runs it.
+		if (!get_jit_rm_any_preset())
+		{
+			verify(fpu_cfg.RM<2);
+		}
+		else if (fpu_cfg.RM>=2)
+			g_dec_rm23_blocks++;
 		//what about fp/fs ?
 
 		NextOp=NDO_NextOp;
@@ -176,6 +190,15 @@ static bool dec_is_macop(u32 op)
 {
 	//mac.l @<REG_M>+,@<REG_N>+ / mac.w @<REG_M>+,@<REG_N>+
 	return (op&0xF00F)==0x000F || (op&0xF00F)==0x400F;
+}
+
+// Plan 5.39 (Flycast 62085539a): FPU ops that do not read PR, so a PR=1 block keeps them native. Flycast's list
+// also has fneg; ours waits for the interpreter's fneg fix (P32).
+static bool dec_is_pr_free(u32 op)
+{
+	const u32 lo=op&0xF;
+	//fmov forms 0xFnm6-0xFnmC / fsts FPUL,<FREG_N> 0xFn0D, flds <FREG_N>,FPUL 0xFn1D
+	return (lo>=6 && lo<=0xC) || (op&0xEF)==0x0D;
 }
 
 #if 1
@@ -954,7 +977,11 @@ bool dec_generic(u32 op)
 		state.info.has_fpu=true;
 		//return false;//fpu off for now
 		if (state.cpu.FPR64 /*|| state.cpu.FSZ64*/)
-			return false;
+		{
+			if (!get_jit_pr_moves_preset() || !dec_is_pr_free(op))
+				return false;
+			g_dec_pr_moves++;
+		}
 
 		if (state.cpu.FSZ64 && (d==PRM_FRN_SZ || d==PRM_FRM_SZ || s==PRM_FRN_SZ || s==PRM_FRM_SZ))
 		{
@@ -1315,24 +1342,32 @@ _end:
 
 	//cycle tricks
 	{
+		// P71 JIT IDLE RULE: the x30 also bills work blocks. 1 = Reicast's x3 (a bt block only when it branches
+		// back), 2 = no cycle trick at all (Flycast). idle_loop is set at every level, for JIT IDLE SKIP.
+		const int idle_rule=get_jit_idle_rule_preset();
+		const u32 plain_cycles=block.cycles;
+
 		//Small-n-simple idle loop detector :p
 		if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6)
 		{
 			if (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1)
 			{
-				block.cycles*=30;
+				if (idle_rule==0)
+					block.cycles*=30;
+				else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))
+					block.cycles*=3;
 				// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice.
 				block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);
 			}
 
-			if (block.BranchBlock==block.start)
+			if (block.BranchBlock==block.start && idle_rule<2)
 			{
 				block.cycles*=10;
 			}
 		}
 
 		//if in syscalls area (ip.bin etc) skip fast :p
-		if ((block.start&0x1FFF0000)==0x0C000000)
+		if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)
 		{
 			if (block.start&0x8000)
 			{
@@ -1348,6 +1383,8 @@ _end:
 		}
 		//make sure we don't use wayy-too-many cycles ;p
 		block.cycles=min(block.cycles,max_cycles);
+		if (block.cycles>plain_cycles)
+			g_dec_rule_blocks++;
 	}
 
 	static int cc=0;

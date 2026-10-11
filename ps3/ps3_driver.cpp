@@ -29,10 +29,13 @@
 #include "ps3/ps3_jit_greuse.h"
 #include "ps3/ps3_jit_carry.h"
 #include "ps3/ps3_jit_div32.h"
+#include "ps3/ps3_jit_mac.h"
+#include "ps3/ps3_jit_bcache.h"
 #include "ps3/ps3_jit_exit.h"
 #include "ps3/ps3_jit_gate.h"
 #include "ps3/ps3_jit_link.h"
 #include "dc/sh4/sys_gate.h"
+#include "ps3_timebase.h"	// gettime — the plan 5.40 probe
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
 #ifdef ppc_li
@@ -323,6 +326,15 @@ static u32 s_ppe_focrf, s_ppe_flds, s_ppe_fsts, s_ppe_ftrc, s_ppe_float;
 extern "C" int get_jit_frchg_preset();
 extern "C" int get_jit_prefetch_preset();
 static u32 s_frchg_sites, s_pref_sites;
+
+// Plan section 7, bundle 8, for the [jit8] line: BCACHE and mac sites compiled since boot, and the decoder's counts
+// (PR=1 moves kept native, blocks the idle rule billed, blocks compiled with RM 2 or 3).
+extern "C" int get_jit_idle_rule_preset();
+extern "C" int get_jit_pr_moves_preset();
+extern "C" int get_jit_rm_any_preset();
+extern "C" int get_fpu_dn_preset();
+extern u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
+static u32 s_bcache_sites, s_mac_sites;
 
 // Plan 5.31 JIT GUARD REUSE: this block's plan (each memory op's check, then the roles); sites since boot.
 extern "C" int get_jit_guard_reuse_preset();
@@ -1214,21 +1226,11 @@ void ngen_End(DecodedBlock* block)
 
 		if (get_bcache_preset())
 		{
-			// BCACHE: bm_bcache[] holds {addr, code} pairs mirrored from cache[], so a hit touches one 8-byte entry at
-			// (addr<<1) & 0x1FFF8; addr != 0xFFFFFFFF means code is valid. addr stays in rarg0 for a miss.
-			verify(sizeof(BlockCacheFlatEntry)==8 && BM_BLOCKLIST_COUNT==16384);
-
-			ppc_rlwinmx(ppc_rarg1,ppc_rarg0,1,15,28,0);	// rarg1 = (addr<<1) & 0x1FFF8
-			u32 lo=ppc_addr_high(ppc_rarg2,(void*)&bm_bcache[0]);
-			ppc_addx(ppc_rarg2,ppc_rarg2,ppc_rarg1,0,0);	// rarg2 = &bm_bcache[idx] - lo
-			ppc_lwz(ppc_rarg3,ppc_rarg2,lo);		// entry.addr
-			ppc_cmp(ppc_cr0,ppc_rarg3,ppc_rarg0,0);		// == addr ?
-			ppc_label* miss=ppc_CreateLabel();
-			ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne miss
-			ppc_lwz(ppc_rarg3,ppc_rarg2,lo+4);		// entry.code
-			ppc_mtctr(ppc_rarg3);
-			ppc_bcctrx(BO_ALWAYS,BI_CR0_EQ,0);		// bctr -> cached code
-			miss->MarkLabel();
+			// BCACHE (ps3_jit_bcache.h): bm_bcache[] mirrors cache[] as {addr, code} pairs, so a hit touches one
+			// 8-byte entry; addr != 0xFFFFFFFF means code is valid. addr stays in rarg0 for a miss.
+			verify(BM_BLOCKLIST_COUNT==16384 && (uintptr_t)&bm_bcache[BM_BLOCKLIST_COUNT] < 0x7FFF0000u);
+			emit_bcache_lookup(ppc_rarg0,&bm_bcache[0],ppc_rarg1,ppc_rarg2,ppc_rarg3);
+			s_bcache_sites++;
 		}
 		else
 		{
@@ -1958,6 +1960,15 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 		printf("[ppe] sites: mfocrf=%u flds=%u fsts=%u ftrc=%u float=%u frchg=%u pref=%u greuse=%u/%u\n",
 		       s_ppe_focrf, s_ppe_flds, s_ppe_fsts, s_ppe_ftrc, s_ppe_float, s_frchg_sites, s_pref_sites,
 		       s_gr_validates, s_gr_reuses);
+	}
+
+	static u32 jit8_last;
+	const u32 jit8_n=s_bcache_sites+s_mac_sites+g_dec_pr_moves+g_dec_rule_blocks+g_dec_rm23_blocks;
+	if (jit8_n!=jit8_last)
+	{
+		jit8_last=jit8_n;
+		printf("[jit8] sites: bcache=%u mac=%u prmoves=%u | blocks: idle rule %d billed=%u rm23=%u\n", s_bcache_sites,
+		       s_mac_sites, g_dec_pr_moves, get_jit_idle_rule_preset(), g_dec_rule_blocks, g_dec_rm23_blocks);
 	}
 
 	if (get_jit_idle_skip_preset() && seconds>0.0)
@@ -4082,17 +4093,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_sh_load(ppc_rarg3,reg_mach);		// old MACH
 				ppc_sh_load(ppc_rarg4,op->rs3);			// SR.status
 
-				// mac.w operands are already sign-extended (lha), so mullw gives the signed product; its sign is the high word.
-				ppc_mullwx(ppc_rarg5,ppc_rarg0,ppc_rarg1,0,0);
-				if (is_l)
-					ppc_mulhwx(ppc_rarg6,ppc_rarg0,ppc_rarg1,0);
-				else
-					ppc_srawix(ppc_rarg6,ppc_rarg5,31,0);
-
-				ppc_addcx(ppc_rarg7,ppc_rarg2,ppc_rarg5,0,0);	// MACL + lo
-				ppc_addex(ppc_r11,ppc_rarg3,ppc_rarg6,0,0);	// MACH + hi + CA
-				ppc_sh_store(ppc_rarg7,op->rd);			// -> MACL
-				ppc_sh_store(ppc_r11,op->rd2);			// -> MACH
+				// mac.w's operands are sign-extended already (lha), so one 64-bit form serves both ops; rarg0-4 stay
+				// as loaded for the S==1 call.
+				emit_mac_acc(ppc_rarg6,ppc_rarg7,ppc_rarg0,ppc_rarg1,ppc_rarg2,ppc_rarg3,ppc_rarg5);
+				ppc_sh_store(ppc_rarg6,op->rd);			// -> MACL
+				ppc_sh_store(ppc_rarg7,op->rd2);		// -> MACH
+				s_mac_sites++;
 
 				// SR.S (value bit 1) is rare, so a predicted-not-taken branch over the call.
 				ppc_andi(ppc_r0,ppc_rarg4,2);
@@ -4611,6 +4617,49 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d fpudn=%d\n", get_jit_idle_rule_preset(),
+	       get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_fpu_dn_preset());
+}
+
+// Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each
+// costs. The values go through volatiles, so the compiler folds nothing.
+static void ps3_ni_probe()
+{
+	static volatile f32 s_tiny=1.0e-30f, s_small=1.0e-10f, s_one=1.0f, s_out;
+	static volatile union { u32 u; f32 f; } s_den={ 0x00000123 };
+	const u32 N=20000;
+	double saved;
+	__asm__ volatile("mffs %0" : "=f"(saved));
+	for (u32 ni=0;ni<2;ni++)
+	{
+		if (ni)
+			__asm__ volatile("mtfsfi 7,4" ::: "memory");
+		else
+			__asm__ volatile("mtfsfi 7,0" ::: "memory");
+
+		union { f32 f; u32 u; } res, opnd, sum;
+		res.f=s_tiny*s_small;
+		opnd.f=s_den.f*s_one;
+		sum.f=s_den.f+s_den.f;
+
+		u64 t[4];
+		t[0]=gettime();
+		for (u32 i=0;i<N;i++)
+			s_out=s_one*s_one;
+		t[1]=gettime();
+		for (u32 i=0;i<N;i++)
+			s_out=s_tiny*s_small;
+		t[2]=gettime();
+		for (u32 i=0;i<N;i++)
+			s_out=s_den.f*s_one;
+		t[3]=gettime();
+		const double ns=1e9/(double)ps3_timebase_hz/N;
+		printf("[ni] NI=%u: 1e-30*1e-10=%08X den*1=%08X den+den=%08X (den=%08X) | ns/op: normal %.1f, den result %.1f,"
+		       " den operand %.1f\n", ni, res.u, opnd.u, sum.u, (u32)s_den.u, (t[1]-t[0])*ns, (t[2]-t[1])*ns,
+		       (t[3]-t[2])*ns);
+	}
+	(void)s_out;
+	__asm__ volatile("mtfsf 0xFF,%0" :: "f"(saved) : "memory");
 }
 
 void ngen_mainloop()
@@ -4622,6 +4671,7 @@ void ngen_mainloop()
 	if (loop_code==0)
 	{
 		ps3_jit_dump_toggles();
+		ps3_ni_probe();
 		s_jit_exit=get_jit_exit_preset()!=0;
 		s_sys_gate=get_sys_gate_preset();
 		s_ta_peak_frame=get_ta_peak_frame_preset()!=0;

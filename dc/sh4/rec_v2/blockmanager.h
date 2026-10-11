@@ -44,13 +44,14 @@ struct DynarecBlock
 // Cache array exposed for potential assembly access (like original)
 extern DynarecBlock* cache[BM_BLOCKLIST_COUNT];
 
-// BCACHE: {addr, code} mirror of cache[], one entry per bucket, for the JIT's dynamic branches (ps3_driver.cpp
-// BET_Dynamic*, which checks the entry size). addr 0xFFFFFFFF (odd, never an SH4 PC) = empty, else code is valid.
+// BCACHE: {addr, code} mirror of cache[], one entry per bucket, for the JIT's dynamic branches (ps3_jit_bcache.h).
+// addr 0xFFFFFFFF (odd, never an SH4 PC) = empty, else code is valid: a u32, as the code cache lies below 4 GB.
 struct BlockCacheFlatEntry
 {
 	u32 addr;
-	DynarecCodeEntry* code;
+	u32 code;
 };
+static_assert(sizeof(BlockCacheFlatEntry)==8, "the JIT's lookup reads 8-byte entries");
 extern BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 
 // Not in the original API

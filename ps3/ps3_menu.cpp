@@ -323,6 +323,8 @@ static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
 static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
 static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
 static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
+static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", NULL };
+static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
@@ -548,6 +550,16 @@ static Option s_jit[] = {
 	  "Slice ends run the update only when due; RESUME skips the lookup. Set before boot." },
 	{ "SYS GATE BATCH",  &g_sys_gate_batch_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
 	  "The slices the gate skipped run as one step, not one by one (5.42). Set before boot." },
+	{ "JIT BCACHE",      &g_jit_bcache_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Dynamic exits look up a flat table: two loads, no store (5.3). Set before boot." },
+	{ "JIT PR MOVES",    &g_jit_pr_moves_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "PR=1 blocks keep fmov, flds and fsts native (5.39). Set before boot." },
+	{ "JIT RM 2/3",      &g_jit_rm_any_preset,    OPT_CHOICE, k_rmany,     0, 0,0,0, NULL,
+	  "ACCEPT: FPSCR.RM 2 or 3 runs as round to nearest, no hang (P57). Set before boot." },
+	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
+	  "Cycle bill of small read+branch blocks; lower = more SH4 work (P71). Set before boot." },
+	{ "FPU DN",          &g_fpu_dn_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "FPSCR.DN also sets the PPU's NI bit: denormals as zero (5.40). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

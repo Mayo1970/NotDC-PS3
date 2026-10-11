@@ -1,6 +1,4 @@
-/*
-	Sh4 register storage/functions/utilities
-*/
+// Sh4 register storage/functions/utilities
 
 #include "types.h"
 #include "sh4_registers.h"
@@ -61,6 +59,8 @@ bool UpdateSR()
 	return SRdecode();
 }
 
+extern "C" int get_fpu_dn_preset();
+
 //make x86 and sh4 float status registers match ;)
 static u32 old_rm=0xFF;
 static u32 old_dn=0xFF;
@@ -87,10 +87,18 @@ void SetFloatStatusReg()
 		__asm__ volatile("ldmxcsr %0" :: "m"(temp));
 		#endif
 #elif HOST_CPU==CPU_PPC_CELL
-		// BIOS runs with RM=1 (reset value); round-to-nearest skips the boot animation.
-		// FPSCR field 7 = XE,NI,RN; RN=01 is toward zero. ps3_rend.cpp restores nearest while drawing.
+		// FPSCR field 7 = XE,NI,RN. RN=01 is toward zero: the BIOS runs with RM=1, nearest skips the boot animation.
+		// FPU DN (plan 5.40) adds NI (4) while DN is set. ps3_rend.cpp restores nearest, NI clear, while drawing.
+		const bool ni=fpscr.DN && get_fpu_dn_preset();
 		if (fpscr.RM==1)
-			__asm__ volatile("mtfsfi 7,1" ::: "memory");
+		{
+			if (ni)
+				__asm__ volatile("mtfsfi 7,5" ::: "memory");
+			else
+				__asm__ volatile("mtfsfi 7,1" ::: "memory");
+		}
+		else if (ni)
+			__asm__ volatile("mtfsfi 7,4" ::: "memory");
 		else
 			__asm__ volatile("mtfsfi 7,0" ::: "memory");
 #endif

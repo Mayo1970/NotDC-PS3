@@ -13,6 +13,382 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-11)
 
+**Built, HW pending: bundle 8, the JIT items (section 7; Matt 2026-10-11:
+"Work on Bundle 8. Ignore the Interpreter parts. I want JIT/Dynarec
+stuff."). Six items: `bcache` and the `JitMac` fix (5.3), 5.39, 5.40, the
+P57 RM verify and P71. Five new rows at the end of the JIT SPEED page, all
+at the old path; JIT MAC (EMULATION page) stays OFF. Package of 22:43 on
+2026-10-11 (`build/notdc_ps3.pkg`, 1529712 bytes). It also holds bundle 7's
+four defaults, as the package of 22:16 does. Nothing of bundle 8 has a HW
+run. The bundle 7 state is below this block.**
+- Not built, Matt's scope: P46 (the SH4 op tests) and P32 (the
+  interpreter's fneg with PR=1 and mac.w with S=1) are interpreter parts.
+  P78's RFCR is a BSC register, not JIT. 5.37 was done on 2026-10-10.
+- The rows (the key is in `nullDC.cfg` [ps3]; the first value is the old
+  path; all are set before boot):
+
+  | Row | Key | Values | Item | Default in source |
+  |---|---|---|---|---|
+  | JIT BCACHE | `JitBcache` | OFF / ON | 5.3 `bcache` | ON (1) since 2026-10-11 (HW run 6); OFF in the package of 22:43 |
+  | JIT PR MOVES | `JitPrMoves` | OFF / ON | 5.39 | OFF (0) |
+  | JIT RM 2/3 | `JitRmAny` | VERIFY / ACCEPT | P57 | VERIFY (0) |
+  | JIT IDLE RULE | `JitIdleRule` | X30 / X3 BACKWARD / OFF | P71 | X30 (0) |
+  | FPU DN | `FpuDn` | OFF / ON | 5.40 | OFF (0) |
+  | JIT MAC (EMULATION, old row) | `JitMac` | OFF / ON | 5.3 `JitMac` | OFF (0) |
+
+- JIT BCACHE (5.3): a dynamic block end (rts at the default DYN IC level,
+  and each DYN IC miss) looks up `bm_bcache[]`, 8-byte {addr, code}
+  entries: 9 instructions, two loads, no store (`ps3/ps3_jit_bcache.h`).
+  The old path is about 16 with a `lookups++` load and store.
+  `BlockCacheFlatEntry.code` is now a u32 (it was a pointer: 16 bytes on
+  PPC64, so the path could not run). `loop_no_update` still calls
+  `bm_GetCode` in C after a timeslice. Known side effect: a hit does not
+  count `lookups`, so two hot blocks in one bucket can take turns in the
+  cached slot (each turn is a few C lookups). Expected gain: noise level.
+- JIT MAC fix (5.3): the S = 0 result is one 64-bit add of `extsw`,
+  `extsw`, `mulld` on MACH:MACL (`ps3/ps3_jit_mac.h`, 7 instructions; every
+  one is in the HW validated 5.2 and 5.38 forms). The old form took the
+  carry of a 64-bit `addc`: on the PC model it is wrong in 26.2% of random
+  mac.l cases, 6.2% of mac.w, and in 1 of Flycast's 4 mac cases (mac.w
+  -21 + 35). The S = 1 call to `sh4_mac_l` / `sh4_mac_w` is not changed.
+  **No game in any old `[IFB]` log runs mac.l or mac.w** (Crazy Taxi,
+  Sonic Adventure, Soul Calibur, Rayman 2, ChuChu Rocket, Looney Tunes), so
+  no HW test game is known: `[jit8] mac=` shows if a game compiles one.
+- JIT PR MOVES (5.39, Flycast `62085539a`): in a PR=1 block the fmov
+  forms, flds and fsts stay native. **fneg is left out**: the plan ties it
+  to the P32 interpreter fix, which is out of scope. In the JIT fneg flips
+  FR(n), as Flycast does, so it can go in with one line if Matt wants it.
+  Old logs, **corrected 2026-10-11 after HW run 5** (the first scan took
+  each log's first game; `ifb_scan2.py` splits per boot): PR=1 FPU ops run
+  in Quake3.cdi (homebrew; `ps3log_spevb_run1.txt`: fmov forms up to
+  3.5K/s each in one window, fcnvsd, float, fmul, fsub about 500/s, then
+  1-4/s), Space Channel 5 (fmov forms 35-62/s, `ps3log_p16_run1.txt`) and
+  Rayman 2 (1-3/s). **Looney Tunes, Soul Calibur and ChuChu Rocket show
+  none.** Expected gain: none that a run can show.
+- JIT RM 2/3 (P57): ACCEPT compiles a block with FPSCR.RM 2 or 3 as round
+  to nearest, as `SetFloatStatusReg()` already runs it; VERIFY keeps the
+  `verify(fpu_cfg.RM<2)` hang. No game that boots here sets RM 2 or 3 (the
+  WinCE games need P38): `[jit8] rm23=` counts such blocks.
+- JIT IDLE RULE (P71): X30 is today's bill. X3 BACKWARD is Reicast's rule
+  (x3; a bt block only when it branches back; the x10 self-loop and the
+  x5 / x15 syscall bills stay). OFF bills each block its own cycles
+  (Flycast). `block.idle_loop` is set at every level, so JIT IDLE SKIP
+  works at every level. It is the only row with a visible effect, and it
+  can cost SPEED (the host runs more SH4 ops per emulated second).
+- FPU DN (5.40): `SetFloatStatusReg()` sets `mtfsfi 7,4|RN` while FPSCR.DN
+  is set (NI). The render thread and the menus keep their own FPSCR. The
+  plan's "check NI on the PPE first" is a probe in the same package: two
+  `[ni]` lines at each boot (dynarec), with the row ON or OFF. They show a
+  denormal result (1e-30 x 1e-10), a denormal operand (x 1.0, and + itself)
+  as bits, and ns per `fmuls` for a normal op, a denormal result and a
+  denormal operand, with NI = 0 and NI = 1. The row is worth a run only if
+  NI = 1 changes a value or a time.
+- Log: `[jitcfg] idlerule= prmoves= rmany= fpudn=` (a fifth line at boot);
+  `bcache=` on the third `[jitcfg]` line now follows its row. `[jit8]`
+  after new compiles: `sites: bcache= mac= prmoves=` and `blocks: idle
+  rule N billed= rm23=` (billed = blocks whose cycles the rule raised).
+  `[ni]` at boot.
+- PC (WSL), new `misc/jit8_check` (`run.sh`, `cut.py`, `gen.py`,
+  `mutate.py`): PASS. `cut.py` cuts the code under test out of the real
+  sources and checks 15 source lines of the driver and the presets.
+  `jit8_check`: both headers against 41 ppu-as words; mac.l and mac.w on a
+  PPC64 model against `shil.cpp`'s `sh4_mac_l` / `sh4_mac_w` and 64-bit
+  math, with junk above the low words, and Flycast's 4 mac cases; the
+  lookup against a table that `blockmanager.cpp`'s own mirror fills (hits,
+  misses on a shared index, empty buckets, 4 table addresses): 400048
+  checks. `dec8_check`: the PR list for all 4096 FPU opcodes (equal to
+  Flycast's list less fneg) and the gate; the cycle block at the three
+  levels (X30 equal to the block before the bundle, `ref_cycle_old.inc`;
+  X3 equal to Reicast's text; OFF plain); the RM rows; the host FPSCR
+  field for each RM, DN and row: 798775 checks. `mutate.py`: 78 of 78
+  planted bugs fail (29 of the 30 header bugs on the model alone; `mullw`
+  for `mulld` gives the same values there, so only the words see it).
+- Other checks after the edits: `fschg_check`, `clock_check`,
+  `timebase_check`, `carry_check`, `div32_check`, `idle_check` PASS.
+- Build: the 7 old warnings, `.got` 0xD608, 0 `r2off`; `bm_bcache` at
+  0x10B92800 (the lookup needs it below 0x7FFF8000).
+- HW steps (package of 22:43; SH4 Clock 200; one row per run; a row acts
+  at the next boot). An install keeps `nullDC.cfg`: the new keys start at
+  0. UDP listener on port 18194 only when Matt says so.
+  1. Any game, rows OFF, 60 s: the two `[ni]` lines and `[jitcfg]
+     idlerule=0 prmoves=0 rmany=0 fpudn=0`. This run answers 5.40's open
+     question.
+  2. JIT IDLE RULE X3 BACKWARD, then OFF, one boot each: the same Looney
+     Tunes race (RPS against 26.4, SPEED, `[stall]` sleep), then Phantasy
+     Star Online's 20 fps scene and a dense Crazy Taxi drive (SPEED must
+     hold). `[jit8]` shows `idle rule N`.
+  3. JIT IDLE RULE back to the level Matt keeps. JIT BCACHE ON: Crazy Taxi
+     and Sonic Adventure. `[jit8] bcache=` above 0, no fault, same-load
+     VPS.
+  4. JIT PR MOVES ON: Space Channel 5 (corrected after HW run 5; the step
+     named Looney Tunes, which has no PR=1 FPU op). `[jit8] prmoves=` above
+     0; with IFB Probe ON the fmov lines leave `[IFB]`. Any image or
+     physics fault?
+  5. FPU DN ON, only if step 1 shows a change with NI = 1: Crazy Taxi and
+     Sonic Adventure. Any geometry or physics fault? `fpudn=1`.
+  6. JIT MAC ON and JIT RM 2/3 ACCEPT: no known game uses them. They can
+     ride on any run; `[jit8] mac=` and `rm23=` tell if a game does.
+- HW run 1, 2026-10-11 (package of 22:43, Crazy Taxi, rows OFF; Matt:
+  "Testing Crazy Taxi."; the listener of the bundle 5 session wrote it, cut
+  into `b8_run1_ct.txt`, scratchpad of session 55d01e77). Matt:
+  "Perfect." Next (Matt): Looney Tunes with JIT IDLE RULE X3 BACKWARD.
+  - `[jitcfg] idlerule=0 prmoves=0 rmany=0 fpudn=0`, `bcache=0`, `Mac=0`.
+  - **5.40's question is answered: NI does nothing on the PPE.**
+    `[ni] NI=0: 1e-30*1e-10=000116C2 den*1=00000123 den+den=00000246 |
+    ns/op: normal 5.4, den result 4.8, den operand 47.8`; `NI=1:` the same
+    three values, `normal 4.7, den result 4.7, den operand 45.8`. So NI = 1
+    flushes no denormal result and zeroes no denormal operand, and it
+    saves no time. A denormal result costs nothing. A denormal operand
+    costs about 10 times a normal op (about 43 ns more) with NI = 0 and
+    with NI = 1; the probe loads the operand with `lfs` in each turn, so
+    the cost can be the load (not split). FPU DN has no effect to test:
+    HW step 5 falls away. **5.40 CLOSED by Matt 2026-10-11 ("Perfect. You
+    can close 5.40."), no effect.** FPU DN stays OFF and was never run ON.
+    The row and the `[ni]` probe are still in the source.
+  - The boot is as the earlier Crazy Taxi boots (`ct_last.txt`, `run4b.txt`:
+    the same vertex timeline up to the drive). The drive's first 30 s:
+    4.9-11.8K vertices at SPEED 99.7-100.2%, no fault line. `[jit8]`:
+    `bcache=0 mac=0 prmoves=0`, `idle rule 0 billed=4733`, `rm23=0`.
+- HW run 2, 2026-10-11 ~22:56-23:03 (package of 22:43, Looney Tunes, JIT
+  IDLE RULE X3 BACKWARD, two boots: `b8_lt_x3_a.txt` up to the main menu,
+  `b8_lt_x3_b.txt` with one race and JIT C-Calls ON; scratchpad of session
+  55d01e77, `ltcmp.py` there; `step2cmp.py` and `rpshist.py` of the older
+  sessions). **Matt: "It runs much worse".** `[jitcfg] idlerule=1`, the
+  other rows OFF; no fault line, two clean JIT EXITs. No X30 race with
+  this package: the reference is `lt_step2.txt` (2026-10-10, X30, other
+  settings: `dyn_ic=2 dve=1 greuse=1`, and the defaults of bundles 2-7
+  were not in).
+
+  | Scene | X30 (`lt_step2.txt`) | X3 BACKWARD |
+  |---|---|---|
+  | Race: SPEED | 100.0% | 60.9% (55.5-89.0), 89 windows |
+  | Race: frames per wall second | 26.4 | 18.2 |
+  | Race: frames per emulated second | 26.4 | 29.95 |
+  | Race: `[stall]` sleep | 99.5 ms/s | 0.3 ms/s |
+  | Demo (60 fps kind, 26-27K vertices): SPEED | 99.8% | 67.8-69.7% |
+  | Demo: frames per wall / emulated second | 59.8 / 59.95 | 40-41 / 58.5-58.7 |
+  | Boot 2D screen (50 Hz, 50 frames/s): SPEED | 99.3-102.8% | 62.5-71.8% |
+
+  - **P71's claim holds in emulated time**: at X3 the race draws 29.95
+    frames per emulated second (62 of 87 windows at 28-30, 20 at 30-32),
+    against 26.4. The game gets its 30 frames when the rule does not bill
+    its work blocks x30.
+  - **The host cannot pay for it.** One emulated second costs 1.64 times
+    the host time in the race, 1.46 in the demo, about 1.47 on the 2D boot
+    screen. P71's estimate was +14% SH4 work. The demo and the boot screen
+    draw the same frames per emulated second as before, so the extra time
+    there is not frame work: it is the game's wait loops, which now spin
+    10 times more turns per slice (my reading; no profile). JIT IDLE SKIP
+    skips none of them in the race (`[idle]` skips/s 0, checks/s 13-15K).
+  - OFF bills less than X3 (no x3, no x10 self-loop, no syscall bill), so
+    it is expected to cost more host time. Matt ran it next: HW run 3.
+- HW run 3, 2026-10-11 ~23:03-23:07 (package of 22:43, JIT IDLE RULE OFF,
+  `[jitcfg] idlerule=2`; `b8_ct_off.txt`: Crazy Taxi, left after 27 s, no
+  drive; `b8_lt_off.txt`: Looney Tunes, one short race, JIT C-Calls ON).
+  **Matt: "OFF is much worse."** No fault line, two clean JIT EXITs.
+
+  | Looney Tunes | X30 (`lt_step2.txt`) | X3 BACKWARD | OFF |
+  |---|---|---|---|
+  | Race at 29.5K+ vertices: SPEED | 100.2% | 58.0% (31 windows) | 56.4% (53.1-58.7, 16 windows) |
+  | Race: frames per wall second | 25.8 | 17.4 | 16.9 |
+  | Race: frames per emulated second | 25.7 | 30.1 | 30.0 |
+  | Demo (60 fps kind): SPEED | 99.8% | 67.8-69.7% | 60.1% |
+  | Menus and select screens: SPEED | 100% | 89-100% | 76-93% |
+  | After the BIOS logo (about 10 s, both games) | 100% | 100% | 12.8% |
+
+  - The race gains nothing over X3: the same 30 frames per emulated second
+    (the game's cap) for a little more host time. So the step that counts
+    is X30 -> X3.
+  - New at OFF: about 10 windows at SPEED 12.8% after the BIOS logo, in
+    Crazy Taxi and in Looney Tunes. That code is at 8C000000-8C00FFFF: OFF
+    drops its x5 / x15 bill (my reading; no profile).
+  - Matt's `nullDC.cfg` now holds `JitIdleRule=2`: set the row back to X30.
+  - Reading of runs 2 and 3: the x30 is a speed trade this host needs. X30
+    stays the default. P71 has no verdict from Matt yet.
+- HW run 4, 2026-10-11 ~23:08-23:14 (package of 22:43, Crazy Taxi, JIT
+  BCACHE ON, JIT IDLE RULE back at X30, JIT C-Calls ON; `b8_ct_bcache.txt`,
+  `binspeed.py`, scratchpad of session 55d01e77). Matt: "Look and sounded
+  fine". No word on the default: the row stays OFF. Sonic Adventure not
+  run. `[jitcfg] bcache=1 ... idlerule=0`;
+  `[jit8] bcache=9255` sites; no fault line, clean JIT EXIT; 257 windows.
+  - Same package, by load, against run 1 (rows OFF, JIT C-Calls OFF) and
+    `run4b.txt` (bundle 5 session, 2026-10-11, `bcache=0`, the same
+    `[jitcfg]` values):
+
+    | Vertices | Run 1, OFF | `run4b.txt`, OFF | BCACHE ON |
+    |---|---|---|---|
+    | 6-9K | 100.31% | 99.96% | 100.00% |
+    | 9-12K | 100.08% | 100.10% | 100.10% |
+    | 12K+ (full-speed windows) | 96.84% (14%, 21 windows) | 98.06% (56%, 16) | 98.13% (60%, 25) |
+    | 6K+ | 99.58% | 99.78% | 99.77% |
+
+  - No gain to see, no loss: BCACHE ON is inside the spread of the two
+    OFF runs. As expected (noise level). `[stall]` sleep with BCACHE ON:
+    210 / 122 / 49 ms/s at 6-9K / 9-12K / 12K+; no OFF run of this
+    package has JIT C-Calls ON, so the sleep has no reference.
+  - Matt 2026-10-11: "You can keep BCACHE on then, but I'd like to know
+    what it does first." Explained; default ON after HW run 6 (below).
+- HW run 5, 2026-10-11 ~23:15-23:19 (package of 22:43, Looney Tunes, JIT
+  PR MOVES ON, JIT BCACHE OFF, JIT C-Calls ON; `b8_lt_prmoves.txt`). Matt:
+  "the Looney Tunes race is done". No fault line, clean JIT EXIT.
+  - **The run did not test the row: `[jitcfg] prmoves=1`, but `[jit8]
+    prmoves=0` to the end.** No PR=1 move was compiled, because Looney
+    Tunes has none. The HW step named the wrong game: the PR=1 fallbacks of
+    `ps3log_spevb_run1.txt` are from its Quake3.cdi boot, not from its
+    Looney Tunes boots (this session's error; the game list above is
+    corrected). JIT PR MOVES still has no HW run. Games that hit it: Space
+    Channel 5, Quake3.cdi, Rayman 2 (1-3/s).
+  - So the run is a rows-OFF race of this package: 87 race windows, SPEED
+    97.62% (31% at full speed), 26.10 frames per wall second, 26.77 per
+    emulated second, `[stall]` sleep 24.1 ms/s, sys 82.7 ms/s.
+  - **Side finding, not split: the race is slower than on 2026-10-10**
+    (`lt_step2.txt`: SPEED 98.96-100.0%, 86-94% of windows at full speed,
+    sleep 91-99.5, sys 71-72.6). Per wall second the SH4 code takes about
+    874 ms (819) and sys 82.7 (71.0) (`stallparts.py`). Interrupts are the
+    same (16.3K/s, 15.6K/s); HBlank is mode 0. Between the two runs: the
+    settings went back to the source defaults (`dyn_ic` 2 -> 1, `dve` 1 ->
+    0, `greuse` 1 -> 0; getcode 81K/s, was 64K/s), and the defaults of
+    bundles 2 to 7 came in (`finetcnt=1`, SPE AICA Sync 3, the TIMING
+    rows). No Looney Tunes race with today's settings exists from before
+    bundle 8, so the logs cannot say which change it is. Bundle 8's rows
+    were all at the old path in this run. Crazy Taxi with the rows OFF is
+    as `run4b.txt` (run 4's table).
+- **HW run 6, 2026-10-11 ~23:20-23:26: JIT BCACHE HW SUCCESS in Looney
+  Tunes** (package of 22:43, JIT BCACHE ON, the other settings as run 5;
+  `b8_lt_bcache.txt`). Matt: "Check Looney Tune's framerate with BCACHE.
+  It's much better." `[jitcfg] bcache=1`, `[jit8] bcache=32235` sites, no
+  fault line. Against run 5 (the same package and settings, BCACHE OFF),
+  one race each, the numbers at 123 race windows (the run went on):
+
+  | Looney Tunes race | BCACHE OFF (run 5, 87 windows) | BCACHE ON (123 windows) |
+  |---|---|---|
+  | SPEED | 97.62% | 99.95% |
+  | Windows at full speed | 31% | 85% |
+  | Frames per wall second | 26.10 | 27.20 |
+  | `[stall]` sleep | 24.1 ms/s | 58.6 ms/s |
+  | SH4 code (rest of `[stall]`) | 874 ms/s | 842 ms/s |
+  | sys | 82.7 ms/s | 80.8 ms/s |
+  | getcode C calls | 81.2K/s | 63.7K/s |
+  | 10-20K vertices: SPEED (full, sleep) | 100.84% (80%, 32) | 99.88% (92%, 85) |
+  | 20-25K | 96.03% (7%, 36) | 99.95% (91%, 46) |
+  | 25-30K | 96.35% (12%, 23) | 100.11% (86%, 53) |
+  | 30K+ | 96.51% (14%, 8) | 99.92% (65%, 22) |
+
+  - The gain is about 35 ms/s of SH4 thread time, 4% of the SH4 code time,
+    in every load bin. It is more than the plan's "noise level": this game
+    takes far more dynamic block ends than Crazy Taxi (32K sites against
+    9K), and its race had no spare time, so the gain shows as SPEED. The
+    frames per emulated second do not change (27.2, 26.8): the 26-27 of
+    the idle rule stays.
+  - It also takes back most of run 5's side finding: sleep 58.6 ms/s
+    against 91 on 2026-10-10 (SH4 code 842 against 819).
+  - **JIT BCACHE defaults to ON in source since 2026-10-11**
+    (`g_jit_bcache_preset` 1; Matt: "You can keep BCACHE on then", after
+    the explanation he asked for, and this run). Not packaged: the package
+    of 22:43 has it OFF. Matt's `nullDC.cfg` holds it ON from his run.
+    `misc/jit8_check` PASS with the new default line.
+  - Matt after the run: "Looney tunes looked fine." Clean JIT EXIT.
+- HW run 7, 2026-10-11 ~23:27-23:32 (package of 22:43, Sonic Adventure,
+  JIT BCACHE ON, JIT PR MOVES ON, X30, JIT C-Calls ON;
+  `b8_sonic_bcache.txt`, `game_history.py`, `binspeed.py`). **Matt: "It
+  ran slightly better, but still not smooth."** `[jit8] bcache=21088`
+  sites, `prmoves=0` (Sonic Adventure compiles no PR=1 move either); no
+  fault line, clean JIT EXIT.
+  - 172 play windows (3K+ vertices): SPEED 100.00% (min 97.0, 99% at full
+    speed), 28.65 frames/s, 77% of the windows at 29.4 or more, `[stall]`
+    sleep 387 ms/s. By load: 3-8K sleep 482, 8-14K 365, 14K+ 277 ms/s
+    (26.3 frames/s at SPEED 99.96%).
+  - Against the old logs (`bcache=0`): the same frame rate. 2026-10-07 and
+    08 (`dve=1 dyn_ic=2 greuse=1`): SPEED 99.99%, 28.5-29.0 frames/s,
+    72-79% of the windows at 29.4+, sleep 394-417 ms/s. 2026-10-10 and 11
+    (bundle 3 and 4 runs, today's JIT settings): SPEED 99.15-99.64% with
+    dips to 33-38%, 27.7-28.4 frames/s. So BCACHE shows no gain here that
+    the log can prove: the game has spare time with and without it.
+  - **Why it is not smooth: 33 of the 172 windows are below 29 frames/s,
+    all at SPEED 100%, with the SH4 thread asleep 318 ms/s (233-492).** The
+    game drops these frames in emulated time while the host has a third
+    of its time spare. This is the Looney Tunes and Phantasy Star Online
+    pattern (the cycle bill, P71), plus Sonic's own 3-vblank frames
+    (5.41). Lead, no run: JIT IDLE RULE X3 BACKWARD in this game. Looney
+    Tunes paid x1.46-1.64 host time for it and had none spare; Sonic
+    Adventure's SH4 thread is 52-72% busy, so most scenes can pay. A
+    global X3 is not possible (run 2), so the lead needs a per-game
+    setting (Matt's parked idea) or a rule that tells wait loops from
+    work blocks.
+  - Next (Matt): Phantasy Star Online, "and then we can get a verdict."
+- HW run 8, 2026-10-11 ~23:33-23:36 (package of 22:43, Phantasy Star
+  Online Ver. 2, the settings of run 7; `b8_pso_bcache.txt`). Matt:
+  "Phantasy Star is done." `[jit8] bcache=16550` sites, `prmoves=0`; no
+  fault line, clean JIT EXIT.
+  - SPEED 100% in every load bin (94-100% of the windows at full speed).
+    Frames per second: 30.0 at 1-4K vertices, 28.6 at 4-8K, **20.2 at
+    8-14K and 19.2 at 14K+**, with `[stall]` sleep 716 / 583 / 541 / 413
+    ms/s. So the 20 fps scene is as in `pso.txt` (bundle 4 session,
+    `bcache=0`: 20.0 and 19.7 at SPEED 100%): BCACHE does not change it,
+    and the SH4 thread sleeps 41-54% of the time in it. It is the same
+    emulated-time pattern as run 7, with more spare host time.
+  - Next (Matt): "I'll test the X3 backward with Sonic Adventure as last."
+- **HW run 9, 2026-10-11 ~23:37-23:41: JIT IDLE RULE X3 BACKWARD in Sonic
+  Adventure** (package of 22:43, the settings of run 7 but `idlerule=1`,
+  the same first level; `b8_sonic_x3.txt`). **Matt: "Sonic Adventure was
+  VERY smooth."** No fault line, clean JIT EXIT.
+
+  | Sonic Adventure, play windows (3K+ vertices) | X30 (run 7, 172) | X3 BACKWARD (168) |
+  |---|---|---|
+  | Frames per second | 28.65 | 29.69 |
+  | Windows at 29.4 frames/s or more | 77% | 97% |
+  | Windows below 29 frames/s | 33 | 5 |
+  | 14K+ vertices: frames per second | 26.31 | 29.64 |
+  | SPEED (mean) | 100.00% | 99.98% |
+  | `[stall]` sleep, all / 14K+ | 387 / 277 ms/s | 343 / 209 ms/s |
+  | Slowest frame of each second (mean) | 22.3 ms | 32.9 ms |
+
+  - The lead of run 7 holds: the frames this game dropped in emulated
+    time come back, and the host pays with about 45-70 ms/s of its spare
+    time. The 14K+ scenes go from 26.3 to 29.6 frames/s.
+  - Cost seen in the log: (1) SPEED per window moves between 98.1% and
+    101.7% (36 windows below 99.5%, 36 above 100.5%; at X30 2 and 7); the
+    mean is 100.0%. One vblank interval per frame holds the frame's work
+    and takes up to 33 ms, the next one is short. Matt saw and heard no
+    fault. (2) Three windows of a boot logo screen at SPEED 65-72% (X30:
+    88-91% there). (3) One scene start at 91.3% (X30: 97.0%).
+  - **State of P71 after runs 2, 3 and 9: the right level depends on the
+    game.** Looney Tunes has no spare host time: X3 gives SPEED 61%.
+    Sonic Adventure has it: X3 gives its 30 frames. Phantasy Star Online
+    has more spare time than Sonic (run 8); no X3 run. So X30 stays the
+    global default, and X3 BACKWARD is a win per game. How to offer it is
+    open (Matt's call): the row by hand, a per-game setting (his parked
+    idea of a per-game ID checker), or a rule that follows the host's
+    spare time.
+  - Matt's `nullDC.cfg` now holds `JitIdleRule=1`.
+- **HW run 10, 2026-10-11 ~23:42-23:45: JIT IDLE RULE X3 BACKWARD in
+  Phantasy Star Online** (package of 22:43, the settings of run 9;
+  `b8_pso_x3.txt`). Matt: "I'm done with Phantasy Star Online." (no word
+  yet on how it looked). `[jitcfg] idlerule=1`; no fault line, clean JIT
+  EXIT. **The 20 fps scene runs at 30.**
+
+  | Phantasy Star Online, by vertices | X30 (run 8): frames/s, sleep | X3 BACKWARD: frames/s, sleep |
+  |---|---|---|
+  | 1-4K | 29.97, 716 ms/s | 29.92, 731 ms/s |
+  | 4-8K | 28.55, 583 | 29.97, 481 |
+  | 8-14K | 20.20, 541 | 29.99, 368 |
+  | 14K+ | 19.17, 413 | 29.97, 234 |
+
+  - SPEED 100.0% in every bin at both levels (X3: min 98.1%, 93% of the
+    4K+ windows at full speed; X30: 94%). No more window jitter than at
+    X30 (7 and 8 windows outside 99.5-100.5%, 5 and 7 at X30). The
+    slowest frame of each second at 8K+: 29.7 ms (26.7).
+  - The host pays 110-180 ms/s of sleep for 10 more frames per second and
+    keeps 234 ms/s spare in the heaviest scene.
+  - This gives the cause of the 20 fps scene that Matt parked on
+    2026-10-11: it is the x30 bill. The two ideas of that day (SH4 Clock
+    250, the 50 Hz mode) are not needed.
+  - Lead, not built, no word from Matt: a rule that keeps the x30 on wait
+    loops only and bills work blocks x1. It needs a JIT HOTBLOCKS profile
+    at X3 first (which blocks take the new host time). Its best case is
+    +14% SH4 work in the race, which has 5-16% of spare time: the same
+    wall as SH4 Clock 220 (5.45, SPEED 97.5%, "basically the same").
+
 **Done but TMU Clock: bundle 7, Time base (section 7; Matt 2026-10-11: "We
 will now work at bundle 7."). HW runs 1 and 2 on 2026-10-11 (Crazy Taxi,
 ChuChu Rocket; below). Verdict (Matt 2026-10-11): "Keep them as default,
@@ -3952,7 +4328,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04; now 6.3, `[ ]`, section 6 is parked |
 | 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) built 2026-10-11 as "TR Volumes", default OFF, no HW test yet (bundle 4, section 0) |
-| 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open); the P57 RM verify is in bundle 8 (section 7) |
+| 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open); the P57 RM verify is in bundle 8 (section 7), built 2026-10-11 as the row JIT RM 2/3, default VERIFY, no HW run |
 | 3e background vertex order | dropped, our code has no such fault |
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
@@ -4173,7 +4549,9 @@ Status 2026-09-23 (all big-endian checked):
   lines with longjmp; a JIT form is very high risk). P57:
   `verify(fpu_cfg.RM<2)` in `dc/sh4/rec_v2/decoder.cpp` hangs the JIT when
   a WinCE game sets RM = 3; Flycast removed it (1 line). 2026-10-07: P57's
-  RM verify is in bundle 8 (section 7); P38 stays here.
+  RM verify is in bundle 8 (section 7); P38 stays here. 2026-10-11: built
+  as the row JIT RM 2/3 (VERIFY / ACCEPT, default VERIFY; section 0), no
+  HW run (no game that boots here sets RM 2 or 3).
 - 3e dropped. Our `background_plane()` + `bg_eval()` evaluates the plane from
   the 3 real vertices (position, colour, UV) at the canvas corners. That is
   independent of vertex order and never rebuilds UVs, which is what both
@@ -4382,8 +4760,8 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.36 | TA per-record counters + deadline scheduler (OPTIMIZATION_POTENTIAL P5; section 0 "left from the list") | SYS GATE `[x]` HW SUCCESS (Matt), default + RESUME since the package of 22:52 (Matt); TA Peak Frame `[!]` blocked 2026-10-07 (Matt), not run on HW, default OFF; built + PC tested 2026-10-06 (Matt: "5.36", then "Gate + Resume levels" and a TA peak toggle): JIT SPEED "JIT SYS GATE" OFF / GATE / + RESUME, VIDEO / DEBUG "TA Peak Frame", both default OFF; sysgate_check PASS, 30/30 mutants fail; package of 22:27; HW 2026-10-06: 3 boots clean, updates 112K -> 28.4K/s, lookups 116K -> 32.6K/s (+ RESUME), dense Crazy Taxi full-speed windows 86.3% -> 94.5%, ~2-3% more spare time (Matt: "much smoother"); the per-slice work itself (`[stall]` sys 63-79 ms/s) did not fall |
 | 5.37 | `fschg` without a sync or a block end (P17; the "FPSCR 0.22M/s" load-hit-store of 5.18) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10 (Matt: "Resume with the next steps."; Looney Tunes race Step 2, candidate 4): JIT SPEED "JIT FSCHG" has a 3rd value "+ NO BLOCK END" (`JitFschg=2`), default was ON (level 1); fschg_check PASS (11/11 mutants fail), frpref_check PASS (29/29); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0); merged 2026-10-06; bundle 8 (section 7) |
 | 5.38 | div32 match: 64/32 and signed divides (P19, bug), next to 5.2 | `[x]` HW SUCCESS (Matt), default FIXED since the package of 21:02; built + PC tested 2026-10-06 (div32_check PASS, 48/48 mutants fail), EMULATION "JIT Div32" OLD / FIXED; package of 19:40; HW 2026-10-06: Crazy Taxi, Sonic Adventure and Rayman 2 clean, same load -0.0% / -0.1%; Rayman 2's untextured level is the same with OLD (separate issue); merged 2026-10-06; the BIOS boot animation, Sonic Adventure and Rayman 2 run matched divisions (Crazy Taxi's game code none) |
-| 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[ ]` merged 2026-10-06; only if a PR=1 game shows in `[IFB]`; bundle 8 (section 7) |
-| 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[ ]` merged 2026-10-06; value unverified, check NI on the PPE first; bundle 8 (section 7) |
+| 5.39 | fmov, flds, fsts and fneg in the JIT when PR=1 (P56) | `[~]` built + PC tested 2026-10-11 (bundle 8, section 0): JIT SPEED "JIT PR MOVES" (`JitPrMoves`), default OFF; fmov, flds and fsts, fneg left out (P32 not done); package of 22:43; no HW run yet: HW run 5 (Looney Tunes) compiled no PR=1 move, that game has none; the PR=1 games in the old logs are Space Channel 5, Quake3.cdi and Rayman 2; merged 2026-10-06 |
+| 5.40 | FPSCR.DN -> PPC NI bit (P4) | `[x]` closed 2026-10-11, no effect (Matt: "You can close 5.40."): the `[ni]` probe on HW shows that NI = 1 changes no value and no time on the PPE (section 0); built 2026-10-11 (bundle 8): JIT SPEED "FPU DN" (`FpuDn`), default OFF, never run ON; the row and the probe stay in the source; package of 22:43; merged 2026-10-06 |
 | 5.41 | VBlank pacing: a 30 fps game's frames reach the screen 1 or 3 refreshes apart (Sonic Adventure "choppy" at SPEED 100%) | `[x]` done 2026-10-08, no felt change (Matt: "It seemed the same, actually. But It's fine."), Frame Hold default OFF; step 1 a `[vid]` refresh count, built 2026-10-07, package of 22:56; HW 2026-10-07: Sonic judder confirmed (1/3 pairs for ~85 s of each ~190 s drift cycle), Looney Tunes mostly the game's own 2/3 cadence, Crazy Taxi clean; step 2 (b) Frame Hold (Matt's pick) built + PC tested 2026-10-07, package of 23:42; HW 2026-10-07: Sonic only 2s at RPS 30 (1 drift slip), Crazy Taxi unchanged, ~23 ms more delay (section 0) |
 | 5.42 | SYS GATE BATCH: the slices the gate skipped run as one step per module, the TMU plan in closed form (Looney Tunes race Step 2, candidate 1) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10 (Matt: "Resume with the next steps."): JIT SPEED "SYS GATE BATCH" (`SysGateBatch`); sysgate_check PASS in 3 modes (63/63 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
 | 5.43 | JIT SQ MISS "+ LA STEPS": the look-ahead passes `@-Rn` stores and `add #imm,Rn` on the store's base register (candidate 2) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10: 4th value of JIT SQ MISS (`JitSqMiss=3`); sqla_check PASS (35/35 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
@@ -4409,7 +4787,7 @@ Matt, 2026-09-23: speed over accuracy. The Flycast cycle model was dropped for
 the existing SH4 Clock option. SPEED% reads against 200 MHz, so judge a lower
 clock by VPS.
 | 5.2 | `JitCarry`: fix, then test | `[x]` HW 2026-10-06, default ON (Matt), in the packages since 17:35; fixed + PC tested 2026-10-06 (`ps3/ps3_jit_carry.h`, no XER; carry_check PASS, 39/39 mutants fail), package of 09:16; HW: Crazy Taxi and Sonic Adventure clean, one fallback per boot, Crazy Taxi same load -0.4% (noise), Sonic FMV after boot +23% VPS, play equal; Matt: Sonic felt choppier, no cause in the log; = OPTIMIZATION_POTENTIAL P41 (the FMV fallbacks) |
-| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `JitMac`, `bcache` `[ ]`; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w); `JitMac` and `bcache` in bundle 8 (section 7) |
+| 5.3 | `JitMac`, `jit_cr0`, `jit_tfwd`, `dyn_ic`, `bcache` | `dyn_ic` `[x]` HW, done (Matt 2026-10-05), default JSR/JMP since the package of 16:42 (Matt); built + PC tested 2026-10-05 (Matt: "Go with DYN_IC"): JIT SPEED "JIT DYN IC" OFF / JSR/JMP / + RTS, default OFF; dynic_check PASS, 25/25 mutants fail; package of 14:19; HW 2026-10-05: clean, Crazy Taxi same-load VPS +1.0% at both levels (noise), Sonic equal, code +3-4%. `jit_cr0` + `jit_tfwd` done in 5.1e. `bcache` `[x]` HW SUCCESS 2026-10-11 (bundle 8, section 0): JIT SPEED "JIT BCACHE" (`JitBcache`); Crazy Taxi correct, no gain to see; Looney Tunes race SPEED 97.62% -> 99.95%, sleep 24 -> 59 ms/s (Matt: "It's much better"); default ON in source since 2026-10-11 (Matt), not packaged. `JitMac` `[~]` built + PC tested 2026-10-11: the `JitMac` 64-bit carry fixed (`ps3/ps3_jit_mac.h`), JIT MAC stays OFF, no game in the old logs runs mac.l or mac.w; `misc/jit8_check` PASS; package of 22:43; no HW run yet; merged 2026-10-06: `bcache` = P17 BCACHE, `JitMac` check = P46 + P32 (mac.w) |
 | 5.4 | ARM7 JIT port (`arm7_jit.cpp` was Wii-gated) | `[x]` HW 2026-09-23, same item as the 5.4 row above |
 
 - 5.0: `nullDC.cfg [ps3] IfbProbe` / `JitCCalls`. IFB Probe is read at compile
@@ -8777,7 +9155,7 @@ with GOALS.md G11. Nothing of this is built.
 | 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE; P81 and P82's EXTS read-back added 2026-10-11, open | the Crazy Taxi crackle (F2); the DSP ring in wave RAM; P81: a probe for the Looney Tunes balance and the SPU clipping | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[~]` HW runs 1-2 2026-10-11 (Crazy Taxi, ChuChu Rocket; section 0): 5 rows on a new TIMING page; TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset ran with no fault and are default ON (Matt: "Keep them as default, they seem harmless."), in the packages since 22:16 (the package of 21:15 has them OFF); TMU Clock stays SH4, no HW run: EFF needs SH4 Clock 150 to act and Matt keeps 200; TMU Fine TCNT has no run with a game in play; PC checks PASS (`misc/timebase_check`) |
-| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
+| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[~]` the JIT items built 2026-10-11 (Matt: "Ignore the Interpreter parts. I want JIT/Dynarec stuff."; section 0): rows JIT BCACHE, JIT PR MOVES (no fneg), JIT RM 2/3, JIT IDLE RULE and FPU DN on the JIT SPEED page, default OFF, and the JIT MAC fix; a `[ni]` probe for 5.40; PC checks PASS (`misc/jit8_check`, 78 of 78 mutants); package of 22:43; HW run 1 2026-10-11 (Crazy Taxi, rows OFF): clean, and 5.40 CLOSED by Matt (NI does nothing on the PPE); HW run 2 (Looney Tunes, JIT IDLE RULE X3 BACKWARD): the race draws 29.95 frames per emulated second (26.4) but SPEED is 60.9%, 18.2 frames per wall second (Matt: "It runs much worse"); HW run 3 (OFF): the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X30 stays the default; HW run 9 (Sonic Adventure, X3 BACKWARD, JIT BCACHE ON): "VERY smooth" (Matt), 29.69 frames/s (28.65 at X30), 14K+ scenes 29.6 (26.3), SPEED 100%; HW run 10 (Phantasy Star Online, X3 BACKWARD): the 20 fps scene at 30.0 frames/s, SPEED 100%: the level is a per-game matter, open; HW runs 7-8 (Sonic Adventure, Phantasy Star Online, JIT BCACHE ON, X30): clean, frame rates as before; HW run 4 (Crazy Taxi, JIT BCACHE ON): correct (Matt: "Look and sounded fine"), 9255 sites, no gain to see there; HW run 6 (Looney Tunes, JIT BCACHE ON): HW SUCCESS, the race at SPEED 99.95% (97.62% OFF), sleep 58.6 ms/s (24.1), Matt: "It's much better", default ON in source since 2026-10-11 (not packaged); HW run 5 (Looney Tunes, JIT PR MOVES ON) did not hit the row (`prmoves=0`: the wrong game, it has no PR=1 FPU op); JIT PR MOVES, JIT MAC and JIT RM 2/3 have no HW run yet; P46, P32 and P78's RFCR not built; 5.37 done 2026-10-10, HW SUCCESS |
 | 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
 | 10 | Maple | P29, P9 SB_MDST, P13, P37; P84's stick dead zone added 2026-10-11 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game; a smooth analog stick | `[ ]` |
 | 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note); P75 and P76 added 2026-10-11 | the Crazy Taxi pause freeze (P75, first); 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
@@ -9035,8 +9413,16 @@ Main gains:
   adds one event per line, only in games that set it.
 - HW: the ChuChu Rocket menu at SH4 150 (6.4), Soul Calibur, Crazy Taxi.
 
-### Bundle 8: SH4 interpreter, FPU and small JIT items  `[ ]`
+### Bundle 8: SH4 interpreter, FPU and small JIT items  `[~]` the JIT items built 2026-10-11, rows default OFF; HW run 1 clean, 5.40 CLOSED (no effect); HW runs 2-3: JIT IDLE RULE X3 "runs much worse", OFF "is much worse" (Matt; SPEED 60.9% and 56.4% in the Looney Tunes race), X30 stays the default; HW run 9: X3 BACKWARD in Sonic Adventure "VERY smooth" (Matt; 97% of the windows at 30 frames/s, 77% at X30), so the level is a per-game matter, open; HW runs 4 and 6: JIT BCACHE HW SUCCESS (the Looney Tunes race back at SPEED 100%), default ON in source (Matt); JIT PR MOVES, JIT MAC, JIT RM 2/3 not run yet (section 0)
 
+- Built (Matt 2026-10-11: "Ignore the Interpreter parts. I want JIT/Dynarec
+  stuff."): `bcache`, the `JitMac` fix, 5.39 (fmov, flds, fsts; no fneg),
+  5.40 with its `[ni]` probe, the P57 RM verify and P71, as the rows JIT
+  BCACHE, JIT PR MOVES, JIT RM 2/3, JIT IDLE RULE and FPU DN on the JIT
+  SPEED page. The check is `misc/jit8_check`, not P46: it holds Flycast's
+  mac cases. Not built: P46, P32, P78's RFCR. Not as the text below says:
+  P46 was not first. The text below is the plan of 2026-10-07 and
+  2026-10-11.
 - Items: P46 (Flycast's SH4 op tests), P32 (fneg with PR=1, mac.w with
   S=1), `JitMac` and `bcache` (5.3), 5.37 (P17 fschg), 5.39 (P56), 5.40
   (P4), P57 RM verify (3d).

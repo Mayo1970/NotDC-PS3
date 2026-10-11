@@ -144,9 +144,8 @@ int g_spe_aica_snd_preset  = 1;   // 1 = that SPU model makes the sound; nullAIC
 int g_spe_aica_dsp_preset  = 1;   // 1 = with the sound on, the SPU model also runs the DSP (5.13 A3, HW)
 int g_sound_thread_preset  = 0;   // 1 = ARM7 and AICA on their own PPU thread (5.14)
 int g_spe_arm7_preset      = 1;   // 1 = ARM7 and nullAICA's registers on an SPU; needs SPE AICA Sound (5.15, HW)
-// OPTIMIZATION_PLAN section 7, bundle 5: a row is off until it is cleared on hardware.
-// 1 = a wave RAM write waits for the sound SPU when a slot has yet to play that byte (6.6); 2 and 3 = with no
-// test, at the first hit of a block or at each sample with a hit (3: HW, the Crazy Taxi crackle)
+// OPTIMIZATION_PLAN section 7, bundle 5: a row is off until it is cleared on hardware. SPE AICA Sync (6.6): 1 = a
+// wave RAM write waits for the SPU if a slot has yet to play that byte; 2, 3 = no test, per block or per sample (3: HW)
 int g_spe_aica_sync_preset = 3;
 int g_dsp_ring_ram_preset  = 1;   // 1 = the SPU's DSP ring mirrors wave RAM, both ways (P20 G2, HW)
 int g_dsp_ring_64k_preset  = 0;   // 1 = DSP writes of a 64K-word ring and TABLE writes reach wave RAM (P20 G3)
@@ -164,6 +163,13 @@ int g_tmu_fine_tcnt_preset = 1;   // 1 = a TCNT read adds the cycles run inside 
 int g_spg_field_bit_preset = 1;   // 1 = the SPG_STATUS field bit flips once per frame, at line 0 (P28, HW)
 int g_hblank_irq_preset    = 1;   // 1 = the HBlank IRQ follows SPG_HBLANK_INT: mode 0 at its line, mode 2 on each (P28, HW)
 int g_vblank_int_reset_preset = 1; // 1 = SPG_VBLANK_INT resets to 0x00150104, as Flycast (P28, HW)
+// OPTIMIZATION_PLAN section 7, bundle 8 (the JIT items): a row is off until it is cleared on hardware. JIT BCACHE
+// is ON since 2026-10-11 (Matt): the Looney Tunes race is back at full speed with it.
+int g_jit_bcache_preset    = 1;   // 1 = dynamic block ends look up the flat {addr, code} table (5.3 bcache, HW)
+int g_jit_pr_moves_preset  = 0;   // 1 = fmov, flds and fsts stay native in a PR=1 block (5.39)
+int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to nearest; 0 hangs in a verify (P57)
+int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles (P71)
+int g_fpu_dn_preset        = 0;   // 1 = FPSCR.DN also sets the PPU's NI bit (5.40)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -309,6 +315,11 @@ static const CfgItem s_items[] = {
 	{ "SpgFieldBit",   &g_spg_field_bit_preset },
 	{ "HblankIrq",     &g_hblank_irq_preset },
 	{ "VblankIntReset", &g_vblank_int_reset_preset },
+	{ "JitBcache",     &g_jit_bcache_preset },
+	{ "JitPrMoves",    &g_jit_pr_moves_preset },
+	{ "JitRmAny",      &g_jit_rm_any_preset },
+	{ "JitIdleRule",   &g_jit_idle_rule_preset },
+	{ "FpuDn",         &g_fpu_dn_preset },
 };
 
 void ps3_presets_load(void)
@@ -592,11 +603,16 @@ int get_tmu_clock_preset()     { return g_tmu_clock_preset; }
 int get_tmu_fine_tcnt_preset() { return g_tmu_fine_tcnt_preset; }
 int get_spg_field_bit_preset() { return g_spg_field_bit_preset; }
 int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 8: read at compile time by the decoder; FPU DN at each FPSCR sync.
+int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
+int get_jit_rm_any_preset()    { return g_jit_rm_any_preset; }
+int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
+int get_fpu_dn_preset()        { return g_fpu_dn_preset; }
 
-// JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
+// JIT backend presets; the fixed 0 ones wait for OPTIMIZATION_PLAN 5. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
 int get_fastmem_preset()       { return 0; }
-int get_bcache_preset()        { return 0; }
+int get_bcache_preset()        { return g_jit_bcache_preset; }
 int get_dyn_ic_preset()        { return g_jit_dyn_ic_preset; }
 int get_jit_code_cache_preset() { return g_jit_code_cache_preset; }
 int get_fpu_pin_preset()       { return g_fpu_pin_preset; }

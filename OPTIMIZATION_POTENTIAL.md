@@ -113,7 +113,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | merged: plan section 0, parked Soul Calibur faults; also 5.12 SPE list #4, TArender.MD TR5 item 3 |
 | P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | merged: plan section 0, parked Soul Calibur faults; TArender.MD TR5 item 1: "the A/B was not run" |
 | P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06, default + CD-DA; CD-DA miss stalls known, parked |
-| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | merged: plan 5.40; extends RESEARCH.MD 3e |
+| P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | CLOSED 2026-10-11 (Matt), no effect: NI does nothing on the PPE (`[ni]` probe, HW); "FPU DN" stays OFF; merged: plan 5.40; extends RESEARCH.MD 3e |
 | P5 | Small speed items | speed | <= 1% each | small to medium | merged: plan 5.36; bind scan is 5.10 (not chosen) |
 | P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06, default ON; EMU_TERM still never runs |
 | P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | merged: plan 5.17 (with P55) |
@@ -126,7 +126,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a, 3b, 3j (open) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
 | P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; HW SUCCESS 2026-10-06, default ON |
-| P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
+| P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | fschg HW SUCCESS 2026-10-10; BCACHE HW SUCCESS 2026-10-11 (bundle 8, "JIT BCACHE" default ON; Looney Tunes race +2.3 points of SPEED); merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
 | P18 | Depth precision | bug | Soul Calibur background flicker (probable cause) | ~15 lines | merged: plan section 0, parked Soul Calibur faults; "Depth Float" HW SUCCESS 2026-10-07, default ON |
 | P19 | div32 match gives wrong results | bug | signed and 64/32 divides, every game | ~60 lines + PC check | = plan 5.38, HW SUCCESS 2026-10-06, default FIXED |
 | P20 | The DSP: A3 by default, and its gaps against caique-rtl | default setting, bugs | no reverb or DSP-only voices by default; ring not shared with wave RAM; 64K-word rings | G1 no code; G2-G3 medium | merged: plan 5.13 A3 (the verdict); G2-G4 built 2026-10-11, bundle 5 (plan section 0); G2 ran on HW with no fault, default ON; G3, G4 HW not run |
@@ -165,8 +165,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P53 | Widescreen: draw geometry outside 4:3 | feature | 16:9 output | ~20 lines | not P36's stretch |
 | P54 | Render-to-texture pixel packing | bug | RTT games (none of our test games) | ~15 lines + modes 4 and 5 | merged: plan section 3 (RTT note); GOALS.md G6.4 |
 | P55 | VRAM writes from SQ and DMA: one address map per block | speed | 0.5% of the SH4 thread or less (estimate) | ~10 lines | merged: plan 5.17 (with P7) |
-| P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (none seen) | ~5 lines | merged: plan 5.39; after P32 |
-| P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
+| P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (old logs: Space Channel 5 35-62 fmov/s, Quake3.cdi up to 3.5K/s, Rayman 2 1-3/s) | ~5 lines | built 2026-10-11 without fneg (bundle 8, "JIT PR MOVES" OFF), no HW run; merged: plan 5.39; fneg after P32 |
+| P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify built 2026-10-11 (bundle 8, "JIT RM 2/3" VERIFY), no HW run; merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
 | P58 | MMUCR fields read the wrong bits on big endian | bug | Border Down (no picture); every game that uses the TLB for store queues | 2 lines; + JIT cache clear (~3) and V = 0 skip (1) | bundle 13 (2026-10-11); Border Down is an open item in plan section 0 |
 | P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | bundle 15 (2026-10-11); corrects plan 3i ("Broadcast is not touched, as in Flycast") |
 | P60 | Present only the renders the game shows | bug (image) | flashing screens and mirrors (South Park, NFL QB Club 2000, Vanishing Point, Metropolis Street Racer), FMV glitches; Quake III split screen | ~40-80 lines + ~30 | fits bundle 11; P2 has the swap rule as pacing only |
@@ -180,7 +180,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple: bundle 10; GD-ROM: bundle 2; G2: bundle 6 |
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 11 |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
-| P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | bundle 8; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
+| P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
 | P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | bundle 14; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
 | P73 | Small render-thread items (4) | speed | fewer draws and copies (not measured) | 4-30 lines each | bundle 14; plan 3k's parked "cheaper first pass"; counters first |
 | P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there |
@@ -457,7 +457,7 @@ scratchpad of session 8112eaf0, after 5.33), `[stall] gd read` is 77.4,
 28.6 ms), and the SH4 thread never sleeps. That is 1.5-13% of the SH4
 thread. P3 stays parked (Matt 2026-10-05).
 
-### P4 FPSCR.DN -> PPC NI bit  `[ ]` merged: plan 5.40
+### P4 FPSCR.DN -> PPC NI bit  `[x]` CLOSED 2026-10-11 (Matt), no effect: the `[ni]` boot probe on HW shows NI = 1 changes no value and no time on the PPE (plan section 0); row "FPU DN" stays OFF; merged: plan 5.40
 
 - Ours: `SetFloatStatusReg()` (`dc/sh4/sh4_registers.cpp:89-96`) sets only the
   rounding mode (`mtfsfi 7,RM`).
@@ -537,7 +537,7 @@ FMV (2026-10-06): the Soul Calibur opening shows the same misses.
   a third of the decodes gave an all-black tile (`blacktex` 3596, 3615).
 - HW check: also the Soul Calibur opening (`tex decodes`, `live`, busy).
 
-### P17 Small JIT items from Flycast  `[ ]` merged: plan 5.3 (BCACHE), 5.37 (fschg)
+### P17 Small JIT items from Flycast  `[~]` fschg HW SUCCESS 2026-10-10 (plan 5.37); BCACHE HW SUCCESS 2026-10-11, bundle 8 (plan section 0): row "JIT BCACHE", default ON in source (Matt); the Looney Tunes race SPEED 97.62% -> 99.95%, about 35 ms/s of SH4 thread time, more than the "noise level" below; Crazy Taxi no gain to see; merged: plan 5.3 (BCACHE), 5.37 (fschg)
 
 Expect gains at noise level: 5.26 removed 1.9M load-hit-stores/s with no
 measurable gain.
@@ -753,7 +753,7 @@ Adventure intro FMV, `[stall] dma`.
   all were VRAM: about 0.5% of the SH4 thread (estimate). Count the
   VRAM-direct blocks in `[ta-split]` first.
 
-### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[ ]` merged: plan 5.39
+### P56 fmov, flds, fsts and fneg in the JIT when PR=1  `[~]` built 2026-10-11, bundle 8 (plan section 0): row "JIT PR MOVES", default OFF, without fneg (P32 not done); no HW run yet (a Looney Tunes run compiled no PR=1 move: that game has none); PR=1 FPU ops in the old logs: Space Channel 5, Quake3.cdi, Rayman 2; merged: plan 5.39
 
 - Flycast `62085539a` (2022, `core/hw/sh4/dyna/decoder.cpp:660-667`): with
   PR=1 every FPU op falls back to the interpreter, except fmov, flds, fsts
@@ -765,7 +765,7 @@ Adventure intro FMV, `[stall] dma`.
 - Value: none seen. The Crazy Taxi census (plan 5.0) has no FPU op among
   the fallbacks. Build it only if a PR=1 game shows up in `[IFB]`.
 
-### P71 The x30 idle rule bills work blocks  `[ ]`
+### P71 The x30 idle rule bills work blocks  `[~]` built 2026-10-11, bundle 8 (plan section 0): row "JIT IDLE RULE" X30 / X3 BACKWARD / OFF, default X30; HW 2026-10-11 at X3 BACKWARD (Looney Tunes): the race draws 29.95 frames per emulated second (26.4), but SPEED is 60.9% and the wall rate 18.2 (Matt: "It runs much worse"); the host cost is x1.64, not the +14% below; OFF: the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X3 BACKWARD in Sonic Adventure: 29.69 frames/s (28.65), 14K+ scenes 29.6 (26.3), SPEED 100% (Matt: "VERY smooth"): Sonic has the spare host time that Looney Tunes lacks; X3 BACKWARD in Phantasy Star Online: its 20 fps scene at 30.0 frames/s, SPEED 100%; X30 stays the global default, a per-game level is open
 
 - Ours: the "Small-n-simple idle loop detector" of the decoder
   (`dc/sh4/rec_v2/decoder.cpp:1316-1351`). A block with fewer than 6
@@ -1778,7 +1778,7 @@ Flycast's RTT games).
 - About 15 lines, plus the two missing modes. Endian-neutral: the pack
   works on host words.
 
-### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify merged: plan 3d; TMU test: built 2026-10-11 in `misc/timebase_check`, bundle 7 (plan section 0)
+### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify built 2026-10-11, bundle 8 (plan section 0): row "JIT RM 2/3", default VERIFY, no HW run; TMU test: built 2026-10-11 in `misc/timebase_check`, bundle 7 (plan section 0)
 
 - GDI track paths with a backslash. Flycast's fixture
   `tests/files/test_gdis/a/cs.gdi` names `tracks\cs01.bin`. Ours
