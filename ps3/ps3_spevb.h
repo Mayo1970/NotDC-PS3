@@ -13,7 +13,8 @@ void ps3spevb_stats(double secs);
 
 // Render thread. The mode is 0 once the builder is down.
 int ps3spevb_mode();
-bool ps3spevb_request(u32 ctx, u32 nvtx, u32 nstrip, u32 nparam, void* vb, u32 cap, bool autosort);
+// flags: SPEVB_AUTOSORT, SPEVB_SPRITE_CULL, SPEVB_CLIP_KEY, SPEVB_NO_TR.
+bool ps3spevb_request(u32 ctx, u32 nvtx, u32 nstrip, u32 nparam, void* vb, u32 cap, u32 flags);
 // Run k of a section; null at its end, at TR_PPU, or when the SPU fails (the builder is then down).
 const SpeRun* ps3spevb_run(u32 k, u32 sec);
 u32 ps3spevb_sec_start(u32 sec);

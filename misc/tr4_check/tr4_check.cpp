@@ -9,6 +9,10 @@ using namespace TASplitter;
 
 namespace TASplitter { TaListFP* TaCmd = 0; void TA_ListInit() {} void TA_ListCont() {} void TA_SoftReset() {} }
 int msgboxf(const char*, unsigned int, ...) { return 0; }
+// Bundle 4: ta.h's TA Bad Records and the store's TA Data Gate, both off (the old path).
+int g_ta_bad_rec_preset;
+u32 g_ta_bad_records;
+static int g_ta_data_gate_preset;
 
 static std::vector<u32>* g_irq;
 void spg_SchedListEndIrq(u32 list) { if (g_irq) g_irq->push_back(list); }

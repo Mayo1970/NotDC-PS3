@@ -16,6 +16,9 @@ struct BgVertex
 	u32 col;
 };
 
+// P10 List Passes: the region-array entries (one per pass) a render snapshots.
+#define RR_MAX_PASSES 8
+
 // TR2: every PVR register and VRAM-derived value the draw path reads, taken on
 // the SH4 thread at STARTRENDER/VBlank so a deferred draw never sees a later write.
 struct RenderRegs
@@ -30,6 +33,11 @@ struct RenderRegs
 	u32 fpu_shad_scale;
 	float fb_scale_x, fb_scale_y;
 	bool autosort;
+	// Bundle 4. pass_autosort[0] is autosort; mv_shared: a pass whose opaque and translucent volume pointers
+	// are one list (P27); glob_clip_x/y: the TA_GLOB_TILE_CLIP size in pixels (P10 tile clip).
+	bool pass_autosort[RR_MAX_PASSES];
+	bool mv_shared;
+	u32 glob_clip_x, glob_clip_y;
 	// Resolved on the SH4 thread: both read VRAM through PARAM_BASE.
 	BgVertex bg_vtx[3];
 	DcParam bg_param;

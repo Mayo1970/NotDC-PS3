@@ -95,6 +95,8 @@ typedef struct {
     uint8_t         wrap_s, wrap_t;
     uint8_t         min_filter, mag_filter;
     uint8_t         no_swizzle_hint; /* set by ps3gl_texture_hint_no_swizzle() before alloc */
+    uint8_t         mip_hint;   /* set by ps3gl_texture_hint_mipmaps() before alloc */
+    uint8_t         max_aniso;  /* GCM_TEXTURE_MAX_ANISO_*, from GL_TEXTURE_MAX_ANISOTROPY_EXT */
     uint32_t        fixed_pitch; /* ps3gl_tex_fixed(): pitch of the max size, kept while width/height change */
     gcmTexture      gcm_tex;
     int             dirty;
@@ -425,6 +427,8 @@ void ps3gl_flush_polygon_batch(void);
 void ps3gl_draw_vb(GLenum mode, uint32_t vb_offset, int first, int count);
 /* The same for ps3gl_vertex_t vertices stride bytes apart (a ps3gl_vring_alloc_raw block). */
 void ps3gl_draw_vb_stride(GLenum mode, uint32_t vb_offset, uint32_t stride, int first, int count);
+/* NotDC P25: the same, with the colour attribute read color_shift vertices later (the block holds them). */
+void ps3gl_draw_vb_shift(GLenum mode, uint32_t vb_offset, uint32_t stride, int first, int count, uint32_t color_shift);
 
 /* Texture helpers */
 ps3gl_texture_t *ps3gl_texture_find(GLuint name);
@@ -524,6 +528,9 @@ void glDeleteTextures(GLsizei n, const GLuint *textures);
 /* PS3-only: the linear layout for the bound texture's next glTexImage2D; call before it (the layout is fixed at
  * allocation). A video quad gains nothing from swizzle and pays its staging copy every frame. */
 void ps3gl_texture_hint_no_swizzle(void);
+/* PS3-only: a full mip chain for the bound texture, whatever ps3gl_set_texture_options() says; call before its
+ * first glTexImage2D. Only a swizzled texture takes it. */
+void ps3gl_texture_hint_mipmaps(void);
 void glTexImage2D(GLenum target, GLint level, GLint internalformat,
                       GLsizei width, GLsizei height, GLint border,
                       GLenum format, GLenum type, const void *pixels);

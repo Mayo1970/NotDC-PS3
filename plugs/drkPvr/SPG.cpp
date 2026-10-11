@@ -131,6 +131,18 @@ s32 render_isp_pending_cycles = 0;
 s32 render_tsp_pending_cycles = 0;
 s32 render_vd_pending_cycles  = 0;
 
+// P10 Core Reset: SOFTRESET bit 1 drops every render-done interrupt still pending. The slices the SYS GATE
+// skipped run first, so an interrupt that was already due still fires.
+void spg_CancelRenderEnd()
+{
+    sys_sync();
+    render_end_pending_cycles = 0;
+    render_isp_pending_cycles = 0;
+    render_tsp_pending_cycles = 0;
+    render_vd_pending_cycles  = 0;
+    sys_kick();
+}
+
 // Called from the TA (ta.h) instead of raising the list-complete IRQ directly.
 void spg_SchedListEndIrq(u32 list)
 {

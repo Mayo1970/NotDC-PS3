@@ -3,6 +3,16 @@
 #include "spg.h"	// spg_SchedListEndIrq (render_delay preset)
 #define params PVRPARAMS
 #define __forceinline 
+// TA Bad Records (ps3_presets.cpp, plan section 7 bundle 4): skip the records that hang the splitter, and count them.
+extern int g_ta_bad_rec_preset;
+extern u32 g_ta_bad_records;
+static inline bool ta_bad_skip()
+{
+	if (!g_ta_bad_rec_preset)
+		return false;
+	g_ta_bad_records++;
+	return true;
+}
 namespace TASplitter
 {
 	void TA_ListCont();
@@ -47,11 +57,8 @@ namespace TASplitter
 	typedef Ta_Dma* TaListFP(Ta_Dma* data,Ta_Dma* data_end);
 	typedef u32 fastcall TaPolyParamFP(void* ptr);
 
-	// The AppendPolyParamN decoders take a typed parameter pointer and return
-	// void; they are dispatched through the untyped u32(*)(void*) slot above.
-	// The reinterpretation is deliberate, so route the cast through
-	// 'void (*)(void)' -- the type GCC treats as compatible with everything --
-	// instead of tripping -Wcast-function-type on every table entry.
+	// The AppendPolyParamN decoders return void but are called through the u32(*)(void*) slot above. The cast
+	// goes through void(*)(void), which GCC takes as compatible, so -Wcast-function-type stays quiet.
 	#define TA_PP_FP(f) ((TaPolyParamFP*)(void(*)(void))(f))
 
 
@@ -355,15 +362,14 @@ public:
 					//32B
 				case ParamType_Object_List_Set:
 					{
-						die("ParamType_Object_List_Set");
-						//*couh* ignore it :p
+						// P9: die() never returns; TA Bad Records skips the record, as Reicast and the SPU decoder.
+						if (!ta_bad_skip())
+							die("ParamType_Object_List_Set");
 						data+=SZ32;
 					}
 					break;
 
-					//Global Parameter
-					//ModVolue :32B
-					//PolyType :32B/64B
+					//Global Parameter: ModVolume 32B, PolyType 32B/64B
 				case ParamType_Polygon_or_Modifier_Volume:
 					{
 						GROUP_EN();
@@ -385,6 +391,14 @@ public:
 							u32 psz=uid>>30;
 							u32 pdid=(u8)(uid);
 							u32 ppid=(u8)(uid>>8);
+
+							// P66 (Flycast c301bf082): Volume = 1 with Col_Type = 1 has no type, and its ids run off the
+							// tables below. The header is skipped; the vertex handler stays.
+							if (uid==0xFFFFFFFF && ta_bad_skip())
+							{
+								data+=SZ32;
+								break;
+							}
 
 							VerxexDataFP=ta_poly_data_lut[pdid];
 							verify(StripStarted==false);
@@ -428,15 +442,8 @@ public:
 					{
 						//printf("VTX:0x%08X\n",VerxexDataFP);
 						verify(VerxexDataFP!=0);
-						// VerxexDataFP is only set by a preceding Polygon/ModVol/Sprite
-						// header; it's null until the first real header of a list is
-						// seen. verify() no-ops when DO_VERIFY is off (this build), so
-						// without this guard, vertex-typed data arriving before any
-						// header -- e.g. stale/uninitialized RAM (0xFFFFFFFF decodes as
-						// ParaType 7) DMA'd in as the very first TA submission -- calls
-						// through a null function pointer and crashes (Rez CDI boot).
-						// Real hardware has no such data race to begin with; skip the
-						// record instead of dereferencing null.
+						// VerxexDataFP is null until a header sets it, and verify() is off in this build: vertex data
+						// before any header (stale RAM, 0xFFFFFFFF reads as ParaType 7; Rez CDI boot) is skipped.
 						if (VerxexDataFP)
 							data=VerxexDataFP(data,data_end);
 						else
@@ -449,7 +456,8 @@ public:
 				case 3:
 				case 6:
 					{
-						die("Unhadled parameter");
+						if (!ta_bad_skip())
+							die("Unhadled parameter");
 						data+=SZ32;
 					}
 					break;
@@ -463,45 +471,8 @@ public:
 		{
 			Init();
 		}
-		/*
-		Volume,Col_Type,Texture,Offset,Gouraud,16bit_UV
-		
-		0	0	0	(0)	x	invalid	Polygon Type 0	Polygon Type 0
-		0	0	1	x	x	0		Polygon Type 0	Polygon Type 3
-		0	0	1	x	x	1		Polygon Type 0	Polygon Type 4
-
-		0	1	0	(0)	x	invalid	Polygon Type 0	Polygon Type 1
-		0	1	1	x	x	0		Polygon Type 0	Polygon Type 5
-		0	1	1	x	x	1		Polygon Type 0	Polygon Type 6
-
-		0	2	0	(0)	x	invalid	Polygon Type 1	Polygon Type 2
-		0	2	1	0	x	0		Polygon Type 1	Polygon Type 7
-		0	2	1	0	x	1		Polygon Type 1	Polygon Type 8
-		0	2	1	1	x	0		Polygon Type 2	Polygon Type 7
-		0	2	1	1	x	1		Polygon Type 2	Polygon Type 8
-
-		0	3	0	(0)	x	invalid	Polygon Type 0	Polygon Type 2
-		0	3	1	x	x	0		Polygon Type 0	Polygon Type 7
-		0	3	1	x	x	1		Polygon Type 0	Polygon Type 8
-
-		1	0	0	(0)	x	invalid	Polygon Type 3	Polygon Type 9
-		1	0	1	x	x	0		Polygon Type 3	Polygon Type 11
-		1	0	1	x	x	1		Polygon Type 3	Polygon Type 12
-
-		1	2	0	(0)	x	invalid	Polygon Type 4	Polygon Type 10
-		1	2	1	x	x	0		Polygon Type 4	Polygon Type 13
-		1	2	1	x	x	1		Polygon Type 4	Polygon Type 14
-
-		1	3	0	(0)	x	invalid	Polygon Type 3	Polygon Type 10
-		1	3	1	x	x	0		Polygon Type 3	Polygon Type 13
-		1	3	1	x	x	1		Polygon Type 3	Polygon Type 14
-		
-		Sprites :
-		(0)	(0)	0	(0)	(0)	invalid	Sprite	Sprite Type 0
-		(0)	(0)	1	x	(0)	(1)		Sprite	Sprite Type 1
-
-		*/
-		//helpers 0-14
+		// obj_ctrl (Volume, Col_Type, Texture, Offset, 16bit_UV) picks the header type (Polygon Type 0-4, Sprite)
+		// and the vertex type (Polygon Type 0-14, Sprite Type 0-1): the TA's table, as the two helpers below have it.
 		static u32  poly_data_type_id(PCW pcw)
 		{
 			if (pcw.Texture)
@@ -784,8 +755,6 @@ public:
 			else
 			{
 				//all 64B done
-				//TA_decoder::AppendModVolVertexA(&vp->mvolA);
-				//TA_decoder::AppendModVolVertexB(&vp->mvolB);
 				return data+SZ64;
 			}
 		}
@@ -872,45 +841,8 @@ strip_end:
 			return data;
 		}
 
-		/*
-		Volume,Col_Type,Texture,Offset,Gouraud,16bit_UV
-		
-		0	0	0	(0)	x	invalid	Polygon Type 0	Polygon Type 0
-		0	0	1	x	x	0		Polygon Type 0	Polygon Type 3
-		0	0	1	x	x	1		Polygon Type 0	Polygon Type 4
-
-		0	1	0	(0)	x	invalid	Polygon Type 0	Polygon Type 1
-		0	1	1	x	x	0		Polygon Type 0	Polygon Type 5
-		0	1	1	x	x	1		Polygon Type 0	Polygon Type 6
-
-		0	2	0	(0)	x	invalid	Polygon Type 1	Polygon Type 2
-		0	2	1	0	x	0		Polygon Type 1	Polygon Type 7
-		0	2	1	0	x	1		Polygon Type 1	Polygon Type 8
-		0	2	1	1	x	0		Polygon Type 2	Polygon Type 7
-		0	2	1	1	x	1		Polygon Type 2	Polygon Type 8
-
-		0	3	0	(0)	x	invalid	Polygon Type 0	Polygon Type 2
-		0	3	1	x	x	0		Polygon Type 0	Polygon Type 7
-		0	3	1	x	x	1		Polygon Type 0	Polygon Type 8
-
-		1	0	0	(0)	x	invalid	Polygon Type 3	Polygon Type 9
-		1	0	1	x	x	0		Polygon Type 3	Polygon Type 11
-		1	0	1	x	x	1		Polygon Type 3	Polygon Type 12
-
-		1	2	0	(0)	x	invalid	Polygon Type 4	Polygon Type 10
-		1	2	1	x	x	0		Polygon Type 4	Polygon Type 13
-		1	2	1	x	x	1		Polygon Type 4	Polygon Type 14
-
-		1	3	0	(0)	x	invalid	Polygon Type 3	Polygon Type 10
-		1	3	1	x	x	0		Polygon Type 3	Polygon Type 13
-		1	3	1	x	x	1		Polygon Type 3	Polygon Type 14
-		
-		Sprites :
-		(0)	(0)	0	(0)	(0)	invalid	Sprite	Sprite Type 0
-		(0)	(0)	1	x	(0)	(1)		Sprite	Sprite Type 1
-
-		*/
-		//helpers 0-14
+		// obj_ctrl (Volume, Col_Type, Texture, Offset, 16bit_UV) picks the header type (Polygon Type 0-4, Sprite)
+		// and the vertex type (Polygon Type 0-14, Sprite Type 0-1): the TA's table, as the two helpers below have it.
 		static u32  poly_data_type_id(PCW pcw)
 		{
 			if (pcw.Texture)
@@ -1081,9 +1013,7 @@ public:
 				//Variable size
 				switch (data->pcw.ParaType)
 				{
-//					default:__assume(0);
-					//Control parameter
-					//32B
+					//Control parameter, 32B
 				case ParamType_End_Of_List:
 					{
 						if (VerxexDataFP)
@@ -1120,15 +1050,14 @@ public:
 					//32B
 				case ParamType_Object_List_Set:
 					{
-						die("ParamType_Object_List_Set");
-						//*couh* ignore it :p
+						// P9: die() never returns; TA Bad Records skips the record, as Reicast and the SPU decoder.
+						if (!ta_bad_skip())
+							die("ParamType_Object_List_Set");
 						data+=SZ32;
 					}
 					break;
 
-					//Global Parameter
-					//ModVolue :32B
-					//PolyType :32B/64B
+					//Global Parameter: ModVolume 32B, PolyType 32B/64B
 				case ParamType_Polygon_or_Modifier_Volume:
 					{
 						//this is here to make up for C++'s limitations
@@ -1229,7 +1158,8 @@ public:
 				case 3:
 				case 6:
 					{
-						die("Unhadled parameter");
+						if (!ta_bad_skip())
+							die("Unhadled parameter");
 						data+=SZ32;
 					}
 					break;

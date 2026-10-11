@@ -55,6 +55,28 @@ extern int g_vram_direct_preset;
 extern int g_lmmode_preset;
 extern int g_fb_watch_preset;
 extern int g_bump_map_preset;
+extern int g_mipmap_preset;
+extern int g_aniso_preset;
+extern int g_tex_filter_preset;
+extern int g_vq_formats_preset;
+// Bundle 4 (plan section 7), the RENDERER page.
+extern int g_int_clamp_preset;
+extern int g_face_reset_preset;
+extern int g_tr_volumes_preset;
+extern int g_volume_cap_preset;
+extern int g_ta_bad_rec_preset;
+extern int g_ta_data_gate_preset;
+extern int g_pt_depth_preset;
+extern int g_tr_sort_depth_preset;
+extern int g_pt_blend_preset;
+extern int g_sprite_cull_preset;
+extern int g_flat_shade_preset;
+extern int g_region_array_preset;
+extern int g_list_passes_preset;
+extern int g_tile_clip_preset;
+extern int g_ta_list_regs_preset;
+extern int g_core_reset_preset;
+extern int g_tr_tri_sort_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;
@@ -119,3 +141,7 @@ void ps3_presets_save(void);
 void ps3_sndcfg_print(const char* when, bool always);
 // [gdcfg] line: every GD-ROM setting, the same way.
 void ps3_gdcfg_print(const char* when, bool always);
+// [texcfg] line: every texture setting, the same way.
+void ps3_texcfg_print(const char* when, bool always);
+// [rendcfg] line: the RENDERER page's rows, the same way.
+void ps3_rendcfg_print(const char* when, bool always);

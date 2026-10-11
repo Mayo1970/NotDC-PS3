@@ -14,14 +14,25 @@
 #define SPE_MAX_VTX    (64 * 1024)
 #define SPE_MAX_STRIPS (16 * 1024)
 #define SPE_MAX_PARAMS (8 * 1024)
-#define SPE_MAX_MODTRI 4096
+#define SPE_MAX_MODTRI 8192
 #define SPE_MAX_MODVOL 256
+// The triangle cap without TAOPT_VOL_8K (the cap before bundle 4).
+#define SPE_MODTRI_OLD 4096
+
+// Plan section 7, bundle 4: decode options of one context, latched at its RESET; the PPU replay reads the same word.
+#define TAOPT_INT_CLAMP  1u   // P8: face colour and intensity as saturated bytes, then face * intensity / 256
+#define TAOPT_FACE_RESET 2u   // P63: the face colours are white again at each list init
+#define TAOPT_TR_VOL     4u   // P27: the translucent volume list is kept, tagged 1 in the volume record
+#define TAOPT_VOL_8K     8u   // P66: 8192 volume triangles
+#define TAOPT_TILE_CLIP  16u  // P10: the user clip rect in the param's reserved bits (ISP 19:0, PCW 9:8)
+// Flycast's tileclip rect, xmin | xmax << 6 | ymin << 12 | ymax << 17, at a list init: tiles 0..39 by 0..14.
+#define TA_CLIP_RESET    ((39u << 6) | (14u << 17))
 
 enum { SPE_OP_NOP, SPE_OP_DATA, SPE_OP_RESET, SPE_OP_CONT, SPE_OP_SOFT, SPE_OP_FENCE };
 enum { SPE_STAGE_RUN, SPE_STAGE_RING, SPE_STAGE_DATA, SPE_STAGE_FENCE, SPE_STAGE_ECHO, SPE_STAGE_EVENT, SPE_STAGE_OUT,
        SPE_STAGE_RELEASE };
 
-// DATA: ea = raw + from, a = bytes, b = to. CONT: b = mark. FENCE: a = fence id, b = raw end.
+// DATA: ea = raw + from, a = bytes, b = to. CONT: b = mark. FENCE: a = fence id, b = raw end. RESET: a = TAOPT_*.
 typedef struct
 {
 	uint8_t op, ctx;
@@ -77,7 +88,8 @@ typedef struct
 	uint32_t gaps, nvtx, nstrip, nparam;
 	uint32_t nmtri, nmvol, max_inv_w, min_w;
 	uint32_t max_w, mv_tris[5];
-	uint32_t pad[14];
+	uint32_t opt;  // the TAOPT_* these lists were decoded with
+	uint32_t pad[13];
 } __attribute__((aligned(128))) SpeFence;
 
 // Mirrors of DcVertex, DcStrip, DcParam, ModTri and ModVolParam; ps3_rend.cpp asserts the layouts.
@@ -85,7 +97,8 @@ typedef struct { uint32_t x, y, w, col, u, v; } SpeVtx;
 typedef struct { uint32_t first; uint16_t count; uint8_t list, pad; uint16_t param, pad2; } SpeStrip;
 typedef struct { uint32_t pcw, isp, tsp, tcw; } SpeParam;
 typedef struct { uint32_t v[9]; } SpeModTri;
-typedef struct { uint32_t first; uint8_t cull, depth, volume_last, pad; } SpeModVol;
+// list: 0 = the opaque volume list, 1 = the translucent one (P27).
+typedef struct { uint32_t first; uint8_t cull, depth, volume_last, list; } SpeModVol;
 
 // Shadow lists the SPU decoder writes, one per context. Every array starts on 128 bytes.
 typedef struct
@@ -102,7 +115,8 @@ typedef struct
 {
 	uint32_t out_ea[SPE_CTX];
 	uint32_t draw;  // S3: the render thread draws the shadow lists, so a RESET waits for its release
-	uint32_t pad[27];
+	uint32_t opt;   // TAOPT_* of every context until its first RESET
+	uint32_t pad[26];
 } __attribute__((aligned(128))) SpeSetup;
 
 // One block for setup, ring and results: the SPU main only gets 3 thread arguments (arg3 arrives as 0).

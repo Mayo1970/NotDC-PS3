@@ -63,6 +63,30 @@ int g_vram_direct_preset   = 0;   // 1 = SQ/DMA runs on the 32-bit VRAM bus map 
 int g_lmmode_preset        = 0;   // 1 = SQ and ch2 DMA to 0x11/0x13 take the bus SB_LMMODE0/1 selects (P7)
 int g_fb_watch_preset      = 0;   // 1 = a 32-bit VRAM write into the shown frame presents it at vblank (P26)
 int g_bump_map_preset      = 1;   // 1 = bump-map texels and the offset colour drawn by a bump program (plan 3j, HW)
+// Bundle 3 (plan section 7), the TEXTURES page: 0 is the old path in every one. Defaults since 2026-10-10 (Matt).
+int g_mipmap_preset        = 1;   // 1 = a mipmapped texture gets its whole mip chain, not level 0 only (P45, HW)
+int g_aniso_preset         = 4;   // anisotropic filter taps: 0 = 1x, 1 = 2x, 2 = 4x, 3 = 8x, 4 = 16x (P52, HW at 16x)
+int g_tex_filter_preset    = 0;   // 0 = the game's filter, 1 = nearest on every texture, 2 = linear (P52, HW)
+int g_vq_formats_preset    = 1;   // 1 = palette VQ and scan-order VQ textures decode as in Flycast (P25)
+// Bundle 4 (plan section 7), the RENDERER page: 0 is the old path in every one. Defaults since 2026-10-11 (Matt),
+// the values of his HW run; TR Depth Write stays GAME (it breaks Sonic Adventure's models), Flat Shading stays OFF.
+int g_int_clamp_preset     = 1;   // 1 = intensity colours as saturated bytes, face * intensity / 256 (P8, HW)
+int g_face_reset_preset    = 1;   // 1 = the face colours are white at each list init; a list cont closes the store's list (P63, HW)
+int g_tr_volumes_preset    = 1;   // 1 = the translucent volume list is kept, and drawn when it is the shared one (P27, HW)
+int g_volume_cap_preset    = 1;   // modifier-volume triangles per frame: 0 = 4096, 1 = 8192 (P66, HW)
+int g_ta_bad_rec_preset    = 1;   // 1 = Object_List_Set, the reserved and the typeless TA records are skipped, not fatal (P9, P66, HW)
+int g_ta_data_gate_preset  = 1;   // 1 = TA records with no list init current are dropped (P66, HW)
+int g_pt_depth_preset      = 1;   // 1 = punch-through always writes depth (P25, HW)
+int g_tr_sort_depth_preset = 0;   // 1 = an autosorted translucent polygon writes no depth (P25; HW: Rayman 2 water right, Sonic models wrong)
+int g_pt_blend_preset      = 1;   // 1 = punch-through blends with its TSP factors (P25, HW)
+int g_sprite_cull_preset   = 1;   // 1 = a sprite culls the other face (P25, HW)
+int g_flat_shade_preset    = 0;   // flat shading without Gouraud: 0 = off, 1 = the RSX takes the last vertex, 2 = the first (P25; HW: no difference seen)
+int g_region_array_preset  = 1;   // 1 = the region array as Flycast reads it: an empty first entry is skipped (P10, HW)
+int g_list_passes_preset   = 1;   // 1 = one draw pass per TA_LIST_CONT, 2 = also the TR depth pass (P10, HW at 1)
+int g_tile_clip_preset     = 1;   // user tile clip: 0 = off, 1 = inside, 2 = also outside (P10, HW at 1)
+int g_ta_list_regs_preset  = 1;   // 1 = TA_LIST_INIT puts TA_ITP_CURRENT and TA_NEXT_OPB back at their bases (P10, HW)
+int g_core_reset_preset    = 1;   // 1 = SOFTRESET bit 1 cancels the pending render-done interrupts (P10, HW)
+int g_tr_tri_sort_preset   = 3;   // autosorted translucent list per triangle: 1 = no depth write, 2 = the game's, 3 = opaque texels first (3k, HW at 3)
 int g_jit_fschg_preset     = 2;   // 1 = fschg skips the UpdateFPSCR() call, 2 also no sync and no block end (5.37, HW)
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -174,6 +198,27 @@ static const CfgItem s_items[] = {
 	{ "Lmmode",        &g_lmmode_preset },
 	{ "FbWatch",       &g_fb_watch_preset },
 	{ "BumpMap",       &g_bump_map_preset },
+	{ "Mipmaps",       &g_mipmap_preset },
+	{ "Aniso",         &g_aniso_preset },
+	{ "TexFilter",     &g_tex_filter_preset },
+	{ "VqFormats",     &g_vq_formats_preset },
+	{ "IntClamp",      &g_int_clamp_preset },
+	{ "FaceReset",     &g_face_reset_preset },
+	{ "TrVolumes",     &g_tr_volumes_preset },
+	{ "VolumeCap",     &g_volume_cap_preset },
+	{ "TaBadRec",      &g_ta_bad_rec_preset },
+	{ "TaDataGate",    &g_ta_data_gate_preset },
+	{ "PtDepth",       &g_pt_depth_preset },
+	{ "TrSortDepth",   &g_tr_sort_depth_preset },
+	{ "PtBlend",       &g_pt_blend_preset },
+	{ "SpriteCull",    &g_sprite_cull_preset },
+	{ "FlatShade",     &g_flat_shade_preset },
+	{ "RegionArray",   &g_region_array_preset },
+	{ "ListPasses",    &g_list_passes_preset },
+	{ "TileClip",      &g_tile_clip_preset },
+	{ "TaListRegs",    &g_ta_list_regs_preset },
+	{ "CoreReset",     &g_core_reset_preset },
+	{ "TrTriSort",     &g_tr_tri_sort_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -291,6 +336,42 @@ static const CfgItem s_gd_items[] = {
 };
 #define GD_ITEMS (sizeof(s_gd_items) / sizeof(s_gd_items[0]))
 
+// Every texture setting: the bundle 3 rows (plan section 7) and the paths they share.
+static const CfgItem s_tex_items[] = {
+	{ "Mipmaps",       &g_mipmap_preset },
+	{ "Aniso",         &g_aniso_preset },
+	{ "TexFilter",     &g_tex_filter_preset },
+	{ "VqFormats",     &g_vq_formats_preset },
+	{ "SpeTexHash",    &g_spe_tex_preset },
+	{ "SpeTexDecode",  &g_spe_texdec_preset },
+	{ "TexSlotHash",   &g_tex_slot_hash_preset },
+	{ "YuvBlockDecode", &g_yuv_block_preset },
+	{ "BumpMap",       &g_bump_map_preset },
+};
+#define TEX_ITEMS (sizeof(s_tex_items) / sizeof(s_tex_items[0]))
+
+// The bundle 4 rows (plan section 7), in the RENDERER page's order.
+static const CfgItem s_rend_items[] = {
+	{ "IntClamp",      &g_int_clamp_preset },
+	{ "FaceReset",     &g_face_reset_preset },
+	{ "TrVolumes",     &g_tr_volumes_preset },
+	{ "VolumeCap",     &g_volume_cap_preset },
+	{ "TaBadRec",      &g_ta_bad_rec_preset },
+	{ "TaDataGate",    &g_ta_data_gate_preset },
+	{ "PtDepth",       &g_pt_depth_preset },
+	{ "TrSortDepth",   &g_tr_sort_depth_preset },
+	{ "PtBlend",       &g_pt_blend_preset },
+	{ "SpriteCull",    &g_sprite_cull_preset },
+	{ "FlatShade",     &g_flat_shade_preset },
+	{ "RegionArray",   &g_region_array_preset },
+	{ "ListPasses",    &g_list_passes_preset },
+	{ "TileClip",      &g_tile_clip_preset },
+	{ "TaListRegs",    &g_ta_list_regs_preset },
+	{ "CoreReset",     &g_core_reset_preset },
+	{ "TrTriSort",     &g_tr_tri_sort_preset },
+};
+#define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -324,6 +405,20 @@ void ps3_gdcfg_print(const char* when, bool always)
 	static int last[GD_ITEMS];
 	static bool printed;
 	cfg_print("gdcfg", s_gd_items, GD_ITEMS, last, &printed, when, always);
+}
+
+void ps3_texcfg_print(const char* when, bool always)
+{
+	static int last[TEX_ITEMS];
+	static bool printed;
+	cfg_print("texcfg", s_tex_items, TEX_ITEMS, last, &printed, when, always);
+}
+
+void ps3_rendcfg_print(const char* when, bool always)
+{
+	static int last[REND_ITEMS];
+	static bool printed;
+	cfg_print("rendcfg", s_rend_items, REND_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {
@@ -390,6 +485,11 @@ int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
 int get_depth_float_preset()   { return g_depth_float_preset; }
 int get_yuv_block_preset()     { return g_yuv_block_preset; }
 int get_bump_map_preset()      { return g_bump_map_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 3: read once per frame by ps3_tex.cpp.
+int get_mipmap_preset()        { return g_mipmap_preset; }
+int get_aniso_preset()         { return g_aniso_preset; }
+int get_tex_filter_preset()    { return g_tex_filter_preset; }
+int get_vq_formats_preset()    { return g_vq_formats_preset; }
 
 // OPTIMIZATION_PLAN 5.12 S0, S3, #2-#5 and 5.16, read once in InitRenderer.
 int get_spe_bell_preset()      { return g_spe_bell_preset; }

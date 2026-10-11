@@ -15,6 +15,10 @@
 #define SPEVB_AUTOSORT 1u
 #define SPEVB_TEST     2u  // boot test: 32 pattern words to vb_ea
 #define SPEVB_BENCH    4u  // boot bench: DMA timings to the RSX block at vb_ea and the main memory block at ctx
+// Bundle 4 (plan section 7), as s_mo_sprite and the s_key masks of ps3_rend.cpp.
+#define SPEVB_SPRITE_CULL 8u   // P25: a sprite's cull direction is the other one
+#define SPEVB_CLIP_KEY    16u  // P10: the clip rect bits (ISP 19:0, PCW 9:8) are part of the merge key
+#define SPEVB_NO_TR       32u  // 3k: the PPU sorts the TR list by triangle; the build answers TR_PPU at once
 
 // Echo flags. TR_PPU: the TR list is left to the PPU, which continues the vertex buffer at vb_used.
 #define SPEVB_OP_DONE 1u

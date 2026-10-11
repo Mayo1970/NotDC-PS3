@@ -11,13 +11,673 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-10)
+## 0. Resume here (updated 2026-10-11)
+
+**Done: 3k, TR Triangle Sort, with 4 levels (Matt 2026-10-11, at the
+bundle 4 verdict: "Build it next"; then, after HW run 2, "Two more
+levels"). HW SUCCESS 2026-10-11 at + OPAQUE DEPTH in Rayman 2 ("They look
+fine now!") and Sonic Adventure ("Perfect!"), HW run 4 below. Verdict
+(Matt 2026-10-11, asked once): the default is + OPAQUE DEPTH, in the
+source since 2026-10-11; TR Depth Write stays GAME. Not packaged: the
+package of 01:41 on 2026-10-11 (`build/notdc_ps3.pkg`, 1510896 bytes) has
+the row OFF; Matt's `nullDC.cfg` has + OPAQUE DEPTH and GAME from his
+run. Crazy Taxi ran with the level after the verdict (HW run 5 below):
+clean log, but render `busy` 20% -> 45% and SPEED 97.9% in its 11-13K
+vertex scenes (was 99.8-100%); Matt: "I consider this a success", the
+cost is parked for later. Not run with the level
+yet: Jet Grind Radio (ON on his word). One row, "TR Triangle Sort", the
+last one of the RENDERER page:
+OFF / ON / + DEPTH WRITE / + OPAQUE DEPTH. The package of 01:41 has
+bundle 4's defaults (the block below).**
+- Why: HW run 1 of bundle 4. With depth write, Rayman 2's water hides the
+  translucent polygons behind it. Without it (TR Depth Write at OFF IF
+  SORTED), Sonic Adventure's models are wrong. The sort was per strip (the
+  average 1/W of a strip).
+- HW run 2, 2026-10-11 ~01:05, the package of 01:01 (the row was OFF / ON
+  then), Sonic Adventure with the row ON and TR Depth Write at GAME. Matt:
+  "Sonic still looks wrong". The log: up to 942 sorted triangles per
+  render, SPEED 100%, render `busy` 5%, sort 1.0%, no fault line.
+  - So the first analysis was wrong for Sonic Adventure: the order is not
+    the cause there. Its translucent list (209-936 strips) is the models:
+    blended (SRC_ALPHA, INV_SRC_ALPHA), every strip with cull mode 1 (both
+    faces drawn) and Z write on. Only a depth write picks the front face
+    per pixel; no sort per triangle can. Rayman 2's water is the other
+    case: a large surface that must not hide what is behind it.
+- HW run 3, 2026-10-11 ~01:40, the package of 01:16, SH4 Clock 200, TR
+  Depth Write at GAME:
+  - Sonic Adventure. Matt: "Depth write: Looked fine. Opaque depth:
+    Looked fine." Log: + DEPTH WRITE 51 s (boot to play), + OPAQUE DEPTH
+    27 s at SPEED 100.0% (min 99.8), up to 954 sorted triangles per
+    render, render `busy` 13% at most, sort 2.3%, no fault line.
+  - Rayman 2. Matt: "With Opaque depth, some elements are broken but
+    water is fine. Opposite happens with depth write." And: "OFF IF
+    SORTED + Depth WRITE fixes both issues", but that pair "gives issue
+    to Sonic Adventure 1". The pair is the ON level: TR Depth Write at OFF
+    IF SORTED also switches the depth write of + DEPTH WRITE off.
+  - The table of the run (models = Sonic Adventure; water, elements =
+    Rayman 2):
+    - ON (no depth write): models wrong, water right, elements right.
+    - + DEPTH WRITE: models right, water wrong, elements right.
+    - + OPAQUE DEPTH (package of 01:16): models right, water right, some
+      elements wrong.
+  - Cause of the wrong elements, from the log: 71 of Rayman 2's 253
+    translucent strips are additive (DstInstr ONE) and use 565 textures,
+    which have no alpha (alpha 1 in every texel). The first pass of
+    + OPAQUE DEPTH wrote the depth of those whole quads, so a glow hid
+    what was behind it. Sonic Adventure has only SRC_ALPHA with
+    INV_SRC_ALPHA, so it did not show.
+  - Fix, in the package of 01:41: the first pass takes only a polygon
+    whose blend hides what is behind it: SRC_ALPHA with INV_SRC_ALPHA
+    (where alpha is 240 or more), or ONE with ZERO (every texel). A
+    polygon of any other blend is not in the first pass.
+- HW run 4, 2026-10-11 ~01:51, the package of 01:41, SH4 Clock 200, TR
+  Depth Write at GAME, TR Triangle Sort at + OPAQUE DEPTH from the boot:
+  - Rayman 2 (the water and the elements of run 3). Matt: "They look fine
+    now!" Log: 82 s, SPEED 100% but one second at 98.5%, up to 930 sorted
+    triangles per render, render `busy` 15% at most, sort 1.3%, no fault
+    line, clean XMB exit.
+  - Sonic Adventure (the models). Matt: "Perfect!" Log: 80 s, up to 2115
+    sorted triangles per render, render `busy` 32% at most, sort 3.1%, no
+    fault line, clean XMB exit. SPEED 100% in play; the slow seconds are
+    the intro FMV (89.5-94.7%, the known SH4-bound FMV) and a load.
+  - So + OPAQUE DEPTH is right in both games: models, water, elements.
+    Not run with it yet: Jet Grind Radio.
+- HW run 5, 2026-10-11 ~01:55, Crazy Taxi, same package and settings
+  (+ OPAQUE DEPTH from the boot), 383 s, clean XMB exit. No word from Matt
+  on the picture yet. Log: no fault line, `drop=0`, fences `bad=0`, SPE
+  Build `fail=0`, up to 1936 sorted triangles per render. The level costs
+  render time here. Same load (9K+ vertices per render), against the
+  Crazy Taxi boots of 2026-10-10 (bundle 3 and Step 2 logs, no level):
+  - Render `busy` 45% (was 20%), 67% at most (was 29%). TR draws per
+    render 1064 (was 215-228): param 21.0% (was 8.3-9.0), glEnd 12.5%
+    (was 4.8-5.0), sort 3.6%. Every TR polygon of the game is SRC_ALPHA
+    with INV_SRC_ALPHA, so the first pass draws the full list.
+  - SPEED by load: full below 11K vertices (as before). 11-13K: 97.9%
+    average, 14 of 57 s below 97%, lowest 87.4% (was 99.8-100.1%, 1 of
+    79 s below 97%). 13K+: 97.4% (was 97.4-99.5%, the same range).
+    `slept` at 11-13K falls from 43-54 to 27 of 60.
+  - Sonic Adventure for reference, 9K+ vertices: `busy` 5% -> 20%, TR
+    draws 182 -> about 1000 per render, SPEED not changed (the game draws
+    20-30 fps). Rayman 2: `busy` 3.5% -> 4.0%.
+  - Verdict (Matt 2026-10-11): "I consider this a success, but can we go
+    back to it later?" The default stays + OPAQUE DEPTH. The cost and the
+    per-game question are parked (the "Parked for later" block below).
+- The row (`TrTriSort` in `nullDC.cfg` [ps3], live), for a translucent
+  list the PVR sorts (autosort):
+  - ON: Flycast's default path (`sortTriangles`, `drawSorted`). Each
+    strip is cut into triangles (one with an inf corner is left out). The
+    key is the farthest corner (the smallest 1/W; ours compares the
+    largest W). A stable sort, far to near. The triangles go out as
+    GL_TRIANGLES in runs of one state, with no depth write.
+  - + DEPTH WRITE: the same sort and draw, but each polygon writes depth
+    as the game asks (and as the TR Depth Write row says). Expected: Sonic
+    Adventure right; Rayman 2's water not sure.
+  - + OPAQUE DEPTH (our own design, no reference): two passes over the
+    same sorted triangles. First, depth only: a texel whose alpha is 240
+    of 255 or more writes its depth (alpha test, no colour, no blend).
+    Then the colour, far to near, with no depth write. A texel that hides
+    what is behind it does so in any order (the models); the rest blend
+    in the sorted order (the water). It draws the list twice. Only a
+    polygon whose blend can hide something is in the first pass (HW run
+    3): an additive one is not.
+  - In all three: a strip's odd triangles have their first two corners
+    swapped, so each triangle winds as its strip does and its newest
+    corner stays last (flat shading); a triangle of the other cull
+    direction joins the run with the two corners swapped again. A
+    presorted list, and the opaque and punch-through lists, do not change.
+- Where it runs: the render thread (PPU): `tri_collect`, `tri_sort` (a
+  radix sort), `tri_runs` and `draw_tr_tris` in `ps3/ps3_rend.cpp`. With
+  SPE Build the request flag `SPEVB_NO_TR` makes the SPU answer TR_PPU at
+  once: it builds the opaque and punch-through runs only
+  (`spe_vb_build.h`, one SPU image changed). It needs Vertex Arrays and
+  Strip Merge (the defaults); without them the sort stays per strip.
+- Cost: the PPU writes 3 vertices per triangle into RSX memory, and the
+  SPU no longer builds the translucent runs. `[rend] busy=`, `draw split:
+  sort`, `[rend4] tris=` (sorted triangles per render), `[spevb] trppu`.
+- PC (WSL), all PASS:
+  - `misc/rend4_check/run.sh`: the rows-off phase is unchanged (4000
+    scenes, the old code's GL calls). Rows on, the 4 levels at random:
+    73373 sorted triangles against the model (each triangle of each strip
+    once, its corners and their order, the draw order by W falling with
+    the submission order at equal W, the state of each run, strips with
+    an inf corner), 18103 of them also in an opaque depth pass (only the
+    polygons whose blend hides, its state, the alpha level, each triangle
+    once, before the pass's colour). `mutate.py 1500 3k`: 29 of 29 planted bugs fail.
+  - `misc/spevb_check/run.sh`: the builder with `SPEVB_NO_TR` at random
+    (3000 scenes, 1129 with the list left to the PPU).
+  - `ta4_check`, `tr4_check`, `bump_check` again on the final files.
+- Not under a check: the RSX itself (the depth of the first pass must be
+  the depth of the colour pass, bit for bit, or + OPAQUE DEPTH flickers),
+  the alpha level of 240 (a pick), the speed.
+- Link: `.got` 0xD288, no warning.
+- HW steps (package of 01:41; the install keeps `nullDC.cfg`; SH4 Clock
+  200). TR Depth Write at GAME (Matt's file has OFF IF SORTED from run 3),
+  TR Triangle Sort at + OPAQUE DEPTH:
+  1. Rayman 2: the water and the elements that were wrong in run 3.
+  2. Sonic Adventure: the models must still be right.
+  3. Crazy Taxi and Jet Grind Radio, for the image and for SPEED.
+  4. On a fault: note the game, the scene and what the element is.
+
+**Parked for later (Matt 2026-10-11: "we can bench these improvements
+later"): Phantasy Star Online Ver. 2 (US) draws 20 fps in a heavy scene at
+SPEED 100%.** Log of 2026-10-11 (`ps3log_b4_run1.txt`, the last boot): 30
+fps in light scenes; 20 fps (19.7-21.0) with 11-17K vertices per render;
+no dropped render, render `busy` 10%, `[pace] slept=60` (the SH4 thread
+sleeps in each frame); the idle loop at 8C3C53F8 skips 15-26K slices of
+111.6K per second, so the game works 39 ms or more per frame and takes 3
+refreshes. Two ideas, not tested: SH4 Clock 250 (30 fps if 39 ms is the
+true value and the PS3 holds SPEED; one boot, the row is read at boot);
+the 50 Hz mode with a PAL disc (2 refreshes = 40 ms, 25 fps, no host
+cost; a forced 50 Hz on the US disc is slow motion).
+Sonic Adventure has the same case, less often (Matt asked 2026-10-11): in
+the 5 boots of this log it draws 30 fps in play and 20-27 fps for a few
+seconds with 12-20K vertices per render, at SPEED 100% (the 3-vblank
+frames of 5.41). The Looney Tunes race is the third game of the kind.
+
+**Parked for later (Matt 2026-10-11, after HW run 5 of 3k: "can we go
+back to it later? Not all games use this and probably we need to see it
+for case by case."): the cost of TR Triangle Sort, and settings per
+game.** Two items, nothing designed, nothing built:
+- A cheaper + OPAQUE DEPTH: the first pass (depth only) needs no sorted
+  order, so it can draw the merged strips in the game's order. Estimate
+  for Crazy Taxi: 1064 -> about 750 TR draws per render, render `busy`
+  45% -> about 37% (20% with the level OFF). Not measured.
+- Matt's idea: "Maybe an ID checker based off a Dreamcast romset that
+  will automatically set the right flags on depending on the game." A
+  table keyed by the disc's product ID (IP.BIN header), which sets rows
+  such as TR Triangle Sort per game. Flycast does this by product ID
+  (`loadGameSpecificSettings`). This changes the old rule "No per-game
+  lists" (2026-09-20, 3g/3i): ask Matt for the scope before a design.
+  Known cases so far: Sonic Adventure and Rayman 2 need + OPAQUE DEPTH;
+  Crazy Taxi pays 25 points of render thread for it.
+
+**Done: bundle 4, TA decode and draw rules (section 7; Matt 2026-10-10:
+"Go with bundle 4."), HW SUCCESS 2026-10-11 in Crazy Taxi, Sonic
+Adventure, Jet Grind Radio and Rayman 2 (HW run 1 below). Verdict (Matt
+2026-10-11, asked once): the defaults are the values of his run: every row
+ON, Volume Cap 8192, TA Bad Records SKIP, List Passes ON, Tile Clip
+INSIDE; TR Depth Write stays GAME (OFF IF SORTED fixes Rayman 2's water
+and breaks Sonic Adventure's models); Flat Shading stays OFF ("No
+difference seen" between its levels: the RSX vertex question is open).
+The defaults are in the source since 2026-10-11, not in the package of
+00:08 (it has every row OFF). Matt's `nullDC.cfg` has the values of his
+last boot: TR Depth Write OFF IF SORTED and Flat Shading LAST VERTEX
+(not the defaults). No game of the run used Sprite Cull, Tile Clip, List
+Passes, the TR volume draw or the TA Data Gate: they are ON on his word.
+Next (Matt: "Build it next"): the sort per triangle, 3k, the block above.**
+
+**The build: the package of
+00:08 on 2026-10-11 has it: `build/notdc_ps3.pkg`, 1508720 bytes, 16 new
+rows, all OFF. Matt's picks before the build (2026-10-10, asked once): every
+item of the bundle but Empty Frame (only Reicast has that rule; a screen
+that is only a background would freeze); added from the fifth review: P63,
+and from P66 the invalid TA types, the volume cap of 8192 and "no data
+before list init"; a new options page, "RENDERER".**
+- The same package is the first one with bundle 3's defaults (Mipmaps ON,
+  Anisotropic 16x, VQ Formats ON). An install keeps `nullDC.cfg`.
+- The rows (options page 7, RENDERER; the key is in `nullDC.cfg` [ps3]).
+  The first value is the old path. All 16 are live (they act from the
+  SELECT menu): a decode row acts from the next TA_LIST_INIT, a draw row
+  from the next render.
+  - Intensity Clamp (`IntClamp`, P8): OFF / ON. Decode. The face colour
+    becomes saturated bytes at the header, the intensity a saturated byte,
+    then each channel is face x intensity / 256; alpha is the face alpha
+    (Flycast `vert_face_base_color`, Reicast "Fixes red dog"). OFF
+    multiplies the floats and clamps after. Both decoders. On the SPU the 3
+    double multiplies per intensity vertex go away.
+  - Face Reset (`FaceReset`, P63): OFF / ON. Decode. The face colours (and
+    the face offset colour) are white at each list init (Flycast
+    `ta_parse_reset`; NHL 2K, NHL 2K2). Also: a TA_LIST_CONT closes the
+    store stage's open list (TA Fast Store only).
+  - TR Volumes (`TrVolumes`, P27): OFF / ON. Decode + draw. The
+    translucent modifier-volume list (list 3) is kept, tagged in the free
+    byte of the volume record. The draw takes list 3's volumes in place of
+    list 1's when a pass of the render has one pointer for both lists in
+    the region array (words +8 and +16 equal, bit 31 clear) and list 3 has
+    more volumes with triangles (Flycast dev `f2013c652`, Xtreme Sports).
+  - Volume Cap (`VolumeCap`, P66): 4096 / 8192 triangles per frame (Jet
+    Grind Radio). The arrays hold 8192 from this build on (+1.2 MB).
+  - TA Bad Records (`TaBadRec`, P9 + P66): FATAL / SKIP. The PPU splitter
+    (`ta.h`) skips Object_List_Set, the reserved types 3 and 6, and a
+    polygon header with Volume = 1 and Col_Type = 1 (it has no type, and
+    its ids ran off two tables). FATAL calls `die()`, which never returns.
+    The SPU decoder always skipped them, so the two now agree.
+  - TA Data Gate (`TaDataGate`, P66): OFF / ON. Store stage. TA records
+    are dropped while no list init is current: before the first one, and
+    from a STARTRENDER of the TA's own context to the next TA_LIST_INIT or
+    TA_LIST_CONT (Flycast `ta_ctx == NULL`; Vigilante 8 FMV). No copy, no
+    list-end interrupt. The flat SQ path pays nothing for it.
+  - PT Depth Write (`PtDepth`, P25): OFF / ON. Draw. Punch-through always
+    writes depth (Worms World Party, Bust-a-Move 4, Re-Volt).
+  - TR Depth Write (`TrSortDepth`, P25): GAME / OFF IF SORTED. Draw. An
+    autosorted translucent polygon writes no depth (Flycast). Soul Calibur
+    sends ~616 such strips with Z write on: look at it first.
+  - PT Blend (`PtBlend`, P25): OFF / ON. Draw. Punch-through blends with
+    its TSP factors (Flycast `1a019b79b`).
+  - Sprite Cull (`SpriteCull`, P25): OFF / ON. Draw + merge. A sprite
+    culls the other face (Flycast `6ffe4c028`; South Park Rally and Wacky
+    Races menus). The PPU merge and the SPU builder flip the strip parity
+    the same way.
+  - Flat Shading (`FlatShade`, P25): OFF / LAST VERTEX / FIRST VERTEX. Draw.
+    A polygon without Gouraud takes one colour per triangle, the colour of
+    the triangle's last vertex on the DC. LAST VERTEX is right if the RSX
+    takes the last vertex of a triangle. FIRST VERTEX is right if it takes
+    the first: the colour attribute then starts 2 vertices later, so the
+    first vertex reads the last one's colour. One of the two is wrong on
+    the RSX: the HW run tells which. The background stays smooth.
+  - Region Array (`RegionArray`, P10): OFF / ON. At STARTRENDER. The sort
+    mode comes from the region array as Flycast reads it: a first entry
+    whose list pointers are all empty is skipped; an entry is 6 words when
+    its pre-sort bit is set. With List Passes each pass takes its own
+    entry.
+  - List Passes (`ListPasses`, P10): OFF / ON / + TR DEPTH. Draw. A render
+    with TA_LIST_CONT draws opaque, punch-through, volumes, translucent
+    once per pass (Flycast `drawStrips`). Opaque polygons blend after pass
+    0. A later pass with no strip is not drawn. + TR DEPTH also draws each
+    non-final sorted pass's translucent strips again, depth only (Flycast
+    `TranslucentPolygonDepthMask`, its Cosmic Smash setting). Such a render
+    goes to the PPU replay and the PPU draw (the SPU lists have no pass
+    marks): `[rend4] pass_ppu=` counts them.
+  - Tile Clip (`TileClip`, P10): OFF / INSIDE / + OUTSIDE. Decode + merge
+    + draw. The decoders pack the last User Tile Clip rect into each
+    header's reserved bits (ISP 19:0, PCW 9:8), so no list layout changed.
+    INSIDE (clip mode 2) is a scissor per run. OUTSIDE (mode 3) draws the
+    run once per side of the rect (up to 4 draws). A rect over the whole TA
+    area is no clip. Volumes are not clipped. Needs Strip Merge and Vertex
+    Arrays (the defaults).
+  - TA List Regs (`TaListRegs`, P10): OFF / ON. TA_LIST_INIT sets
+    TA_ITP_CURRENT = TA_ISP_BASE and TA_NEXT_OPB = TA_NEXT_OPB_INIT
+    (Flycast; Reicast's TA_ISP_CURRENT, for KOS's background polygon).
+  - Core Reset (`CoreReset`, P10): OFF / ON. SOFTRESET bit 1 cancels the
+    render-done interrupts still pending (Minicast `9970b0e`).
+- How the options travel: a context takes its decode options at its list
+  init (`TaContext.opt`); the SPU decoder gets the same word with the RESET
+  command, and each fence says which options its lists have. The draw
+  rules are read once per render job. SPE Build gets Sprite Cull and the
+  clip key as request flags.
+- Log:
+  - `[rendcfg] boot: IntClamp= FaceReset= TrVolumes= VolumeCap= TaBadRec=
+    TaDataGate= PtDepth= TrSortDepth= PtBlend= SpriteCull= FlatShade=
+    RegionArray= ListPasses= TileClip= TaListRegs= CoreReset=`, and a
+    `[rendcfg] menu:` line when one changes.
+  - `[rend4] cont= multi= pass_ppu= trvol= gate_drop= bad_rec= opt=`, per
+    5 s window: TA_LIST_CONT writes, renders drawn by passes, renders sent
+    to the PPU replay for their passes, renders that drew list 3's
+    volumes, TA records the gate dropped, bad records skipped, the decode
+    option bits of the last lists.
+  - A third `[rendz]` line per list: `flat= sprcull= clip=in/out blend=`:
+    the strips of the window's last frame a row can act on (no Gouraud;
+    sprites with a cull direction; clip modes 2 and 3; blend factors that
+    are not ONE, ZERO). The first line's `zwd=` gives the Z-write counts.
+    They tell if a game uses a rule, with the row ON or OFF.
+- Code: `ps3/ps3_rend.cpp` (the decoder, the store gate, `apply_param_body`,
+  `clip_apply`, `draw_vb`, `eff_cull`, `mv_pick_list`, `draw_modvols`,
+  `tr_depth_pass`, `draw_scene`, `snapshot_region`), `ps3/ps3_rend_regs.h`,
+  `ps3/spu/spe_dec.c` + `spe_bell.h` + `spe_bell.c` (the SPU decoder),
+  `ps3/spu/spe_vb_build.h` + `spe_vb.h` (the SPU builder's merge),
+  `ps3/ps3_spe.cpp`, `ps3/ps3_spevb.cpp`, `ps3/ps3gl/ps3gl_vertices.c`
+  (`ps3gl_draw_vb_shift`), `plugs/drkPvr/ta.h`, `regs.cpp`, `SPG.cpp`
+  (`spg_CancelRenderEnd`), `ps3/ps3_presets.cpp`, `ps3/ps3_menu.cpp`. Two
+  SPU images changed (the decoder and the builder).
+- PC (WSL), all PASS:
+  - `misc/ta4_check/run.sh` (new, ASan + UBSan): the PPU replay
+    (`ps3_rend.cpp`'s decoder through the real `ta.h`) and the real
+    `spe_dec.c` on the SPU shims, with the MFC model of `spevb_check`. It
+    is the first PC run of the SPU decoder.
+    - Options off: 6000 frames give the lists of the frozen files of before
+      bundle 4 (`ref_*.inc`), on both decoders.
+    - Any options: 6000 frames, the PPU lists equal the SPU lists word for
+      word, and both follow a model of the ported rules (P8 colours, P63
+      reset, P27 tags, the two caps, the clip rect in the params, the pass
+      marks). 6000 more with the records that have no meaning and TA Bad
+      Records at SKIP.
+    - `mutate.py`: 41 of 41 planted bugs fail.
+  - `misc/rend4_check/run.sh` (new, ASan + UBSan): `ps3_rend.cpp` from
+    `bg_eval` to the end of `draw_scene` over a GL that records every call.
+    - Rows off: 4000 scenes make the GL calls of the frozen file, call for
+      call, with the same vertex block (1.3 million calls).
+    - Rows on: 4000 scenes against a model of each rule: depth write,
+      blend, cull, flat shading and its colour shift, the clip scissors
+      (the outside draws cover the viewport less the rect, once), the pass
+      order, the depth pass, the volumes drawn and how many times.
+    - `mutate.py`: 43 of 43 planted bugs fail. 1 is left out as equivalent
+      (named in the file).
+  - `misc/spevb_check/run.sh` (extended): the SPU builder against the PPU
+    merge with Sprite Cull and the clip key at random, sprite headers in
+    the params: 3000 scenes, equal. 8 of 8 planted bugs fail (scratchpad
+    `mut_spevb.sh`, not in the tree).
+  - The older checks that read the changed files: `tr4_check`,
+    `bump_check` (their harnesses got the new symbols), `spetex_check`,
+    `spepix_check`, `depth_check`, `texslot_check`, `yuv_check`, `tex3_check`.
+  - The SPU builder in the simulator (`misc/spevb_check/sim.sh`, the Looney
+    Tunes race frame): 2.22 ms per build, 2.21 before (+0.3%).
+- Not under a check: the store gate and the store reset at TA_LIST_CONT,
+  `snapshot_region` (the region array reads), `regs.cpp` and
+  `spg_CancelRenderEnd`, the option latch in `rth_job_decode`, `draw_runs`
+  (the SPU runs take the same `apply_param` and `draw_vb` as the PPU runs
+  under the check), `ps3gl_draw_vb_shift`, the menu page, the big-endian
+  build, and the RSX itself (which vertex gives a flat colour).
+- Found by the PC checks, fixed before the package:
+  - The SPU decoder took the clip rect one word early (words 3 to 6; the
+    TA sends it in words 4 to 7).
+  - An outside clip with an inverted rect drew the run twice over a band.
+- Found, not changed:
+  - `spe_dec.c` `recip()` reads a double's sign word at index 0: right on
+    the SPU, wrong on x86. It has a `DEC_HI` macro now (0 on the SPU, the
+    code is the same), as `VB_HI` in the builder.
+  - `ta.h`: an END_OF_LIST with no list open takes its list type as an
+    index of 5 flags (`ListIsFinished`); a type of 5 to 7 writes past them.
+    A normal END_OF_LIST is all zero.
+  - The PPU keeps a vertex record inside an open strip whatever its type;
+    the SPU ends the strip (`odd=`). The face colours and the clip rect
+    are one state for all contexts in both decoders, and the PPU replays
+    only the renders the SPU does not draw: after such a render the PPU's
+    state is the older one.
+  - A volume group's area sum draws every triangle from the group's first
+    one (Flycast's too): a run of the other list inside a group would go
+    with it. Lists do not interleave like that in a normal frame.
+- Comments over 2 lines in `plugs/drkPvr/ta.h` and `spe_vb_build.h` are
+  cut to 2 (Matt's comment rule for edited files): the two copies of the
+  TA type table in `ta.h` are now 2 lines that point at the helpers.
+- Not taken from Flycast: the clip of modifier volumes (its own TODO for
+  inside), the per-pass Z clear flag (no Flycast renderer uses it), the
+  `throw` on types 3 and 6 (ours skips one record, as Reicast and the SPU).
+- Link: `.got` 0xD258, no warning.
+- UDP listener: started at Matt's request (2026-10-11 00:25, PID 27628,
+  port 18194, into `ps3log_b4_run1.txt`, scratchpad of session c485c4b0).
+- HW run 1 as a whole (4 boots, 627 s): 4 clean XMB exits, no fault
+  line, `fail=0`. No slow second in play but the known ones (the Sonic
+  Adventure intro FMV at 91.6-92.4%, one Crazy Taxi second at 98.7%); the
+  other slow seconds are the SELECT menu and the boots.
+  - What the 4 games use (`[rendz]`, `[rend4]`): strips without Gouraud
+    in all four (up to 360 per frame), so Flat Shading acted; a
+    punch-through list only in Jet Grind Radio (148 strips, all with blend
+    factors, none with Z write off), so PT Blend acted there and PT Depth
+    Write changed nothing.
+  - Not used by any of the 4: sprites with a cull direction (Sprite Cull),
+    a user clip (Tile Clip), TA_LIST_CONT (List Passes, `cont=0`), the
+    shared volume pointer (`trvol=0`), `gate_drop=0`, `bad_rec=0`. No
+    counter exists for Intensity Clamp, Face Reset, Region Array, TA List
+    Regs and Core Reset.
+- HW run 1, 2026-10-11 from 00:25 (`ps3log_b4_run1.txt`):
+  - Crazy Taxi, rows set ON in the SELECT menu (all but Volume Cap, TA Bad
+    Records and TR Depth Write; Flat Shading LAST VERTEX, Tile Clip
+    INSIDE). Matt: "It looked better, actually!" No fault line.
+  - Sonic Adventure, the same rows. TR Depth Write at OFF IF SORTED:
+    Matt: "it gave me issues on the models." HW FAILURE for this row; it
+    stays at GAME. Log: the translucent list has 469 strips, all with Z
+    write on, `sort=auto`. Our sort is per strip (average 1/W), so with no
+    depth write the faces of one model draw in the wrong order. Flycast's
+    default sorts per triangle. With the row at GAME and the other rows
+    ON, Matt saw no transparency issue ("it only displays with OFF IF
+    SORTED").
+  - Jet Grind Radio (US), 131 s, every row ON but TR Depth Write (Volume
+    Cap 8192, TA Bad Records SKIP, Flat Shading LAST VERTEX, Tile Clip
+    INSIDE). Matt: "looked fine with those settings."
+    - SPEED 100% in 128 of 131 s; the game draws 30 fps. The 3 slow
+      seconds: 1 at boot, 2 at the SELECT menu. Render `busy` 18% at most.
+    - Volume triangles per render: up to 3305 in list 1 and 2870 in list
+      3, so 6175 with TR Volumes ON: over the old cap of 4096, under 8192.
+      `trvol=0`: the game's own list 1 was the one drawn.
+    - `rtt=0/0` (no render to texture in this run), `cont=0`, `gate_drop=0`,
+      `bad_rec=0`, no fault line, clean XMB exit.
+  - Rayman 2, the same rows (the bump levels run on the PPU replay,
+    `ppu=251` per window). Matt: "Rayman 2 has the transparency on water
+    fixed using OFF IF SORTED". SPEED 100% in 101 of 103 s, no fault line.
+    Log: 107-254 translucent strips per frame, all with Z write on,
+    `sort=auto`, 11-34 of them cover most of the screen (the water).
+  - So TR Depth Write is right for Rayman 2 and wrong for Sonic Adventure.
+    Both games send every translucent strip with Z write on under
+    autosort. Cause: the sort is per strip. With Z write, a large strip
+    (water) hides what the game draws behind it; without it, the strips of
+    one model come out in the wrong order. Flycast's default is no depth
+    write with a sort per triangle; ours has no such sort. Open for Matt's
+    verdict.
+- Risks for the HW run:
+  - Flat Shading: one of the two levels shows wrong colours on flat
+    polygons (the colour of another corner). `[rendz] flat=` tells if the
+    scene has such strips.
+  - TR Depth Write: Soul Calibur. List Passes: a game with TA_LIST_CONT in
+    every frame loses the SPU decode and build for those renders (`[rend]
+    busy=`, `[rend4] pass_ppu=`).
+  - TA Data Gate: a game that sends TA data after STARTRENDER with no new
+    list init loses that data.
+  - Tile Clip OUTSIDE: up to 4 draws per run.
+- HW steps (package of 00:08; every row OFF after the install; SH4 Clock
+  200). All rows are live, so one boot per game. Do not press START in a
+  Crazy Taxi drive (the open RTT freeze below).
+  1. Crazy Taxi to a drive, rows OFF: nothing must change. Read `[rendcfg]
+     boot:` and `[rend4]`.
+  2. SELECT, RENDERER: the rows ON one at a time, top to bottom, with a
+     look at the scene after each. Flat Shading: LAST VERTEX, then FIRST
+     VERTEX. Note the row at the first wrong image.
+  3. Sonic Adventure and Soul Calibur the same way (Soul Calibur: TR Depth
+     Write first).
+  4. The named games only if Matt has them: Red Dog (Intensity Clamp),
+     Xtreme Sports (TR Volumes), Worms World Party, Bust-a-Move 4, Re-Volt
+     (PT Depth Write), South Park Rally, Wacky Races (Sprite Cull), Cosmic
+     Smash (List Passes), NHL 2K2 (Face Reset), Vigilante 8 (TA Data Gate),
+     a KOS homebrew (TA List Regs).
+  5. Optional, one more boot: SPE Doorbell ON and SPE Draw OFF (VIDEO /
+     DEBUG, set before boot) with the decode rows ON: `[spe] ... bad=0`,
+     the two decoders on the PS3 itself.
+  6. On a fault: the row OFF in the SELECT menu; note the game and the
+     scene.
+
+**Done: bundle 3, the texture path (section 7; Matt 2026-10-10: "Let's
+work with Bundle 3 now."), HW SUCCESS 2026-10-10 in Crazy Taxi and Sonic
+Adventure (Matt: "The roads looked right. Same for Sonic Adventure 1.",
+then "Perfect. It's a success then."). Defaults in the source since
+2026-10-10 (Matt's picks, asked once): Mipmaps ON, Anisotropic 16x, VQ
+Formats ON; Texture Filter stays GAME. Not packaged: the package of 22:06
+on 2026-10-10 has every row OFF. Matt's `nullDC.cfg` has the HW run's
+values (the same ones). Not tested on HW: Rayman 2 (Matt: "Can we skip
+Rayman 2?"; it is the only game with bump-map textures, `bump=0` in both
+logs), a 4-bit palette texture (`p4=0` in both logs), a game with a
+texture of the two VQ forms, the CHECK boot. Matt's picks before the build
+(2026-10-10, asked once): the items P45, P52 and the P25 VQ formats; the
+P25 trilinear weights are left out; P1 steps 2-3 are dropped; the texture
+hash covers the top level only; a new options page, "TEXTURES".**
+- Defaults (`ps3/ps3_presets.cpp`): `Mipmaps` 1, `Aniso` 4, `TexFilter`
+  0, `VqFormats` 1. In the package of 22:06 they are all 0.
+- Why the picks:
+  - P1 step 2 has no target: SPE Tex Decode (5.12 #4, default ON) already
+    writes the RSX order and skips `convert_pixels()`. Step 3 gives no
+    image and no measured speed (decode is 0.4% of the render thread, the
+    RSX waits on nothing).
+  - Trilinear weights: without a shader they scale the vertex colour only
+    (no effect on decal textures), and the SPU vertex builder must change.
+  - Hash: Flycast also watches the top level and the codebook only. So the
+    SPU hash image did not change.
+- The rows (options page 6, TEXTURES; the key is in `nullDC.cfg` [ps3]).
+  All four are live (they act from the SELECT menu). The first value is
+  the old path.
+  - Mipmaps (`Mipmaps`, P45): OFF / ON. A mipmapped texture (TCW
+    MipMapped, not in scan order) gets every level down to 1x1 in RSX
+    memory, by Flycast's rules (`TexCache.cpp` `Update()`): the VQ 1x1
+    level is texel (1,1) of a 2x2 block (YUV: the block of the 2x2
+    level); the 1x1 level of a YUV texture is one 565 texel.
+    - Not on a mirrored texture: it is linear in RSX memory, and the
+      linear chain never ran on HW (the first-build rule of section 7).
+    - Filter (Flycast `SetGPState`): LINEAR_MIPMAP_NEAREST on bilinear
+      polygons; level 0 only in a punch-through list and on point-sampled
+      polygons; LINEAR_MIPMAP_LINEAR when Anisotropic is above 1x. The
+      sampler's maxlod is levels - 1. No LoD bias from MipMapD.
+    - Decode: with SPE Tex Decode ON the SPU decodes each level of 8x8
+      and up as one job (the SPU image did not change). The PPU decodes
+      4x4, 2x2 and 1x1 (21 texels). A twiddled YUV texture with a chain
+      decodes on the PPU at every level (see "Found").
+    - A switch clears the texture cache (the chain is fixed at
+      allocation). RSX memory of these textures: +33%.
+    - A write to a lower level alone keeps that level's old texels (the
+      hash pick). The next change of the top level decodes the chain.
+  - Anisotropic (`Aniso`, P52): 1x / 2x / 4x / 8x / 16x, on every texture
+    that is not point-sampled. Sampler state only.
+  - Texture Filter (`TexFilter`, P52): GAME / NEAREST / LINEAR. NEAREST
+    and LINEAR force one filter on every texture (Flycast
+    TextureFiltering). Sampler state only.
+  - VQ Formats (`VqFormats`, P25): OFF / ON. ON reads two forms as Flycast
+    does. Palette VQ (a palette texture with VQ_Comp): a codebook entry
+    is the 8 index bytes of one twiddled block (4x4 texels for 4-bit, 2x4
+    for 8-bit). Scan-order VQ (VQ_Comp with ScanOrder, not mipmapped): an
+    index byte is 4 texels of one row, with the row stride. OFF ignores
+    VQ on a palette texture and reads every VQ texture as twiddled. The
+    PPU hashes and decodes the two forms: the SPUs describe a texture the
+    old way. A switch clears the texture cache.
+- Log:
+  - `[texcfg] boot: Mipmaps= Aniso= TexFilter= VqFormats= SpeTexHash=
+    SpeTexDecode= TexSlotHash= YuvBlockDecode= BumpMap=`, and a `[texcfg]
+    menu:` line when one changes.
+  - `[tex] mipmaps ON, vq formats OFF, cache cleared`; `[tex] anisotropic
+    4x, filter GAME`.
+  - `[texfmt]` has four new counts per window: `chains=` (textures decoded
+    with a chain), `chainlv=` (levels written under level 0), `palvq=` and
+    `plvq=` (fills of the two VQ forms by their TCW bits, with the row ON
+    or OFF: they tell if a game has such textures).
+  - `[ps3gl] mip uploads` goes above 0. `[spepix] tex jobs` counts one job
+    per level of 8x8 and up.
+- Code: `ps3/ps3_tex.cpp` (`describe()`, `level_desc()`, `decode()`,
+  `upload()`, `upload_chain()`, `set_tex_params()`; `ps3tex_bind()` takes
+  the punch-through flag from `apply_param_body()`),
+  `ps3/ps3gl/ps3gl_textures.c` (`ps3gl_texture_hint_mipmaps()`,
+  `ps3gl_tex_chain_levels()`, `ps3gl_tex_direct_level()` and `_end()`,
+  `GL_TEXTURE_MAX_ANISOTROPY_EXT`), `ps3/ps3gl/ps3gl.h`,
+  `ps3/ps3_presets.cpp`, `ps3/ps3_menu.cpp`. No SPU image changed.
+- PC (WSL), all PASS:
+  - `misc/tex3_check/run.sh` (new, ASan + UBSan): the real `ps3_tex.cpp`
+    and `ps3gl_textures.c` as whole files, with the real SPU decode
+    (`spe_pix_job.h` on `misc/spepix_check`'s shims) and RSX memory as an
+    arena with guards.
+    - Trace: with every option 0 the two files give what their frozen
+      copies give (`ref_ps3_tex.inc`, `ref_ps3gl_textures.inc`, the tree
+      before bundle 3): 12 seeds of 25 epochs equal. Each bind folds the
+      whole texture block, the sampler state, every SPU job and every
+      RSX allocation.
+    - Model: 6 seeds of 40 epochs with random options, SPE modes (OFF, ON,
+      CHECK), late SPU jobs and SELECT-menu switches: 24649 binds, 370
+      million texels, each one against a per-texel model of Flycast's
+      rules, at its place in the swizzled or linear memory. 6794 binds
+      with a chain (33963 lower levels), 2525 palette VQ, 1798 scan-order
+      VQ. Also: the level counts, `gcmTexture`, maxlod, the filters, the
+      anisotropy, no word written outside a level, no SPE CHECK mismatch,
+      and ps3gl's mip-upload count.
+    - The lower-level rule (the hash pick), in the three SPE modes.
+    - `mutate.py`: 67 of 67 planted bugs fail (53 in `ps3_tex.cpp`, 14 in
+      `ps3gl_textures.c`). 3 are left out as equivalent (named in the
+      file).
+  - The older checks that read the changed files: `spetex_check`,
+    `spepix_check`, `yuv_check`, `texslot_check`, `bump_check`,
+    `spevb_check`, `tr4_check`.
+- Not under a check: the RSX itself (the swizzled chain in RSX memory,
+  maxlod, the mip filters, anisotropy: the ps3gl mip path never ran on HW
+  in this tree), the menu page, the big-endian build (the new decode
+  paths use the `vram8`/`vram16` accessors only).
+- Found:
+  - The SPU decode has no swizzled form for a twiddled YUV texture
+    (`tex_tile()` sends it to the 16-bit kernel, which has no YUV case).
+    Before P45 no YUV texture was swizzled, so it had no effect. The PC
+    check found it on the first model run. `spu_layout()` in
+    `ps3_tex.cpp` keeps these textures on the PPU. A YUV kernel on the SPU
+    is an SPU image change: not done.
+  - Not changed: the trilinear passes (FilterMode 2 and 3) still draw at
+    full weight. A texture whose source passes the end of VRAM wraps
+    (Flycast refuses it).
+- Not taken from Flycast: the LoD bias from MipMapD (desktop GL 3 only
+  there; the RSX bias format is unverified), the GPU palette.
+- Link: `.got` 0xD0D8, 0 `r2off`, no warning.
+- The package of 22:06 holds the whole tree, so it is also the first one
+  with the defaults that sections below call "not packaged" (bundle 2's
+  14 rows ON, and the older ones). An install keeps `nullDC.cfg`: Matt's
+  values stay, and only a key that his file does not have takes a default.
+- Risks for the HW run:
+  - The first RSX use of a swizzled mip chain in this tree. A fault shows
+    as scrambled or black textures at a distance, or a render freeze.
+    Mipmaps OFF in the SELECT menu clears it (the cache is cleared).
+  - One SPU job per level: a frame that decodes many mipmapped textures
+    waits longer (`[spepix] tex jobs`, `wait total`, `max`). A chain job
+    on the SPU would cut it; that is an SPU image change.
+  - RSX memory: `[ps3gl] WARNING: failed to allocate` must not show.
+- UDP listener: started at Matt's request (2026-10-10 22:23, PID 30384,
+  port 18194, into `ps3log_b3_run1.txt`, scratchpad of session 39900053),
+  stopped at his request at 22:43. Port 18194 is free.
+  Matt: "I'll just do the tests with everything ON." So the run has the 4
+  rows ON from the start, not the steps below.
+- HW boot 1 2026-10-10 ~22:23-22:28, Crazy Taxi (cut as `ct_b3.txt`).
+  `[texcfg] boot: Mipmaps=1 Aniso=4 TexFilter=0 VqFormats=1 SpeTexHash=1
+  SpeTexDecode=1 TexSlotHash=1 YuvBlockDecode=1 BumpMap=1`. Matt: "The
+  roads looked right. Same for Sonic Adventure 1."
+  - 294 s, no fault line, no dropped render, `fail=0` on the three
+    texture and vertex SPUs, no allocation warning, clean XMB exit.
+  - The chain reaches the RSX: 1272 textures decoded with a chain (6781
+    lower levels); up to 184 of 285 live textures have one (avg 6.4
+    levels, max 9); 65-75% of the binds in the drive have maxlod above 0.
+    180 of the 1452 mipmapped fills got no chain (mirrored).
+  - `palvq=0 plvq=0` in every window: Crazy Taxi has no texture of the
+    two VQ forms, so VQ Formats had nothing to act on.
+  - Texture Filter went NEAREST, LINEAR and back to GAME in the SELECT
+    menu; each switch is in the log.
+  - Speed: 100% in the drive but for 5 windows at 93-97% in one scene of
+    17-20K vertices. That scene is SH4-bound (render `busy` 29%, `rend`
+    stall 0.0-0.1 ms per frame), as in the bundle 2 runs.
+  - Cost against the two Crazy Taxi runs of bundle 2 (other scenes, so
+    not same-load): decode 0.43% of the render thread (0.31-0.36), `gl`
+    3.3% (2.4-3.0), `job_max` 16 ms at most (13). SPU decode jobs 5200
+    (1614-2329); the render thread waits for them 3.2 ms at most per 5 s
+    window.
+- HW boot 2 2026-10-10 ~22:31-22:37, Sonic Adventure (cut as
+  `sonic_b3.txt`). The same 4 values (`YuvBlockDecode=0` in this boot).
+  Matt: the image is right (his words are in boot 1).
+  - 216 s, no fault line, no dropped render, `fail=0`, no allocation
+    warning, clean XMB exit.
+  - 560 textures decoded with a chain (3135 lower levels); up to 185 of
+    258 live textures have one (avg 6.8 levels, max 9).
+  - `palvq=0 plvq=0` in every window here too.
+  - Texture Filter went NEAREST, LINEAR and back to GAME in the SELECT
+    menu.
+  - Speed: no window of play under 99%. The windows under it are the
+    SELECT menu, the boot, one load, and the intro FMV (91.5-93.0%, the
+    known SH4-bound FMV).
+  - Render `busy` 13% at most, decode 0.21%, `job_max` 21 ms at most (a
+    level load).
+- State after the two boots: Mipmaps, Anisotropic 16x and Texture Filter
+  work on HW in Crazy Taxi and Sonic Adventure (Matt's eyes, clean logs).
+  VQ Formats ON changed nothing in them: no game with a palette VQ or a
+  scan-order VQ texture has run. Not run: Rayman 2, and the CHECK boot.
+- Verdict (Matt 2026-10-10): "Perfect. It's a success then." Rayman 2 is
+  skipped at his word. Asked once for the defaults: Mipmaps ON,
+  Anisotropic 16x (the only value that ran on HW), VQ Formats ON (OFF
+  decodes the two forms as garbage; only the PC check covers ON), no
+  package.
+- Left for bundle 3: a package with the defaults (when Matt asks for
+  one). If a later game shows a wrong texture at a distance, try Mipmaps
+  OFF first, then Anisotropic 1x; for a wrong texture close up in a game
+  with `palvq=` or `plvq=` above 0, VQ Formats OFF.
+- HW steps (package of 22:06; the install keeps `nullDC.cfg`, the 4 rows
+  come up OFF; SH4 Clock 200). All rows are live, so one boot per game:
+  1. Crazy Taxi, all rows OFF, to a drive: nothing must change. Read
+     `[texcfg] boot:`.
+  2. SELECT, TEXTURES, Mipmaps ON. Look at the road and the buildings far
+     away: less shimmer, no wrong texture. Log: `[tex] mipmaps ON`,
+     `[texfmt] chains=`, `[ps3gl] mip uploads` above 0, `[spepix] ...
+     fail=0`, the render `busy` against step 1.
+  3. Anisotropic 16x: the far road is sharper. Then Texture Filter
+     NEAREST, LINEAR, and back to GAME.
+  4. VQ Formats ON: nothing must change unless `palvq=` or `plvq=` is
+     above 0.
+  5. Sonic Adventure (floors at a distance) and Rayman 2 (mip and VQ
+     textures), the same way.
+  6. Optional, one more boot: SPE Tex Decode and SPE Tex Hash at CHECK
+     (VIDEO / DEBUG, set before boot) with Mipmaps ON: `check tex ok=N
+     bad=0`.
+  7. On a fault: the row OFF in the SELECT menu; note the game and the
+     scene.
 
 **Done: bundle 2, GD-ROM and disc images (section 7; Matt 2026-10-10: "Go
 with bundle 2."), HW SUCCESS 2026-10-10 (Matt), every row default ON in
 the source since 2026-10-10 (Matt: "apply them as ON by default."; GD-ROM
-Speed default REAL, his pick). Not packaged: the package of 19:26 (the
-build of 18:48, packed again) still has every row OFF. HW: ChuChu Rocket
+Speed default REAL, his pick). The package of 19:26 (the build of 18:48,
+packed again) still has every row OFF; the package of 22:06 (bundle 3,
+above) is the first one with these defaults. HW: ChuChu Rocket
 and Crazy Taxi with every row ON, and a Crazy Taxi load with GD-ROM Speed
 REAL. Not tested on HW (Matt: "I'll do it later on"): Disc Swap (a
 two-disc game) and the two GDI rows (a GDI set); they are default ON too.
@@ -2620,6 +3280,7 @@ not caused by S3 (5.12 S3 runs 2-3).
   - P51, screenshot to PNG (~60-80 lines): pixel evidence for the flicker.
   - 2026-10-07 (section 7): P1 steps 0-1 and P2 have no target left. P1
     steps 2-3 are in bundle 3, P51 is in bundle 12.
+  - 2026-10-10: Matt dropped P1 steps 2-3 (bundle 3, top of this section).
 
 | Item | Status |
 |---|---|
@@ -2628,7 +3289,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 2.3 DSP | `[x]` done as 5.13 A1b + A3 (SPU DSP recompiler), HW SUCCESS 2026-10-07, default ON; P20 G2-G4 open, bundle 5 (section 7) |
 | 2.4 Strip merge + inf drop | `[x]` HW, default ON, ~3x fewer draws |
 | 2.5 ARM7 clock (`arm_sh4_bias` 20) | moved to section 6 (6.1-6.3) on 2026-10-04; now 6.3, `[ ]`, section 6 is parked |
-| 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) merged, open; bundle 4 (section 7) |
+| 3c modifier volumes (Flycast GL) | `[x]` HW; P27 (TR-list volumes) built 2026-10-11 as "TR Volumes", default OFF, no HW test yet (bundle 4, section 0) |
 | 3d background depth bias | `[x]` HW, no regression; the WinCE games need P38 (merged, open); the P57 RM verify is in bundle 8 (section 7) |
 | 3e background vertex order | dropped, our code has no such fault |
 | 3f NaN colour = 255 | `[x]` HW, no regression |
@@ -2831,6 +3492,7 @@ All changes are uncommitted in the working tree. Matt commits.
 | 3g | GD-ROM: blank sector on FAD miss | NBA Hoopz voice samples. | Small. | `e94b26f1d` |
 | 3h | GD-ROM: CDDA stop at lead-out, restart/pause rules | CD audio that loops or runs past its track. Only matters with the Cdda preset ON. | Medium (touches the image readers). | `9ea0563a7`, `e5344d37d` |
 | 3i | Region and cable from IP.BIN | A game boots in a region and video mode it supports, with no manual setting. | Small. Check it does not clash with Matt's "no game presets" rule: it reads the disc header, not a list. | `core/emulator.cpp` `loadSpecialSettings()` |
+| 3k | Translucent sort per triangle | An autosorted translucent list draws in the right order inside a model and across large surfaces (Sonic Adventure models, Rayman 2 water) with no depth write. | The PPU cuts the strips into triangles, sorts them (radix) and draws them in runs; the SPU builder skips the list. Medium. | `core/hw/pvr/ta_util.cpp` `sortTriangles`, `gldraw.cpp` `drawSorted` |
 | 3j | Bump maps | Rayman 2 level surfaces show their textures again. Today its bump-map overlay covers them with plain vertex colour. No other test game uses bump maps. | Bump texels decode as raw 4444 (S, R) on the PPU and the SPU; the decoders keep the offset colour (K1, K2, K3, Q) per vertex (3b's work); a bump Cg fragment program. Shares the shader work of 3a and 3b. Medium. | `core/rend/dx9/d3d_shaders.cpp` `pp_BumpMap`, `core/rend/texconv.cpp` `texBMP_TW` |
 
 Status 2026-09-23 (all big-endian checked):
@@ -2881,7 +3543,8 @@ Status 2026-09-23 (all big-endian checked):
     pointers (region-array words +8 and +16) and the TR list has more
     volumes, Flycast draws the TR list's volumes (Xtreme Sports shadows).
     Ours drops list 3 at decode, on the PPU and on the SPU. ~30 lines in
-    both decoders. 2026-10-07: in bundle 4 (section 7).
+    both decoders. 2026-10-07: in bundle 4 (section 7). 2026-10-11: built
+    as the "TR Volumes" row, default OFF, no HW test yet (section 0).
 
 - 3g `[x]` built (big-endian checked).
   - `dc/gdrom/gdromv3.cpp` SPI_CD_READ: `other` or expected data type 1
@@ -2970,6 +3633,13 @@ Status 2026-09-23 (all big-endian checked):
     to the PPU decoder and draw, so parts (1)-(3) need no SPU change; the
     offset colour lives in `TaContext.offs`, not in DcVertex. HW SUCCESS
     2026-10-08 (Matt), default ON in source.
+
+- 3k, added 2026-10-11 (Matt, at the bundle 4 verdict: "Build it next"):
+  built as the "TR Triangle Sort" row. HW run 2: ON alone does not fix
+  Sonic Adventure; two more levels built (+ DEPTH WRITE, + OPAQUE DEPTH).
+  `[x]` HW SUCCESS 2026-10-11 at + OPAQUE DEPTH (Sonic Adventure models,
+  Rayman 2 water and elements), default + OPAQUE DEPTH in source (Matt),
+  not packaged (section 0).
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
@@ -7417,9 +8087,9 @@ for the function.
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
 | 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF |
-| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt) | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; not packaged; Disc Swap and the GDI rows not tested on HW yet |
-| 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[ ]` |
-| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[ ]` |
+| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt) | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet |
+| 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[x]` HW SUCCESS 2026-10-10 (Crazy Taxi, Sonic Adventure; section 0): P45, P52 and the P25 VQ formats, 4 rows on the TEXTURES page; default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (Matt); not packaged (the package of 22:06 has them OFF); VQ Formats not tested by a game that needs it; the P25 trilinear weights left out and P1 steps 2-3 dropped (Matt) |
+| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt) | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
 | 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[ ]` (section 6 is parked) |
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[ ]` |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
@@ -7501,8 +8171,14 @@ Main gains:
   loading; a GDI set with spaces in its file names; a two-disc game for
   P34.
 
-### Bundle 3: Texture path  `[ ]`
+### Bundle 3: Texture path  `[x]` HW SUCCESS 2026-10-10, default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (section 0)
 
+- Built (Matt's picks, 2026-10-10): P45, P52 and the P25 VQ formats, as
+  the rows Mipmaps, Anisotropic, Texture Filter and VQ Formats on a new
+  TEXTURES page. Left out: the P25 trilinear weights. Dropped: P1 steps
+  2-3 (step 2 is done by SPE Tex Decode; step 3 has no image or speed
+  gain). The hash covers the top level only, not the whole chain. The
+  text below is the plan of 2026-10-07.
 - Items: P45 (the whole mip chain), P52 (anisotropic filtering, a filter
   override), P25 (the two-pass trilinear weights, palette VQ and planar
   VQ), P1 steps 2-3 (block decoders, 16-bit RSX formats).
@@ -7533,8 +8209,13 @@ Main gains:
   render `busy`); Rayman 2 (mip and VQ textures in use; its untextured
   surfaces are closed, 3j).
 
-### Bundle 4: TA decode and draw rules  `[ ]`
+### Bundle 4: TA decode and draw rules  `[x]` HW SUCCESS 2026-10-11, default ON in source but TR Depth Write and Flat Shading (section 0)
 
+- Built (Matt's picks, 2026-10-10): every item below but P10's Empty
+  Frame; added P63 and, from P66, the invalid TA types, the volume cap and
+  "no data before list init". 16 rows on a new RENDERER page. The tile
+  clip rect is packed into reserved param bits, so DcParam and the SPE
+  layout did not change. The text below is the plan of 2026-10-07.
 - Items: P8 (intensity colour clamp order), P27 (3c: TR-list modifier
   volumes), P25 (depth write, sprite cull, flat shading), P10 (region
   array, LIST_CONT passes, user tile clip, TA_ISP_CURRENT, SOFTRESET bit 1,
@@ -7721,8 +8402,10 @@ Main gains:
 
 - P1 steps 0-1 and P2: no target left. Soul Calibur runs at full speed
   since P16 (decode 0.2-1.0% of the render thread, no dropped renders),
-  and its black textures are closed (2026-10-07). P1 steps 2-3 are in
-  bundle 3.
+  and its black textures are closed (2026-10-07). P1 steps 2-3 were in
+  bundle 3; Matt dropped them on 2026-10-10 (section 0).
+- The P25 two-pass trilinear weights: left out of bundle 3 by Matt on
+  2026-10-10. Open; they need a shader or an SPU vertex-builder change.
 - P14 (3a, 3b, and 3j bump maps since 2026-10-08): already one shared
   piece of work in section 3 (a PVR Cg shader in ps3gl).
 - P42 (b)-(d): stay in 5.12 (active, section 0).

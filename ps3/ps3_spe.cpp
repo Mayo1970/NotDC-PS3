@@ -152,7 +152,10 @@ void ps3spe_wait_cmd(u32 cmd)
 	s_cmd_wait += gettime() - t0;
 }
 
-void ps3spe_reset(u32 ctx) { push(SPE_OP_RESET, ctx, 0, 0, 0); }
+void ps3spe_reset(u32 ctx, u32 opt) { push(SPE_OP_RESET, ctx, 0, opt, 0); }
+
+static u32 s_boot_opt;
+void ps3spe_boot_opt(u32 opt) { s_boot_opt = opt; }
 void ps3spe_cont(u32 ctx, u32 pos) { push(SPE_OP_CONT, ctx, 0, 0, pos); }
 void ps3spe_soft() { push(SPE_OP_SOFT, 0, 0, 0, 0); }
 
@@ -312,6 +315,7 @@ bool ps3spe_init()
 	for (u32 i = 0; i < SPE_CTX; i++)
 		s_shared.setup.out_ea[i] = (u32)(uintptr_t)&s_out[i];
 	s_shared.setup.draw = g_spe_draw;
+	s_shared.setup.opt = s_boot_opt;
 
 	sysSpuThreadAttribute tattr;
 	sysSpuThreadAttributeInitialize(tattr);

@@ -31,6 +31,7 @@ static struct { u8* vram; } PVRPARAMS;
 static u32* g_pal;
 #define PALETTE_RAM g_pal
 static struct { u32 pal_ram_ctrl, text_control; } g_rr;
+static int s_vqfmt;  // P25 VQ Formats OFF: the texture forms the SPU knows
 static u64 s_hash_bytes;
 static int yuv_conv_generation(u32, u32*) { return 0; }
 #define __builtin_prefetch(...) ((void)0)

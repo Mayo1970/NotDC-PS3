@@ -206,9 +206,8 @@ static inline vec_uint4 d2f(vec_double2 d)
 	return spu_add(spu_add(e, m), up);
 }
 
-// 1/x as fdivs gives it for x normal in lanes 0 and 2. q starts within one ulp; the fused residual at each
-// neighbouring midpoint has an exact sign and picks the side (1/x is never a midpoint). As recip() in spe_dec.c,
-// two at once and without branches: the midpoints are q and q - 1 as doubles plus half their ulp (bit 28).
+// 1/x as fdivs gives it, x normal in lanes 0 and 2: recip() of spe_dec.c, two at once and without branches. The
+// fused residual at each neighbouring midpoint (q and q - 1 as doubles plus half their ulp, bit 28) picks the side.
 static inline __attribute__((always_inline)) vec_uint4 recip2(vec_uint4 X)
 {
 	const vec_double2 one = spu_splats(1.0);
@@ -418,11 +417,22 @@ static inline int vtx_inf(const SpeVtx* v)
 	return (w >> 31) || w < F_INF_W;
 }
 
+// strip_equivalent's masks for pcw, isp, tsp, tcw; SPEVB_CLIP_KEY adds the clip rect bits. Set per build.
+static vec_uint4 eq_mask = { 0x300CEu, 0xF4000000u, ~0u, ~0u };
+// SPEVB_SPRITE_CULL of the build (0 or 1).
+static uint32_t spr_cull;
+
 // strip_equivalent on the 4 words at once; both params sit on 16 bytes.
 static inline int equivalent(const SpeParam* a, const SpeParam* b)
 {
 	const vec_uint4 d = spu_xor(*(const vec_uint4*)a, *(const vec_uint4*)b);
-	return spu_extract(spu_orx(spu_and(d, ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u }))), 0) == 0;
+	return spu_extract(spu_orx(spu_and(d, eq_mask)), 0) == 0;
+}
+
+// eff_cull of ps3_rend.cpp: CullMode, with its direction bit flipped for a sprite (ParaType 5) under P25.
+static inline uint32_t eff_cull(const SpeParam* p)
+{
+	return ((p->isp >> 27) & 3) ^ (spr_cull & ((p->pcw >> 29) == 5));
 }
 
 // apply_param's alpha force: UseAlpha off, or a texture (it always binds) with ShadInstr 1.
@@ -870,7 +880,7 @@ static inline __attribute__((always_inline)) void run_open(const Job* s, const S
 	run.first = vb_used;
 	run.open = 1;
 	run.reversed = 0;
-	run.cull = (p->isp >> 27) & 3;
+	run.cull = eff_cull(p);
 	run.param = s->param;
 	run.p = *p;
 	run.list = list;
@@ -891,7 +901,7 @@ static inline __attribute__((always_inline)) void draw_strip(const Job* s, const
 	if (__builtin_expect(join, 1))
 	{
 		// Repeat the last vertex; one more copy flips the parity when the cull direction differs.
-		const uint32_t cull = (p->isp >> 27) & 3;
+		const uint32_t cull = eff_cull(p);
 		const uint32_t flip = (cull >= 2) & (cull != run.cull);
 		emit_last(1 + (run.reversed ^ flip));
 		run.reversed = flip;
@@ -1148,6 +1158,9 @@ static void build(const SpeVbBell* q)
 	vb_used = nruns = pub_vtx = vin = 0;
 	vb_cap = q->cap;
 	run.open = 0;
+	spr_cull = (q->flags & SPEVB_SPRITE_CULL) != 0;
+	eq_mask = (q->flags & SPEVB_CLIP_KEY) ? ((vec_uint4){ 0x303CEu, 0xF40FFFFFu, ~0u, ~0u })
+	                                       : ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u });
 	os_open(&os_vb, q->vb_ea);
 	os_open(&os_run, setup.runs_ea);
 	vb_p = (vec_uint4*)ls_vb[0];
@@ -1176,7 +1189,9 @@ static void build(const SpeVbBell* q)
 	cur_list = sec_list[SEC_TR];
 	sec_strips = 0;
 	uint32_t flag = SPEVB_TR_DONE;
-	if (q->flags & SPEVB_AUTOSORT)
+	if (q->flags & SPEVB_NO_TR)
+		flag = SPEVB_TR_PPU;
+	else if (q->flags & SPEVB_AUTOSORT)
 	{
 		key_n = key_seen = key_over = key_bad = 0;
 		uint32_t t0 = spu_read_decrementer();

@@ -74,6 +74,21 @@ static u32 s_store_list = ListType_None;
 // Latched once at InitRenderer, so a run never changes store path mid-stream.
 static bool s_ta_fast;
 
+// P66 TA Data Gate (Flycast ta_ctx == NULL, Vigilante 8): no list init is current before the first one and after a
+// STARTRENDER of the TA's context. With the row ON the TA records of that time are dropped.
+static bool s_ta_nolist = true;
+static bool s_ta_closed;
+// TA Fast Store with the gate open: the flat SQ path's test, so a closed gate costs it nothing.
+static bool s_flat_ok;
+static u32 s_stat_gate;
+
+static void ta_gate_set(bool nolist)
+{
+	s_ta_nolist = nolist;
+	s_ta_closed = nolist && g_ta_data_gate_preset != 0;
+	s_flat_ok = s_ta_fast && !s_ta_closed;
+}
+
 static inline u32 fsm_key(u32 para, u32 objc)
 {
 	return (para << 5) | ((objc >> 2) & 31);

@@ -10,6 +10,9 @@
 
 // PVR X-scaler preset (ps3/ps3_presets.cpp).
 extern "C" int get_x_scaler_preset();
+// Plan section 7, bundle 4 (P10): TA List Regs and Core Reset.
+extern int g_ta_list_regs_preset;
+extern int g_core_reset_preset;
 
 u8 regs[RegSize];
 
@@ -92,6 +95,13 @@ static void pvr_write_reg(u32 addr, u32 data)
 			if (data >> 31)
 			{
 				rend_list_init();
+				// P10 (Flycast, Reicast): the TA's write pointers go back to their bases; KOS reads
+				// TA_ITP_CURRENT (Reicast's TA_ISP_CURRENT) to place its background polygon.
+				if (g_ta_list_regs_preset)
+				{
+					TA_NEXT_OPB = TA_NEXT_OPB_INIT;
+					TA_ITP_CURRENT = TA_ISP_BASE;
+				}
 				data = 0;  // hardware clears the register after triggering
 			}
 			break;
@@ -103,7 +113,10 @@ static void pvr_write_reg(u32 addr, u32 data)
 			{
 				if (data & 1)
 					rend_list_srst();
-				// bits 1 and 2 accepted but not currently emulated
+				// P10 (Minicast 9970b0e): a core reset cancels a render whose end interrupt is still to come.
+				if ((data & 2) && g_core_reset_preset)
+					spg_CancelRenderEnd();
+				// bit 2 accepted but not currently emulated
 				data = 0;  // hardware self-clears
 			}
 			break;

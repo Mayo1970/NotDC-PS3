@@ -56,7 +56,14 @@ static bool s_bump_on;  // plan 3j: off, as on the PS3 for every scene the SPU b
 static void glBegin(GLenum) { die("glBegin"); }
 static void glEnd() { die("glEnd"); }
 static u32 apply_param(const DcParam&, u32) { die("apply_param in the DRY pass"); }
-static void ps3gl_draw_vb(GLenum, u32, int, int) { die("draw in the DRY pass"); }
+// Bundle 4: what draw_vb reads; the DRY pass never draws.
+enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
+struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; };
+static ClipView s_cv;
+static u32 s_clip_mode, s_flat_shift;
+static int s_clip_r[4];
+static void glScissor(int, int, int, int) { die("glScissor in the DRY pass"); }
+static void ps3gl_draw_vb_shift(GLenum, u32, u32, int, int, u32) { die("draw in the DRY pass"); }
 
 #include "region.inc"
 
@@ -155,6 +162,8 @@ int main(int argc, char** argv)
 	s_rl.nstrip = nstrip;
 	s_rl.nparam = nparam;
 	s_merge = true;
+	s_strip_lo = 0;
+	s_strip_hi = nstrip;
 	s_vb = (ps3gl_vertex_t*)ref_vb.data();
 	s_vb_cap = cap;
 	s_dry_runs = ref_runs.data();

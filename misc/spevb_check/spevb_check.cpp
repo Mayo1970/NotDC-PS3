@@ -84,10 +84,19 @@ static u32 apply_param(const DcParam& p, u32)
 	g_trace.push_back(r);
 	return (!p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1)) ? 0xFF000000u : 0;
 }
-static void ps3gl_draw_vb(GLenum, u32, int first, int count)
+// Bundle 4: draw_vb's clip and colour shift are off here (misc/rend4_check runs them); the draw is one range.
+enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
+struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; };
+static ClipView s_cv;
+static u32 s_clip_mode, s_flat_shift;
+static int s_clip_r[4];
+static void glScissor(int, int, int, int) { die("glScissor with no clip"); }
+static void ps3gl_draw_vb_shift(GLenum, u32, u32 stride, int first, int count, u32 shift)
 {
 	if (g_trace.empty())
 		die("draw before apply_param");
+	if (stride != sizeof(ps3gl_vertex_t) || shift)
+		die("draw stride %u shift %u", stride, shift);
 	g_trace.back().first = (u32)first;
 	g_trace.back().count = (u32)count;
 }
@@ -133,6 +142,8 @@ struct Scene
 {
 	u32 ctx, nvtx, nstrip, nparam, cap;
 	bool autosort, wild;
+	// Bundle 4: Sprite Cull (P25), the clip rect bits in the merge key (P10); 3k: the TR list is the PPU's.
+	bool spr, clip, notr;
 };
 
 static u32 gen_xy()
@@ -173,6 +184,10 @@ static void gen_params(SpeParam* p, u32 n)
 	for (u32 k = 0; k < pool; k++)
 	{
 		base[k].pcw = rnd32() & 0x000300FFu;
+		// A polygon or a sprite header (ParaType 4 or 5); the clip rect's two high bits.
+		base[k].pcw |= ((rnd32() % 3) ? 4u : 5u) << 29;
+		if (rnd32() % 4 == 0)
+			base[k].pcw |= (rnd32() & 3) << 8;
 		base[k].isp = rnd32();
 		base[k].tsp = rnd32();
 		base[k].tcw = rnd32() % 4;
@@ -204,6 +219,8 @@ static void gen_params(SpeParam* p, u32 n)
 
 static u32 tr_ppu_expected(const Scene& s)
 {
+	if (s.notr)
+		return 1;
 	if (!s.autosort)
 		return 0;
 	const SpeOut* o = g_out[s.ctx];
@@ -229,6 +246,9 @@ static void gen_scene(Scene& s, u32 kind)
 	s.ctx = rnd32() % SPE_CTX;
 	s.autosort = rnd32() & 1;
 	s.wild = kind == 5;
+	s.spr = rnd32() & 1;
+	s.clip = rnd32() % 3 == 0;
+	s.notr = rnd32() % 4 == 0;
 	SpeOut* o = g_out[s.ctx];
 	u32 max_strip = 40, max_count = 12;
 	switch (kind)
@@ -320,6 +340,11 @@ static void ref_run(const Scene& s, bool dry, RefOut& r, bool bump = false, bool
 	s_rl.nstrip = s.nstrip;
 	s_rl.nparam = s.nparam;
 	s_merge = true;
+	s_mo_sprite = s.spr;
+	s_key_pcw = s.clip ? 0x303CE : 0x300CE;
+	s_key_isp = s.clip ? 0xF40FFFFF : 0xF4000000;
+	s_strip_lo = 0;
+	s_strip_hi = s.nstrip;
 	r.vb.assign((size_t)s.cap * 9 + 9, 0xEEEEEEEEu);
 	s_vb = (ps3gl_vertex_t*)r.vb.data();
 	s_vb_used = 0;
@@ -458,7 +483,8 @@ static void spu_check(const Scene& s, const RefOut& ref)
 	q.nparam = s.nparam;
 	q.vb_ea = (u32)spu_ea(g_vb);
 	q.cap = s.cap;
-	q.flags = s.autosort ? SPEVB_AUTOSORT : 0;
+	q.flags = (s.autosort ? SPEVB_AUTOSORT : 0) | (s.spr ? SPEVB_SPRITE_CULL : 0) | (s.clip ? SPEVB_CLIP_KEY : 0) |
+	          (s.notr ? SPEVB_NO_TR : 0);
 	if (spu_build(&q))
 		die("DMA left in the queue");
 	const SpeVbEcho* e = g_echo;

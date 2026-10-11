@@ -2,6 +2,7 @@
 // against a model of Flycast's rules: every textured vertex type, the face offset colour, sprites, split 64-byte records.
 #include "plugs/drkPvr/ta.h"
 #include "ps3/ps3_rend_regs.h"
+#include "ps3/spu/spe_bell.h"
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +14,9 @@ namespace TASplitter { TaListFP* TaCmd = 0; void TA_ListInit() {} void TA_ListCo
 int msgboxf(const char*, unsigned int, ...) { return 0; }
 void spg_SchedListEndIrq(u32) {}
 u32 StripCount;
+// Bundle 4: ta.h's TA Bad Records, and the decode options (all off here; misc/ta4_check runs them).
+int g_ta_bad_rec_preset;
+u32 g_ta_bad_records;
 
 #include "defines.inc"
 #include "structs.inc"
@@ -22,6 +26,9 @@ static TaContext s_ctx;
 static TaContext* s_dec = &s_ctx;
 static u32 s_cur_list, s_mv_list, s_stat_built[5], s_stat_wtotal, s_stat_wclamp, s_overflow;
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
+static u32 s_face8 = 0xFFFFFFFF, s_foffs8 = 0xFFFFFFFF;
+static u32 s_dopt;
+static u32 s_clip_rect;
 static u32 s_sprite_col = 0xFFFFFFFF;
 static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
 static u32 s_sprite_offs;
@@ -30,7 +37,7 @@ static bool s_bump_on;
 
 static void reset_lists(TaContext* c)
 {
-	c->nvtx = c->nstrip = c->nparam = c->strip_first = c->nmtri = c->nmvol = 0;
+	c->nvtx = c->nstrip = c->nparam = c->strip_first = c->nmtri = c->nmvol = c->npass = 0;
 	c->min_w = 1e30f;
 	c->max_w = 0.0f;
 	c->max_inv_w = 1.0f;

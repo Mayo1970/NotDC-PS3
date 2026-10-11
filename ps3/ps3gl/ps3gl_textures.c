@@ -482,7 +482,10 @@ static int tex_alloc_level0(ps3gl_texture_t *t, GLsizei width, GLsizei height)
                                 is_pow2((uint32_t)width) && is_pow2((uint32_t)height) &&
                                 width <= PS3GL_MAX_TEX_DIM && height <= PS3GL_MAX_TEX_DIM);
 
-        t->alloc_levels = (uint8_t)tex_alloc_levels((uint32_t)width, (uint32_t)height);
+        /* A hinted chain only swizzled: a linear chain (the base pitch on every level) never ran on HW. */
+        t->alloc_levels = (uint8_t)((t->mip_hint && t->swizzled)
+                                        ? mip_num_levels((uint32_t)width, (uint32_t)height)
+                                        : tex_alloc_levels((uint32_t)width, (uint32_t)height));
 
         uint32_t size = tex_total_size((uint32_t)width, (uint32_t)height,
                                        t->alloc_levels, t->swizzled);
@@ -613,6 +616,40 @@ uint8_t *ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t *pitch,
     *pitch = tex_linear_pitch(t->width);
     *swizzled = t->swizzled;
     return t->data;
+}
+
+/* P45: the mip levels the bound texture's memory holds: 1 without a chain, 0 with no memory. */
+int ps3gl_tex_chain_levels(void)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t || !t->data)
+        return 0;
+    return t->alloc_levels ? t->alloc_levels : 1;
+}
+
+/* P45: level `level` (1 or more) of the bound swizzled texture for the caller to write, after level 0. NULL if
+ * the texture holds no such level; else ps3gl_tex_direct_level_end(level) after the write. */
+uint8_t *ps3gl_tex_direct_level(int level)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t || !t->data || !t->swizzled || level < 1 || level >= (int)t->alloc_levels)
+        return NULL;
+    return t->data + tex_level_offset(t->width, t->height, level, 1);
+}
+
+/* Counts the level as glTexImage2D does: only in order, so the sampler never reaches an unwritten level. */
+void ps3gl_tex_direct_level_end(int level)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (!t || !t->data)
+        return;
+    if (level >= 1 && level == t->num_levels && t->num_levels < 15) {
+        t->num_levels = (uint8_t)(level + 1);
+        ps3gl_frame_mip_uploads++;
+    }
+    build_gcm_texture(t);
+    t->dirty = 1;
+    t->content_dirty = 1;
 }
 
 /* 5.12 #4 CHECK: RGBA words as decode() writes them, converted into main memory as glTexImage2D would store them in
@@ -849,6 +886,19 @@ static uint8_t gl_to_gcm_filter(GLint param)
     }
 }
 
+/* The RSX has 1, 2, 4, 6, 8, 10, 12 and 16 taps; a GL value takes the largest one that does not pass it. */
+static uint8_t gl_to_gcm_aniso(GLint param)
+{
+    if (param >= 16) return GCM_TEXTURE_MAX_ANISO_16;
+    if (param >= 12) return GCM_TEXTURE_MAX_ANISO_12;
+    if (param >= 10) return GCM_TEXTURE_MAX_ANISO_10;
+    if (param >= 8)  return GCM_TEXTURE_MAX_ANISO_8;
+    if (param >= 6)  return GCM_TEXTURE_MAX_ANISO_6;
+    if (param >= 4)  return GCM_TEXTURE_MAX_ANISO_4;
+    if (param >= 2)  return GCM_TEXTURE_MAX_ANISO_2;
+    return GCM_TEXTURE_MAX_ANISO_1;
+}
+
 static void tex_param(GLenum pname, GLint param)
 {
     ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
@@ -859,7 +909,7 @@ static void tex_param(GLenum pname, GLint param)
     case GL_TEXTURE_WRAP_T:     t->wrap_t     = gl_to_gcm_wrap(param); break;
     case GL_TEXTURE_MIN_FILTER: t->min_filter = gl_to_gcm_filter(param); break;
     case GL_TEXTURE_MAG_FILTER: t->mag_filter = gl_to_gcm_filter(param); break;
-    case GL_TEXTURE_MAX_ANISOTROPY_EXT:
+    case GL_TEXTURE_MAX_ANISOTROPY_EXT: t->max_aniso = gl_to_gcm_aniso(param); break;
     case GL_GENERATE_MIPMAP:
         break;
     default: break;
@@ -883,6 +933,12 @@ void ps3gl_texture_hint_no_swizzle(void)
 {
     ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
     if (t) t->no_swizzle_hint = 1;
+}
+
+void ps3gl_texture_hint_mipmaps(void)
+{
+    ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    if (t) t->mip_hint = 1;
 }
 
 /* TexEnv */
@@ -989,7 +1045,7 @@ void ps3gl_apply_textures(void)
             if (t->num_levels > 1)
                 minlod = PS3GL_MIP_DEBUG_MINLOD;
 #endif
-            rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, GCM_TEXTURE_MAX_ANISO_1);
+            rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, t->max_aniso);
             ps3gl_frame_tex_binds++;
             if (t->num_levels > 1)
                 ps3gl_frame_mipped_binds++;

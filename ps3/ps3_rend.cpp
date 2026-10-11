@@ -83,9 +83,14 @@ struct ModVolParam
 {
 	u32 first;
 	u8 cull, depth, volume_last;
+	u8 list;  // 0 = the opaque volume list, 1 = the translucent one (P27)
 };
-#define MAX_MODTRI 4096
+// P66 Volume Cap: the arrays hold 8192 triangles; the cap is MAX_MODTRI_OLD without the option.
+#define MAX_MODTRI 8192
+#define MAX_MODTRI_OLD 4096
 #define MAX_MODVOL 256
+// P10 List Passes: the passes one context keeps (Flycast MAX_PASSES is 10).
+#define MAX_PASSES 8
 
 // TR1: the SH4 thread appends raw 32-byte TA records here; StartRender decodes them.
 // TR5: 2 MB against a measured high-water of 993 KB (Sonic Adventure, 30K vtx).
@@ -112,6 +117,11 @@ struct TaContext
 	ModTri mtri[MAX_MODTRI];
 	ModVolParam mvol[MAX_MODVOL];
 	u32 nmtri, nmvol;
+	// Bundle 4: the TAOPT_* of this context, latched at its list init for both decoders.
+	u32 opt;
+	// P10 List Passes: nstrip and nmvol at each TA_LIST_CONT of the PPU replay; the SPU lists carry none.
+	u32 pass_strip[MAX_PASSES], pass_mvol[MAX_PASSES];
+	u32 npass;
 	// Raw TA stream, decoded lazily. cont_marks holds the raw_used values at
 	// which TA_LIST_CONT arrived, so the replay can split at the same points.
 	u8* raw;
@@ -129,8 +139,8 @@ struct TaContext
 
 // 5.12 S2: the SPU decoder writes these lists in the same layout.
 static_assert(TA_CONTEXTS == SPE_CTX && MAX_VTX == SPE_MAX_VTX && MAX_STRIPS == SPE_MAX_STRIPS &&
-              MAX_PARAMS == SPE_MAX_PARAMS && MAX_MODTRI == SPE_MAX_MODTRI && MAX_MODVOL == SPE_MAX_MODVOL,
-              "SPE list sizes");
+              MAX_PARAMS == SPE_MAX_PARAMS && MAX_MODTRI == SPE_MAX_MODTRI && MAX_MODVOL == SPE_MAX_MODVOL &&
+              MAX_MODTRI_OLD == SPE_MODTRI_OLD && MAX_PASSES == RR_MAX_PASSES, "SPE list sizes");
 static_assert(sizeof(DcVertex) == sizeof(SpeVtx) && offsetof(DcVertex, col) == offsetof(SpeVtx, col) &&
               offsetof(DcVertex, u) == offsetof(SpeVtx, u), "SpeVtx layout");
 static_assert(sizeof(DcStrip) == sizeof(SpeStrip) && offsetof(DcStrip, count) == offsetof(SpeStrip, count) &&
@@ -138,7 +148,8 @@ static_assert(sizeof(DcStrip) == sizeof(SpeStrip) && offsetof(DcStrip, count) ==
               "SpeStrip layout");
 static_assert(sizeof(DcParam) == sizeof(SpeParam) && sizeof(ModTri) == sizeof(SpeModTri), "SpeParam/SpeModTri layout");
 static_assert(sizeof(ModVolParam) == sizeof(SpeModVol) && offsetof(ModVolParam, cull) == offsetof(SpeModVol, cull) &&
-              offsetof(ModVolParam, volume_last) == offsetof(SpeModVol, volume_last), "SpeModVol layout");
+              offsetof(ModVolParam, volume_last) == offsetof(SpeModVol, volume_last) &&
+              offsetof(ModVolParam, list) == offsetof(SpeModVol, list), "SpeModVol layout");
 static TaContext s_ctx[TA_CONTEXTS];
 // s_ta is the store stage's target and belongs to the SH4 thread. s_dec (replay)
 // and s_rc (draw) belong to the render thread once it runs.
@@ -158,6 +169,10 @@ struct DrawLists
 	u32 nvtx, nstrip, nparam, nmtri, nmvol;
 	float min_w, max_w, max_inv_w;
 	u32 mv_tris[5];
+	// Bundle 4: the lists' TAOPT_*, and the PPU replay's pass marks (npass is 0 for the SPU lists).
+	u32 opt, npass;
+	const u32* pass_strip;
+	const u32* pass_mvol;
 };
 static DrawLists s_rl;
 // 5.12 #2: the context whose SpeOut lists s_rl points at, or -1 for the PPU replay's lists.
@@ -182,6 +197,11 @@ static bool s_peak_frame;
 
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
+// P8 Intensity Clamp: the face colour and the face offset colour as saturated ARGB bytes, taken at the header.
+static u32 s_face8 = 0xFFFFFFFF, s_foffs8 = 0xFFFFFFFF;
+// Bundle 4: the TAOPT_* of the context in replay (s_dec->opt), and the last User_Tile_Clip rect (P10).
+static u32 s_dopt;
+static u32 s_clip_rect;
 static u32 s_sprite_col = 0xFFFFFFFF;
 // Plan 3j: the face offset colour (PolyParam 2B) and the sprite's; offset colours are kept while s_bump_param.
 static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
@@ -263,8 +283,17 @@ static void reset_lists(TaContext* c)
 	c->max_inv_w = 1.0f;
 	c->nmtri = 0;
 	c->nmvol = 0;
+	c->npass = 0;
 	memset(c->mv_tris, 0, sizeof(c->mv_tris));
 	c->rend_nvtx = 0;
+}
+
+// Bundle 4: the decode options a context takes at its list init (ps3_presets.cpp; all live).
+static u32 ta_opts_now()
+{
+	return (g_int_clamp_preset ? TAOPT_INT_CLAMP : 0) | (g_face_reset_preset ? TAOPT_FACE_RESET : 0) |
+	       (g_tr_volumes_preset ? TAOPT_TR_VOL : 0) | (g_volume_cap_preset ? TAOPT_VOL_8K : 0) |
+	       (g_tile_clip_preset ? TAOPT_TILE_CLIP : 0);
 }
 
 // The stored stream is per list-init, so it is cleared with the decoded lists.
@@ -280,8 +309,10 @@ static void reset_raw(TaContext* c)
 	c->n_cont_done = 0;
 	c->raw_overflow = false;
 	c->spe_pub = 0;
+	// The SPU decoder takes the same options with the RESET, so both decoders give one set of lists.
+	c->opt = ta_opts_now();
 	if (g_spe_on)
-		ps3spe_reset((u32)(c - s_ctx));
+		ps3spe_reset((u32)(c - s_ctx), c->opt);
 }
 
 // 5.12: sends the stored bytes the SPE has not seen yet.
@@ -365,15 +396,39 @@ static inline u32 float_argb(float a, float r, float g, float b)
 	return (clamp_byte(a) << 24) | (clamp_byte(r) << 16) | (clamp_byte(g) << 8) | clamp_byte(b);
 }
 
+// P8, Flycast vert_face_base_color (Red Dog): each channel is face * intensity / 256 on the saturated bytes,
+// and alpha is the face alpha.
+static inline u32 int_scale(u32 face, u32 sat)
+{
+	return (face & 0xFF000000u) | (((((face >> 16) & 0xFF) * sat) >> 8) << 16) |
+	       (((((face >> 8) & 0xFF) * sat) >> 8) << 8) | (((face & 0xFF) * sat) >> 8);
+}
+
 static inline u32 intensity_argb(float i)
 {
+	if (s_dopt & TAOPT_INT_CLAMP)
+		return int_scale(s_face8, clamp_byte(i));
 	return float_argb(s_face_a, s_face_r * i, s_face_g * i, s_face_b * i);
 }
 
 // Flycast vert_face_offs_color: the face offset colour scaled by the vertex's offset intensity, alpha unscaled.
 static inline u32 intensity_offs(float i)
 {
+	if (s_dopt & TAOPT_INT_CLAMP)
+		return int_scale(s_foffs8, clamp_byte(i));
 	return float_argb(s_foffs_a, s_foffs_r * i, s_foffs_g * i, s_foffs_b * i);
+}
+
+// Only the opaque volume list is kept, as nullDC-v1 does; P27 TR Volumes keeps the translucent one too.
+static inline bool mv_kept(u32 list)
+{
+	return list == ListType_Opaque_Modifier_Volume ||
+	       (list == ListType_Translucent_Modifier_Volume && (s_dopt & TAOPT_TR_VOL));
+}
+
+static inline u32 mv_cap()
+{
+	return (s_dopt & TAOPT_VOL_8K) ? MAX_MODTRI : MAX_MODTRI_OLD;
 }
 
 // Floor on 1/W to keep W finite. 1e-4 merged every plane past W=10000 (SC5's video backdrop failed
@@ -463,11 +518,12 @@ struct Ps3VertexDecoder
 	// nullDC-v1 closes the volume list with a terminator holding the final count.
 	static void EndList(u32 ListType)
 	{
-		if (ListType != ListType_Opaque_Modifier_Volume || s_dec->nmvol >= MAX_MODVOL)
+		if (!mv_kept(ListType) || s_dec->nmvol >= MAX_MODVOL)
 			return;
 		ModVolParam& p = s_dec->mvol[s_dec->nmvol++];
 		p.first = s_dec->nmtri;
 		p.cull = p.depth = p.volume_last = 0;
+		p.list = (u8)(ListType == ListType_Translucent_Modifier_Volume);
 	}
 
 	template <class T>
@@ -481,6 +537,14 @@ struct Ps3VertexDecoder
 		p.isp = pp->isp;
 		p.tsp = pp->tsp;
 		p.tcw = pp->tcw;
+		if (s_dopt & TAOPT_TILE_CLIP)
+		{
+			// P10: the user clip rect in the reserved bits (ISP 19:0, PCW 9:8), 0 without a clip mode. The mode
+			// stays in the PCW (Flycast takes it from every header, Group_En or not).
+			const u32 clip = ((p.pcw.full >> 16) & 3) >= 2 ? s_clip_rect : 0;
+			p.isp.full = (p.isp.full & 0xFFF00000u) | (clip & 0xFFFFFu);
+			p.pcw.full = (p.pcw.full & ~0x300u) | ((clip >> 20) << 8);
+		}
 		s_bump_param = s_bump_on && pp->pcw.Texture && pp->tcw.NO_PAL.PixelFmt == 4;
 	}
 
@@ -490,6 +554,7 @@ struct Ps3VertexDecoder
 		add_param(pp);
 		s_face_a = pp->FaceColorA; s_face_r = pp->FaceColorR;
 		s_face_g = pp->FaceColorG; s_face_b = pp->FaceColorB;
+		s_face8 = float_argb(s_face_a, s_face_r, s_face_g, s_face_b);
 	}
 	static void AppendPolyParam2A(TA_PolyParam2A* pp) { add_param(pp); }
 	static void AppendPolyParam2B(TA_PolyParam2B* pp)
@@ -498,6 +563,8 @@ struct Ps3VertexDecoder
 		s_face_g = pp->FaceColorG; s_face_b = pp->FaceColorB;
 		s_foffs_a = pp->FaceOffsetA; s_foffs_r = pp->FaceOffsetR;
 		s_foffs_g = pp->FaceOffsetG; s_foffs_b = pp->FaceOffsetB;
+		s_face8 = float_argb(s_face_a, s_face_r, s_face_g, s_face_b);
+		s_foffs8 = float_argb(s_foffs_a, s_foffs_r, s_foffs_g, s_foffs_b);
 	}
 	static void AppendPolyParam3(TA_PolyParam3* pp) { add_param(pp); }
 	static void AppendPolyParam4A(TA_PolyParam4A* pp) { add_param(pp); }
@@ -506,6 +573,7 @@ struct Ps3VertexDecoder
 	{
 		s_face_a = pp->FaceColor0A; s_face_r = pp->FaceColor0R;
 		s_face_g = pp->FaceColor0G; s_face_b = pp->FaceColor0B;
+		s_face8 = float_argb(s_face_a, s_face_r, s_face_g, s_face_b);
 	}
 
 	static void StartPolyStrip() { s_dec->strip_first = s_dec->nvtx; }
@@ -634,24 +702,24 @@ struct Ps3VertexDecoder
 		EndPolyStrip();
 	}
 
-	// Only the opaque volume list is kept, as nullDC-v1 does.
 	static void StartModVol(TA_ModVolParam* param)
 	{
 		s_mv_list = s_cur_list;
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmvol >= MAX_MODVOL)
+		if (!mv_kept(s_cur_list) || s_dec->nmvol >= MAX_MODVOL)
 			return;
 		ModVolParam& p = s_dec->mvol[s_dec->nmvol++];
 		p.first = s_dec->nmtri;
 		p.cull = (u8)param->isp.CullMode;
 		p.depth = (u8)param->isp.DepthMode;
 		p.volume_last = (u8)param->pcw.Volume;
+		p.list = (u8)(s_cur_list == ListType_Translucent_Modifier_Volume);
 	}
 	static void ModVolStripEnd() {}
 	// Part A opens the triangle, part B closes it: both test the same cap.
 	static void AppendModVolVertexA(TA_ModVolA* mvv)
 	{
 		s_dec->mv_tris[s_mv_list % 5]++;
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmtri >= MAX_MODTRI)
+		if (!mv_kept(s_cur_list) || s_dec->nmtri >= mv_cap())
 			return;
 		ModTri& t = s_dec->mtri[s_dec->nmtri];
 		t.x0 = mvv->x0; t.y0 = mvv->y0; t.z0 = mvv->z0;
@@ -662,7 +730,7 @@ struct Ps3VertexDecoder
 	}
 	static void AppendModVolVertexB(TA_ModVolB* mvv)
 	{
-		if (s_cur_list != ListType_Opaque_Modifier_Volume || s_dec->nmtri >= MAX_MODTRI)
+		if (!mv_kept(s_cur_list) || s_dec->nmtri >= mv_cap())
 			return;
 		ModTri& t = s_dec->mtri[s_dec->nmtri++];
 		t.y2 = mvv->y2;
@@ -670,13 +738,38 @@ struct Ps3VertexDecoder
 		track_w(mvv->z2);
 	}
 
-	static void SetTileClip(u32 xmin, u32 ymin, u32 xmax, u32 ymax) {}
+	// P10: the rect as Flycast's tileclip_val keeps it; add_param packs it into the next headers.
+	static void SetTileClip(u32 xmin, u32 ymin, u32 xmax, u32 ymax)
+	{
+		s_clip_rect = xmin | (xmax << 6) | (ymin << 12) | (ymax << 17);
+	}
 	static void TileClipMode(u32 mode) {}
 
 	// As nullDC-v1: list init clears the context, a soft reset keeps the lists. ListInit/ListCont
 	// pick the context, because by replay time TA_ISP_BASE may point elsewhere.
-	static void ListCont() {}
-	static void ListInit() { reset_lists(s_dec); }
+	static void ListCont()
+	{
+		// P10 List Passes: a TA_LIST_CONT ends a pass; the draw takes each pass's strips and volumes by these marks.
+		if (s_dec->npass < MAX_PASSES)
+		{
+			s_dec->pass_strip[s_dec->npass] = s_dec->nstrip;
+			s_dec->pass_mvol[s_dec->npass] = s_dec->nmvol;
+			s_dec->npass++;
+		}
+	}
+	// Flycast ta_parse_reset: P63 makes the face colours white (NHL 2K2), P10 puts the clip rect back.
+	static void ListInit()
+	{
+		reset_lists(s_dec);
+		if (s_dopt & TAOPT_FACE_RESET)
+		{
+			s_face_a = s_face_r = s_face_g = s_face_b = 1;
+			s_foffs_a = s_foffs_r = s_foffs_g = s_foffs_b = 1;
+			s_face8 = s_foffs8 = 0xFFFFFFFF;
+		}
+		if (s_dopt & TAOPT_TILE_CLIP)
+			s_clip_rect = TA_CLIP_RESET;
+	}
 	static void SoftReset() {}
 };
 DcVertex Ps3VertexDecoder::s_spr[4];
@@ -763,6 +856,21 @@ static u8 s_fsm_state = TAS_NOLIST;
 static u32 s_store_list = ListType_None;
 // Latched once at InitRenderer, so a run never changes store path mid-stream.
 static bool s_ta_fast;
+
+// P66 TA Data Gate (Flycast ta_ctx == NULL, Vigilante 8): no list init is current before the first one and after a
+// STARTRENDER of the TA's context. With the row ON the TA records of that time are dropped.
+static bool s_ta_nolist = true;
+static bool s_ta_closed;
+// TA Fast Store with the gate open: the flat SQ path's test, so a closed gate costs it nothing.
+static bool s_flat_ok;
+static u32 s_stat_gate;
+
+static void ta_gate_set(bool nolist)
+{
+	s_ta_nolist = nolist;
+	s_ta_closed = nolist && g_ta_data_gate_preset != 0;
+	s_flat_ok = s_ta_fast && !s_ta_closed;
+}
 
 static inline u32 fsm_key(u32 para, u32 objc)
 {
@@ -961,6 +1069,7 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 	if (!c || !c->raw)
 		return;
 	s_dec = c;
+	s_dopt = c->opt;
 	if (c->raw_decoded == 0)
 		TileAccel.ListInit();
 
@@ -985,6 +1094,11 @@ static void decode_pending(TaContext* c, u32 raw_end, u32 cont_end)
 template<bool probe, bool flat>
 static inline void store_sq(u32* data)
 {
+	if (s_ta_closed)
+	{
+		s_stat_gate++;
+		return;
+	}
 	if (probe)
 		g_ta_split.t_store = ta_stamp();
 	const u32 pcw = data[0];
@@ -1036,7 +1150,7 @@ void ps3ta_store_sq(u32* data)
 // below 8 MB, as TAWriteSQ decides. YUV and direct VRAM keep the old path.
 static inline bool sqw_flat_target(u32 dest)
 {
-	if (!g_ta_sq_direct_preset || !s_ta_fast)
+	if (!g_ta_sq_direct_preset || !s_flat_ok)
 		return false;
 	const u32 area = (dest & 0x20) ? CCN_QACR1.Area : CCN_QACR0.Area;
 	return area == 4 && (dest & 0x01800000) == 0;
@@ -1150,6 +1264,11 @@ void FASTCALL do_sqw_nommu_frame(u32 dest)
 
 void ps3ta_store_dma(u32* data, u32 size)
 {
+	if (s_ta_closed)
+	{
+		s_stat_gate += size;
+		return;
+	}
 	TaContext* c = s_ta;
 	u32 bytes = size * 32;
 	Ta_Dma* p = (Ta_Dma*)data;
@@ -1223,6 +1342,46 @@ static bool using_autosort()
 	if (((FPU_PARAM_CFG >> 21) & 1) == 0)
 		return (ISP_FEED_CFG & 1) == 0;
 	return ((vri(REGION_BASE) >> 29) & 1) == 0;
+}
+
+// P10 Region Array, Flycast getRegionTileAddrAndSize: an entry is 5 words, 6 with FPU_PARAM_CFG bit 21 or a
+// pre-sort bit in it; a first entry whose list pointers are all empty (bit 31) is skipped.
+static void region_entry(u32* addr, u32* size)
+{
+	u32 a = REGION_BASE;
+	const bool type1 = ((FPU_PARAM_CFG >> 21) & 1) == 0;
+	u32 sz = (type1 ? 5 : 6) * 4;
+	bool empty = true;
+	for (int i = type1 ? 4 : 5; i > 0 && empty; i--)
+		empty = (vri(a + i * 4) & 0x80000000u) != 0;
+	if (empty)
+		a += sz;
+	if ((vri(a) >> 29) & 1)
+		sz = 6 * 4;
+	*addr = a;
+	*size = sz;
+}
+
+// Each pass's region-array entry (Flycast getRegionSettings), for passes 0..last: its sort mode, and whether its
+// opaque and translucent volume pointers are one list (P27; the plan also asks for a pointer that is not empty).
+static void snapshot_region(u32 last)
+{
+	const bool on = g_region_array_preset != 0;
+	const bool type1 = ((FPU_PARAM_CFG >> 21) & 1) == 0;
+	u32 addr = REGION_BASE, size = (type1 ? 5 : 6) * 4;
+	if (on)
+		region_entry(&addr, &size);
+	s_snap.mv_shared = false;
+	for (u32 k = 0; k < RR_MAX_PASSES; k++)
+	{
+		const u32 e = addr + k * size;
+		// OFF: every pass sorts as nullDC-v1 UsingAutoSort says for the first entry.
+		s_snap.pass_autosort[k] = !on ? s_snap.autosort : type1 ? (ISP_FEED_CFG & 1) == 0 : ((vri(e) >> 29) & 1) == 0;
+		const u32 w8 = vri(e + 8);
+		if (k <= last && w8 == vri(e + 16) && !(w8 & 0x80000000u))
+			s_snap.mv_shared = true;
+	}
+	s_snap.autosort = s_snap.pass_autosort[0];
 }
 
 // Background plane (ISP_BACKGND_T): 3 vertices; the PVR extends their plane over the whole screen.
@@ -1311,6 +1470,9 @@ static void snapshot_render_regs()
 	s_snap.fb_scale_x = s_fb_scale_x;
 	s_snap.fb_scale_y = s_fb_scale_y;
 	s_snap.autosort = using_autosort();
+	// P10 Tile Clip: the TA's global clip, in pixels (Flycast globClip).
+	s_snap.glob_clip_x = ((TA_GLOB_TILE_CLIP & 0x3F) + 1) * 32;
+	s_snap.glob_clip_y = (((TA_GLOB_TILE_CLIP >> 16) & 0xF) + 1) * 32;
 	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
 }
 
@@ -1389,9 +1551,112 @@ static void reset_param_cache()
 	s_cache_valid = false;
 }
 
+// Bundle 4 draw rules (plan section 7), latched per job in rth_job_decode. All 0 is the old path.
+struct DrawOpts
+{
+	bool pt_depth;     // P25: punch-through always writes depth
+	bool tr_nodepth;   // P25: an autosorted translucent polygon writes no depth
+	bool pt_blend;     // P25: punch-through blends with its TSP factors
+	u8 flat;           // P25: 0 = always Gouraud, 1 = flat from the RSX's last vertex, 2 = from its first
+	u8 passes;         // P10: 0 = one pass, 1 = one per TA_LIST_CONT, 2 = + the TR depth pass
+	u8 clip;           // P10: 0 = no user clip, 1 = inside, 2 = + outside; 0 when the lists carry no rects
+	bool tr_vol;       // P27: the lists hold the translucent volume list
+	u8 tri_sort;       // 3k: 0 = sort per strip, 1 = per triangle with no depth write, 2 = + depth write, 3 = + opaque depth
+};
+static DrawOpts s_do;
+// The pass in draw (0 with one pass), its sort mode, and P10's TR depth pass.
+static u32 s_pass;
+static bool s_pass_autosort;
+static bool s_depth_pass;
+// 3k, while the sorted triangles draw: no depth write (Flycast's SortingEnabled), the game's depth write, or the
+// first pass of + OPAQUE DEPTH (depth alone, for texels with alpha of TRI_OPAQUE_REF or more).
+enum { TRI_NONE, TRI_NODEPTH, TRI_GAME, TRI_OPAQUE };
+#define TRI_OPAQUE_REF 240
+static u32 s_tri_mode;
+static u32 s_stat_tris;
+
+// + OPAQUE DEPTH: 2 = the polygon hides what is behind it at any alpha (ONE, ZERO), 1 = at full alpha (SRC_ALPHA,
+// INV_SRC_ALPHA), 0 = never (an additive glow adds to what is behind it; Rayman 2 has such quads with no texture alpha).
+static inline u32 tri_covers(const DcParam& p)
+{
+	if (p.tsp.SrcInstr == 1 && p.tsp.DstInstr == 0)
+		return 2;
+	return p.tsp.SrcInstr == 4 && p.tsp.DstInstr == 5;
+}
+// P25 FIRST VERTEX: vertices the colour attribute of the next draw starts later (0 or 2).
+static u32 s_flat_shift;
+static u32 s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_cont;
+// TA Bad Records: the records ta.h's splitter skipped (P9, P66), per stats window.
+u32 g_ta_bad_records;
+
+// P10 Tile Clip: the scene's viewport in GL pixels, whether it is the base scissor, and the canvas it shows.
+struct ClipView
+{
+	int x, y, w, h;
+	bool scissor;
+	float cx0, cy0, cw, ch;
+};
+static ClipView s_cv;
+// The applied param's clip: none, inside (the scissor is set), outside (one draw per side of the rect), or all cut.
+enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
+static u32 s_clip_mode;
+static int s_clip_r[4];  // x0, y0, x1, y1 in GL pixels, inside the viewport
+static bool s_clip_base = true;
+
+static void clip_base()
+{
+	if (s_clip_base)
+		return;
+	s_clip_base = true;
+	if (s_cv.scissor)
+		glScissor(s_cv.x, s_cv.y, s_cv.w, s_cv.h);
+	else
+		glDisable(GL_SCISSOR_TEST);
+}
+
+// Flycast getTileClip: mode 2 draws inside the tile rect, mode 3 outside; a rect over the whole TA area is no clip.
+static void clip_apply(const DcParam& p)
+{
+	const u32 mode = (p.pcw.full >> 16) & 3;
+	s_clip_mode = CLIP_NONE;
+	if (mode < 2 || (mode == 3 && s_do.clip < 2) || &p == &g_rr.bg_param)
+		return clip_base();
+	const u32 rect = (p.isp.full & 0xFFFFFu) | (((p.pcw.full >> 8) & 3) << 20);
+	const float csx = (float)((rect & 63) * 32), cex = (float)((((rect >> 6) & 63) + 1) * 32);
+	const float csy = (float)(((rect >> 12) & 31) * 32), cey = (float)((((rect >> 17) & 31) + 1) * 32);
+	if (csx == 0 && csy == 0 && cex >= (float)g_rr.glob_clip_x && cey >= (float)g_rr.glob_clip_y)
+		return clip_base();
+	// DC y goes down, GL y goes up from the viewport's lower edge.
+	const float sx = (float)s_cv.w / s_cv.cw, sy = (float)s_cv.h / s_cv.ch;
+	int r[4] = { s_cv.x + (int)lroundf((csx - s_cv.cx0) * sx), s_cv.y + s_cv.h - (int)lroundf((cey - s_cv.cy0) * sy),
+	             s_cv.x + (int)lroundf((cex - s_cv.cx0) * sx), s_cv.y + s_cv.h - (int)lroundf((csy - s_cv.cy0) * sy) };
+	const int lim[4] = { s_cv.x, s_cv.y, s_cv.x + s_cv.w, s_cv.y + s_cv.h };
+	for (int k = 0; k < 4; k++)
+	{
+		const int lo = lim[k & 1], hi = lim[2 + (k & 1)];
+		r[k] = r[k] < lo ? lo : r[k] > hi ? hi : r[k];
+	}
+	const bool empty = r[2] <= r[0] || r[3] <= r[1];
+	// An outside clip around no pixel cuts nothing.
+	if (mode == 3 && empty)
+		return clip_base();
+	memcpy(s_clip_r, r, sizeof(r));
+	s_clip_base = false;
+	glEnable(GL_SCISSOR_TEST);
+	if (mode == 3)
+	{
+		s_clip_mode = CLIP_OUTSIDE;
+		return;
+	}
+	s_clip_mode = empty ? CLIP_ALL : CLIP_INSIDE;
+	if (!empty)
+		glScissor(r[0], r[1], r[2] - r[0], r[3] - r[1]);
+}
+
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
 static u32 apply_param_body(const DcParam& p, u32 list);
 static inline const u32* bump_offs(const DcParam& p);
+static inline u32 eff_cull(const DcParam& p);
 
 // 5.12 #3: p's slot in this scene's SPU texture hashes: its list index, or the background's slot.
 static inline u32 spetex_slot(const DcParam& p)
@@ -1415,6 +1680,22 @@ static u32 apply_param(const DcParam& p, u32 list)
 
 static u32 apply_param_body(const DcParam& p, u32 list)
 {
+	// P10 List Passes, the TR depth pass (Flycast drawSorted, Cosmic Smash): the pass's translucent polygons
+	// again, depth only, so the next pass tests against them. The caller holds the colour mask off.
+	if (s_depth_pass)
+	{
+		glDisable(GL_BLEND);
+		glDisable(GL_ALPHA_TEST);
+		glDisable(GL_TEXTURE_2D);
+		ps3gl_tex_bump(0);
+		glDepthFunc(dc_depth_func(DC_GEQUAL));
+		glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
+		set_cull(eff_cull(p));
+		if (s_do.clip)
+			clip_apply(p);
+		s_cache_valid = false;
+		return 0;
+	}
 
 	if (list == ListType_Translucent)
 	{
@@ -1427,21 +1708,44 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		else
 			glDisable(GL_ALPHA_TEST);
 		// Autosort ignores DepthMode and compares ">=" on 1/W.
-		glDepthFunc(dc_depth_func(g_rr.autosort ? DC_GEQUAL : p.isp.DepthMode));
+		glDepthFunc(dc_depth_func(s_pass_autosort ? DC_GEQUAL : p.isp.DepthMode));
 	}
 	else
 	{
-		glDisable(GL_BLEND);
+		// P25 PT Blend: punch-through blends (Flycast 1a019b79b). P10 List Passes: so does opaque after pass 0.
+		if ((list == ListType_Punch_Through && s_do.pt_blend) || (list == ListType_Opaque && s_pass != 0))
+		{
+			glEnable(GL_BLEND);
+			glBlendFunc(blend_src[p.tsp.SrcInstr], blend_dst[p.tsp.DstInstr]);
+		}
+		else
+			glDisable(GL_BLEND);
 		// Punch-through ignores DepthMode and compares ">=" on 1/W.
 		glDepthFunc(dc_depth_func(list == ListType_Punch_Through ? DC_GEQUAL : p.isp.DepthMode));
 	}
-	glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
-	set_cull(p.isp.CullMode);
+	// P25 (Flycast SetGPState): punch-through always writes depth (Worms World Party, Bust-a-Move 4, Re-Volt), and
+	// an autosorted translucent polygon never does.
+	bool zwrite = !p.isp.ZWriteDis;
+	if (list == ListType_Punch_Through && s_do.pt_depth)
+		zwrite = true;
+	else if (list == ListType_Translucent && s_pass_autosort && (s_do.tr_nodepth || s_tri_mode == TRI_NODEPTH))
+		zwrite = false;
+	glDepthMask(zwrite ? GL_TRUE : GL_FALSE);
+	set_cull(eff_cull(p));
+	// P25 Flat Shading: a polygon without Gouraud takes one colour per triangle; the background stays smooth.
+	if (s_do.flat)
+	{
+		const bool flat = !p.pcw.Gouraud && &p != &g_rr.bg_param;
+		glShadeModel(flat ? GL_FLAT : GL_SMOOTH);
+		s_flat_shift = (flat && s_do.flat == 2) ? 2 : 0;
+	}
+	if (s_do.clip)
+		clip_apply(p);
 	// Flycast SetGPState: stencil bit 7 marks pixels whose polygon takes modifier-volume shadows.
 	glStencilFunc(GL_ALWAYS, p.pcw.Shadow ? 0x80 : 0, 0xFF);
 
 	const u64 t_tex = PERF_TICKS();
-	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw, spetex_slot(p));
+	bool textured = p.pcw.Texture && ps3tex_bind(p.tsp, p.tcw, spetex_slot(p), list == ListType_Punch_Through);
 	s_dt[DT_TEX] += PERF_TICKS() - t_tex;
 	if (textured)
 	{
@@ -1452,6 +1756,18 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		glDisable(GL_TEXTURE_2D);
 	// 3j: the texenv's bump program for a bump texture; the background has no offset colours.
 	ps3gl_tex_bump(textured && &p != &g_rr.bg_param && bump_offs(p) != 0);
+
+	// 3k + OPAQUE DEPTH, first pass: the polygon's own state, but depth alone and only where alpha passes the test.
+	if (s_tri_mode == TRI_OPAQUE)
+	{
+		const u32 covers = tri_covers(p);
+		glDisable(GL_BLEND);
+		if (covers == 2)
+			glDisable(GL_ALPHA_TEST);
+		else
+			glEnable(GL_ALPHA_TEST);
+		glDepthMask(covers && !p.isp.ZWriteDis ? GL_TRUE : GL_FALSE);
+	}
 
 	// UseAlpha=0 means opaque vertex alpha; modulate (1) takes alpha from the texture only.
 	bool force = !p.tsp.UseAlpha || (textured && p.tsp.ShadInstr == 1);
@@ -1484,10 +1800,46 @@ static inline void emit_vertex(const DcVertex* v, u32 alpha_or, u32 offs)
 static bool s_merge;          // Strip Merge preset, latched per scene
 static u32 s_stat_draws[5];   // glBegin/glEnd pairs per list
 
+// Bundle 4 merge options, latched per scene: P25's sprite cull flip, and strip_equivalent's PCW and ISP masks,
+// which hold the clip rect bits (PCW 9:8, ISP 19:0) when the lists carry rects (P10).
+static bool s_mo_sprite;
+static u32 s_key_pcw = 0x300CE, s_key_isp = 0xF4000000;
+// The strips the list passes below walk: one pass of P10 List Passes, or every strip.
+static u32 s_strip_lo, s_strip_hi;
+
+// P25 Sprite Cull (Flycast 6ffe4c028): a sprite's cull direction is the other one; modes 0 and 1 both cull nothing.
+static inline u32 eff_cull(const DcParam& p)
+{
+	return p.isp.CullMode ^ (u32)(s_mo_sprite && (p.pcw.full >> 29) == 5);
+}
+
 // Vertex Arrays preset: the scene's merged strips are written once, straight into one vring
 // block, and each run is a draw of a range of it. Null = the glBegin/glEnd path.
 static ps3gl_vertex_t* s_vb;
 static u32 s_vb_off, s_vb_used, s_vb_cap;
+
+// One run of the scene's vertex block, stride bytes per vertex. P25 FIRST VERTEX gives the colour attribute a start
+// 2 vertices on. P10: an outside clip draws the run once per side of the rect; a clip that cuts all draws nothing.
+static void draw_vb(GLenum prim, u32 stride, u32 first, u32 count)
+{
+	if (s_clip_mode == CLIP_ALL)
+		return;
+	if (s_clip_mode != CLIP_OUTSIDE)
+	{
+		ps3gl_draw_vb_shift(prim, s_vb_off, stride, (int)first, (int)count, s_flat_shift);
+		return;
+	}
+	const int x1 = s_cv.x + s_cv.w, y1 = s_cv.y + s_cv.h;
+	const int side[4][4] = { { s_cv.x, s_cv.y, s_clip_r[0], y1 }, { s_clip_r[2], s_cv.y, x1, y1 },
+	                         { s_clip_r[0], s_cv.y, s_clip_r[2], s_clip_r[1] }, { s_clip_r[0], s_clip_r[3], s_clip_r[2], y1 } };
+	for (int k = 0; k < 4; k++)
+	{
+		if (side[k][2] <= side[k][0] || side[k][3] <= side[k][1])
+			continue;
+		glScissor(side[k][0], side[k][1], side[k][2] - side[k][0], side[k][3] - side[k][1]);
+		ps3gl_draw_vb_shift(prim, s_vb_off, stride, (int)first, (int)count, s_flat_shift);
+	}
+}
 
 struct StripRun
 {
@@ -1514,8 +1866,8 @@ static u32 s_stat_bump_strips;  // 3j: strips drawn with their offset colours
 // Flycast PolyParam::equivalentIgnoreCullingDirection: ISP 0xF4000000 keeps cull on/off, not its direction.
 static inline bool strip_equivalent(const DcParam& a, const DcParam& b)
 {
-	return ((a.pcw.full ^ b.pcw.full) & 0x300CE) == 0
-	    && ((a.isp.full ^ b.isp.full) & 0xF4000000) == 0
+	return ((a.pcw.full ^ b.pcw.full) & s_key_pcw) == 0
+	    && ((a.isp.full ^ b.isp.full) & s_key_isp) == 0
 	    && a.tsp.full == b.tsp.full && a.tcw.full == b.tcw.full;
 }
 
@@ -1587,7 +1939,7 @@ template <bool DRY = false> static void run_close()
 	}
 	const u64 t0 = PERF_TICKS();
 	if (s_vb)
-		ps3gl_draw_vb(GL_TRIANGLE_STRIP, s_vb_off, (int)s_run.first, (int)s_run.count);
+		draw_vb(GL_TRIANGLE_STRIP, (u32)sizeof(ps3gl_vertex_t), s_run.first, s_run.count);
 	else
 		glEnd();
 	s_dt[DT_GLEND] += PERF_TICKS() - t0;
@@ -1632,7 +1984,8 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 		// Repeat the last vertex; one more copy flips the parity when the cull direction differs.
 		const DcVertex* last = s_run.last;
 		run_emit(last);
-		if (p.isp.CullMode < 2 || p.isp.CullMode == s_run.cull)
+		const u32 cull = eff_cull(p);
+		if (cull < 2 || cull == s_run.cull)
 		{
 			if (s_run.reversed)
 				run_emit(last);
@@ -1655,7 +2008,7 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 		s_run.first = s_vb_used;
 		s_run.open = true;
 		s_run.reversed = false;
-		s_run.cull = p.isp.CullMode;
+		s_run.cull = (u8)eff_cull(p);
 		s_run.param = s.param;
 		s_run.list = list;
 		s_run.count = 0;
@@ -1702,7 +2055,7 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 // Draws one list in submission order: opaque, punch-through, and presorted translucent.
 template <bool DRY = false> static void draw_list(u32 list)
 {
-	for (u32 i = 0; i < s_rl.nstrip; i++)
+	for (u32 i = s_strip_lo; i < s_strip_hi; i++)
 	{
 		const DcStrip& s = s_rl.strip[i];
 		if (s.list == list)
@@ -1725,7 +2078,7 @@ template <bool DRY = false> static void draw_tr_sorted()
 {
 	const u64 t_sort = PERF_TICKS();
 	u32 n = 0;
-	for (u32 i = 0; i < s_rl.nstrip; i++)
+	for (u32 i = s_strip_lo; i < s_strip_hi; i++)
 	{
 		const DcStrip& st = s_rl.strip[i];
 		if (st.list != ListType_Translucent || st.count == 0)
@@ -1755,6 +2108,144 @@ template <bool DRY = false> static void draw_tr_sorted()
 // spevb_check: end
 static_assert(RUN_MAX_VTX == SPEVB_RUN_MAX_VTX && sizeof(ps3gl_vertex_t) == SPEVB_VTX_BYTES, "SPE build layout");
 
+// 3k TR Triangle Sort (Flycast sortTriangles). key: the bits of the triangle's largest W, inverted, so a rising key
+// is a rising smallest 1/W (Flycast's key). id: the third corner's vertex | its odd place in the strip << 16 | param << 17.
+struct TriKey
+{
+	u32 key, id;
+};
+static TriKey s_tri[MAX_VTX], s_tri_tmp[MAX_VTX];
+
+// Every triangle of the pass's translucent strips with no inf corner, in submission order.
+static u32 tri_collect()
+{
+	u32 n = 0;
+	for (u32 i = s_strip_lo; i < s_strip_hi; i++)
+	{
+		const DcStrip& st = s_rl.strip[i];
+		if (st.list != ListType_Translucent || st.count < 3)
+			continue;
+		s_stat_strips[ListType_Translucent]++;
+		const DcVertex* v = &s_rl.vtx[st.first];
+		bool inf0 = vertex_inf(v), inf1 = vertex_inf(v + 1);
+		for (u32 k = 2; k < st.count; k++)
+		{
+			const bool inf2 = vertex_inf(v + k);
+			if (!inf0 && !inf1 && !inf2 && n < MAX_VTX)
+			{
+				float w = v[k].w;
+				if (v[k - 1].w > w) w = v[k - 1].w;
+				if (v[k - 2].w > w) w = v[k - 2].w;
+				u32 bits;
+				memcpy(&bits, &w, 4);
+				s_tri[n].key = ~bits;
+				s_tri[n].id = (st.first + k) | ((k & 1) << 16) | ((u32)st.param << 17);
+				n++;
+			}
+			inf0 = inf1;
+			inf1 = inf2;
+		}
+	}
+	return n;
+}
+
+// Flycast's std::stable_sort on the key: a radix sort, least significant byte first, keeps equal keys in order.
+static void tri_sort(u32 n)
+{
+	TriKey* src = s_tri;
+	TriKey* dst = s_tri_tmp;
+	for (u32 sh = 0; sh < 32; sh += 8)
+	{
+		u32 hist[256];
+		memset(hist, 0, sizeof(hist));
+		for (u32 i = 0; i < n; i++)
+			hist[(src[i].key >> sh) & 255]++;
+		u32 sum = 0;
+		for (u32 d = 0; d < 256; d++)
+		{
+			const u32 c = hist[d];
+			hist[d] = sum;
+			sum += c;
+		}
+		for (u32 i = 0; i < n; i++)
+			dst[hist[(src[i].key >> sh) & 255]++] = src[i];
+		std::swap(src, dst);
+	}
+}
+
+// The sorted triangles from vertex base on, in runs of one state (the strip merge's key). emit writes the corners:
+// a strip's odd triangles and the other cull direction of a run each swap the first two, so the winding stays.
+static void tri_runs(u32 n, u32 base, bool emit)
+{
+	const DcParam* rp = 0;
+	const u32* offs = 0;
+	u32 run_first = 0, run_cull = 0, alpha_or = 0;
+	for (u32 t = 0; t <= n; t++)
+	{
+		const DcParam* p = t < n ? &s_rl.param[s_tri[t].id >> 17] : 0;
+		if (!p || !rp || !strip_equivalent(*p, *rp) || (t - run_first) * 3 + 3 > RUN_MAX_VTX)
+		{
+			// The first pass of + OPAQUE DEPTH draws only the runs that can hide something.
+			if (t != run_first && (s_tri_mode != TRI_OPAQUE || tri_covers(*rp)))
+			{
+				const u64 t0 = PERF_TICKS();
+				draw_vb(GL_TRIANGLES, (u32)sizeof(ps3gl_vertex_t), base + 3 * run_first, 3 * (t - run_first));
+				s_dt[DT_GLEND] += PERF_TICKS() - t0;
+				s_stat_draws[ListType_Translucent]++;
+			}
+			if (!p)
+				break;
+			alpha_or = apply_param(*p, ListType_Translucent);
+			rp = p;
+			run_first = t;
+			run_cull = eff_cull(*p);
+			offs = bump_offs(*p);
+		}
+		if (!emit)
+			continue;
+		const u32 c = s_tri[t].id & 0xFFFF, cull = eff_cull(*p);
+		const u32 swap = ((s_tri[t].id >> 16) & 1) ^ (u32)(cull >= 2 && cull != run_cull);
+		const u32 corner[3] = { swap ? c - 1 : c - 2, swap ? c - 2 : c - 1, c };
+		for (u32 k = 0; k < 3; k++)
+			vb_emit(&s_rl.vtx[corner[k]], alpha_or, offs ? offs[corner[k]] : 0);
+	}
+}
+
+// 3k: the autosorted translucent list of the pass, far to near. ON draws it once with no depth write (Flycast).
+// + DEPTH WRITE keeps the game's depth write. + OPAQUE DEPTH first writes the depth of the near-opaque texels alone.
+static void draw_tr_tris()
+{
+	const u64 t_sort = PERF_TICKS();
+	u32 n = tri_collect();
+	tri_sort(n);
+	s_dt[DT_SORT] += PERF_TICKS() - t_sort;
+	if (n > (s_vb_cap - s_vb_used) / 3)
+		n = (s_vb_cap - s_vb_used) / 3;
+	s_stat_tris += n;
+	const u32 base = s_vb_used;
+	reset_param_cache();
+	if (s_do.tri_sort == 3)
+	{
+		// A texel that hides what is behind it does so in any draw order; the rest blend in the sorted order.
+		s_tri_mode = TRI_OPAQUE;
+		glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		glAlphaFunc(GL_GEQUAL, TRI_OPAQUE_REF / 255.0f);
+		tri_runs(n, base, true);
+		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		glAlphaFunc(GL_GREATER, 0.0f);
+		reset_param_cache();
+		s_tri_mode = TRI_NODEPTH;
+		tri_runs(n, base, false);
+	}
+	else
+	{
+		s_tri_mode = s_do.tri_sort == 2 ? TRI_GAME : TRI_NODEPTH;
+		tri_runs(n, base, true);
+	}
+	s_tri_mode = TRI_NONE;
+	reset_param_cache();
+}
+
 // 5.12 #2 ON: one list from the SPU's runs; each run is apply_param and one draw, as run_close does.
 // False when the SPU fails; s_spevb_drawn then says whether any run of the list went out.
 static u32 s_spevb_drawn;
@@ -1773,7 +2264,7 @@ static bool draw_runs(u32 sec, u32 list)
 		if (r->count)
 		{
 			const u64 t0 = PERF_TICKS();
-			ps3gl_draw_vb_stride(GL_TRIANGLE_STRIP, s_vb_off, SPEVB_VTX_STRIDE, (int)r->first, (int)r->count);
+			draw_vb(GL_TRIANGLE_STRIP, SPEVB_VTX_STRIDE, r->first, r->count);
 			s_dt[DT_GLEND] += PERF_TICKS() - t0;
 			s_stat_draws[list]++;
 		}
@@ -1785,12 +2276,18 @@ static bool draw_runs(u32 sec, u32 list)
 	return true;
 }
 
+// P25 FIRST VERTEX: the shifted colour attribute reads 2 vertices past a run, so each block holds 2 more.
+static inline u32 vb_spare()
+{
+	return s_do.flat == 2 ? 2 : 0;
+}
+
 // After a failed SPU build the PPU draws the rest of the scene in a fresh vring block: late SPU puts may
 // still land in the old one. A list the SPU had begun is lost for this frame.
 static bool spevb_lost(int& build)
 {
 	build = SPEVB_OFF;
-	s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+	s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 	s_vb_used = 0;
 	return s_spevb_drawn != 0;
 }
@@ -1819,11 +2316,14 @@ static void draw_tr(int& build)
 			if (!ps3spevb_tr_ppu())
 				return;
 			s_vb_cap -= ps3spevb_vb_used();
-			s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+			s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 			s_vb_used = 0;
 		}
 	}
-	if (g_rr.autosort)
+	// 3k needs the vertex block; glBegin/glEnd keeps the sort per strip.
+	if (s_pass_autosort && s_do.tri_sort && s_vb)
+		draw_tr_tris();
+	else if (s_pass_autosort)
 		draw_tr_sorted();
 	else
 		draw_list(ListType_Translucent);
@@ -1855,7 +2355,10 @@ static int spevb_begin(int build)
 		dst = spu_vb;
 		cap = s_chk_cap = s_vb_cap < ccap ? s_vb_cap : ccap;
 	}
-	return ps3spevb_request((u32)s_rl_spe, s_rl.nvtx, s_rl.nstrip, s_rl.nparam, dst, cap, g_rr.autosort)
+	const u32 flags = (g_rr.autosort ? SPEVB_AUTOSORT : 0) | (s_mo_sprite ? SPEVB_SPRITE_CULL : 0) |
+	                  ((s_rl.opt & TAOPT_TILE_CLIP) ? SPEVB_CLIP_KEY : 0) |
+	                  ((s_do.tri_sort && g_rr.autosort) ? SPEVB_NO_TR : 0);
+	return ps3spevb_request((u32)s_rl_spe, s_rl.nvtx, s_rl.nstrip, s_rl.nparam, dst, cap, flags)
 	     ? build : SPEVB_OFF;
 }
 
@@ -2005,12 +2508,31 @@ static void draw_mod_tris(u32 first, u32 count)
 	glEnd();
 }
 
-// Opaque modifier volumes, as Flycast gldraw.cpp DrawModVols: build the volume in stencil bits 1:0,
-// then shade only pixels with bit 7 (Shadow polygon) and bit 0 set, at FPU_SHAD_SCALE.
-static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
+// P27 (Flycast f2013c652, Xtreme Sports): when a pass has one volume list for opaque and translucent, and the
+// translucent list holds more volumes, its volumes are the ones drawn. 0 = the opaque list, 1 = the translucent.
+static u32 mv_pick_list()
 {
-	if (s_rl.nmvol < 2 || s_rl.nmtri == 0)
+	if (!s_do.tr_vol || !g_rr.mv_shared)
+		return 0;
+	u32 n[2] = { 0, 0 };
+	for (u32 i = 0; i + 1 < s_rl.nmvol; i++)
+		if (s_rl.mvol[i + 1].first > s_rl.mvol[i].first)
+			n[s_rl.mvol[i].list & 1]++;
+	return n[1] > n[0];
+}
+
+// Modifier volumes, as Flycast DrawModVols: the volume goes into stencil bits 1:0, then pixels with bit 7 (Shadow)
+// and bit 0 are shaded at FPU_SHAD_SCALE. [lo, hi): the pass's volume records; vlist: the list drawn (mv_pick_list).
+static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w, u32 lo, u32 hi, u32 vlist)
+{
+	if (s_rl.nmvol < 2 || s_rl.nmtri == 0 || lo >= hi)
 		return;
+	if (s_do.clip)
+	{
+		clip_base();
+		s_clip_mode = CLIP_NONE;
+	}
+	s_flat_shift = 0;
 
 	glDisable(GL_TEXTURE_2D);
 	glDisable(GL_ALPHA_TEST);
@@ -2021,11 +2543,11 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 	glEnable(GL_STENCIL_TEST);
 
 	s32 mod_base = -1;
-	for (u32 i = 0; i + 1 < s_rl.nmvol; i++)
+	for (u32 i = lo; i < hi && i + 1 < s_rl.nmvol; i++)
 	{
 		const ModVolParam& p = s_rl.mvol[i];
 		u32 count = s_rl.mvol[i + 1].first - p.first;
-		if (count == 0)
+		if (count == 0 || p.list != vlist)
 			continue;
 		if (mod_base < 0)
 			mod_base = (s32)p.first;
@@ -2070,6 +2592,22 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w)
 	reset_param_cache();
 }
 
+// P10 List Passes level 2 (Flycast drawSorted with TranslucentPolygonDepthMask, Cosmic Smash): the pass's sorted
+// translucent strips again, depth only (apply_param_body), so the next pass tests against them.
+static void tr_depth_pass()
+{
+	const u32 strips = s_stat_strips[ListType_Translucent], draws = s_stat_draws[ListType_Translucent];
+	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	s_depth_pass = true;
+	reset_param_cache();
+	draw_tr_sorted();
+	s_depth_pass = false;
+	reset_param_cache();
+	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	s_stat_strips[ListType_Translucent] = strips;
+	s_stat_draws[ListType_Translucent] = draws;
+}
+
 // Resets the GL state the passes below assume; must run before the clear.
 static void reset_gl_state()
 {
@@ -2099,6 +2637,9 @@ struct ListDiag
 	// near, with Z write on, masks everything the later lists put behind it.
 	u32 big;
 	float bigw0, bigw1;
+	// Bundle 4, strips a row acts on: no Gouraud; sprites with a cull direction; user clip inside and outside;
+	// blend factors that are not (ONE, ZERO).
+	u32 flat, sprcull, clip_in, clip_out, blend;
 };
 static ListDiag s_diag[3];
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
@@ -2138,6 +2679,11 @@ static void collect_diag()
 			bool force = !p.tsp.UseAlpha || (p.pcw.Texture && p.tsp.ShadInstr == 1);
 			if (force) d.forced++;
 			d.ct[p.pcw.Col_Type & 3]++;
+			if (!p.pcw.Gouraud) d.flat++;
+			if ((p.pcw.full >> 29) == 5 && p.isp.CullMode >= 2) d.sprcull++;
+			if (((p.pcw.full >> 16) & 3) == 2) d.clip_in++;
+			if (((p.pcw.full >> 16) & 3) == 3) d.clip_out++;
+			if (p.tsp.SrcInstr != 1 || p.tsp.DstInstr != 0) d.blend++;
 			float sx0 = 1e30f, sx1 = -1e30f, sy0 = 1e30f, sy1 = -1e30f;
 			float sw0 = 1e30f, sw1 = 0.0f;
 			for (u32 k = 0; k < st.count; k++)
@@ -2198,6 +2744,8 @@ static void print_diag()
 		       d.dst[0], d.dst[1], d.dst[2], d.dst[3], d.dst[4], d.dst[5], d.dst[6], d.dst[7],
 		       d.fmt[0], d.fmt[1], d.fmt[2], d.fmt[3], d.fmt[4], d.fmt[5], d.fmt[6], d.fmt[7],
 		       d.cmin, d.cmax, d.black, d.ct[0], d.ct[1], d.ct[2], d.ct[3]);
+		printf("[rendz] %s flat=%u sprcull=%u clip=%u/%u blend=%u\n",
+		       s_diag_name[L], d.flat, d.sprcull, d.clip_in, d.clip_out, d.blend);
 	}
 }
 
@@ -2249,6 +2797,17 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glLoadIdentity();
 	glDepthRange(range_near, 1.0);
 
+	s_cv.cx0 = cx0;
+	s_cv.cy0 = cy0;
+	s_cv.cw = cw;
+	s_cv.ch = ch;
+	s_clip_base = true;
+	s_clip_mode = CLIP_NONE;
+	s_flat_shift = 0;
+	s_pass = 0;
+	s_pass_autosort = g_rr.autosort;
+	s_depth_pass = false;
+
 	// nullDC-v1 always shades Gouraud; its winding is judged as seen on screen.
 	glShadeModel(GL_SMOOTH);
 	glFrontFace(GL_CCW);
@@ -2281,48 +2840,97 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		// [rendz] prints only the last frame of a window, and a render job always ends in rth_print_stats.
 		if (os_GetSeconds() - s_stat_t0 >= STAT_WINDOW_S)
 			collect_diag();
+		// P10 List Passes: the marks of the PPU replay; the SPU lists carry none (rth_job_decode).
+		const bool multi = s_do.passes && s_rl.npass != 0;
+		if (multi)
+			s_stat_multi++;
 		// Worst case per strip: 3 joins, and per vertex a join copy, a parity copy and itself.
 		s_vb = 0;
 		int build = SPEVB_OFF;
 		if (s_merge && get_vertex_array_preset())
 		{
 			s_vb_cap = 3 * s_rl.nvtx + 4 * s_rl.nstrip + 16;
+			// The TR depth pass writes the translucent strips a second time.
+			if (multi && s_do.passes == 2)
+				s_vb_cap *= 2;
 			s_vb_used = 0;
 			build = s_rl_spe >= 0 ? ps3spevb_mode() : SPEVB_OFF;
 			if (build == SPEVB_ON)
 			{
-				s_vb = (ps3gl_vertex_t*)ps3gl_vring_alloc_raw(s_vb_cap * SPEVB_VTX_STRIDE + 128, &s_vb_off);
+				s_vb = (ps3gl_vertex_t*)ps3gl_vring_alloc_raw((s_vb_cap + vb_spare()) * SPEVB_VTX_STRIDE + 128, &s_vb_off);
 				if (!s_vb)
 					build = SPEVB_OFF;
 			}
 			if (build != SPEVB_ON)
-				s_vb = ps3gl_vring_alloc((int)s_vb_cap, &s_vb_off);
+				s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 			build = spevb_begin(build);
 		}
-		// Hardware order: opaque, punch-through, translucent.
-		reset_param_cache();
-		draw_list_or_runs(SPEVB_SEC_OP, ListType_Opaque, build);
+		// The clip's extra draws and the colour shift need the vertex block: glBegin/glEnd draws without them.
+		if (!s_vb)
+		{
+			s_do.clip = 0;
+			if (s_do.flat == 2)
+				s_do.flat = 1;
+		}
+		// Hardware order: opaque, punch-through, translucent. P10 List Passes: once per pass (Flycast drawStrips);
+		// a pass after the first with no strip is not drawn, and its volumes go to the next pass.
+		const u32 npass = multi ? s_rl.npass + 1 : 1;
+		const u32 vlist = mv_pick_list();
+		if (vlist)
+			s_stat_trvol++;
+		u32 mv_lo = 0;
+		for (u32 k = 0; k < npass; k++)
+		{
+			s_strip_lo = k ? s_rl.pass_strip[k - 1] : 0;
+			s_strip_hi = k + 1 < npass ? s_rl.pass_strip[k] : s_rl.nstrip;
+			const u32 mv_hi = k + 1 < npass ? s_rl.pass_mvol[k] : s_rl.nmvol;
+			if (k != 0)
+			{
+				if (s_strip_lo == s_strip_hi)
+					continue;
+				// The state the first pass starts with.
+				glDisable(GL_ALPHA_TEST);
+				glEnable(GL_STENCIL_TEST);
+				glStencilMask(0xFF);
+				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+				glDepthMask(GL_TRUE);
+			}
+			s_pass = k;
+			s_pass_autosort = g_rr.pass_autosort[k < RR_MAX_PASSES ? k : RR_MAX_PASSES - 1];
+			reset_param_cache();
+			draw_list_or_runs(SPEVB_SEC_OP, ListType_Opaque, build);
 
-		glEnable(GL_ALPHA_TEST);
-		glAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
-		reset_param_cache();
-		draw_list_or_runs(SPEVB_SEC_PT, ListType_Punch_Through, build);
+			glEnable(GL_ALPHA_TEST);
+			glAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
+			reset_param_cache();
+			draw_list_or_runs(SPEVB_SEC_PT, ListType_Punch_Through, build);
 
-		// Hardware shades the opaque volumes between punch-through and translucent.
-		const u64 t_mv = PERF_TICKS();
-		draw_modvols(cx0, cy0, cw, ch, bg_w);
-		s_dt[DT_MODVOL] += PERF_TICKS() - t_mv;
-		glDisable(GL_STENCIL_TEST);
+			// Hardware shades the opaque volumes between punch-through and translucent.
+			const u64 t_mv = PERF_TICKS();
+			draw_modvols(cx0, cy0, cw, ch, bg_w, mv_lo, mv_hi, vlist);
+			s_dt[DT_MODVOL] += PERF_TICKS() - t_mv;
+			glDisable(GL_STENCIL_TEST);
+			mv_lo = mv_hi;
 
-		// apply_param turns the "alpha > 0" test on per translucent poly.
-		glDisable(GL_ALPHA_TEST);
-		glAlphaFunc(GL_GREATER, 0.0f);
-		reset_param_cache();
-		draw_tr(build);
+			// apply_param turns the "alpha > 0" test on per translucent poly.
+			glDisable(GL_ALPHA_TEST);
+			glAlphaFunc(GL_GREATER, 0.0f);
+			reset_param_cache();
+			draw_tr(build);
+			if (s_do.passes == 2 && k + 1 < npass && s_pass_autosort)
+				tr_depth_pass();
+		}
+		s_pass = 0;
 		if (build == SPEVB_CHECK)
 			spevb_check();
 		s_vb = 0;
 	}
+	if (s_do.clip)
+		clip_base();
+	s_clip_mode = CLIP_NONE;
+	s_flat_shift = 0;
+	if (s_do.flat)
+		glShadeModel(GL_SMOOTH);
 	ps3gl_tex_bump(0);
 	ps3gl_tex1_bits(0);
 	glDisable(GL_ALPHA_TEST);
@@ -2377,6 +2985,11 @@ static void draw_frame()
 	glViewport(vp_x, 0, vp_w, sh);
 	ps3gl_apply_states();
 
+	s_cv.x = (int)vp_x;
+	s_cv.y = 0;
+	s_cv.w = (int)vp_w;
+	s_cv.h = (int)sh;
+	s_cv.scissor = true;
 	draw_scene(0.0f, 0.0f, 640.0f * g_rr.fb_scale_x, 480.0f * g_rr.fb_scale_y);
 }
 
@@ -2428,6 +3041,10 @@ static void rtt_render()
 	depth_begin();
 	glClearStencil(0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	s_cv.x = s_cv.y = 0;
+	s_cv.w = (int)w;
+	s_cv.h = (int)h;
+	s_cv.scissor = false;
 	draw_scene((float)x0, (float)y0, (float)w, (float)h);
 	ps3_video_end_frame_noflip();
 
@@ -2795,6 +3412,12 @@ static void rth_print_stats()
 	       decodes, live, s_overflow,
 	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024), s_stat_bump_strips / r, s_stat_bump_ppu);
 	s_stat_bump_strips = s_stat_bump_ppu = 0;
+	// Bundle 4: TA_LIST_CONT writes, renders by passes, renders sent to the PPU replay for their passes, renders with
+	// the TR volume list, TA records the gate dropped, bad records skipped; 3k: sorted triangles per render.
+	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u\n",
+	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
+	       s_stat_tris / r);
+	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -2852,12 +3475,12 @@ static void spe_compare(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	const SpeOut* o = ps3spe_out(ctx);
 	const u32 hs[] = { r->id, r->ctx, r->pos, r->ncont, r->nvtx, r->nstrip, r->nparam, r->nmtri, r->nmvol,
 	                   r->max_inv_w, r->min_w, r->max_w,
-	                   r->mv_tris[0], r->mv_tris[1], r->mv_tris[2], r->mv_tris[3], r->mv_tris[4] };
+	                   r->mv_tris[0], r->mv_tris[1], r->mv_tris[2], r->mv_tris[3], r->mv_tris[4], r->opt };
 	const u32 hp[] = { fence, ctx, raw_end, cont_end, c->nvtx, c->nstrip, c->nparam, c->nmtri, c->nmvol,
 	                   fbits(c->max_inv_w), fbits(c->min_w), fbits(c->max_w),
-	                   c->mv_tris[0], c->mv_tris[1], c->mv_tris[2], c->mv_tris[3], c->mv_tris[4] };
+	                   c->mv_tris[0], c->mv_tris[1], c->mv_tris[2], c->mv_tris[3], c->mv_tris[4], c->opt };
 	static const char* const hn[] = { "id", "ctx", "pos", "ncont", "nvtx", "nstrip", "nparam", "nmtri", "nmvol",
-	                                  "max_inv_w", "min_w", "max_w", "mv0", "mv1", "mv2", "mv3", "mv4" };
+	                                  "max_inv_w", "min_w", "max_w", "mv0", "mv1", "mv2", "mv3", "mv4", "opt" };
 	bool ok = true;
 	for (u32 k = 0; k < sizeof(hs) / sizeof(hs[0]) && ok; k++)
 		if (hs[k] != hp[k])
@@ -2901,10 +3524,12 @@ static void spe_compare(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	{
 		const SpeModVol& a = o->mvol[i];
 		const ModVolParam& b = c->mvol[i];
-		if (a.first != b.first || a.cull != b.cull || a.depth != b.depth || a.volume_last != b.volume_last)
+		if (a.first != b.first || a.cull != b.cull || a.depth != b.depth || a.volume_last != b.volume_last ||
+		    a.list != b.list)
 		{
-			const u32 ws[] = { a.first, a.cull, a.depth, a.volume_last }, wp[] = { b.first, b.cull, b.depth, b.volume_last };
-			spe_report(fence, ctx, "mvol", i, ws, wp, 4);
+			const u32 ws[] = { a.first, a.cull, a.depth, a.volume_last, a.list };
+			const u32 wp[] = { b.first, b.cull, b.depth, b.volume_last, b.list };
+			spe_report(fence, ctx, "mvol", i, ws, wp, 5);
 			ok = false;
 		}
 	}
@@ -2929,6 +3554,10 @@ static void lists_from_ctx(const TaContext* c)
 	s_rl.max_w = c->max_w;
 	s_rl.max_inv_w = c->max_inv_w;
 	memcpy(s_rl.mv_tris, c->mv_tris, sizeof(s_rl.mv_tris));
+	s_rl.opt = c->opt;
+	s_rl.npass = c->npass;
+	s_rl.pass_strip = c->pass_strip;
+	s_rl.pass_mvol = c->pass_mvol;
 }
 
 static float bitsf(u32 u)
@@ -2947,10 +3576,11 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	if (!r)
 		return false;
 	const u32 ctx = (u32)(c - s_ctx);
-	if (r->id != fence || r->ctx != ctx || r->pos != raw_end || r->ncont != cont_end)
+	// The SPU decoded with the options its RESET carried: they must be the context's, or the replay takes over.
+	if (r->id != fence || r->ctx != ctx || r->pos != raw_end || r->ncont != cont_end || r->opt != c->opt)
 	{
-		const u32 hs[] = { r->id, r->ctx, r->pos, r->ncont }, hp[] = { fence, ctx, raw_end, cont_end };
-		spe_report(fence, ctx, "id/ctx/pos/ncont", 0, hs, hp, 4);
+		const u32 hs[] = { r->id, r->ctx, r->pos, r->ncont, r->opt }, hp[] = { fence, ctx, raw_end, cont_end, c->opt };
+		spe_report(fence, ctx, "id/ctx/pos/ncont/opt", 0, hs, hp, 5);
 		ps3spe_result(false, gettime() - t0);
 		return false;
 	}
@@ -2971,6 +3601,9 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	s_rl.max_w = bitsf(r->max_w);
 	s_rl.max_inv_w = bitsf(r->max_inv_w);
 	memcpy(s_rl.mv_tris, r->mv_tris, sizeof(s_rl.mv_tris));
+	s_rl.opt = r->opt;
+	s_rl.npass = 0;
+	s_rl.pass_strip = s_rl.pass_mvol = 0;
 	ps3spe_result(true, gettime() - t0);
 	return true;
 }
@@ -2991,6 +3624,14 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	REND_PHASE(PH_TADEC);
 	double t0 = os_GetSeconds();
 	s_bump_on = g_bump_map_preset != 0;
+	// Bundle 4: this job's draw rules (ps3_presets.cpp, all live).
+	s_do.pt_depth = g_pt_depth_preset != 0;
+	s_do.tr_nodepth = g_tr_sort_depth_preset != 0;
+	s_do.pt_blend = g_pt_blend_preset != 0;
+	s_do.flat = (u8)g_flat_shade_preset;
+	s_do.passes = (u8)g_list_passes_preset;
+	s_do.tri_sort = (u8)g_tr_tri_sort_preset;
+	s_mo_sprite = g_sprite_cull_preset != 0;
 	// S3 skips the replay; a late or wrong fence replays from raw_decoded, which S3 never moves.
 	bool spe = fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end);
 	if (spe && s_bump_on && has_bump(s_rl.param, s_rl.nparam))
@@ -2998,11 +3639,23 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 		spe = false;
 		s_stat_bump_ppu++;
 	}
+	// P10 List Passes: only the PPU replay marks where each TA_LIST_CONT fell in the lists.
+	if (spe && s_do.passes && cont_end != 0)
+	{
+		spe = false;
+		s_stat_pass_ppu++;
+	}
 	if (!spe)
 	{
 		decode_pending(c, raw_end, cont_end);
 		lists_from_ctx(c);
 	}
+	// What the lists carry decides the rest: the clip rects in the params (and the merge key), the TR volumes.
+	const bool rects = (s_rl.opt & TAOPT_TILE_CLIP) != 0;
+	s_do.clip = rects ? (u8)g_tile_clip_preset : 0;
+	s_do.tr_vol = (s_rl.opt & TAOPT_TR_VOL) != 0;
+	s_key_pcw = rects ? 0x303CE : 0x300CE;
+	s_key_isp = rects ? 0xF40FFFFF : 0xF4000000;
 	c->rend_nvtx = s_rl.nvtx;
 	s_stat_t_dec += os_GetSeconds() - t0;
 	s_rc = c;
@@ -3268,7 +3921,10 @@ bool InitRenderer()
 	s_peak_frame = g_ta_peak_frame_preset != 0;
 	ta_fsm_build();
 	ta_store_reset();
+	ta_gate_set(true);
 	rth_start();
+	// The SPU decoder starts with the options reset_all_contexts gave the contexts above.
+	ps3spe_boot_opt(ta_opts_now());
 	ps3spe_init();
 	ps3spevb_init();
 	ps3spetex_init();
@@ -3305,6 +3961,7 @@ void ResetRenderer(bool Manual)
 	TileAccel.Reset(Manual);
 	TaStore.Reset(Manual);
 	ta_store_reset();
+	ta_gate_set(true);
 	reset_all_contexts();
 	ps3tex_reset();
 	VertexCount = 0;
@@ -3389,6 +4046,10 @@ void StartRender()
 			printf("[ps3rend] no TA context for PARAM_BASE=%08X, drawing TA_ISP_BASE's\n", (u32)PARAM_BASE);
 		rc = s_ta;
 	}
+	snapshot_region(rc->n_cont < RR_MAX_PASSES ? rc->n_cont : RR_MAX_PASSES - 1);
+	// P66 TA Data Gate: the TA's own context goes to the core, so no list init is current from here.
+	if (rc == s_ta)
+		ta_gate_set(true);
 
 	// Render-done IRQ timing; games pace off these IRQs. This is the previous
 	// job's count (TR3 replays later), close enough for a clamped delay.
@@ -3436,6 +4097,8 @@ void EndRender() {}
 void ListCont()
 {
 	set_ta_context(TA_ISP_BASE);
+	ta_gate_set(false);
+	s_stat_cont++;
 	spe_flush(s_ta);
 	if (s_ta->n_cont < MAX_CONT_MARKS)
 	{
@@ -3452,11 +4115,15 @@ void ListCont()
 	// finished flags the splitter tracks, and the table does not use them.
 	if (!s_ta_fast)
 		TaStore.ListCont();
+	// P63 (Flycast ta_vtx_ListInit): a continuation also closes the store's open list.
+	else if (g_face_reset_preset)
+		ta_store_reset();
 }
 
 void ListInit()
 {
 	set_ta_context(TA_ISP_BASE);
+	ta_gate_set(false);
 	// reset_raw drops bytes the render thread may still be replaying.
 	rth_wait_decode(s_ta);
 	reset_raw(s_ta);

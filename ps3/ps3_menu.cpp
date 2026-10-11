@@ -308,6 +308,15 @@ static const char* k_gdpos[]     = { "OLD", "REQ_STAT", "+ GET_SCD", NULL };
 static const char* k_gdspeed[]   = { "FAST", "REAL", NULL };
 static const char* k_cddamiss[]  = { "OFF", "PLAY AHEAD", "+ SILENCE", NULL };
 static const char* k_div32[]     = { "OLD", "FIXED", NULL };
+static const char* k_aniso[]     = { "1x", "2x", "4x", "8x", "16x", NULL };
+static const char* k_texfilter[] = { "GAME", "NEAREST", "LINEAR", NULL };
+static const char* k_volcap[]    = { "4096", "8192", NULL };
+static const char* k_badrec[]    = { "FATAL", "SKIP", NULL };
+static const char* k_trdepth[]   = { "GAME", "OFF IF SORTED", NULL };
+static const char* k_flat[]      = { "OFF", "LAST VERTEX", "FIRST VERTEX", NULL };
+static const char* k_passes[]    = { "OFF", "ON", "+ TR DEPTH", NULL };
+static const char* k_tileclip[]  = { "OFF", "INSIDE", "+ OUTSIDE", NULL };
+static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEPTH", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
@@ -552,6 +561,56 @@ static Option s_gdrom[] = {
 	  "TRIANGLE in the in-game menu changes the disc (P34). Live." },
 };
 
+// Plan section 7, bundle 3: one row per item; the first value is the old path.
+static Option s_textures[] = {
+	{ "Mipmaps",         &g_mipmap_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Mipmapped textures get every mip level: far floors stop shimmering (P45). Live." },
+	{ "Anisotropic",     &g_aniso_preset,         OPT_CHOICE, k_aniso,     0, 0,0,0, NULL,
+	  "Anisotropic filter taps on textures that are not nearest (P52). Live." },
+	{ "Texture Filter",  &g_tex_filter_preset,    OPT_CHOICE, k_texfilter, 0, 0,0,0, NULL,
+	  "GAME keeps each polygon's filter; the others force one on all (P52). Live." },
+	{ "VQ Formats",      &g_vq_formats_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Palette VQ and scan-order VQ textures decode as in Flycast (P25). Live." },
+};
+
+// Plan section 7, bundle 4: one row per item; the first value is the old path. All act from the in-game menu.
+static Option s_renderer[] = {
+	{ "Intensity Clamp", &g_int_clamp_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Intensity colours clamp to bytes, then face x intensity (P8, Red Dog)." },
+	{ "Face Reset",      &g_face_reset_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The face colours are white at each list init (P63, NHL 2K2)." },
+	{ "TR Volumes",      &g_tr_volumes_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Shadow volumes sent in the translucent list are drawn (P27, Xtreme Sports)." },
+	{ "Volume Cap",      &g_volume_cap_preset,    OPT_CHOICE, k_volcap,    0, 0,0,0, NULL,
+	  "Shadow-volume triangles kept per frame (P66, Jet Grind Radio)." },
+	{ "TA Bad Records",  &g_ta_bad_rec_preset,    OPT_CHOICE, k_badrec,    0, 0,0,0, NULL,
+	  "SKIP ignores TA records with no meaning. FATAL stops the emulator (P9)." },
+	{ "TA Data Gate",    &g_ta_data_gate_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TA data sent with no list init current is dropped (P66, Vigilante 8)." },
+	{ "PT Depth Write",  &g_pt_depth_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Punch-through polygons always write depth (P25, Worms World Party)." },
+	{ "TR Depth Write",  &g_tr_sort_depth_preset, OPT_CHOICE, k_trdepth,   0, 0,0,0, NULL,
+	  "OFF IF SORTED: auto-sorted translucent polygons write no depth (P25)." },
+	{ "PT Blend",        &g_pt_blend_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Punch-through polygons blend with their own factors (P25)." },
+	{ "Sprite Cull",     &g_sprite_cull_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Sprites cull the other face (P25, South Park Rally menus)." },
+	{ "Flat Shading",    &g_flat_shade_preset,    OPT_CHOICE, k_flat,      0, 0,0,0, NULL,
+	  "Polygons without Gouraud take one colour. Try both vertex orders (P25)." },
+	{ "Region Array",    &g_region_array_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The sort mode comes from the first region entry that has lists (P10)." },
+	{ "List Passes",     &g_list_passes_preset,   OPT_CHOICE, k_passes,    0, 0,0,0, NULL,
+	  "Each TA_LIST_CONT is a draw pass of its own (P10, Cosmic Smash)." },
+	{ "Tile Clip",       &g_tile_clip_preset,     OPT_CHOICE, k_tileclip,  0, 0,0,0, NULL,
+	  "The user tile clip cuts polygons inside or outside its rectangle (P10)." },
+	{ "TA List Regs",    &g_ta_list_regs_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "TA_LIST_INIT resets the TA pointers games read back (P10, KOS homebrew)." },
+	{ "Core Reset",      &g_core_reset_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SOFTRESET bit 1 cancels the render-done interrupts still pending (P10)." },
+	{ "TR Triangle Sort", &g_tr_tri_sort_preset,  OPT_CHOICE, k_trisort,   0, 0,0,0, NULL,
+	  "Auto-sorted translucent polygons sort per triangle. 3 ways to write depth (3k)." },
+};
+
 static Option s_controls[] = {
 	{ "Players",         &g_player_count,         OPT_RANGE,  NULL,        0, 1,4,1, "%d",
 	  "Maple ports the emulator creates. Pad N drives Dreamcast port N." },
@@ -572,6 +631,8 @@ static Page s_opt_pages[] = {
 	{ "VIDEO / DEBUG", s_video, (int)(sizeof(s_video) / sizeof(s_video[0])) },
 	{ "JIT SPEED",     s_jit,   (int)(sizeof(s_jit) / sizeof(s_jit[0])) },
 	{ "GD-ROM",        s_gdrom, (int)(sizeof(s_gdrom) / sizeof(s_gdrom[0])) },
+	{ "TEXTURES",      s_textures, (int)(sizeof(s_textures) / sizeof(s_textures[0])) },
+	{ "RENDERER",      s_renderer, (int)(sizeof(s_renderer) / sizeof(s_renderer[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1022,10 +1083,14 @@ static int* const k_live_opts[] = {
 	&g_yuv_block_preset, &g_frame_hold_preset, &g_yuv_conv_fast_preset, &g_vram_direct_preset, &g_lmmode_preset,
 	&g_fb_watch_preset, &g_bump_map_preset, &g_gd_position_preset, &g_gd_scd_q_preset, &g_cdda_miss_preset,
 	&g_gd_speed_preset, &g_gd_dma_fix_preset, &g_gd_cmd_fix_preset, &g_gd_set_mode_preset, &g_sector_2340_preset,
-	&g_disc_swap_preset,
+	&g_disc_swap_preset, &g_mipmap_preset, &g_aniso_preset, &g_tex_filter_preset, &g_vq_formats_preset,
+	&g_int_clamp_preset, &g_face_reset_preset, &g_tr_volumes_preset, &g_volume_cap_preset, &g_ta_bad_rec_preset,
+	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
+	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
+	&g_core_reset_preset, &g_tr_tri_sort_preset,
 };
 
-#define MAX_INGAME_OPTS 128
+#define MAX_INGAME_OPTS 192
 static int s_run_val[MAX_INGAME_OPTS];    // the running emulator's values while the menu is open
 static int s_boot_val[MAX_INGAME_OPTS];   // boot-only options as saved for the next boot
 static bool s_boot_val_set;
@@ -1197,6 +1262,8 @@ void ps3_menu_ingame(void)
 			sgc_KyonbSync();
 		ps3_sndcfg_print("menu", false);
 		ps3_gdcfg_print("menu", false);
+		ps3_texcfg_print("menu", false);
+		ps3_rendcfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1282,5 +1349,7 @@ int ps3_menu_run(void)
 	       selectedFilePath[0] ? selectedFilePath : "(BIOS, no disc)");
 	ps3_sndcfg_print("boot", true);
 	ps3_gdcfg_print("boot", true);
+	ps3_texcfg_print("boot", true);
+	ps3_rendcfg_print("boot", true);
 	return 1;
 }

@@ -22,6 +22,7 @@ typedef struct
 	uint32_t nvtx, nstrip, nparam, strip_first, nmtri, nmvol;
 	uint32_t min_w, max_w, max_inv_w;
 	uint32_t mv_tris[5];
+	uint32_t opt;  // TAOPT_* of the context's last RESET
 } DecCtx;
 
 // An LS window over one shadow array. Bytes below the write index are final, so every put of them,
@@ -51,6 +52,8 @@ static uint32_t tc, tc_type, vd, vd_type, strip_started;
 static uint32_t cur_list;          // FifoSplitter::CurrentList
 static uint32_t dec_list, mv_list; // s_cur_list, s_mv_list
 static uint32_t face_a = F_ONE, face_r = F_ONE, face_g = F_ONE, face_b = F_ONE;
+static uint32_t face8 = 0xFFFFFFFFu;  // P8: the face colour as saturated ARGB bytes (s_face8)
+static uint32_t clip_rect;            // P10: the last User_Tile_Clip rect (s_clip_rect)
 static uint32_t sprite_col = 0xFFFFFFFFu;
 static uint32_t spr_x[4], spr_y[4], spr_z[3];
 static uint32_t type_lut[256];
@@ -77,6 +80,10 @@ static uint32_t clamp_byte(uint32_t b)
 	return sh >= 32 ? 0 : q >> sh;
 }
 
+// The word of a double that holds its sign: the first one on the SPU. misc/ta4_check sets DEC_HI 1 for x86.
+#ifndef DEC_HI
+#define DEC_HI 0
+#endif
 static inline vec_double2 to_d(uint32_t b) { return spu_extend((vec_float4)spu_splats(b)); }
 static inline uint32_t to_f(vec_double2 v) { return spu_extract((vec_uint4)spu_roundtf(v), 0); }
 
@@ -125,10 +132,10 @@ static uint32_t recip(uint32_t x)
 	}
 	const vec_double2 qd = to_d(q);
 	const vec_double2 ru = spu_nmsub(xd, spu_mul(spu_add(qd, to_d(q + 1)), half), one);
-	if (!(spu_extract((vec_uint4)ru, 0) >> 31))
+	if (!(spu_extract((vec_uint4)ru, DEC_HI) >> 31))
 		return q + 1;
 	const vec_double2 rd = spu_nmsub(xd, spu_mul(spu_add(qd, to_d(q - 1)), half), one);
-	if (spu_extract((vec_uint4)rd, 0) >> 31)
+	if (spu_extract((vec_uint4)rd, DEC_HI) >> 31)
 		return q - 1;
 	return q;
 }
@@ -140,6 +147,13 @@ static inline uint32_t float_argb(uint32_t a, uint32_t r, uint32_t g, uint32_t b
 
 static inline uint32_t intensity_argb(uint32_t i)
 {
+	if (d->opt & TAOPT_INT_CLAMP)
+	{
+		// P8, as int_scale on the PPU: each channel is face * intensity / 256, alpha is the face alpha.
+		const uint32_t s = clamp_byte(i);
+		return (face8 & 0xFF000000u) | (((((face8 >> 16) & 0xFF) * s) >> 8) << 16) |
+		       (((((face8 >> 8) & 0xFF) * s) >> 8) << 8) | (((face8 & 0xFF) * s) >> 8);
+	}
 	return (clamp_byte(face_a) << 24) | (mul_byte(face_r, i) << 16) | (mul_byte(face_g, i) << 8) | mul_byte(face_b, i);
 }
 
@@ -274,6 +288,13 @@ static void add_param(const uint32_t* r)
 	p->isp = r[1];
 	p->tsp = r[2];
 	p->tcw = r[3];
+	if (d->opt & TAOPT_TILE_CLIP)
+	{
+		// P10, as add_param on the PPU: the clip rect in the reserved bits, 0 without a clip mode.
+		const uint32_t clip = ((r[0] >> 16) & 3) >= 2 ? clip_rect : 0;
+		p->isp = (r[1] & 0xFFF00000u) | (clip & 0xFFFFFu);
+		p->pcw = (r[0] & ~0x300u) | ((clip >> 20) << 8);
+	}
 }
 
 static inline void set_face(const uint32_t* f)
@@ -282,15 +303,28 @@ static inline void set_face(const uint32_t* f)
 	face_r = f[1];
 	face_g = f[2];
 	face_b = f[3];
+	face8 = float_argb(f[0], f[1], f[2], f[3]);
+}
+
+// mv_kept and mv_cap of the PPU: the opaque volume list, with P27 the translucent one too; P66's cap.
+static inline int mv_kept(uint32_t list)
+{
+	return list == 1 || (list == 3 && (d->opt & TAOPT_TR_VOL));
+}
+
+static inline uint32_t mv_cap(void)
+{
+	return (d->opt & TAOPT_VOL_8K) ? SPE_MAX_MODTRI : SPE_MODTRI_OLD;
 }
 
 static void end_list(uint32_t list)
 {
-	if (list != 1 || d->nmvol >= SPE_MAX_MODVOL)
+	if (!mv_kept(list) || d->nmvol >= SPE_MAX_MODVOL)
 		return;
 	SpeModVol* p = (SpeModVol*)st_at(&st[S_MVOL], d->nmvol++);
 	p->first = d->nmtri;
-	p->cull = p->depth = p->volume_last = p->pad = 0;
+	p->cull = p->depth = p->volume_last = 0;
+	p->list = (uint8_t)(list == 3);
 }
 
 static void strip_end(void)
@@ -432,20 +466,20 @@ static void sprite_b(const uint32_t* b)
 static void modvol_param(const uint32_t* r)
 {
 	mv_list = dec_list;
-	if (dec_list != 1 || d->nmvol >= SPE_MAX_MODVOL)
+	if (!mv_kept(dec_list) || d->nmvol >= SPE_MAX_MODVOL)
 		return;
 	SpeModVol* p = (SpeModVol*)st_at(&st[S_MVOL], d->nmvol++);
 	p->first = d->nmtri;
 	p->cull = (uint8_t)((r[1] >> 27) & 3);
 	p->depth = (uint8_t)(r[1] >> 29);
 	p->volume_last = (uint8_t)((r[0] >> 6) & 1);
-	p->pad = 0;
+	p->list = (uint8_t)(dec_list == 3);
 }
 
 static void modvol_a(const uint32_t* r)
 {
 	d->mv_tris[mv_list % 5]++;
-	if (dec_list != 1 || d->nmtri >= SPE_MAX_MODTRI)
+	if (!mv_kept(dec_list) || d->nmtri >= mv_cap())
 		return;
 	SpeModTri* t = (SpeModTri*)st_at(&st[S_MTRI], d->nmtri);
 	for (int k = 0; k < 7; k++)
@@ -456,7 +490,7 @@ static void modvol_a(const uint32_t* r)
 
 static void modvol_b(const uint32_t* b)
 {
-	if (dec_list != 1 || d->nmtri >= SPE_MAX_MODTRI)
+	if (!mv_kept(dec_list) || d->nmtri >= mv_cap())
 		return;
 	SpeModTri* t = (SpeModTri*)st_at(&st[S_MTRI], d->nmtri++);
 	t->v[7] = b[0];
@@ -572,7 +606,8 @@ static const uint32_t* step(const uint32_t* r, const uint32_t* end)
 		cur_list = LIST_NONE;
 		vd = VD_NONE;
 		return r + 8;
-	case 1:  // User_Tile_Clip
+	case 1:  // User_Tile_Clip: xmin, ymin, xmax, ymax in words 4..7 (the splitter's data_32[3..6])
+		clip_rect = (r[4] & 63) | ((r[6] & 63) << 6) | ((r[5] & 31) << 12) | ((r[7] & 31) << 17);
 		return r + 8;
 	case 4:  // Polygon or Modifier Volume
 	{
@@ -704,6 +739,7 @@ void dec_init(const SpeSetup* setup)
 	{
 		out_ea[i] = setup->out_ea[i];
 		reset_lists(&dctx[i]);
+		dctx[i].opt = setup->opt;
 	}
 	build_lut();
 	d = &dctx[0];
@@ -711,13 +747,22 @@ void dec_init(const SpeSetup* setup)
 }
 
 // FifoSplitter::ListInit. Its EndList lands on lists that are cleared right after, so it is left out.
-void dec_reset(uint32_t ctx)
+void dec_reset(uint32_t ctx, uint32_t opt)
 {
 	DecCtx* c = &dctx[ctx & (SPE_CTX - 1)];
 	tc = TC_MAIN;
 	strip_started = 0;
 	cur_list = LIST_NONE;
 	reset_lists(c);
+	c->opt = opt;
+	// As Ps3VertexDecoder::ListInit: P63 makes the face colour white, P10 puts the clip rect back.
+	if (opt & TAOPT_FACE_RESET)
+	{
+		face_a = face_r = face_g = face_b = F_ONE;
+		face8 = 0xFFFFFFFFu;
+	}
+	if (opt & TAOPT_TILE_CLIP)
+		clip_rect = TA_CLIP_RESET;
 	if (c == d)
 	{
 		// Puts of the old lists still in flight must not land on the new ones.
@@ -750,4 +795,5 @@ void dec_fence(uint32_t ctx, SpeFence* res)
 	res->max_w = c->max_w;
 	for (int k = 0; k < 5; k++)
 		res->mv_tris[k] = c->mv_tris[k];
+	res->opt = c->opt;
 }

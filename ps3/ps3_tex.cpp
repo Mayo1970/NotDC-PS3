@@ -1,4 +1,4 @@
-// PVR texture decode (twiddled, planar, stride, VQ, palette, YUV422, mipmap top level) to RGBA8,
+// PVR texture decode (twiddled, planar, stride, VQ, palette, YUV422, mip chain) to RGBA8,
 // cached per TCW/TSP key and revalidated once per frame by a hash of the source VRAM.
 #include "ps3_tex.h"
 #include "plugs/drkPvr/Renderer_if.h"
@@ -28,6 +28,14 @@ extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint3
 extern "C" void ps3gl_tex_direct_end(void);
 extern "C" uint8_t* ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t* pitch, int* swizzled);
 extern "C" void ps3gl_tex_convert_check(void* dst, GLsizei width, GLsizei height, const void* rgba);
+// Plan section 7, bundle 3 (the TEXTURES page).
+extern "C" int get_mipmap_preset();
+extern "C" int get_aniso_preset();
+extern "C" int get_tex_filter_preset();
+extern "C" int get_vq_formats_preset();
+extern "C" int ps3gl_tex_chain_levels(void);
+extern "C" uint8_t* ps3gl_tex_direct_level(int level);
+extern "C" void ps3gl_tex_direct_level_end(int level);
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -42,6 +50,7 @@ struct TexEntry
 	u32 last_frame;
 	u32 checked_frame;
 	u16 w, h;
+	bool chain; // P45: its RSX memory holds the mip levels
 };
 
 static TexEntry s_cache[CACHE_SLOTS];
@@ -60,6 +69,12 @@ static YuvTables s_yuvt;
 static int s_yuv_block = -1;
 // Plan 3j Bump Maps, latched per frame; it is in the cache key of bump textures, so a switch decodes them again.
 static int s_bump = -1;
+// Bundle 3, latched per frame. Mipmaps (P45) and VQ Formats (P25) change what a texture holds: a switch clears
+// the cache. Anisotropic (index of k_aniso) and Texture Filter (P52) are sampler state only.
+static int s_mips = -1, s_vqfmt = -1, s_aniso, s_filter;
+static const GLint k_aniso[5] = { 1, 2, 4, 8, 16 };
+// [texfmt]: textures given a chain and levels written past level 0, this window.
+static u32 s_mip_tex, s_mip_levels;
 // [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
 static u32 s_yuv_blk;
 static u32 s_yuv_last_w, s_yuv_last_h, s_yuv_last_pitch;
@@ -69,6 +84,8 @@ static char s_yuv_last_kind = '-';
 static u32 s_fmt_count[8];
 static u32 s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride;
 static u32 s_flag_nonsq, s_flag_mirror, s_flag_clamp;
+// By the TCW bits, with VQ Formats ON or OFF: palette textures with VQ_Comp, VQ textures in scan order.
+static u32 s_flag_palvq, s_flag_plvq;
 // Counted per bind, not per cache fill: a mirrored texture drawn every frame
 // fills once, so the fill counter cannot size the linear-layout cost.
 static u32 s_bind_total, s_bind_mirror;
@@ -190,7 +207,15 @@ struct TexDesc
 	u32 pal_base;
 	u32 vq_cb;     // VQ codebook, at the texture address before any mip offset
 	u32 src_bytes; // source span hashed for change detection
+	u32 base, lvl; // the texture address; log2 of the width
+	bool mip;      // the source holds a mip chain; addr is its top level
 };
+
+// P25 VQ Formats: the two forms it adds. The SPUs describe a texture the old way, so the PPU hashes and decodes these.
+static inline bool vq_odd(const TexDesc& d)
+{
+	return d.vq && (d.pal4 || d.pal8 || !d.twiddled);
+}
 
 static void describe(TSP tsp, TCW tcw, TexDesc* d)
 {
@@ -200,44 +225,48 @@ static void describe(TSP tsp, TCW tcw, TexDesc* d)
 	d->addr = (tcw.NO_PAL.TexAddr << 3) & VRAM_MASK;
 	d->pal4 = d->fmt == 5;
 	d->pal8 = d->fmt == 6;
-	d->vq = tcw.NO_PAL.VQ_Comp && !d->pal4 && !d->pal8;
-	d->twiddled = d->pal4 || d->pal8 || d->vq || !tcw.NO_PAL.ScanOrder;
+	const bool pal = d->pal4 || d->pal8;
+	// VQ Formats (Flycast): VQ acts on palette textures too, and a VQ texture not mipmapped keeps its scan order.
+	d->vq = tcw.NO_PAL.VQ_Comp && (s_vqfmt > 0 || !pal);
+	d->twiddled = pal || !tcw.NO_PAL.ScanOrder || (d->vq && (s_vqfmt <= 0 || tcw.NO_PAL.MipMapped));
 	d->pal_base = d->pal4 ? tcw.PAL.PalSelect << 4 : (tcw.PAL.PalSelect >> 4) << 8;
 	d->pitch = d->w;
+	d->base = d->addr;
+	d->vq_cb = d->addr;
+	d->lvl = tsp.TexU + 3;
 
-	bool mip = tcw.NO_PAL.MipMapped && d->twiddled;
-	if (mip)
+	d->mip = tcw.NO_PAL.MipMapped && d->twiddled;
+	if (d->mip)
 		d->h = d->w; // mipmapped textures are square
+	// Stride textures: rows are TEXT_CONTROL[4:0] * 32 texels apart.
+	if (!d->twiddled && tcw.NO_PAL.StrideSel)
+	{
+		u32 stride = (g_rr.text_control & 31) * 32;
+		if (stride)
+			d->pitch = stride;
+	}
 
-	u32 lvl = tsp.TexU + 3;
 	if (d->vq)
 	{
 		// nullDC-v1 twidle_tex: the codebook stays at the texture address and
 		// only the index map moves by the mip offset, then by the 2 KB book.
-		d->vq_cb = d->addr;
-		if (mip)
-			d->addr += vq_mip_bytes[lvl];
+		if (d->mip)
+			d->addr += vq_mip_bytes[d->lvl];
 		d->addr += 2048;
-		d->src_bytes = d->w * d->h / 4;
+		// Scan order: one index byte per 4 texels of a row (Flycast texture_PLVQ).
+		d->src_bytes = d->twiddled ? d->w * d->h / 4 : d->pitch * d->h / 4;
 	}
-	else if (d->pal4 || d->pal8)
+	else if (pal)
 	{
 		u32 bits = d->pal4 ? 4 : 8;
-		if (mip)
-			d->addr += mip_texels[lvl] * bits / 8;
+		if (d->mip)
+			d->addr += mip_texels[d->lvl] * bits / 8;
 		d->src_bytes = d->w * d->h * bits / 8;
 	}
 	else
 	{
-		if (mip)
-			d->addr += mip_texels[lvl] * 2;
-		// Stride textures: rows are TEXT_CONTROL[4:0] * 32 texels apart.
-		if (!d->twiddled && tcw.NO_PAL.StrideSel)
-		{
-			u32 stride = (g_rr.text_control & 31) * 32;
-			if (stride)
-				d->pitch = stride;
-		}
+		if (d->mip)
+			d->addr += mip_texels[d->lvl] * 2;
 		d->src_bytes = d->pitch * d->h * 2;
 	}
 }
@@ -330,13 +359,51 @@ static u32 hash_texture(const TexDesc& d)
 static u32 tex_hash(const TexDesc& d, TSP tsp, TCW tcw, u32 pidx)
 {
 	u32 h;
-	if (s_spetex == SPETEX_ON && ps3spetex_hash(pidx, &h))
+	const bool spu_ok = !vq_odd(d);
+	if (s_spetex == SPETEX_ON && spu_ok && ps3spetex_hash(pidx, &h))
 		return h;
 	h = hash_texture(d);
 	u32 spu;
-	if (s_spetex == SPETEX_CHECK && ps3spetex_hash(pidx, &spu))
+	if (s_spetex == SPETEX_CHECK && spu_ok && ps3spetex_hash(pidx, &spu))
 		ps3spetex_check(pidx, tsp.full, tcw.full, spu, h);
 	return h;
+}
+
+// P45: the level of side 1 << i of d's chain, by Flycast's rules (TexCache.cpp Update()). *take11: a VQ 1x1 level
+// is texel (1,1) of the 2x2 block m describes.
+static void level_desc(const TexDesc& d, u32 i, TexDesc* m, bool* take11)
+{
+	*m = d;
+	*take11 = false;
+	m->lvl = i;
+	m->w = m->h = m->pitch = 1u << i;
+	if (d.vq)
+	{
+		m->addr = d.vq_cb + 2048 + vq_mip_bytes[i];
+		if (i == 0)
+		{
+			// A YUV texture takes the block of its 2x2 level.
+			if (d.fmt == 3)
+				m->addr = d.vq_cb + 2048 + vq_mip_bytes[1];
+			m->w = m->h = m->pitch = 2;
+			*take11 = true;
+		}
+		m->src_bytes = (m->w * m->h + 3) / 4;
+	}
+	else if (d.pal4 || d.pal8)
+	{
+		const u32 bits = d.pal4 ? 4 : 8;
+		m->addr = d.base + mip_texels[i] * bits / 8;
+		m->src_bytes = (m->w * m->h * bits + 7) / 8;
+	}
+	else
+	{
+		m->addr = d.base + mip_texels[i] * 2;
+		m->src_bytes = m->w * m->h * 2;
+		// The 1x1 level of a YUV texture is one 565 texel.
+		if (i == 0 && d.fmt == 3)
+			m->fmt = 1;
+	}
 }
 
 // spepix_check: begin decode
@@ -346,7 +413,44 @@ static void decode(const TexDesc& d, bool ignore_alpha)
 	if (d.twiddled)
 		build_twiddle(w, h);
 
-	if (d.vq)
+	if (d.vq && (d.pal4 || d.pal8))
+	{
+		// P25 (Flycast texPAL4_VQ, texPAL8_VQ): a codebook entry is the 8 index bytes of one twiddled block; a
+		// is the index byte this texel has without VQ.
+		for (u32 y = 0; y < h; y++)
+			for (u32 x = 0; x < w; x++)
+			{
+				u32 t = s_tx[x] | s_ty[y];
+				u32 a = d.pal4 ? t >> 1 : t;
+				u32 b = vram8(d.vq_cb + vram8(d.addr + (a >> 3)) * 8 + (a & 7));
+				s_out[y * w + x] = cvt_pal(d.pal_base + (d.pal4 ? (b >> ((t & 1) * 4)) & 15 : b));
+			}
+	}
+	else if (d.vq && !d.twiddled)
+	{
+		// P25 (Flycast texture_PLVQ): a codebook entry is 4 texels of one row.
+		u32 cols = d.pitch < w ? d.pitch : w;
+		for (u32 y = 0; y < h; y++)
+		{
+			u32 row = d.addr + y * (d.pitch / 4);
+			for (u32 x = 0; x < cols; x += 4)
+			{
+				u32 e = d.vq_cb + vram8(row + x / 4) * 8;
+				u32* o = &s_out[y * w + x];
+				if (d.fmt == 3)
+				{
+					yuv_pair(vram16(e), vram16(e + 2), o);
+					yuv_pair(vram16(e + 4), vram16(e + 6), o + 2);
+				}
+				else
+					for (u32 k = 0; k < 4; k++)
+						o[k] = cvt16(d.fmt, vram16(e + k * 2));
+			}
+			for (u32 x = cols; x < w; x++)
+				s_out[y * w + x] = 0;
+		}
+	}
+	else if (d.vq)
 	{
 		u32 cb = d.vq_cb;
 		u32 idx_base = d.addr;
@@ -463,18 +567,25 @@ static void spu_job(const TexDesc& d, bool ignore_alpha, u32 dst, u32 pitch, boo
 }
 // spepix_check: end decode
 
-// 5.12 #4: the SPU decodes d into the bound texture's RSX memory; false leaves it to the PPU paths.
-static bool upload_spu(const TexDesc& d, bool ignore_alpha)
+// The SPU's swizzled output has no twiddled YUV form: before P45 (a chain) no YUV texture was swizzled.
+static inline bool spu_layout(const TexDesc& d, bool swizzled)
+{
+	return !(swizzled && d.fmt == 3 && d.twiddled && !d.vq);
+}
+
+// 5.12 #4: the SPU decodes d into level `level` of the bound texture's RSX memory; false leaves it to the PPU paths.
+static bool upload_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 {
 	if (!spu_fits(d))
 	{
 		ps3spepix_tex_skip();
 		return false;
 	}
-	u32 pitch;
-	int swz;
-	u8* const dst = ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz);
-	if (!dst)
+	// P45: a chain level is swizzled, so it has no pitch.
+	u32 pitch = 0;
+	int swz = 1;
+	u8* const dst = level ? ps3gl_tex_direct_level(level) : ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz);
+	if (!dst || !spu_layout(d, swz != 0))
 		return false;
 	SpePixTex j;
 	spu_job(d, ignore_alpha, (u32)(uintptr_t)dst, pitch, swz != 0, g_rr.pal_ram_ctrl, &j);
@@ -482,6 +593,12 @@ static bool upload_spu(const TexDesc& d, bool ignore_alpha)
 	// A late SPU is down now; the PPU path rewrites the whole level.
 	if (!ps3spepix_tex(&j, &res))
 		return false;
+	// The counts below are per texture: level 0 gives them.
+	if (level)
+	{
+		ps3gl_tex_direct_level_end(level);
+		return true;
+	}
 	ps3gl_tex_direct_end();
 	if (!(res & SPEPIX_LIT))
 		s_black_tex++;
@@ -493,17 +610,18 @@ static bool upload_spu(const TexDesc& d, bool ignore_alpha)
 
 // 5.12 #4 CHECK: the SPU decodes into a copy in the bound texture's layout, decode() runs as before, and its words as
 // glTexImage2D stores them must equal the copy, with the same black and alpha-0 counts.
-static void check_spu(const TexDesc& d, bool ignore_alpha)
+static void check_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 {
 	u32* const spu = ps3spepix_tex_check_buf(0);
 	u32* const ppu = ps3spepix_tex_check_buf(1);
 	u32 pitch = 0, res = 0;
-	int swz = 0;
+	int swz = level != 0;
 	bool ran = false;
 	SpePixTex j;
 	if (!spu_fits(d))
 		ps3spepix_tex_skip();
-	else if (spu && ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz))
+	else if (spu && (level ? ps3gl_tex_direct_level(level) : ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz)) &&
+	         spu_layout(d, swz != 0))
 	{
 		spu_job(d, ignore_alpha, (u32)(uintptr_t)spu, pitch, swz != 0, g_rr.pal_ram_ctrl, &j);
 		ran = ps3spepix_tex(&j, &res);
@@ -556,34 +674,61 @@ static bool upload_yuv_block(const TexDesc& d)
 	return true;
 }
 
-// Decodes d into the bound texture.
-static void upload(const TexDesc& d, bool ignore_alpha)
+// Decodes d into level `level` of the bound texture. take11 (P45): the level is texel (1,1) of d's 2x2 block.
+static void upload(const TexDesc& d, bool ignore_alpha, u32 level = 0, bool take11 = false)
 {
 	// 3j: a bump texel is raw 4444 (S in A:R, R in G:B), and IgnoreTexA does not apply (Flycast texBMP_TW).
 	if (d.fmt == 4 && s_bump > 0)
 	{
 		TexDesc b = d;
 		b.fmt = 2;
-		upload(b, false);
+		upload(b, false, level, take11);
 		return;
 	}
-	if (d.fmt == 3)
+	if (d.fmt == 3 && level == 0)
 	{
 		s_yuv_last_w = d.w;
 		s_yuv_last_h = d.h;
 		s_yuv_last_pitch = d.pitch;
 		s_yuv_last_kind = d.vq ? 'v' : d.twiddled ? 't' : 'p';
 	}
-	const int pix = ps3spepix_tex_mode();
-	if (pix == SPEPIX_ON && upload_spu(d, ignore_alpha))
+	// The SPU's tiles are 8 texels a side or more (the small mip levels are not), and it has no P25 VQ forms; nor
+	// has the P42 decoder.
+	const bool fast = d.w >= 8 && d.h >= 8 && !take11 && !vq_odd(d);
+	const int pix = fast ? ps3spepix_tex_mode() : SPEPIX_OFF;
+	if (pix == SPEPIX_ON && upload_spu(d, ignore_alpha, level))
 		return;
 	if (pix == SPEPIX_CHECK)
-		check_spu(d, ignore_alpha);
-	else if (d.fmt == 3 && upload_yuv_block(d))
+		check_spu(d, ignore_alpha, level);
+	else if (d.fmt == 3 && fast && level == 0 && upload_yuv_block(d))
 		return;
 	else
 		decode(d, ignore_alpha);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, d.w, d.h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+	if (take11)
+		s_out[0] = s_out[3];
+	const GLsizei w = take11 ? 1 : (GLsizei)d.w, h = take11 ? 1 : (GLsizei)d.h;
+	glTexImage2D(GL_TEXTURE_2D, (GLint)level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+}
+
+// P45: the levels under level 0, when the bound texture's memory holds them (ps3gl_texture_hint_mipmaps()).
+static void upload_chain(const TexDesc& d, bool ignore_alpha)
+{
+	const u32 levels = (u32)ps3gl_tex_chain_levels();
+	if (!d.mip || levels < 2)
+		return;
+	// The black and alpha-0 counts are per texture: level 0 gave them.
+	const u32 black = s_black_tex, alpha0 = s_alpha0_tex;
+	for (u32 level = 1; level < levels && level <= d.lvl; level++)
+	{
+		TexDesc m;
+		bool take11;
+		level_desc(d, d.lvl - level, &m, &take11);
+		upload(m, ignore_alpha, level, take11);
+	}
+	s_black_tex = black;
+	s_alpha0_tex = alpha0;
+	s_mip_tex++;
+	s_mip_levels += levels - 1;
 }
 
 static void free_entry(TexEntry& e)
@@ -627,6 +772,25 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 		s_bump = bump;
 		printf("[tex] bump maps %s\n", bump ? "ON" : "OFF");
 	}
+	// Bundle 3. A chain is fixed at allocation and VQ Formats changes the texels: both start from an empty cache.
+	const int mips = get_mipmap_preset() != 0, vqfmt = get_vq_formats_preset() != 0;
+	if (mips != s_mips || vqfmt != s_vqfmt)
+	{
+		ps3tex_reset();
+		s_mips = mips;
+		s_vqfmt = vqfmt;
+		printf("[tex] mipmaps %s, vq formats %s, cache cleared\n", mips ? "ON" : "OFF", vqfmt ? "ON" : "OFF");
+	}
+	int aniso = get_aniso_preset(), filter = get_tex_filter_preset();
+	aniso = aniso < 0 ? 0 : (aniso > 4 ? 4 : aniso);
+	filter = filter < 0 || filter > 2 ? 0 : filter;
+	if (aniso != s_aniso || filter != s_filter)
+	{
+		static const char* const k_filter[3] = { "GAME", "NEAREST", "LINEAR" };
+		s_aniso = aniso;
+		s_filter = filter;
+		printf("[tex] anisotropic %dx, filter %s\n", (int)k_aniso[aniso], k_filter[filter]);
+	}
 
 	s_frame++;
 	// Age out a slice per frame so the sweep cost stays flat.
@@ -639,20 +803,26 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 	}
 }
 
-// ps3gl picks the RSX layout at the first glTexImage2D, so set these before it:
-// mirrored wrap needs a linear layout and stalls the RSX on a swizzled one.
-static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v)
+// Set before the first glTexImage2D, where ps3gl fixes the layout: a mirrored wrap stalls the RSX on a swizzled one.
+// chain: the texture has its mip levels and the list may sample them.
+static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v, bool chain)
 {
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
 	                tsp.ClampU ? GL_CLAMP_TO_EDGE : (mirror_u ? GL_MIRRORED_REPEAT : GL_REPEAT));
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
 	                tsp.ClampV ? GL_CLAMP_TO_EDGE : (mirror_v ? GL_MIRRORED_REPEAT : GL_REPEAT));
-	GLint filter = tsp.FilterMode ? GL_LINEAR : GL_NEAREST;
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+	// P52 Texture Filter (Flycast TextureFiltering): 1 forces nearest, 2 linear.
+	const bool nearest = s_filter == 1 || (s_filter == 0 && !tsp.FilterMode);
+	// Flycast SetGPState: the chain filters bilinear textures only; anisotropic takes the trilinear form.
+	GLint min = nearest ? GL_NEAREST : GL_LINEAR;
+	if (chain && !nearest)
+		min = s_aniso > 0 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, nearest ? GL_NEAREST : GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, nearest ? 1 : k_aniso[s_aniso]);
 }
 
-bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
+bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 {
 	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
 	bool mirror_u = !tsp.ClampU && tsp.FlipU;
@@ -700,6 +870,8 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
 			const u64 t_d = PERF_TICKS();
 			glBindTexture(GL_TEXTURE_2D, hit->name);
 			upload(d, tsp.IgnoreTexA);
+			if (hit->chain)
+				upload_chain(d, tsp.IgnoreTexA);
 			s_t_decode += PERF_TICKS() - t_d;
 			hit->hash = hsh;
 			s_decodes++;
@@ -739,16 +911,26 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
 		if (d.w != d.h)               s_flag_nonsq++;
 		if (tsp.FlipU || tsp.FlipV)   s_flag_mirror++;
 		if (tsp.ClampU || tsp.ClampV) s_flag_clamp++;
+		const bool pal = tcw.NO_PAL.PixelFmt == 5 || tcw.NO_PAL.PixelFmt == 6;
+		if (tcw.NO_PAL.VQ_Comp && pal) s_flag_palvq++;
+		if (tcw.NO_PAL.VQ_Comp && !pal && tcw.NO_PAL.ScanOrder && !tcw.NO_PAL.MipMapped) s_flag_plvq++;
 		REND_PHASE(PH_TEX);
 		const u64 t_d = PERF_TICKS();
 		glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
-		set_tex_params(tsp, mirror_u, mirror_v);
+		set_tex_params(tsp, mirror_u, mirror_v, false);
+		// P45 Mipmaps: the chain needs the swizzled layout, so the first build gives a mirrored texture none.
+		const bool chain = s_mips > 0 && d.mip && !mirror;
 		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy (and P42 needs linear).
-		// Must be set before the first upload: the layout is fixed at allocation.
-		if (d.fmt == 3)
+		// Both must be set before the first upload: the layout is fixed at allocation.
+		if (chain)
+			ps3gl_texture_hint_mipmaps();
+		else if (d.fmt == 3)
 			ps3gl_texture_hint_no_swizzle();
 		upload(d, tsp.IgnoreTexA);
+		if (chain)
+			upload_chain(d, tsp.IgnoreTexA);
+		hit->chain = chain && ps3gl_tex_chain_levels() > 1;
 		s_t_decode += PERF_TICKS() - t_d;
 		s_live++;
 		s_decodes++;
@@ -758,7 +940,8 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx)
 	hit->last_frame = s_frame;
 	const u64 t_g = PERF_TICKS();
 	glBindTexture(GL_TEXTURE_2D, hit->name);
-	set_tex_params(tsp, mirror_u, mirror_v);
+	// Flycast: a punch-through polygon samples level 0 only.
+	set_tex_params(tsp, mirror_u, mirror_v, hit->chain && !punch_through);
 	s_t_gl += PERF_TICKS() - t_g;
 	return true;
 }
@@ -791,16 +974,20 @@ void ps3tex_stats(u32* decodes, u32* live)
 	printf("[texfmt] 1555=%u 565=%u 4444=%u yuv=%u bump=%u p4=%u p8=%u"
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
 	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u"
-	       " | yuvblk=%u yuvlast=%ux%u%c%u spudec=%u\n",
+	       " | yuvblk=%u yuvlast=%ux%u%c%u spudec=%u"
+	       " | chains=%u chainlv=%u palvq=%u plvq=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
 	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
-	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec);
+	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec,
+	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq);
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;
+	s_flag_palvq = s_flag_plvq = 0;
+	s_mip_tex = s_mip_levels = 0;
 	s_bind_total = s_bind_mirror = 0;
 	s_black_tex = s_alpha0_tex = 0;
 	s_evict = s_evict_hot = 0;

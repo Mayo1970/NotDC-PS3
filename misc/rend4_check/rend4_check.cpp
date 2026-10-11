@@ -1,0 +1,632 @@
+// Bundle 4 (plan section 7) PC check, WSL: the draw rules. Rows off: draw_scene makes the frozen file's GL calls,
+// call for call. Rows on: each draw's state, the pass order and the volumes follow a model of the rules.
+#include <stdint.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <vector>
+#include <set>
+#include "rend4.h"
+
+typedef uint32_t u32;
+
+static u32 g_scene;
+static void die(const char* fmt, ...) __attribute__((format(printf, 1, 2), noreturn));
+static void die(const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	printf("FAIL (scene %u): ", g_scene);
+	vprintf(fmt, ap);
+	printf("\n");
+	va_end(ap);
+	exit(1);
+}
+
+static uint64_t rs = 0x9E3779B97F4A7C15ull;
+static u32 rnd()
+{
+	rs ^= rs << 13;
+	rs ^= rs >> 7;
+	rs ^= rs << 17;
+	return (u32)(rs >> 32);
+}
+static u32 rndn(u32 n) { return rnd() % n; }
+static u32 fb(float f) { u32 u; memcpy(&u, &f, 4); return u; }
+static float bf(u32 u) { float f; memcpy(&f, &u, 4); return f; }
+
+enum { GL_NEVER = 0x200, GL_FRONT = 0x404, GL_BACK = 0x405, GL_FLAT = 0x1D00, GL_SMOOTH = 0x1D01 };
+static const u32 k_src[8] = { 0, 1, 0x306, 0x307, 0x302, 0x303, 0x304, 0x305 };
+static const u32 k_dst[8] = { 0, 1, 0x300, 0x301, 0x302, 0x303, 0x304, 0x305 };
+static const unsigned char k_cmp[2][8] = { { 0, 4, 2, 6, 1, 5, 3, 7 }, { 0, 1, 2, 3, 4, 5, 6, 7 } };
+
+// ---- scenes -------------------------------------------------------------------
+
+static std::vector<u32> g_vtx, g_strip, g_param, g_mtri, g_mvol;
+static R4Scene S;
+
+// A clip rect in the reserved bits: tiles, sometimes over the whole area, sometimes off the canvas.
+static u32 rnd_rect()
+{
+	const u32 r = rndn(10);
+	if (r == 0)
+		return 0 | 19u << 6 | 0 << 12 | 14u << 17;   // the whole 640x480
+	if (r == 1)
+		return 0 | 39u << 6 | 0 << 12 | 31u << 17;
+	u32 x0 = rndn(22), x1 = rndn(22), y0 = rndn(17), y1 = rndn(17);
+	if (rndn(8) && x1 < x0) { const u32 t = x0; x0 = x1; x1 = t; }
+	if (rndn(8) && y1 < y0) { const u32 t = y0; y0 = y1; y1 = t; }
+	return x0 | x1 << 6 | y0 << 12 | y1 << 17;
+}
+
+static void gen_scene(bool rows)
+{
+	memset(&S, 0, sizeof(S));
+	S.opt = rows ? rnd() & 31 : 0;
+	const bool rects = (S.opt & 16) != 0;
+	// Params from a small pool, so strips merge.
+	u32 base[6][4];
+	const u32 pool = 1 + rndn(6);
+	for (u32 k = 0; k < pool; k++)
+	{
+		const u32 uc = rndn(3) ? 0 : rndn(4);
+		const u32 rect = rects ? (uc >= 2 ? rnd_rect() : 0) : rnd();
+		base[k][0] = (rnd() & 0xFF) | uc << 16 | (rndn(3) ? 4u : 5u) << 29 | ((rect >> 20) & 3) << 8;
+		base[k][1] = (rnd() & 0xFFF00000u) | (rect & 0xFFFFFu);
+		// The blend: any, or often the two that hide what is behind (SRC_ALPHA with INV_SRC_ALPHA; ONE with ZERO).
+		const u32 bl = rndn(4);
+		base[k][2] = bl == 0 ? rnd() : (rnd() & 0x03FFFFFFu) | (bl == 3 ? 1u << 29 : 4u << 29 | 5u << 26);
+		base[k][3] = rnd() & 0x07FFFFFFu;  // no bump texture
+	}
+	S.nparam = 1 + rndn(40);
+	g_param.resize(S.nparam * 4);
+	for (u32 i = 0; i < S.nparam; i++)
+	{
+		u32 q[4];
+		memcpy(q, base[rndn(pool)], 16);
+		const u32 r = rndn(100);
+		if (r < 20)
+			q[1] ^= 0x18000000u;           // the cull direction
+		else if (r < 30)
+			q[0] ^= 1u << rndn(8);
+		else if (r < 36)
+			q[1] ^= 1u << (26 + rndn(6));
+		else if (r < 40)
+			q[2] ^= 1u << rndn(32);
+		else if (r < 46 && rects && ((q[0] >> 16) & 3) >= 2)
+		{
+			const u32 rect = rnd_rect();
+			q[0] = (q[0] & ~0x300u) | ((rect >> 20) & 3) << 8;
+			q[1] = (q[1] & 0xFFF00000u) | (rect & 0xFFFFFu);
+		}
+		memcpy(&g_param[i * 4], q, 16);
+	}
+	S.nstrip = rndn(8) ? 1 + rndn(120) : 0;
+	g_strip.resize(S.nstrip * 4);
+	g_vtx.clear();
+	u32 prm = 0;
+	for (u32 i = 0; i < S.nstrip; i++)
+	{
+		const u32 count = 3 + rndn(6);
+		const u32 l = rndn(100);
+		if (rndn(3) == 0)
+			prm = rndn(S.nparam);
+		g_strip[i * 4] = (u32)(g_vtx.size() / 6);
+		g_strip[i * 4 + 1] = count;
+		g_strip[i * 4 + 2] = l < 50 ? 0 : l < 80 ? 2 : 4;
+		g_strip[i * 4 + 3] = prm;
+		// 3k: at most one inf corner (W = 0) in a translucent strip; the sorted triangles leave its triangles out.
+		const u32 inf_at = rows && g_strip[i * 4 + 2] == 2 && rndn(6) == 0 ? rndn(count) : ~0u;
+		for (u32 k = 0; k < count; k++)
+		{
+			const u32 v[6] = { fb((float)rndn(6400) / 10.0f), fb((float)rndn(4800) / 10.0f),
+			                   k == inf_at ? 0 : fb(1.0f + (float)rndn(990) / 10.0f), rnd(), fb((float)i), fb((float)k) };
+			g_vtx.insert(g_vtx.end(), v, v + 6);
+		}
+	}
+	S.nvtx = (u32)(g_vtx.size() / 6);
+	// Volumes: runs of records of one list, each run closed by its end record. A triangle's id is every x of it.
+	g_mvol.clear();
+	g_mtri.clear();
+	// The opaque list's runs come first: the area sum of a volume group spans every triangle from the group's
+	// first one (Flycast's too), so a run of the other list inside a group would be drawn with it.
+	const u32 nlists = rndn(4), tr_from = rndn(4);
+	for (u32 l = 0; l < nlists; l++)
+	{
+		const u32 tag = rows && (S.opt & 4) ? l >= tr_from : 0;
+		const u32 nv = rndn(5);
+		for (u32 v = 0; v <= nv; v++)
+		{
+			const u32 e[5] = { (u32)(g_mtri.size() / 9), v < nv ? rndn(4) : 0, v < nv ? rndn(8) : 0, v < nv ? rndn(2) : 0, tag };
+			g_mvol.insert(g_mvol.end(), e, e + 5);
+			const u32 nt = v < nv ? rndn(4) : 0;
+			for (u32 t = 0; t < nt; t++)
+			{
+				const float id = (float)(g_mtri.size() / 9);
+				const u32 tri[9] = { fb(id), fb((float)rndn(480)), fb(1.0f), fb(id), fb((float)rndn(480)), fb(1.0f),
+				                     fb(id), fb((float)rndn(480)), fb(1.0f) };
+				g_mtri.insert(g_mtri.end(), tri, tri + 9);
+			}
+		}
+	}
+	S.nmvol = (u32)(g_mvol.size() / 5);
+	S.nmtri = (u32)(g_mtri.size() / 9);
+	// The pass marks of the PPU replay (the lists carry them with the rows off too).
+	S.npass = rndn(3) ? 0 : 1 + rndn(4);
+	u32 ps = 0, pm = 0;
+	for (u32 k = 0; k < S.npass; k++)
+	{
+		if (rndn(4))
+			ps += rndn(S.nstrip - ps + 1);
+		pm += rndn(S.nmvol - pm + 1);
+		S.pass_strip[k] = ps;
+		S.pass_mvol[k] = pm;
+	}
+	static const u32 none[9] = { 0 };
+	S.vtx = g_vtx.empty() ? none : g_vtx.data();
+	S.strip = g_strip.empty() ? none : g_strip.data();
+	S.param = g_param.data();
+	S.mtri = g_mtri.empty() ? none : g_mtri.data();
+	S.mvol = g_mvol.empty() ? none : g_mvol.data();
+	S.max_inv_w = fb(1.0f);
+	S.isp_backgnd_d = fb(0.001f);
+	S.pt_alpha_ref = rnd() & 0xFF;
+	S.fpu_shad_scale = rnd() & 0x1FF;
+	const u32 as = rndn(2);
+	for (int k = 0; k < R4_PASSES; k++)
+		S.pass_autosort[k] = rows ? rndn(2) : as;
+	S.mv_shared = rows ? rndn(2) : 0;
+	S.glob_clip_x = 640;
+	S.glob_clip_y = 480;
+	S.bg_param[0] = (rnd() & 0x8A);
+	S.bg_param[1] = rnd() & 0xFFF00000u;
+	S.bg_param[2] = rnd();
+	S.bg_param[3] = rnd() & 0x07FFFFFFu;
+	const float bx[3] = { 0, 640, 0 }, by[3] = { 0, 0, 480 };
+	for (int k = 0; k < 3; k++)
+	{
+		S.bg_vtx[k][0] = bx[k];
+		S.bg_vtx[k][1] = by[k];
+		S.bg_vtx[k][2] = (float)rndn(100) / 100.0f;
+		S.bg_vtx[k][3] = (float)rndn(100) / 100.0f;
+		S.bg_col[k] = rnd();
+	}
+	if (rndn(4))
+	{
+		// The display: a 4:3 viewport in 1280x720, scissored.
+		S.vx = 160; S.vy = 0; S.vw = 960; S.vh = 720; S.scissor = 1;
+		S.cx0 = 0; S.cy0 = 0; S.cw = 640; S.ch = 480;
+	}
+	else
+	{
+		// A render to texture: the clip window at its own size, no scissor.
+		const u32 w = 64 + rndn(577), h = 64 + rndn(417);
+		S.vx = 0; S.vy = 0; S.vw = (int)w; S.vh = (int)h; S.scissor = 0;
+		S.cx0 = (float)rndn(641 - w); S.cy0 = (float)rndn(481 - h); S.cw = (float)w; S.ch = (float)h;
+	}
+	S.depth_float = rndn(2);
+	S.merge = rows ? 1 : rndn(8) != 0;
+	S.vertex_arrays = rows ? 1 : rndn(8) != 0;
+	if (rows)
+	{
+		S.pt_depth = rndn(2);
+		S.tr_nodepth = rndn(2);
+		S.pt_blend = rndn(2);
+		S.sprite_cull = rndn(2);
+		S.flat = rndn(3);
+		S.passes = rndn(3);
+		S.clip_level = rndn(3);
+		S.tri_sort = rndn(4);
+	}
+}
+
+// ---- the model -----------------------------------------------------------------
+
+static uint64_t n_draws, n_depth, n_clip_in, n_clip_out, n_clip_all, n_flat, n_shift, n_multi, n_trvol, n_spr, n_tris;
+static uint64_t n_sorted, n_sorted_swap, n_opaque;
+
+// The largest W of a triangle's corners as bits (W is positive): the sort's key, the farthest corner.
+static u32 tri_w(u32 sid, u32 kc)
+{
+	const u32 first = S.strip[sid * 4];
+	u32 w = 0;
+	for (u32 k = kc - 2; k <= kc; k++)
+		if (S.vtx[(first + k) * 6 + 2] > w)
+			w = S.vtx[(first + k) * 6 + 2];
+	return w;
+}
+
+static u32 pass_of(u32 sid, bool multi)
+{
+	u32 p = 0;
+	if (multi)
+		for (u32 k = 0; k < S.npass; k++)
+			if (S.pass_strip[k] <= sid)
+				p = k + 1;
+	return p;
+}
+
+struct Rect { int x0, y0, x1, y1; };
+static int area(const Rect& r) { return r.x1 > r.x0 && r.y1 > r.y0 ? (r.x1 - r.x0) * (r.y1 - r.y0) : 0; }
+static bool meet(const Rect& a, const Rect& b) { return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1; }
+
+// The clip of a param: 0 none, 2 inside, 3 outside; r: the tile rect in GL pixels, cut to the viewport.
+static u32 clip_of(const u32* p, Rect* r)
+{
+	const u32 level = (S.opt & 16) ? S.clip_level : 0;
+	const u32 mode = (p[0] >> 16) & 3;
+	if (!level || mode < 2 || (mode == 3 && level < 2))
+		return 0;
+	const u32 rect = (p[1] & 0xFFFFFu) | ((p[0] >> 8) & 3) << 20;
+	const double xs = (rect & 63) * 32.0, xe = (((rect >> 6) & 63) + 1) * 32.0;
+	const double ys = ((rect >> 12) & 31) * 32.0, ye = (((rect >> 17) & 31) + 1) * 32.0;
+	if (xs == 0 && ys == 0 && xe >= S.glob_clip_x && ye >= S.glob_clip_y)
+		return 0;
+	const double sx = (double)S.vw / S.cw, sy = (double)S.vh / S.ch;
+	Rect q = { S.vx + (int)lround((xs - S.cx0) * sx), S.vy + S.vh - (int)lround((ye - S.cy0) * sy),
+	           S.vx + (int)lround((xe - S.cx0) * sx), S.vy + S.vh - (int)lround((ys - S.cy0) * sy) };
+	const Rect v = { S.vx, S.vy, S.vx + S.vw, S.vy + S.vh };
+	q.x0 = q.x0 < v.x0 ? v.x0 : q.x0 > v.x1 ? v.x1 : q.x0;
+	q.x1 = q.x1 < v.x0 ? v.x0 : q.x1 > v.x1 ? v.x1 : q.x1;
+	q.y0 = q.y0 < v.y0 ? v.y0 : q.y0 > v.y1 ? v.y1 : q.y0;
+	q.y1 = q.y1 < v.y0 ? v.y0 : q.y1 > v.y1 ? v.y1 : q.y1;
+	*r = q;
+	// Outside a rect with no pixel is everywhere: no clip (Flycast's test never cuts then).
+	if (mode == 3 && !area(q))
+		return 0;
+	return mode;
+}
+
+static void model(const R4Call* c, u32 n, const u32* vb)
+{
+	const bool multi = S.passes && S.npass != 0;
+	const u32 last_pass = multi ? S.npass : 0;
+	std::vector<u32> colour(S.nstrip, 0), depth(S.nstrip, 0), tris(S.nstrip, 0), pre(S.nstrip, 0);
+	// + OPAQUE DEPTH: the pass whose colour draws have begun (its depth-only draws must all come before them).
+	u32 colour_pass = ~0u;
+	// 3k: the last sorted triangle drawn in each pass.
+	u32 last_pass_tri = ~0u, last_w = 0, last_sid = 0, last_kc = 0;
+	// The last pass that has strips: the TR depth pass runs after every pass but the last one.
+	u32 prev_key = 0;
+	for (u32 i = 0; i < n;)
+	{
+		if (c[i].kind != R4_DRAW)
+		{
+			// The background, the volumes and their shade quad draw under the viewport's own scissor.
+			if (c[i].kind == R4_IMM)
+			{
+				const u32 view[4] = { (u32)S.vx, (u32)S.vy, (u32)S.vw, (u32)S.vh };
+				if (c[i].scissor != (u32)S.scissor || (S.scissor && memcmp(c[i].sc, view, 16)))
+					die("call %u: a glBegin draw under a clip scissor", i);
+			}
+			i++;
+			continue;
+		}
+		// A group: the draws of one range. An outside clip sends its range once per side of the rect.
+		u32 j = i;
+		while (j < n && (c[j].kind != R4_DRAW || (c[j].first == c[i].first && c[j].count == c[i].count &&
+		       c[j].color_mask == c[i].color_mask)))
+		{
+			if (c[j].kind == R4_CALL && c[j].op != 18 /* OP_SCISSOR */)
+				break;
+			j++;
+		}
+		const R4Call& d = c[i];
+		const bool dpass = d.color_mask == 0;
+		std::set<u32> ids;
+		for (u32 k = d.first; k < d.first + d.count; k++)
+			ids.insert((u32)bf(vb[(size_t)k * 9 + 4]));
+		const u32 first_id = (u32)bf(vb[(size_t)d.first * 9 + 4]);
+		std::vector<Rect> scs;
+		for (u32 k = i; k < j; k++)
+			if (c[k].kind == R4_DRAW)
+			{
+				const Rect r = { (int)c[k].sc[0], (int)c[k].sc[1], (int)(c[k].sc[0] + c[k].sc[2]), (int)(c[k].sc[1] + c[k].sc[3]) };
+				scs.push_back(r);
+				if (memcmp(&c[k].blend, &d.blend, (char*)&d.scissor - (char*)&d.blend) || c[k].shift != d.shift)
+					die("the draws of one range differ in state");
+			}
+		n_draws++;
+		// 3k: a run of sorted triangles. Each one is three corners of one strip, the newest corner last, wound as the
+		// strip winds it; the draw order is the farthest corner's W falling, and the submission order at equal W.
+		// + OPAQUE DEPTH, the first pass: the same triangles, counted per strip; they come before the pass's colour.
+		if (d.prim == 4 && dpass)
+		{
+			for (u32 k = d.first + 2; k < d.first + d.count; k += 3)
+			{
+				const u32 sid = (u32)bf(vb[(size_t)k * 9 + 4]);
+				if (sid >= S.nstrip)
+					die("draw %u: a depth-only triangle of strip %u", i, sid);
+				if (pass_of(sid, multi) == colour_pass)
+					die("draw %u: a depth-only triangle of strip %u after the colour of its pass", i, sid);
+				pre[sid]++;
+				n_opaque++;
+			}
+		}
+		else if (d.prim == 4)
+		{
+			const u32 fsid = (u32)bf(vb[(size_t)d.first * 9 + 4]);
+			const u32* fp = &S.param[S.strip[fsid * 4 + 3] * 4];
+			const u32 run_cull = ((fp[1] >> 27) & 3) ^ (u32)(S.sprite_cull && (fp[0] >> 29) == 5);
+			if (d.count % 3)
+				die("draw %u: %u vertices in a triangle run", i, d.count);
+			for (u32 k = d.first; k < d.first + d.count; k += 3)
+			{
+				u32 sid[3], kk[3];
+				for (int c3 = 0; c3 < 3; c3++)
+				{
+					sid[c3] = (u32)bf(vb[(size_t)(k + c3) * 9 + 4]);
+					kk[c3] = (u32)bf(vb[(size_t)(k + c3) * 9 + 5]);
+				}
+				if (sid[0] != sid[2] || sid[1] != sid[2] || sid[2] >= S.nstrip || kk[2] < 2 || kk[2] >= S.strip[sid[2] * 4 + 1])
+					die("draw %u: a triangle of strips %u %u %u corners %u %u %u", i, sid[0], sid[1], sid[2], kk[0], kk[1], kk[2]);
+				const u32* p = &S.param[S.strip[sid[2] * 4 + 3] * 4];
+				const u32 eff = ((p[1] >> 27) & 3) ^ (u32)(S.sprite_cull && (p[0] >> 29) == 5);
+				const u32 swap = (kk[2] & 1) ^ (u32)(eff >= 2 && eff != run_cull);
+				if (kk[0] != (swap ? kk[2] - 1 : kk[2] - 2) || kk[1] != (swap ? kk[2] - 2 : kk[2] - 1))
+					die("draw %u: strip %u triangle %u has corners %u %u (swap %u)", i, sid[2], kk[2], kk[0], kk[1], swap);
+				const u32 pass = pass_of(sid[2], multi), w = tri_w(sid[2], kk[2]);
+				colour_pass = pass;
+				if (pass == last_pass_tri && (w > last_w || (w == last_w && (sid[2] < last_sid || (sid[2] == last_sid && kk[2] <= last_kc)))))
+					die("draw %u: triangle %u/%u (W %08X) after %u/%u (W %08X)", i, sid[2], kk[2], w, last_sid, last_kc, last_w);
+				last_pass_tri = pass;
+				last_w = w;
+				last_sid = sid[2];
+				last_kc = kk[2];
+				tris[sid[2]]++;
+				n_sorted++;
+				n_sorted_swap += swap;
+			}
+		}
+		else if (d.prim != 5)
+			die("draw %u: primitive %u", i, d.prim);
+		for (u32 sid : ids)
+		{
+			if (sid >= S.nstrip)
+				die("draw %u: vertex of strip %u", i, sid);
+			const u32* st = &S.strip[sid * 4];
+			const u32* p = &S.param[st[3] * 4];
+			const u32 L = st[2], pass = pass_of(sid, multi);
+			const bool as = S.pass_autosort[pass < R4_PASSES ? pass : R4_PASSES - 1] != 0;
+			const u32 zwd = (p[1] >> 26) & 1, dm = p[1] >> 29, gouraud = (p[0] >> 1) & 1;
+			const u32 eff = ((p[1] >> 27) & 3) ^ (u32)(S.sprite_cull && (p[0] >> 29) == 5);
+			const u32 sec = L == 0 ? 0 : L == 4 ? 1 : 2;
+			// The sorted triangles are the autosorted translucent strips of a pass, with the row ON.
+			const bool trilist = S.tri_sort && L == 2 && as;
+			const bool trimode = trilist && !dpass;
+			// A depth-only draw is the List Passes depth pass (strips) or + OPAQUE DEPTH's first pass (triangles).
+			const bool opq = dpass && d.prim == 4;
+			if ((d.prim == 4) != (trimode || opq) || (opq && !(trilist && S.tri_sort == 3)))
+				die("draw %u strip %u (list %u, autosort %d): primitive %u with TR Triangle Sort %u", i, sid, L, as, d.prim, S.tri_sort);
+			const u32 key = pass * 4 + (dpass && !opq ? 3 : sec);
+			if (key < prev_key)
+				die("draw %u: strip %u (pass %u, list %u) after a later section", i, sid, pass, L);
+			prev_key = key;
+			if (d.cull != (u32)(eff >= 2))
+				die("draw %u strip %u: cull %u, want %u", i, sid, d.cull, eff >= 2);
+			if (sid == first_id && eff >= 2 && d.cull_face != (eff == 2 ? GL_FRONT : GL_BACK))
+				die("draw %u strip %u: cull face %X for mode %u", i, sid, d.cull_face, eff);
+			if ((p[0] >> 29) == 5 && ((p[1] >> 27) & 3) >= 2 && S.sprite_cull)
+				n_spr++;
+			if (opq)
+			{
+				// Only a polygon whose blend hides what is behind it is in this pass: at full alpha (the alpha test at
+				// the opaque level), or at any alpha (no alpha test). No blend, depth as the game asks.
+				const u32 si = (p[2] >> 29) & 7, di = (p[2] >> 26) & 7;
+				const u32 covers = si == 1 && di == 0 ? 2 : si == 4 && di == 5 ? 1 : 0;
+				if (!covers || d.blend || d.depth_func != GL_NEVER + k_cmp[S.depth_float][6] || d.depth_mask != !zwd ||
+				    d.alpha_test != (u32)(covers == 1) || d.alpha_func != 0x206 || d.alpha_ref != fb(240 / 255.0f))
+					die("draw %u strip %u: the opaque depth pass state (covers %u blend %u mask %u test %u func %X)", i, sid,
+					    covers, d.blend, d.depth_mask, d.alpha_test, d.alpha_func);
+			}
+			else if (dpass)
+			{
+				if (!(multi && S.passes == 2 && L == 2 && as && pass < last_pass))
+					die("draw %u: a depth pass over strip %u (pass %u of %u, list %u)", i, sid, pass, last_pass, L);
+				if (d.blend || d.depth_func != GL_NEVER + k_cmp[S.depth_float][6] || d.depth_mask != !zwd || d.texture)
+					die("draw %u strip %u: the depth pass state", i, sid);
+				depth[sid]++;
+				n_depth++;
+			}
+			else
+			{
+				const bool blend = L == 2 || (L == 4 && S.pt_blend) || (L == 0 && pass != 0);
+				if (d.blend != (u32)blend)
+					die("draw %u strip %u (list %u pass %u): blend %u", i, sid, L, pass, d.blend);
+				if (blend && (d.src != k_src[(p[2] >> 29) & 7] || d.dst != k_dst[(p[2] >> 26) & 7]))
+					die("draw %u strip %u: blend factors %X %X", i, sid, d.src, d.dst);
+				bool zw = !zwd;
+				if (L == 4 && S.pt_depth)
+					zw = true;
+				else if (L == 2 && as && (S.tr_nodepth || S.tri_sort == 1 || S.tri_sort == 3))
+					zw = false;
+				// The translucent list's own alpha test: above 0, where the polygon asks for it.
+				if (L == 2 && (d.alpha_func != 0x204 || d.alpha_ref != 0))
+					die("draw %u strip %u: alpha func %X ref %08X in the translucent list", i, sid, d.alpha_func, d.alpha_ref);
+				if (d.depth_mask != (u32)zw)
+					die("draw %u strip %u (list %u, autosort %d): depth mask %u, want %d", i, sid, L, as, d.depth_mask, zw);
+				const u32 cmp = L == 4 ? 6 : L == 2 && as ? 6 : dm;
+				if (d.depth_func != GL_NEVER + k_cmp[S.depth_float][cmp])
+					die("draw %u strip %u: depth func %X", i, sid, d.depth_func);
+				const bool flat = S.flat && !gouraud;
+				if (d.shade != (flat ? GL_FLAT : GL_SMOOTH) || d.shift != (flat && S.flat == 2 ? 2u : 0u))
+					die("draw %u strip %u: shade %X shift %u (flat %u, gouraud %u)", i, sid, d.shade, d.shift, S.flat, gouraud);
+				n_flat += flat;
+				n_shift += d.shift != 0;
+				if (!trimode)
+					colour[sid]++;
+			}
+			// The clip: every strip of the range has the range's scissors.
+			Rect r;
+			const u32 mode = clip_of(p, &r);
+			const Rect v = { S.vx, S.vy, S.vx + S.vw, S.vy + S.vh };
+			if (mode == 0)
+			{
+				if (scs.size() != 1 || d.scissor != (u32)S.scissor || (S.scissor && memcmp(&scs[0], &v, sizeof(v))))
+					die("draw %u strip %u: no clip, but scissor %u %d,%d-%d,%d x%zu", i, sid, d.scissor, scs[0].x0, scs[0].y0,
+					    scs[0].x1, scs[0].y1, scs.size());
+			}
+			else if (mode == 2)
+			{
+				if (scs.size() != 1 || !d.scissor || memcmp(&scs[0], &r, sizeof(r)) || !area(r))
+					die("draw %u strip %u: inside clip %d,%d-%d,%d, scissor %d,%d-%d,%d x%zu", i, sid, r.x0, r.y0, r.x1, r.y1,
+					    scs[0].x0, scs[0].y0, scs[0].x1, scs[0].y1, scs.size());
+				n_clip_in++;
+			}
+			else
+			{
+				int sum = 0;
+				for (size_t a = 0; a < scs.size(); a++)
+				{
+					if (!d.scissor || !area(scs[a]) || (area(r) && meet(scs[a], r)) || scs[a].x0 < v.x0 || scs[a].y0 < v.y0 ||
+					    scs[a].x1 > v.x1 || scs[a].y1 > v.y1)
+						die("draw %u strip %u: outside clip %d,%d-%d,%d in %d,%d-%d,%d: scissor %zu of %zu is %d,%d-%d,%d (on %u)", i,
+						    sid, r.x0, r.y0, r.x1, r.y1, v.x0, v.y0, v.x1, v.y1, a, scs.size(), scs[a].x0, scs[a].y0, scs[a].x1,
+						    scs[a].y1, d.scissor);
+					for (size_t b = 0; b < a; b++)
+						if (meet(scs[a], scs[b]))
+							die("draw %u strip %u: outside clip, two scissors overlap", i, sid);
+					sum += area(scs[a]);
+				}
+				if (sum != area(v) - area(r))
+					die("draw %u strip %u: outside clip covers %d pixels, want %d", i, sid, sum, area(v) - area(r));
+				n_clip_out++;
+			}
+		}
+		i = j;
+	}
+	// Every strip once, but one an inside clip cuts whole, or an outside clip over the whole viewport.
+	for (u32 sid = 0; sid < S.nstrip; sid++)
+	{
+		const u32* st = &S.strip[sid * 4];
+		const u32* p = &S.param[st[3] * 4];
+		const u32 pass = pass_of(sid, multi);
+		const bool as = S.pass_autosort[pass < R4_PASSES ? pass : R4_PASSES - 1] != 0;
+		Rect r;
+		const u32 mode = clip_of(p, &r);
+		const Rect v = { S.vx, S.vy, S.vx + S.vw, S.vy + S.vh };
+		const bool cut = (mode == 2 && !area(r)) || (mode == 3 && area(r) == area(v));
+		n_clip_all += cut;
+		if (S.tri_sort && st[2] == 2 && as)
+		{
+			// The triangles with no inf corner.
+			u32 want_tris = 0;
+			for (u32 k = 2; k < st[1] && !cut; k++)
+				want_tris += S.vtx[(st[0] + k) * 6 + 2] && S.vtx[(st[0] + k - 1) * 6 + 2] && S.vtx[(st[0] + k - 2) * 6 + 2];
+			const u32 si = (p[2] >> 29) & 7, di = (p[2] >> 26) & 7;
+			const bool covers = (si == 1 && di == 0) || (si == 4 && di == 5);
+			if (colour[sid] || tris[sid] != want_tris || pre[sid] != (S.tri_sort == 3 && covers ? want_tris : 0u))
+				die("strip %u: %u sorted triangles (%u depth-only), want %u (and %u strip draws)", sid, tris[sid], pre[sid],
+				    want_tris, colour[sid]);
+		}
+		else if (colour[sid] != (cut ? 0u : 1u) || tris[sid] || pre[sid])
+			die("strip %u drawn %u times (clip mode %u)", sid, colour[sid], mode);
+		const bool want_depth = multi && S.passes == 2 && st[2] == 2 && as && pass < last_pass && !cut;
+		// A later pass with no strip is not drawn; then the pass before it is the last one drawn, with a depth pass.
+		if (depth[sid] != (want_depth ? 1u : 0u))
+			die("strip %u: %u depth passes, want %d (pass %u of %u)", sid, depth[sid], want_depth, pass, last_pass);
+	}
+	// The volumes: the records of each pass drawn (an empty later pass gives its records to the next), of one list.
+	// Each volume's triangles once, and the group's again where a volume closes it (DepthMode 1 or 2).
+	std::vector<u32> want(S.nmtri, 0);
+	u32 cnt[2] = { 0, 0 };
+	for (u32 i = 0; i + 1 < S.nmvol; i++)
+		if (S.mvol[(i + 1) * 5] > S.mvol[i * 5])
+			cnt[S.mvol[i * 5 + 4] & 1]++;
+	const u32 vlist = (S.opt & 4) && S.mv_shared && cnt[1] > cnt[0];
+	n_trvol += vlist;
+	if (S.nstrip && S.nmvol >= 2 && S.nmtri)
+	{
+		u32 mv_lo = 0;
+		const u32 np = multi ? S.npass + 1 : 1;
+		for (u32 k = 0; k < np; k++)
+		{
+			const u32 lo = k ? S.pass_strip[k - 1] : 0, hi = k + 1 < np ? S.pass_strip[k] : S.nstrip;
+			const u32 mv_hi = k + 1 < np ? S.pass_mvol[k] : S.nmvol;
+			if (k && lo == hi)
+				continue;
+			int base = -1;
+			for (u32 i = mv_lo; i < mv_hi && i + 1 < S.nmvol; i++)
+			{
+				const u32 first = S.mvol[i * 5], end = S.mvol[(i + 1) * 5], depth = S.mvol[i * 5 + 2];
+				if (end == first || S.mvol[i * 5 + 4] != vlist)
+					continue;
+				if (base < 0)
+					base = (int)first;
+				for (u32 t = first; t < end; t++)
+					want[t]++;
+				if (depth == 1 || depth == 2)
+				{
+					for (u32 t = (u32)base; t < end; t++)
+						want[t]++;
+					base = -1;
+				}
+			}
+			mv_lo = mv_hi;
+		}
+	}
+	const float* tx;
+	const u32 nt = r4_new_tris(&tx);
+	std::vector<u32> got(S.nmtri, 0);
+	for (u32 k = 0; k < nt; k++)
+	{
+		if ((u32)tx[k] >= S.nmtri)
+			die("a volume vertex of triangle %u", (u32)tx[k]);
+		got[(u32)tx[k]]++;
+	}
+	for (u32 t = 0; t < S.nmtri; t++)
+	{
+		if (got[t] != want[t] * 3)
+			die("volume triangle %u drawn %u/3 times, want %u (list %u)", t, got[t], want[t], vlist);
+		n_tris += want[t];
+	}
+	n_multi += multi;
+}
+
+int main(int argc, char** argv)
+{
+	const u32 scenes = argc > 1 ? (u32)atoi(argv[1]) : 4000;
+	if (argc > 2)
+		rs ^= (uint64_t)atoi(argv[2]) * 0x9E3779B97F4A7C15ull;
+	uint64_t calls = 0;
+	for (g_scene = 0; g_scene < scenes; g_scene++)
+	{
+		gen_scene(false);
+		const R4Call *cn, *cr;
+		const u32 *vn, *vr;
+		u32 un, ur;
+		const u32 nn = r4_new_run(&S, &cn, &vn, &un);
+		const u32 nr = r4_ref_run(&S, &cr, &vr, &ur);
+		if (nn != nr)
+			die("rows off: %u GL calls, the old code makes %u", nn, nr);
+		for (u32 k = 0; k < nn; k++)
+			if (memcmp(&cn[k], &cr[k], sizeof(R4Call)))
+				die("rows off: call %u differs (kind %u/%u op %u/%u a %X/%X first %u/%u count %u/%u hash %X/%X)", k,
+				    cn[k].kind, cr[k].kind, cn[k].op, cr[k].op, cn[k].a[0], cr[k].a[0], cn[k].first, cr[k].first,
+				    cn[k].count, cr[k].count, cn[k].hash, cr[k].hash);
+		if (un != ur || (un && memcmp(vn, vr, (size_t)un * 36)))
+			die("rows off: the vertex block differs");
+		calls += nn;
+	}
+	printf("phase 1: %u scenes with the rows off make the old code's GL calls (%llu calls)\n", scenes, (unsigned long long)calls);
+	for (g_scene = 0; g_scene < scenes; g_scene++)
+	{
+		gen_scene(true);
+		const R4Call* cn;
+		const u32* vn;
+		u32 un;
+		const u32 nn = r4_new_run(&S, &cn, &vn, &un);
+		model(cn, nn, vn);
+	}
+	printf("PASS: %u scenes per phase; %llu draws; %llu depth-pass strips, %llu multi-pass scenes; clip: %llu inside, "
+	       "%llu outside, %llu strips cut whole; %llu flat strips (%llu with the colour shift); %llu sprite cull flips; "
+	       "%llu scenes with the TR volumes, %llu volume triangles; %llu sorted triangles (%llu with swapped corners, %llu in an opaque depth pass)\n",
+	       scenes, (unsigned long long)n_draws,
+	       (unsigned long long)n_depth, (unsigned long long)n_multi, (unsigned long long)n_clip_in,
+	       (unsigned long long)n_clip_out, (unsigned long long)n_clip_all, (unsigned long long)n_flat,
+	       (unsigned long long)n_shift, (unsigned long long)n_spr, (unsigned long long)n_trvol, (unsigned long long)n_tris,
+	       (unsigned long long)n_sorted, (unsigned long long)n_sorted_swap, (unsigned long long)n_opaque);
+	return 0;
+}

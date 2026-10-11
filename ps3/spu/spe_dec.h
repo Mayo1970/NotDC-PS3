@@ -8,8 +8,8 @@
 extern SpeEcho echo;
 
 void dec_init(const SpeSetup* setup);
-// RESET: the replay's ListInit, plus empty lists for ctx.
-void dec_reset(uint32_t ctx);
+// RESET: the replay's ListInit, plus empty lists for ctx; opt is the context's TAOPT_* from here on.
+void dec_reset(uint32_t ctx, uint32_t opt);
 // Records of one pulled chunk; n >= 1. 64-byte records may span two chunks.
 void dec_records(uint32_t ctx, const uint32_t* rec, uint32_t n);
 // Puts every list of ctx out, waits for the DMA and fills the counts of res.

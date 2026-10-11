@@ -18,7 +18,10 @@ void ps3spe_stats(double secs);
 
 // SH4 thread only: each call writes one ring entry and rings the bell. DATA returns its command number.
 u32 ps3spe_data(u32 ctx, const u8* raw, u32 from, u32 to);
-void ps3spe_reset(u32 ctx);
+// opt: the context's TAOPT_* (bundle 4) until its next reset.
+void ps3spe_reset(u32 ctx, u32 opt);
+// The TAOPT_* an SPU started now gives every context before its first reset.
+void ps3spe_boot_opt(u32 opt);
 void ps3spe_cont(u32 ctx, u32 pos);
 void ps3spe_soft();
 u32 ps3spe_fence(u32 ctx, u32 pos);

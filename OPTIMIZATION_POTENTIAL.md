@@ -147,10 +147,10 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P60 | Present only the renders the game shows | bug (image) | flashing screens and mirrors (South Park, NFL QB Club 2000, Vanishing Point, Metropolis Street Racer), FMV glitches; Quake III split screen | ~40-80 lines + ~30 | fits bundle 11; P2 has the swap rule as pacing only |
 | P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
 | P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
-| P63 | Face colours reset once per frame | bug | NHL 2K, NHL 2K2 (black players, black ice) | 1-2 lines per decoder | fits bundle 4 |
+| P63 | Face colours reset once per frame | bug | NHL 2K, NHL 2K2 (black players, black ice) | 1-2 lines per decoder | built 2026-10-11 in bundle 4 ("Face Reset", HW run, default ON) |
 | P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | fits bundle 8 |
 | P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | fits bundle 1 (with P7) |
-| P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | fits bundle 4; RTT parts: bundle 11 (P54) |
+| P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | 3 built 2026-10-11 in bundle 4 (volume cap, data gate, invalid types; HW run, default ON); RTT parts: bundle 11 (P54) |
 | P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | fits bundle 8 |
 | P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple: bundle 10; GD-ROM: bundle 2; G2: bundle 6 |
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 11 |
@@ -187,7 +187,11 @@ game never shows. Minicast has no new commits. Rayman 2 is plan 3j.
 
 ## 1. Speed
 
-### P1 Soul Calibur texture path  `[ ]` merged: plan section 0 (Soul Calibur faults)
+### P1 Soul Calibur texture path  `[ ]` merged: plan section 0 (Soul Calibur faults); steps 2-3 dropped by Matt 2026-10-10 (bundle 3)
+
+2026-10-10: step 2's goal is met by SPE Tex Decode (5.12 #4, default ON):
+the SPU writes the RSX order straight into RSX memory. Step 3 gives no
+image and no measured speed. Matt dropped both (plan section 0, bundle 3).
 
 2026-10-06: do P16 first. In the fight windows of `run526c.txt` (scratchpad
 of session 3f596c0b), `[texfmt]` shows yuv=840 565=210 p4=0-7 per 5 s. That
@@ -762,7 +766,7 @@ Adventure intro FMV, `[stall] dma`.
   right). Then the Flycast rule in both paths: 64-bit = a 32-byte copy into
   VRAM, 32-bit = `pvr_write_area1_32`. About 40 lines, no speed cost.
 
-### P8 Intensity colour clamp order  `[ ]`
+### P8 Intensity colour clamp order  `[~]` "Intensity Clamp" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt)
 
 - Reicast (`hw/pvr/ta_vtx.cpp:1001-1019`, comment "Fixes red dog"): the face
   colour is stored as saturated bytes at the header (`poly_float_color`,
@@ -785,7 +789,7 @@ Adventure intro FMV, `[stall] dma`.
     double precision is not fully pipelined (Cell documentation; not
     measured here).
 
-### P9 Hangs on rare input  `[~]` GD-ROM DMA clamp ("GD DMA Fix") and 2340-byte sectors built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; the rest open
+### P9 Hangs on rare input  `[~]` GD-ROM DMA clamp ("GD DMA Fix") and 2340-byte sectors built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; the TA replay built 2026-10-11 as "TA Bad Records", bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the maple and AICA items open
 
 None of these messages appears in the logs of past sessions (461 scratchpad
 text files checked). Each fix is 1-4 lines.
@@ -815,7 +819,7 @@ text files checked). Each fix is 1-4 lines.
   from 2352 (`&in[12]`).
 - More GD-ROM hangs, found in the Flycast review: P22.
 
-### P10 PVR register and list rules  `[ ]`
+### P10 PVR register and list rules  `[~]` "Region Array", "List Passes", "Tile Clip", "TA List Regs", "Core Reset" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); Empty Frame left out (Matt); the screen clip and scaler are bundle 11
 
 Games affected: unknown for each.
 - TA_LIST_INIT sets TA_ISP_CURRENT = TA_ISP_BASE (Reicast
@@ -1165,7 +1169,7 @@ More hangs on rare input (P9 has the first five). Flycast
   the Read_SB_ADST double-DMA guard (Flycast has the same at :414-427).
   3 lines. Separate from plan 6.5.
 
-### P25 Render rules (fixed function)  `[ ]`
+### P25 Render rules (fixed function)  `[~]` palette VQ and planar VQ built 2026-10-10 as "VQ Formats", bundle 3 (plan section 0), default ON in source (Matt), no game with such a texture run on HW yet; "PT Depth Write", "TR Depth Write", "PT Blend", "Sprite Cull", "Flat Shading" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt) but TR Depth Write (GAME: OFF IF SORTED fixes Rayman 2 water and breaks Sonic Adventure models; plan 3k "TR Triangle Sort" at + OPAQUE DEPTH fixes both, HW SUCCESS 2026-10-11, default in source) and Flat Shading (OFF: no difference seen on HW); the trilinear weights left out
 
 Each one is small and needs no shader.
 - Depth write. Flycast (`core/rend/gles/gldraw.cpp:261-280`, the same in
@@ -1196,6 +1200,13 @@ Each one is small and needs no shader.
   `TexCache.cpp:328-362` (`a7f200876`). Ours (`ps3/ps3_tex.cpp:171-172`)
   ignores VQ on palette textures and always treats VQ as twiddled, so these
   decode as garbage. Small.
+  - Built 2026-10-10 (bundle 3, the "VQ Formats" row). Flycast's forms:
+    palette VQ has one index byte per 4x4 (4-bit) or 2x4 (8-bit) block,
+    and a codebook entry is that block's 8 index bytes; planar VQ has one
+    index byte per 4 texels of a row (`texture_PLVQ`), not per 2x2 block.
+  - The trilinear weights above were left out of bundle 3 (Matt): the
+    vertex colour does not reach a decal texture, and SPE Build makes the
+    vertices on the SPU.
 
 ### P26 Framebuffer output: write watch, interlaced and 24-bit reads  `[ ]`
 
@@ -1234,7 +1245,7 @@ Each one is small and needs no shader.
   `SPG_CONTROL.interlace ? FB_R_SOF2 : FB_R_SOF1`
   (`core/hw/pvr/Renderer_if.cpp:633-637`).
 
-### P27 Modifier volumes in the TR list (Xtreme Sports)  `[ ]` merged: plan 3c
+### P27 Modifier volumes in the TR list (Xtreme Sports)  `[~]` merged: plan 3c; "TR Volumes" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt)
 
 - Flycast dev `f2013c652` (`origin/dev core/hw/pvr/ta_vtx.cpp:1303-1322`):
   when a pass shares the opaque and translucent modifier-volume pointers
@@ -1388,7 +1399,11 @@ nullAICA only (SPE AICA Sound OFF):
 - No byte-order issue. Risk: low.
 - HW check: ChuChu Rocket, Crazy Taxi, Sonic Adventure, Looney Tunes.
 
-### P45 Mipmaps: upload the whole mip chain  `[ ]`
+### P45 Mipmaps: upload the whole mip chain  `[x]` "Mipmaps" built 2026-10-10, bundle 3 (plan section 0), HW SUCCESS 2026-10-10, default ON in source
+
+Built 2026-10-10 with two changes to the form below (Matt's picks): the
+hash covers the top level only, as Flycast's lock does, and no LoD bias.
+With SPE Tex Decode ON the SPU decodes the levels of 8x8 and up.
 
 - Hardware: the PVR picks a mip level per pixel for every mipmapped
   texture. Ours draws level 0 only, so distant floors and roads alias.
@@ -1756,7 +1771,7 @@ Flycast's RTT games).
   P47 (the same function). Impact unknown: our comment says the BIOS asks
   for format 0, 100 bytes.
 
-### P63 Face colours reset once per frame  `[ ]`
+### P63 Face colours reset once per frame  `[~]` "Face Reset" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt)
 
 - Flycast `f599891e0` and `537c2a4ed` (NHL 2K2 black ice, NHL 2K black
   players): at every TA context parse it sets FaceBaseColor and
@@ -1815,7 +1830,7 @@ Flycast's RTT games).
 - About 6 lines. Byte order: none. P7 (LMMODE) is the other ch2 item.
   Bundle 1. Not Capcom vs. SNK 2: `cvs2.txt` has no `Ch2 abort` line.
 
-### P66 Small TA and renderer fixes  `[ ]`
+### P66 Small TA and renderer fixes  `[~]` "Volume Cap", "TA Data Gate" and the invalid TA types (in "TA Bad Records") built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the TA store size, the object list overflow, the RTT items and TA_YUV_TEX_BASE open
 
 None of the named games is in Matt's set.
 - Modifier-volume triangle cap: Flycast `c42799726` and `9f13ded50` (Jet
@@ -2213,7 +2228,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - Value: pixel evidence for visual faults (the Soul Calibur flicker). Cost:
   one RSX wait per shot. Risk: low.
 
-### P52 Anisotropic filtering and a texture filter override  `[ ]`
+### P52 Anisotropic filtering and a texture filter override  `[x]` "Anisotropic" and "Texture Filter" built 2026-10-10, bundle 3 (plan section 0), HW SUCCESS 2026-10-10, default 16x and GAME in source
 
 - Flycast: `rend.AnisotropicFiltering` (`core/cfg/option.cpp:110`, default
   1 = off), applied to every texture that is not nearest

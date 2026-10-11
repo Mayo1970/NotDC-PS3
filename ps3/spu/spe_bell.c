@@ -148,7 +148,7 @@ static void exec_cmd(const SpeCmd* m)
 		if (setup.draw)
 			wait_release(c->need);
 		c->pos = c->ncont = c->gaps = 0;
-		dec_reset(m->ctx);
+		dec_reset(m->ctx, m->a);
 		break;
 	case SPE_OP_CONT:
 		if (m->b != c->pos)

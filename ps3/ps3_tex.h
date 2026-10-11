@@ -8,7 +8,8 @@ struct DcParam;
 // The scene's params go to the SPU texture hash (5.12 #3) when it is on.
 void ps3tex_frame_begin(const DcParam* params, u32 nparam);
 // Binds the decoded texture on TMU0 and sets its filter/clamp from the TSP. pidx: the param's SPU hash slot.
-bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx);
+// punch_through: the list samples level 0 only (P45 Mipmaps).
+bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through);
 void ps3tex_reset();
 void ps3tex_stats(u32* decodes, u32* live);
 // Read and clear the window's bind split (timebase ticks) and hash volume.

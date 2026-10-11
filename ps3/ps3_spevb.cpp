@@ -102,7 +102,7 @@ static void note_wait(u64 t0)
 
 int ps3spevb_mode() { return s_up ? s_mode : SPEVB_OFF; }
 
-bool ps3spevb_request(u32 ctx, u32 nvtx, u32 nstrip, u32 nparam, void* vb, u32 cap, bool autosort)
+bool ps3spevb_request(u32 ctx, u32 nvtx, u32 nstrip, u32 nparam, void* vb, u32 cap, u32 flags)
 {
 	if (!s_up)
 		return false;
@@ -112,7 +112,7 @@ bool ps3spevb_request(u32 ctx, u32 nvtx, u32 nstrip, u32 nparam, void* vb, u32 c
 	s_bell.nparam = nparam;
 	s_bell.vb_ea = (u32)(uintptr_t)vb;
 	s_bell.cap = cap;
-	s_bell.flags = autosort ? SPEVB_AUTOSORT : 0;
+	s_bell.flags = flags;
 	// The fields land before seq; the store of seq kills the SPU's reservation.
 	__asm__ volatile("lwsync" ::: "memory");
 	s_bell.seq = ++s_seq;
