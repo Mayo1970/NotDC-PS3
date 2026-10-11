@@ -431,6 +431,10 @@ static Option s_audio[] = {
 	  "The LFO reset bit stays set after a write, as on hardware (P31). Set before boot." },
 	{ "SPE AICA Gain",   &g_spe_aica_gain_preset, OPT_RANGE,  NULL,        0, 50,100,5, "%d%%",
 	  "SPE AICA Sound output level. Below 100% leaves room before clipping (6.6). Live." },
+	{ "G2 DMA Small",    &g_g2_dma_small_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A sound DMA of 512 cycles or less ends at once (P24, Bangai-O). Needs DMA Fix. Live." },
+	{ "G2 DMA Read",     &g_g2_dma_read_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A sound DMA can copy wave RAM to system RAM (P9, SB_ADDIR 1). Live." },
 };
 
 static Option s_video[] = {
@@ -1103,6 +1107,7 @@ static int* const k_live_opts[] = {
 	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
 	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
+	&g_g2_dma_small_preset, &g_g2_dma_read_preset,
 };
 
 #define MAX_INGAME_OPTS 192

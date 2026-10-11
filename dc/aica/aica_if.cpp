@@ -12,10 +12,12 @@
 
 extern "C" int get_dma_fix_preset();
 extern "C" int get_aica_race_fix_preset();
+extern "C" int get_g2_dma_small_preset();
+extern "C" int get_g2_dma_read_preset();
 extern u32 g_aram_hz_dma;   // ps3/ps3_aica_spe.cpp: 1 while the G2 DMA copies
 
-// G2 DMA counters for [aicafix] (plan 6.5), taken by g2dma_take().
-static struct { u32 starts, bytes, busy, noaden, irqrd, dup, end31, star, stag, len; } s_g2;
+// G2 DMA counters for [aicafix] (plan 6.5, bundle 6), taken by g2dma_take().
+static struct { u32 starts, bytes, busy, noaden, irqrd, dup, end31, small, rd, star, stag, len; } s_g2;
 // AICA Race Fix: bytes the running transfer copied; STAR/STAG move by them at its end, as in Flycast.
 static u32 s_g2_len;
 
@@ -296,7 +298,9 @@ void Write_SB_ADST(u32 data)
         return;
     }
 
-    if (SB_ADDIR == 1)
+    // G2 DMA Read (P9, as Reicast and Flycast): SB_ADDIR 1 copies wave RAM to system RAM, with the same registers
+    const bool rd = SB_ADDIR == 1;
+    if (rd && !get_g2_dma_read_preset())
     {
         // Direction: AICA→system RAM is not implemented; warn and bail.
         msgboxf("AICA DMA: SB_ADDIR==1 (AICA→RAM) not supported",
@@ -304,8 +308,8 @@ void Write_SB_ADST(u32 data)
         return;
     }
 
-    u32 src = SB_ADSTAR;
-    u32 dst = SB_ADSTAG;
+    u32 src = rd ? SB_ADSTAG : SB_ADSTAR;
+    u32 dst = rd ? SB_ADSTAR : SB_ADSTAG;
     u32 len = clamp_dma_len(SB_ADLEN & 0x7FFFFFFF);
 
     // Transfer must be 4-byte aligned
@@ -328,6 +332,10 @@ void Write_SB_ADST(u32 data)
     s_g2.len  = len;
     if (SB_ADLEN & 0x80000000)
         s_g2.end31++;
+    s_g2.rd += rd;
+
+    // Without AICA Race Fix a start is taken while a transfer runs: that transfer's end is still due
+    const bool overlap = (SB_ADST & 1) != 0;
 
     if (race_fix)
     {
@@ -346,6 +354,15 @@ void Write_SB_ADST(u32 data)
         // DMA_FIX: deferred completion (see UpdateAicaDma). PSP completes inline below ~4096 cycles; we always defer
         // a few cycles at least, since instant completion is the exact bug class this investigation chases.
         int cycles = (int)(len * (SH4_CLOCK_EFF / 2 / 25000000));
+
+        // G2 DMA Small (P24, Flycast 1e661a4d4 + 439105856): 512 SH4 cycles or less end in the start call (Bangai-O,
+        // Nomad Soul). Longer ones stay scheduled (5c5c872af, the Sports Jam announcer).
+        if (get_g2_dma_small_preset() && cycles <= 512 && !overlap)
+        {
+            s_g2.small++;
+            aica_dma_complete();
+            return;
+        }
         if (cycles < 64) cycles = 64;
 
         // SCHED preset: complete via the deadline queue (ordered vs the other DMA/disc completions), not the
@@ -483,8 +500,8 @@ void aica_sb_Init()
 void aica_sb_Reset(bool Manual) {}
 void aica_sb_Term()             {}
 
-// [aicafix]: the G2 DMA counters since the last call (starts, bytes, busy, noaden, irqrd, dup, end31), then zeroed.
-void g2dma_take(u32 out[7])
+// [aicafix]: the G2 DMA counters since the last call (starts, bytes, busy, noaden, irqrd, dup, end31, small, rd), then zeroed.
+void g2dma_take(u32 out[9])
 {
     out[0] = s_g2.starts;
     out[1] = s_g2.bytes;
@@ -493,5 +510,7 @@ void g2dma_take(u32 out[7])
     out[4] = s_g2.irqrd;
     out[5] = s_g2.dup;
     out[6] = s_g2.end31;
-    s_g2.starts = s_g2.bytes = s_g2.busy = s_g2.noaden = s_g2.irqrd = s_g2.dup = s_g2.end31 = 0;
+    out[7] = s_g2.small;
+    out[8] = s_g2.rd;
+    s_g2.starts = s_g2.bytes = s_g2.busy = s_g2.noaden = s_g2.irqrd = s_g2.dup = s_g2.end31 = s_g2.small = s_g2.rd = 0;
 }

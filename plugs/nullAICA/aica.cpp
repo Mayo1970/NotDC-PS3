@@ -298,7 +298,7 @@ void aica_arm7s_dump(double wall_s)
         aica_montrace_dump();
 }
 
-void g2dma_take(u32 out[7]);                          // dc/aica/aica_if.cpp
+void g2dma_take(u32 out[9]);                          // dc/aica/aica_if.cpp
 void arm_spe_fix_take(u32 out[6]);                    // ps3/ps3_arm_spe.cpp
 extern u32 g_arm_races, g_arm_resets, g_arm_stale;    // vbaARM/arm7.cpp
 extern u32 g_aicafix_ca_reads, g_aicafix_ca_clamped;  // sgc_if.cpp
@@ -318,7 +318,7 @@ void aica_fix_dump(double wall_s)
     if (acc < 5.0)
         return;
     acc = 0.0;
-    u32 g[7], s[6];
+    u32 g[9], s[6];
     g2dma_take(g);
     if (g_arm_spe)
         arm_spe_fix_take(s);
@@ -333,10 +333,10 @@ void aica_fix_dump(double wall_s)
         g_arm_races = g_aicafix_raises = g_arm_resets = g_arm_stale = g_aicafix_ca_reads = g_aicafix_ca_clamped = 0;
     }
     printf("[aicafix] race %d reset %d clamp %d | g2 starts %u %u KB busy %u noaden %u irqrd %u dup %u end31 %u"
-           " | sh4 irq raises %u slices extended %u | arm7 resets %u stale latch %u | ca reads %u clamped %u"
-           " | nullAICA clip %u/%u\n",
-           race, rst, clamp, g[0], g[1] >> 10, g[2], g[3], g[4], g[5], g[6], s[1], s[0], s[2], s[3], s[4], s[5],
-           g_aica_clip[0], g_aica_clip[1]);
+           " small %u rd %u | sh4 irq raises %u slices extended %u | arm7 resets %u stale latch %u | ca reads %u"
+           " clamped %u | nullAICA clip %u/%u\n",
+           race, rst, clamp, g[0], g[1] >> 10, g[2], g[3], g[4], g[5], g[6], g[7], g[8], s[1], s[0], s[2], s[3], s[4],
+           s[5], g_aica_clip[0], g_aica_clip[1]);
     g_aica_clip[0] = g_aica_clip[1] = 0;
 }
 

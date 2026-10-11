@@ -1,5 +1,6 @@
 // OPTIMIZATION_PLAN 6.5 PC check: the real dc/aica/aica_if.cpp (AICA G2 DMA) against a model of the rules, with AICA
 // Race Fix off (the old rules) and on (Flycast a920ae590 + a44619931), DMA Fix and SCHED off and on, on random traffic.
+// Section 7, bundle 6: also G2 DMA Small (P24) and G2 DMA Read (P9) off and on, so 32 configurations.
 #include "types.h"
 #include "dc/mem/sb.h"
 #include "dc/asic/asic.h"
@@ -16,11 +17,13 @@ u32 SB_E2STAG, SB_E2STAR, SB_E2LEN, SB_E2DIR, SB_E2EN, SB_E2ST;
 __settings settings;
 void SaveSettings() {}
 s32 rtc_cycles;
-static int g_race, g_dmafix, g_sched;
+static int g_race, g_dmafix, g_sched, g_small, g_read;
 extern "C" int get_sh4_clock_preset() { return 200; }
 extern "C" int get_dma_fix_preset() { return g_dmafix; }
 extern "C" int get_sched_preset() { return g_sched; }
 extern "C" int get_aica_race_fix_preset() { return g_race; }
+extern "C" int get_g2_dma_small_preset() { return g_small; }
+extern "C" int get_g2_dma_read_preset() { return g_read; }
 u32 g_aram_hz_dma;   // plan 6.6: set around the copy; must be 0 again after every start
 static u32 g_msgbox;
 int msgboxf(const char*, unsigned int, ...) { g_msgbox++; return 0; }
@@ -37,7 +40,7 @@ void sh4_sched_request(int, int cycles) { g_cb_pend = cycles; }
 
 void aica_sb_Init();
 void UpdateAicaDma(u32 cycles);
-void g2dma_take(u32 out[7]);
+void g2dma_take(u32 out[9]);
 
 // ---- the model ----
 struct Model
@@ -47,6 +50,7 @@ struct Model
 	std::unordered_map<u32, u32> mem;
 };
 static Model M;
+static u32 g_m_small;   // transfers the model ended in the start call (P24)
 
 static u32 m_read32(u32 a) { auto it = M.mem.find(a); return it == M.mem.end() ? a * 2654435761u : it->second; }
 
@@ -74,7 +78,8 @@ static void m_write_adst(u32 d)
 		return;
 	if (!(M.en & 1))
 		return;
-	if (M.dir == 1)
+	const bool rd = M.dir == 1;
+	if (rd && !g_read)
 	{
 		M.msgbox++;
 		return;
@@ -83,8 +88,11 @@ static void m_write_adst(u32 d)
 	if (l > 8u * 1024 * 1024)
 		l = 8u * 1024 * 1024;
 	l &= ~3u;
+	// P9: the copy runs from the G2 address to the system address; the registers still move forward
+	const u32 src = rd ? M.stag : M.star, dst = rd ? M.star : M.stag;
 	for (u32 i = 0; i < l; i += 4)
-		M.mem[M.stag + i] = m_read32(M.star + i);
+		M.mem[dst + i] = m_read32(src + i);
+	const bool overlap = (M.st & 1) != 0;
 	if (g_race)
 	{
 		M.run_len = l;
@@ -99,6 +107,13 @@ static void m_write_adst(u32 d)
 	if (g_dmafix)
 	{
 		int c = (int)(l * 4);
+		// P24: 512 cycles or less end here, but not over a transfer that still runs (its end is due)
+		if (g_small && c <= 512 && !overlap)
+		{
+			g_m_small++;
+			m_complete();
+			return;
+		}
 		M.pend = c < 64 ? 64 : c;
 	}
 	else
@@ -192,7 +207,9 @@ static bool compare()
 	return !g_fail;
 }
 
-static u32 g_cov[8];   // starts, busy refusals, guard reads (1 while idle), completions, bit 31 ends, ADDIR 1, no ADEN
+// starts, busy refusals, guard reads (1 while idle), completions, bit 31 ends, ADDIR 1 refused, no ADEN, small ends,
+// ADDIR 1 transfers
+static u32 g_cov[9];
 
 // One run: ops of random G2 DMA traffic on a fresh state. Returns false on the first difference.
 static bool run(u32 ops)
@@ -224,7 +241,8 @@ static bool run(u32 ops)
 		}
 		else if (k < 26)
 		{
-			u32 v = rnd(4) ? rnd(0x200) * 4 : rnd(0x1000);
+			// one length in five sits at the 128-byte limit of P24
+			u32 v = rnd(5) == 0 ? 96 + rnd(18) * 4 : rnd(4) ? rnd(0x200) * 4 : rnd(0x1000);
 			if (rnd(2))
 				v |= 0x80000000u;
 			SB_ADLEN = M.len = v;
@@ -238,7 +256,7 @@ static bool run(u32 ops)
 		else if (k < 58)   // start
 		{
 			const u32 d = rnd(8) ? 1 : rnd(4);
-			const u32 st0 = M.st, ms0 = M.msgbox;
+			const u32 st0 = M.st, ms0 = M.msgbox, sm0 = g_m_small;
 			const bool running = (M.st & 1) != 0, en = (M.en & 1) != 0;
 			extern void Write_SB_ADST(u32 data);
 			Write_SB_ADST(d);
@@ -252,7 +270,11 @@ static bool run(u32 ops)
 				else if (M.msgbox != ms0)
 					g_cov[5]++;
 				else
+				{
 					g_cov[0]++;
+					g_cov[7] += g_m_small - sm0;
+					g_cov[8] += M.dir == 1;
+				}
 			}
 			(void)st0;
 		}
@@ -294,11 +316,15 @@ int main(int argc, char** argv)
 	const u32 ops = argc > 2 ? (u32)strtoul(argv[2], 0, 10) : 3000;
 	g_rng = 0x9E3779B97F4A7C15ull * (argc > 3 ? strtoull(argv[3], 0, 10) + 1 : 1);
 	u32 bad = 0, total = 0;
-	for (int cfg = 0; cfg < 8; cfg++)
+	u32 c[9];
+	g2dma_take(c);
+	for (int cfg = 0; cfg < 32; cfg++)
 	{
 		g_race = cfg & 1;
 		g_dmafix = (cfg >> 1) & 1;
 		g_sched = (cfg >> 2) & 1;
+		g_small = (cfg >> 3) & 1;
+		g_read = (cfg >> 4) & 1;
 		memset(g_cov, 0, sizeof(g_cov));
 		u32 ok = 0;
 		for (u32 r = 0; r < runs; r++)
@@ -307,16 +333,21 @@ int main(int argc, char** argv)
 			if (run(ops))
 				ok++;
 			else if (bad++ < 6)
-				printf("MISMATCH race %d dmafix %d sched %d run %u: %s real %08X model %08X\n", g_race, g_dmafix, g_sched, r,
-				       g_fail, g_fa, g_fb);
+				printf("MISMATCH race %d dmafix %d sched %d small %d read %d run %u: %s real %08X model %08X\n", g_race,
+				       g_dmafix, g_sched, g_small, g_read, r, g_fail, g_fa, g_fb);
 			total++;
 		}
-		printf("race %d dmafix %d sched %d: %u / %u runs | starts %u busy %u guard reads %u ends %u (bit 31 %u) addir1 %u"
-		       " no aden %u\n", g_race, g_dmafix, g_sched, ok, runs, g_cov[0], g_cov[1], g_cov[2], g_cov[3], g_cov[4],
-		       g_cov[5], g_cov[6]);
+		printf("race %d dmafix %d sched %d small %d read %d: %u / %u runs | starts %u busy %u guard reads %u ends %u"
+		       " (bit 31 %u) addir1 refused %u no aden %u small ends %u reads %u\n", g_race, g_dmafix, g_sched, g_small,
+		       g_read, ok, runs, g_cov[0], g_cov[1], g_cov[2], g_cov[3], g_cov[4], g_cov[5], g_cov[6], g_cov[7], g_cov[8]);
+		// The real code's own [aicafix] counts for the two rows
+		g2dma_take(c);
+		if (c[7] != g_cov[7] || c[8] != g_cov[8])
+		{
+			printf("MISMATCH counters: small %u model %u, rd %u model %u\n", c[7], g_cov[7], c[8], g_cov[8]);
+			bad++;
+		}
 	}
-	u32 c[7];
-	g2dma_take(c);
 	printf("%s (%u of %u runs)\n", bad ? "FAIL" : "PASS", total - bad, total);
 	return bad ? 1 : 0;
 }

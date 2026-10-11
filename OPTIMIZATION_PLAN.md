@@ -13,6 +13,90 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-11)
 
+**PARKED by Matt 2026-10-11 ("Let's park this for now. I will test it
+with Bangai-O and Nomad Soul later on."): bundle 6, G2 DMA (section 7;
+Matt 2026-10-11: "Work on bundle 6."). HW run 1 done, no fix for the
+ChuChu Rocket sound fault (F1; Matt after the run: "Neither fixes the
+issue."). The rows work and stay OFF. Open: Matt's test of Bangai-O and
+Nomad Soul, the games P24 names (step 5 below). Two rows at the end of the
+AUDIO page, both OFF by default, both live: G2 DMA Small (P24,
+`G2DmaSmall`) and G2 DMA Read (P9, `G2DmaRead`). The package of 19:22 on
+2026-10-11 has them
+(`build/notdc_ps3.pkg`, 1525680 bytes); it differs from the package of
+18:46 only in these two rows and their two log counts. Matt 2026-10-11
+20:20: "Start the listener." The listener of the bundle 5 session still
+runs (pid 6248) and owns port 18194, so no second one was started: HW run
+1 of bundle 6 is in `ps3log_b5_run2.txt` (scratchpad of session 01bbad3e)
+from line 392820, a ChuChu Rocket boot with both rows OFF.**
+- HW run 1, 2026-10-11 ~20:20, the package of 19:22, ChuChu Rocket, SH4
+  Clock 200 (`ps3log_b5_run2.txt`, lines 392820-394994): 14 `[aicafix]`
+  windows (~70 s), SPEED 100%, clean XMB exit, no fault line.
+  - Rows: both OFF at boot; both ON from line 394132; Small ON, Read OFF
+    at 394713; Small OFF, Read ON at 394796.
+  - G2 DMA Small acted: 12 transfers ended in the start call (`small` 2,
+    1, 7, 2, each equal to or below `g2 starts`); 7 of them in the window
+    of the 1846 KB load (12 starts). `small` reads 0 with the row OFF.
+  - G2 DMA Read did not act: `rd` 0 in every window. ChuChu Rocket sends
+    no SB_ADDIR = 1 transfer, so this row cannot change it.
+  - The run has no stage traffic: at most 12 starts per window, against
+    70-134 in the stage of `ps3log_b2_run1.txt`. So the row ran on the
+    boot, the load and the menus only.
+  - Matt: "Neither fixes the issue." Read here as F1 (the cues that loop
+    and play slowly). So the end time of the small G2 DMAs is not F1's
+    cause in the menus. F1 stays parked (section 6).
+- G2 DMA Small ON: an AICA G2 DMA of 512 SH4 cycles or less (128 bytes or
+  less at SH4 Clock 200) ends in its start call: the registers, then the
+  end IRQ (Flycast `aica_if.cpp:405-409`). Longer ones stay scheduled. It
+  acts only with DMA Fix ON (with DMA Fix OFF every transfer ends at once
+  already). A start over a running transfer (possible only with AICA Race
+  Fix OFF) keeps the scheduled path, so each start still has one end. The
+  Read_SB_ADST guard is not changed.
+- G2 DMA Read ON: SB_ADDIR = 1 copies from SB_ADSTAG (wave RAM) to
+  SB_ADSTAR (system RAM), word by word through the memory handlers, so no
+  byte order change. The registers and the end are those of a write. OFF:
+  the message box and no end, as before.
+- Where: `Write_SB_ADST` in `dc/aica/aica_if.cpp`. `[aicafix]` has two new
+  counts after `end31`: `small` (ends in the start call) and `rd`
+  (SB_ADDIR = 1 transfers). `[sndcfg]` prints both keys.
+- PC (WSL): `misc/g2dma_check` now has 32 configurations (AICA Race Fix,
+  DMA Fix, Scheduler, G2 DMA Small, G2 DMA Read) x 3 seeds, 40 runs each:
+  PASS, 3840 of 3840 runs, with 45373 small ends, 21687 SB_ADDIR = 1
+  transfers and 37936 refused ones; the two new `[aicafix]` counts equal
+  the model's. One length in five is at the 128-byte limit. `mutate.sh`:
+  21 of 21 planted bugs fail (9 new: the row tests, the limit one step
+  low and high, an end over a running transfer, the copy direction; the
+  "guard read returns 0" one named a line number and did not apply any
+  more, now a pattern). `misc/sysgate_check` with `G2SMALL=1`: 1200
+  timelines equal in the 3 gate modes, also with `RACEFIX=1` (about 1
+  timeline in 12 has a small end); `misc/clock_check` and
+  `misc/aicactl_check` (64 seeds) PASS. `sysgate_check` did not link
+  since bundle 4 (three names missing in its `stubs.inc`): added.
+- Test game: ChuChu Rocket, not Looney Tunes (Matt 2026-10-11: "Wait
+  Looney Tunes? And not ChuChu Rocket?"). The first HW steps named Looney
+  Tunes from the bundle text, with no look at the transfer sizes. The old
+  logs give the sizes (`[aicafix]`: starts and KB per 5 s window):
+  - ChuChu Rocket (`ps3log_b2_run1.txt`, lines 14474-20061): 470 starts
+    in 16 windows. Two loads are 1881 and 1846 KB. In the stage the
+    windows read 16 starts / 1 KB, 70 / 2, 88 / 4, 134 / 10, 107 / 6: 30
+    to 75 bytes each on average, below the 128-byte limit. Each one has
+    bit 31 of SB_ADLEN (`end31` = starts) and one guard read (`irqrd`).
+  - Looney Tunes (`ps3log_step3_run1.txt`): 340-363 starts / 168-181 KB
+    in a race, so 512 bytes each. They stay scheduled: the row does
+    nothing in a race.
+  - Crazy Taxi (`ps3log_b2_run1.txt`): 0 starts in 70 windows.
+  ChuChu Rocket also has the open echo fault (F1, section 6, parked). No
+  evidence links it to this row.
+- HW steps (package of 19:22, SH4 Clock 200, both rows OFF at boot):
+  1. ChuChu Rocket, a stage, 60 s: note `g2 starts` on `[aicafix]` and
+     the sound (the echo of F1 is there today).
+  2. SELECT menu, AUDIO: G2 DMA Small ON (live). 60 s more in a stage.
+     `small` shows the transfers that ended at once. Sound as before,
+     better or worse?
+  3. G2 DMA Read ON: `rd` shows SB_ADDIR = 1 transfers (0 expected).
+  4. Boot ChuChu Rocket with G2 DMA Small ON: the two loads and the menus.
+  5. Bangai-O and Nomad Soul, if Matt has them: boot with G2 DMA Small
+     OFF (startup freeze?), then ON.
+
 **Done: the Crazy Taxi crackle (F2, 6.6). HW SUCCESS 2026-10-11 with SPE
 AICA Sync at + SAMPLE SYNC (HW run 4; Matt, menus: "At +SAMPLE seems to
 work well? No crunch."; in the drive: "Pretty good!", then "Fully
@@ -7963,7 +8047,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
 | 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[ ]`; merged 2026-10-06: P11, P57 (TMU test); bundle 7 (section 7) |
-| 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (open), P31 (CA clamp, done); P24 in bundle 6 (section 7) |
+| 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (built 2026-10-11 as "G2 DMA Small", bundle 6, default OFF; HW run 1: no fix for F1 in ChuChu Rocket), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
 | 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | - |
@@ -8478,20 +8562,31 @@ file and line numbers) stays in `OPTIMIZATION_POTENTIAL.md` under the same
 P numbers. Its line numbers are from 2026-10-04 and 2026-10-06, so search
 for the function.
 
+Update 2026-10-11 (Matt: "Yes, I want these in the OPTIMIZATION PLAN."):
+the items of the sixth review (`OPTIMIZATION_POTENTIAL.md` P71-P85, line
+numbers from 2026-10-11) have a place here. Those that share the code of a
+bundle went into bundles 2, 4, 5, 8, 10 and 11 ("added 2026-10-11" in the
+table and in each bundle). Bundles 13, 14 and 15 are new: they hold the
+items that had no bundle, with P58 and P59 of the fifth review. P83 stays
+with GOALS.md G11. Nothing of this is built.
+
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
 | 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF |
-| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt) | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet |
+| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt); P77 and P82's lead-out stop added 2026-10-11, open | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls; P77: no endless loop at a disc swap | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet |
 | 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[x]` HW SUCCESS 2026-10-10 (Crazy Taxi, Sonic Adventure; section 0): P45, P52 and the P25 VQ formats, 4 rows on the TEXTURES page; default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (Matt); not packaged (the package of 22:06 has them OFF); VQ Formats not tested by a game that needs it; the P25 trilinear weights left out and P1 steps 2-3 dropped (Matt) |
-| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt) | image fixes in 8 named games and KOS homebrew; no render-thread hang | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
-| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE | the Crazy Taxi crackle (F2); the DSP ring in wave RAM | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
-| 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[ ]` |
+| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt); P79 and P80 added 2026-10-11, open | image fixes in 8 named games and KOS homebrew; no render-thread hang; P79: punch-through edges, P80: trapezoid sprites | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
+| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE; P81 and P82's EXTS read-back added 2026-10-11, open | the Crazy Taxi crackle (F2); the DSP ring in wave RAM; P81: a probe for the Looney Tunes balance and the SPU clipping | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
+| 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[ ]` |
-| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d) | correctness; speed at noise level | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
+| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[ ]`; 5.37 done 2026-10-10, HW SUCCESS (section 0) |
 | 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
-| 10 | Maple | P29, P9 SB_MDST, P13, P37 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game | `[ ]` |
-| 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note) | 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
+| 10 | Maple | P29, P9 SB_MDST, P13, P37; P84's stick dead zone added 2026-10-11 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game; a smooth analog stick | `[ ]` |
+| 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note); P75 and P76 added 2026-10-11 | the Crazy Taxi pause freeze (P75, first); 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
 | 12 | HW test tools | P50, P51 (section 0, Soul Calibur faults) | SPEED on the TV without the UDP listener; PNG evidence | `[ ]` |
+| 13 | MMU store queues | P58, P78 (MMUCR mask, TLB data array 2), P74 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; opens bundle 1's P7 and P26 rows | `[ ]` added 2026-10-11 |
+| 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[ ]` added 2026-10-11 |
+| 15 | Flash defaults | P59 (corrects 3i), P85 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit | `[ ]` added 2026-10-11 |
 
 Main gains:
 - Speed: little is left. Only bundle 1 gives SH4-thread time, and it is
@@ -8500,6 +8595,11 @@ Main gains:
   section 0); the 5.18 profile measured only Crazy Taxi.
 - Most games fixed: bundle 2. Most visible: bundle 3 (mipmaps). Audible:
   bundle 5 (the crackle).
+- Update 2026-10-11: P71 (bundle 8) is the first item that targets the
+  Looney Tunes race. It acts on emulated time, not on host speed, and it
+  can cost SPEED. Bundle 14 gives render-thread time (measured: the bind
+  is 11 points of busy in Crazy Taxi at + OPAQUE DEPTH). Bundle 13 lets
+  four games boot. P75 (bundle 11) ends the Crazy Taxi pause freeze.
 
 ### Bundle 1: VRAM and TA-area writes  `[x]` HW 2026-10-08, P43 default ON, the rest OFF (section 0)
 
@@ -8564,6 +8664,14 @@ Main gains:
 - HW: ChuChu Rocket and Looney Tunes CD-DA, the BIOS CD player, Crazy Taxi
   loading; a GDI set with spaces in its file names; a two-disc game for
   P34.
+- Added 2026-10-11 (sixth review; open, nothing built):
+  - P77, before the first HW test of Disc Swap. `gdrom_disc_swap()`
+    clears the command in flight but not the state, so a swap during a
+    command ends in an endless `verify`. Flycast stopped these clears in
+    `cbd01fba3`. Drop them (about 8 lines less). Then the open-lid phase
+    before the BUSY second (about 12 lines), if a game ignores the swap.
+  - P82's stop of CD-DA at the lead-out (about 8 lines; "not taken" in
+    section 0, low).
 
 ### Bundle 3: Texture path  `[x]` HW SUCCESS 2026-10-10, default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (section 0)
 
@@ -8631,6 +8739,14 @@ Main gains:
 - Checks: the S2 compare (SPE Draw OFF, SPE Doorbell ON) stays bit-exact,
   then SPE Draw ON for the image. HW: Crazy Taxi, Sonic Adventure, Soul
   Calibur; the named games only if Matt has them.
+- Added 2026-10-11 (sixth review; open, nothing built):
+  - P79, a third level of the PT Blend row: a punch-through texel that
+    passes the alpha test draws with alpha 1, as Flycast GL (its DX9
+    disagrees). Jet Grind Radio then draws its PT list with no blend.
+    About 6 lines.
+  - P80: the sprite's fourth corner from the plane of the other three, in
+    both decoders (`misc/ta4_check`). About 15 lines PPU, 30 SPU.
+  - The speed follow-ups of 3k are in bundle 14.
 
 ### Bundle 5: AICA RAM coherency  `[~]` HW runs 1-4 2026-10-11: SPE AICA Sync SUCCESS (default + SAMPLE SYNC), DSP Ring RAM no fault (default ON); 4 rows OFF (section 0)
 
@@ -8660,9 +8776,21 @@ Main gains:
 - Checks: `misc/spu_sim`, `misc/a2_check` and `misc/a3_check` stay
   bit-exact (6.6). HW: the 6.6 steps (Crazy Taxi main menu music at full
   speed), Looney Tunes loads.
+- Added 2026-10-11 (sixth review; open, nothing built):
+  - P81, for the Looney Tunes balance and the SPU clipping (both open in
+    section 0). Two tests with no code first: a Crazy Taxi drive with SPE
+    AICA DSP OFF (read `peak=`), and Looney Tunes against Flycast with its
+    DSP ON. Then a probe on the `[aica-spe] sound` line (about 45 lines).
+    No fix is known. The boot of the complaint played no CD audio, so the
+    lead "the music is CD audio (EXTS)" does not hold for it.
+  - P82's EXTS read-back, inside the DSP Reg Reads row (about 10 lines).
 
-### Bundle 6: G2 DMA  `[ ]`
+### Bundle 6: G2 DMA  `[~]` PARKED 2026-10-11 (Matt); built, default OFF; HW run 1 (ChuChu Rocket): works, no fix for F1; Matt tests Bangai-O and Nomad Soul later (section 0)
 
+- Built (2026-10-11): both items below, as the rows G2 DMA Small and G2
+  DMA Read at the end of the AUDIO page, live. A small start over a
+  running transfer (AICA Race Fix OFF only) stays scheduled. The text
+  below is the plan of 2026-10-07.
 - Items: P24 (6.5: small transfers complete at once), P9 (SB_ADDIR = 1:
   wave RAM to system RAM).
 - Shared code: the G2 DMA start in `dc/aica/aica_if.cpp`, next to the AICA
@@ -8676,8 +8804,9 @@ Main gains:
 - Gain: the Bangai-O startup freeze, the Nomad Soul freeze and crash
   (P24). No endless wait on a DMA from wave RAM (P9; no game known, the
   Looney Tunes logs have no such message). About 5 lines.
-- HW: Looney Tunes (it uses G2 DMA; Crazy Taxi does not); Bangai-O and
-  Nomad Soul only if Matt has them.
+- HW: ChuChu Rocket (its stage sends G2 DMAs of 30-75 bytes; Looney Tunes
+  sends 512-byte ones, above the limit; Crazy Taxi sends none; section 0,
+  corrected 2026-10-11); Bangai-O and Nomad Soul only if Matt has them.
 
 ### Bundle 7: Time base  `[ ]`
 
@@ -8720,6 +8849,16 @@ Main gains:
   noise level (5.37, `bcache`), no user seen (5.39: no PR=1 game; JitMac:
   no mac.l or mac.w in the Crazy Taxi fallback census), unverified (5.40).
 - HW: Crazy Taxi and Sonic Adventure (`[IFB]`, same-load VPS).
+- Added 2026-10-11 (sixth review; open, nothing built):
+  - P71. The decoder's idle rule (`dc/sh4/rec_v2/decoder.cpp`) bills each
+    small block that reads memory and ends in a conditional branch x30
+    (Reicast x3, Flycast no rule). It hits work blocks: 20% of the billed
+    cycles in the Looney Tunes race. An option X30 / X3 BACKWARD / OFF,
+    about 3 lines. It is the only item of this bundle with a visible
+    effect, and it can cost SPEED (the host runs more real ops per
+    emulated second), so it gets its own HW runs: the Looney Tunes race
+    (RPS against 26.4), Phantasy Star Online, a dense Crazy Taxi drive.
+  - P78's RFCR (read-only 17, as Flycast; 2 lines).
 
 ### Bundle 9: ARM7 engines  `[ ]`
 
@@ -8754,6 +8893,11 @@ Main gains:
 - Trap: today the saves are one file per port (`vmu_save_A1.bin` in
   `/dev_hdd0/savedata/vmu`). P37 changes the file names.
 - HW: Sonic Adventure VMU save and load, Crazy Taxi controls.
+- Added 2026-10-11 (sixth review; open, nothing built): P84's stick dead
+  zone. Today each axis is cut alone below 20, with no rescale; Flycast
+  uses a radial dead zone with a rescale and a limit of 128. About 15
+  lines in `ps3/ps3_input.cpp`. G12 (the second stick, GOALS.md) edits the
+  same files, so it can share the session; P84 has its exact edits.
 
 ### Bundle 11: Output stage  `[ ]`
 
@@ -8776,6 +8920,18 @@ Main gains:
   not see cheats that patch code (P36).
 - HW: Crazy Taxi and Sonic Adventure at 16:9, a 2D screen; an RTT game
   only if Matt has one.
+- Added 2026-10-11 (sixth review; open, nothing built):
+  - P75 first: it is a freeze fix. The Crazy Taxi pause (START in a
+    drive, section 0) is a render to texture, and `ps3_video_readback()`
+    calls PSL1GHT's `rsxSetTransferData`, which never returns. 3 lines,
+    and 2 for `rsxFinish` (it waits only on its first call). HW: START in
+    a drive, twice in one boot.
+  - Then P66's RTT scaler (the Crazy Taxi pause background) and P76: RTT
+    and 2D presents dropped silently while a flip is queued, the RTT size
+    from the tile clip, no RTT in pack modes 4-7, `fb_line_double`, blank
+    video. 1-8 lines each.
+  - So the line above ("none of our test games, `rtt=0/0`") is out of
+    date: Crazy Taxi is an RTT game.
 
 ### Bundle 12: HW test tools  `[ ]`
 
@@ -8796,7 +8952,88 @@ Main gains:
 - HW: any game: the text in the left pillarbox bar, a PNG under
   `/dev_hdd0/data/NotDC/`.
 
+### Bundle 13: MMU store queues  `[ ]` added 2026-10-11
+
+- Items: P58 (the MMUCR fields on big endian, with the JIT cache clear and
+  the V = 0 skip), P78 (the MMUCR write mask, the TLB data array 2
+  writes), P74 (a flat store-queue flush for AT = 1).
+- Shared code: `dc/sh4/ccn.h` (the bitfield) and `dc/sh4/ccn.cpp`
+  (`CCN_MMUCR_write()`), `dc/mem/mmu.cpp` (`UTLB_Sync()`, `sq_remap`),
+  `dc/mem/sh4_internal_reg.cpp` (the F3 and F7 arrays),
+  `dc/sh4/sh4_sqw.h`, and the JIT PREF in `ps3/ps3_driver.cpp`.
+- Order:
+  1. P58 with the write mask. The cache clear must run on both AT edges:
+     the PREF target, JIT PREFETCH and JIT GUARD REUSE read AT at compile
+     time. Add a log line per MMUCR write (the values and their order in
+     the four games are not known).
+  2. The data array 2 writes (2 lines each).
+  3. P74 last, and only if a game is SH4-bound after the fix.
+- Check before HW: the devkitPPC `-S` test, or a boot self-test line that
+  writes 0x00000105 and prints AT, TI and URC (P58).
+- Gain: Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS
+  logo (they stop there today: section 0, "Open, separate"). It opens the
+  two rows of bundle 1 that never ran: P7 (LMMODE, with Rez) and P26 (FB
+  Write Watch, with Ikaruga). P74: these games get TA SQ Direct and RAM SQ
+  Direct (gain not measured).
+- Risk: a game that turns AT on then sends its store-queue flushes
+  through the TLB. WinCE games still need P38.
+- HW: the four games; Crazy Taxi, Sonic Adventure and Looney Tunes
+  unchanged.
+
+### Bundle 14: Render-thread draw cost  `[ ]` added 2026-10-11
+
+- Items: P72 (5.10: the ps3gl texture bind scan, compare before set), P73
+  (the + OPAQUE DEPTH first-pass skips, the merge key bits that the draw
+  never reads, the texture lifetime, an index list for the sorted
+  triangles).
+- Shared code: `ps3/ps3gl/ps3gl_textures.c`, `ps3gl_states.c` and
+  `ps3gl_vertices.c`; `apply_param()` and the 3k passes in
+  `ps3/ps3_rend.cpp`; `ps3/ps3_tex.cpp` (the lifetime).
+- Shared measure: one Crazy Taxi drive at TR Triangle Sort + OPAQUE DEPTH:
+  render `busy`, its `gl` share, TR draws per render, SPEED at 11-13K
+  vertices. Today (HW run 5 of 3k): busy 45.2%, of it the bind 11.1 and
+  the sort 3.6; 4.17 us per draw, 1.37 us of it the bind.
+- Order: P72's bind (about 10 lines), then its compares (about 40), then
+  P73's first-pass skips (4 lines). A counter before the merge key and
+  before the texture lifetime. The index list last (its ceiling is 4.6
+  points of busy).
+- Trap: each place that changes RSX state behind ps3gl (the UI, the
+  framebuffer present, the RTT) must reset the new state cache.
+- Gain: the parked cost of 3k (Crazy Taxi SPEED 97.9% in 11-13K vertex
+  scenes, Sonic Adventure busy 20%). Every opaque draw binds too. The
+  picture does not change.
+- Checks: `misc/rend4_check` (the draw trace stays equal) and
+  `misc/spevb_check` (the merge key). HW: Crazy Taxi and Sonic Adventure
+  at + OPAQUE DEPTH.
+
+### Bundle 15: Flash defaults  `[ ]` added 2026-10-11
+
+- Items: P59 (the broadcast byte: NTSC, as Flycast writes it; corrects
+  3i), P85 (the language of a new syscfg block, a flash built when
+  `dc_flash.bin` is missing, the console ID, the flash save on the forced
+  exit).
+- Shared code: `dc/flash_fix.cpp` (`dc_flash_set_time()`,
+  `dc_flash_set_region()`, `dc_flash_restore_region()`, `lookup_block`,
+  `alloc_block`), and the exit path in `ps3/ps3_main.cpp` for the save.
+- Byte order: none. The flash is read and written as bytes (`wr16`).
+- Gain: Capcom vs. SNK 2 (JP), Border Down (JP) and Rayman 2 (US) play at
+  60 Hz, not 50 (P59). A new flash boots in English, not Japanese. The
+  settings that the BIOS saved survive a forced exit. The console ID is
+  also a fact for G11.
+- Cost: a 60 Hz game has 20% more frames per second to run and draw
+  (P59).
+- Not here: the dial-up account blocks of P83 use the same code, but only
+  G11 needs them. P37's BIOS language option stays in bundle 10; P85 only
+  sets the default.
+- HW: the three games (VPS about 60, SPEED, the menus); one boot with a
+  new flash; Crazy Taxi unchanged.
+
 ### Not bundled
+
+- Added 2026-10-11: P83 (the G11 modem facts) belongs to GOALS.md G11.
+  P82's nullAICA ALFO depth acts only with SPE AICA Sound OFF, as P31's
+  nullAICA-only fixes below; P82's ARMRST read-back has no user. P84's
+  G12 edits belong to GOALS.md G12 (they can share bundle 10's session).
 
 - P1 steps 0-1 and P2: no target left. Soul Calibur runs at full speed
   since P16 (decode 0.2-1.0% of the render thread, no dropped renders),

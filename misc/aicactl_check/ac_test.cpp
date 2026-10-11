@@ -59,7 +59,7 @@ bool g_aram_hz_stale;
 u32 g_aram_hz_dma, g_aram_ring_base, g_aram_ring_len;
 void aram_hz_hit(u32, u32) {}
 void ps3aica_ring_wrote(u32) {}
-void g2dma_take(u32 out[7]) { for (int i = 0; i < 7; i++) out[i] = 0; }
+void g2dma_take(u32 out[9]) { for (int i = 0; i < 9; i++) out[i] = 0; }
 void arm_spe_fix_take(u32 out[6]) { for (int i = 0; i < 6; i++) out[i] = 0; }
 bool arm_reset_latch();   // arm_mem.cpp
 // The reference's diagnostic prints go nowhere: these replace newlib's, which would stop the SPU for the PPU.

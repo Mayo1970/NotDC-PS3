@@ -19,6 +19,12 @@ uint64_t ps3_timebase_hz = 1000000000ull;
 u32 SB_ADSTAR, SB_ADSTAG, SB_ADLEN, SB_ADDIR, SB_ADEN, SB_ADST, SB_ADSUSP;
 // Added after 5.36: AICA Race Fix (RACEFIX=1 runs its G2 DMA rules) and the bundle 1 framebuffer watch.
 extern "C" int get_aica_race_fix_preset() { return getenv("RACEFIX") != 0; }
+// Bundle 6: G2SMALL=1 ends the short G2 DMAs in the start call (P24); the guest here never sets SB_ADDIR.
+extern "C" int get_g2_dma_small_preset() { return getenv("G2SMALL") != 0; }
+extern "C" int get_g2_dma_read_preset() { return 0; }
+// Named by regs.cpp since bundle 4 and by aica_if.cpp since bundle 5; the presets at their source defaults.
+int g_core_reset_preset = 1, g_ta_list_regs_preset = 1;
+u32 g_aram_hz_dma;
 void aica_fix_dump(double s) { (void)s; }
 bool g_fb_dirty;
 void fb_watch_set(u32 s, u32 n) { (void)s; (void)n; }

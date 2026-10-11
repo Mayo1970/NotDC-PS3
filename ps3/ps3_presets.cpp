@@ -154,6 +154,9 @@ int g_dsp_reg_read_preset  = 0;   // 1 = a read of TEMP, MEMS, MIXS or EFREG ret
 int g_aica_mono_fix_preset = 0;   // 1 = MONO output is (L + R) / 2, as Flycast 136ce267d (P31)
 int g_aica_lfore_preset    = 0;   // 1 = LFORE stays set after a write, as Flycast 27fd0d426 and caique (P31)
 int g_spe_aica_gain_preset = 100; // SPE AICA Sound output level in percent before the 16-bit clamp; 100 = none (6.6 clipping)
+// OPTIMIZATION_PLAN section 7, bundle 6: a row is off until it is cleared on hardware.
+int g_g2_dma_small_preset  = 0;   // 1 = an AICA G2 DMA of 512 SH4 cycles or less ends in its start call (P24)
+int g_g2_dma_read_preset   = 0;   // 1 = an AICA G2 DMA with SB_ADDIR 1 copies wave RAM to system RAM (P9)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -292,6 +295,8 @@ static const CfgItem s_items[] = {
 	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
 	{ "AicaLfore",     &g_aica_lfore_preset },
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
+	{ "G2DmaSmall",    &g_g2_dma_small_preset },
+	{ "G2DmaRead",     &g_g2_dma_read_preset },
 };
 
 void ps3_presets_load(void)
@@ -337,6 +342,8 @@ static const CfgItem s_snd_items[] = {
 	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
 	{ "AicaLfore",     &g_aica_lfore_preset },
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
+	{ "G2DmaSmall",    &g_g2_dma_small_preset },
+	{ "G2DmaRead",     &g_g2_dma_read_preset },
 };
 #define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
 
@@ -545,6 +552,9 @@ int get_aica_mono_fix_preset() { return g_aica_mono_fix_preset; }
 int get_aica_lfore_preset()    { return g_aica_lfore_preset; }
 // OPTIMIZATION_PLAN 6.6, the clipping step: read at each CHECK.
 int get_spe_aica_gain_preset() { return g_spe_aica_gain_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 6: read at each G2 DMA start by dc/aica/aica_if.cpp.
+int get_g2_dma_small_preset()  { return g_g2_dma_small_preset; }
+int get_g2_dma_read_preset()   { return g_g2_dma_read_preset; }
 
 // JIT backend presets; fixed 0 until OPTIMIZATION_PLAN 5 clears one. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
