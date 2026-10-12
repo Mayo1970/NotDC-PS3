@@ -730,6 +730,7 @@ lbl_unknown_block:
 			u32 opcode = CPUReadMemoryQuick(decode_pc);
 			u32 cond = opcode >> 28;
 			scan.insn(opcode);
+			arm_p49_scan(decode_pc, opcode);
 
 			// The entrypoint is the instruction's first uop: the guard of a conditional one (op uop in the next slot),
 			// so a branch into it still tests the condition; for AL, the op itself.

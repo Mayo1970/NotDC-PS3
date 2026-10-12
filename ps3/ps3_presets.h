@@ -19,6 +19,7 @@ extern int g_arm7_idle_skip_preset;
 extern int g_aica_kyonb_preset;
 extern int g_aica_race_fix_preset;
 extern int g_arm7_reset_fix_preset;
+extern int g_arm7_str_align_preset;
 extern int g_aica_ca_clamp_preset;
 extern int g_audio_buffers_preset;
 extern int g_exit_fix_preset;

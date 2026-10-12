@@ -11,6 +11,13 @@ u32  arm_GetReg(int n);
 void arm_SetReg(int n, u32 value);
 u32  arm_GetNextPC();
 void arm_SetNextPC(u32 value);
+u32  arm_GetNZCV();
+void arm_SetNZCV(u32 value);
+
+// P49 census (log only) and the unaligned word stores (arm7.cpp)
+void arm_p49_scan(u32 pc, u32 op);
+void arm_unal_store(u32 addr);
+void arm_p49_quiet(bool quiet);
 
 // Runs the embedded ARM7DI conformance tests.
 // Returns the number of FAILED tests (0 == all passed).

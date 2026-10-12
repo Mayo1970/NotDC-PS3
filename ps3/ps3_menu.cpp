@@ -422,6 +422,8 @@ static Option s_audio[] = {
 	  "Flycast's SH4/ARM7 race fixes: G2 DMA guards, +50 ARM7 ticks. Set before boot." },
 	{ "ARM7 Reset Fix",  &g_arm7_reset_fix_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
 	  "An ARM7 reset enters SVC mode and clears the FIQ latch. Set before boot." },
+	{ "ARM7 STR Align",  &g_arm7_str_align_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "An unaligned ARM7 word store writes the aligned word (6.8). Set before boot." },
 	{ "CA Clamp",        &g_aica_ca_clamp_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Channel position reads stop at LEA-3 with SPE AICA too. Set before boot." },
 	{ "SPE AICA Sync",   &g_spe_aica_sync_preset, OPT_CHOICE, k_aicasync,  0, 0,0,0, NULL,

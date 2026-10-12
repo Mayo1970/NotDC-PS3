@@ -1785,6 +1785,7 @@ static void* compile_block(u32 block_pc)
 	{
 		mark_insn_start();
 		u32 op = arm_ReadMem32(pc & ARAM_MASK);
+		arm_p49_scan(pc, op);
 		emit_insn(block_pc, pc, op, last, blockSafe);
 		pc += 4;
 		if (last)

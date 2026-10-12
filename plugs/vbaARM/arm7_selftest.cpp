@@ -3,10 +3,14 @@
 
 #include "arm7.h"
 #include "arm_mem.h"
+#include "arm7_jit.h"
 #include "arm7_selftest_data.h"
 
 #include "ps3_timebase.h"
 #define printf(...) printf(__VA_ARGS__)
+#include "arm7_optest.h"
+
+extern "C" int get_arm7_str_align_preset();
 
 // Core internals we drive directly.
 extern u8* arm_aica_ram;
@@ -95,6 +99,35 @@ static bool run_one(const Arm7SelfTest& t)
     return false;
 }
 
+// arm7_optest.h on the engine arm_Run() uses now (the ARM7 JIT at boot), in the real sound RAM.
+struct OpTestIo
+{
+    void reset() { arm_SetEnabled(false); arm_SetEnabled(true); }
+    void flush() { arm_FlushCode(); }
+    u32  reg(int n) { return arm_GetReg(n); }
+    void set_reg(int n, u32 v) { arm_SetReg(n, v); }
+    u32  nzcv() { return arm_GetNZCV(); }
+    void set_nzcv(u32 v) { arm_SetNZCV(v); }
+    u32  rd32(u32 a) { return arm_ReadMem32(a); }
+    void wr32(u32 a, u32 v) { arm_WriteMem32(a, v); }
+    u32  pc() { return arm_GetNextPC(); }
+    void set_pc(u32 pc) { arm_SetNextPC(pc); arm_SetReg(RN_R15, pc + 4); }
+    void run(u32 ticks) { arm_Run(ticks); }
+    bool str_align() { return get_arm7_str_align_preset() != 0; }
+};
+
+// Both passes of the op tests. Returns the failed checks.
+static int run_op_tests()
+{
+    OpTestIo io;
+    A7TStats st = { 0, 0, 0 };
+    a7t_run(io, false, "[ARM7TEST]  ", st);
+    a7t_run(io, true, "[ARM7TEST]  ", st);
+    printf("[ARM7TEST] op tests (Flycast AicaArmTest + STR cases), step and block: %u checks in %u runs, %u failed\n",
+           st.checks, st.runs, st.fails);
+    return (int)st.fails;
+}
+
 int arm_RunSelfTests()
 {
     printf("\n==================== ARM7DI SELF-TEST ====================\n");
@@ -114,6 +147,7 @@ int arm_RunSelfTests()
         return -1;
     }
     s_test_aram = saved_aram;
+    arm_p49_quiet(true);   // the census and the unaligned-store counts are for game code
 
     int failed = 0;
     for (int i = 0; i < arm7_selftest_count; i++)
@@ -122,14 +156,18 @@ int arm_RunSelfTests()
             failed++;
     }
 
-    memset(saved_aram, 0, ARAM_SIZE);
-    arm_aica_ram = saved_aram;
-    arm_SetEnabled(false);   // leave the core disabled; emulator re-enables later
-
     if (failed == 0)
         printf("[ARM7TEST] PASS: all %d tests passed.\n", arm7_selftest_count);
     else
         printf("[ARM7TEST] FAIL: %d / %d tests failed.\n", failed, arm7_selftest_count);
+
+    memset(saved_aram, 0, ARAM_SIZE);
+    failed += run_op_tests();
+
+    memset(saved_aram, 0, ARAM_SIZE);
+    arm_aica_ram = saved_aram;
+    arm_SetEnabled(false);   // leave the core disabled; emulator re-enables later
+    arm_p49_quiet(false);
     printf("==========================================================\n\n");
 
     return failed;

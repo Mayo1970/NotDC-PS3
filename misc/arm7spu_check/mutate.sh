@@ -4,14 +4,18 @@ cd "$(dirname "$0")"
 V=../../plugs/vbaARM
 H=../../ps3/spu/arm7_spu.h
 FLAGS="-std=c++17 -O2 -fno-strict-aliasing -w -Istub -I$V -I../.."
-mkdir -p /tmp/a7mut
-sed 's#"../../ps3/spu/arm7_spu.h"#"/tmp/a7mut/arm7_spu.h"#' harness.cpp > /tmp/a7mut/harness.cpp
+# The copy keeps the tree's shape: arm7_spu.h includes ../../plugs/vbaARM/arm7_p49.h. A link, not a second copy of
+# that header: #pragma once takes a copy for another file.
+rm -rf /tmp/a7mut
+mkdir -p /tmp/a7mut/ps3/spu
+ln -s "$(cd ../.. && pwd)/plugs" /tmp/a7mut/plugs
+sed 's#"../../ps3/spu/arm7_spu.h"#"/tmp/a7mut/ps3/spu/arm7_spu.h"#' harness.cpp > /tmp/a7mut/harness.cpp
 caught=0
 total=0
 try() {
 	total=$((total + 1))
-	sed "$2" $H > /tmp/a7mut/arm7_spu.h
-	if cmp -s /tmp/a7mut/arm7_spu.h $H; then echo "MUTATION DID NOT APPLY: $1"; return; fi
+	sed "$2" $H > /tmp/a7mut/ps3/spu/arm7_spu.h
+	if cmp -s /tmp/a7mut/ps3/spu/arm7_spu.h $H; then echo "MUTATION DID NOT APPLY: $1"; return; fi
 	g++ $FLAGS -I. $V/arm7.cpp $V/arm7_cached.cpp /tmp/a7mut/harness.cpp -o /tmp/a7mut/chk || { echo "BUILD FAILED: $1"; return; }
 	if /tmp/a7mut/chk 120 3 > /tmp/a7mut/run.log 2>&1; then
 		echo "NOT CAUGHT: $1"

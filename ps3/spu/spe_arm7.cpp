@@ -109,6 +109,8 @@ static void aram_store(uint32_t h, uint32_t v, uint32_t n)
 
 // ── ARM7 memory (arm_mem.cpp ReadMemArm / WriteMemArm) ──
 
+static uint32_t s_unal, s_unal_addr[4];   // unaligned word stores and the first 4 addresses (bundle 9, log only)
+
 static inline uint32_t a7_fetch(uint32_t a) { return *(const uint32_t*)(aram_line(a) + (a & 124)); }
 
 static uint32_t a7_rd32(uint32_t addr)
@@ -142,9 +144,17 @@ static void a7_wr32(uint32_t addr, uint32_t v)
 	}
 	if (addr & 3)
 	{
-		for (uint32_t i = 0; i < 4; i++)
-			aram_store(((addr + i) ^ 3) & 0x1FFFFF, v >> (8 * i), 1);
-		return;
+		if (s_unal < 4)
+			s_unal_addr[s_unal] = addr;
+		s_unal++;
+		// ARM7 STR Align (6.8): the ARM7DI and Flycast write the aligned word; without it the store scatters 4 bytes.
+		if (!(setup.flags & ARM_SETUP_STR_ALIGN))
+		{
+			for (uint32_t i = 0; i < 4; i++)
+				aram_store(((addr + i) ^ 3) & 0x1FFFFF, v >> (8 * i), 1);
+			return;
+		}
+		addr &= ~3u;
 	}
 	aram_store(addr & 0x1FFFFF, v, 4);
 }
@@ -168,6 +178,24 @@ static A7Cpu cpu;
 static uint32_t s_resets;   // ARM7 resets under ARM7 Reset Fix
 
 static void ac_race(void) { a7_race(&cpu); }
+
+// Bundle 9 (log only): the P49 census and the unaligned stores go to the PPU when a count moved, or each 1024
+// instructions looked at. All terms only rise, so an equal key means equal counts.
+static ArmCensus cen;
+static uint32_t cen_key;
+
+static void census_put(void)
+{
+	const uint32_t key = cpu.p49.n[0] + cpu.p49.n[1] + s_unal + (cpu.p49.scan >> 10);
+	if (key == cen_key || !setup.census_ea)
+		return;
+	cen_key = key;
+	wait_tag(TAG_MEM);   // the last put of the block is done: its LS copy can change
+	cen.p49 = cpu.p49;
+	cen.unal = s_unal;
+	memcpy(cen.unal_addr, s_unal_addr, sizeof(cen.unal_addr));
+	mfc_putf(&cen, setup.census_ea, sizeof(cen), TAG_MEM, 0, 0);
+}
 
 // An ARM7 reset (ARMRST release, or the PPU's arm_Reset); ARM7 Reset Fix also clears the FIQ latch.
 static void arm_reset_edge(void)
@@ -694,6 +722,7 @@ static uint32_t run_cmds(uint32_t tail, uint32_t head)
 		st.stale = ac.stale;
 		st.ca_reads = ac.ca_reads;
 		st.ca_clamped = ac.ca_clamped;
+		census_put();
 		put_echo();
 	}
 	return tail;

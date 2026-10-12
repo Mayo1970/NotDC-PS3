@@ -120,7 +120,7 @@ $(BUILD)/spu/spe_aica.elf: ps3/spu/spe_aica.c ps3/spu/spe_dsp_jit.c $(SPU_SRCS_s
 	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -DCAIQUE_PROF -DCAIQUE_DSP_HOOK -DCAIQUE_ADV_RENDER_ONLY -Iplugs/caiqueAICA -Wl,--gc-sections -s $(BUILD)/spu/spe_aica_main.o $(BUILD)/spu/spe_dsp_jit.o $(SPU_SRCS_spe_aica) -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
 # 5.15: the ARM7, nullAICA's registers and the caique control twin on one SPU; it writes spe_aica's log.
-$(BUILD)/spu/spe_arm7.elf: ps3/spu/spe_arm7.cpp plugs/caiqueAICA/aica_model.cpp $(wildcard ps3/spu/*.h plugs/caiqueAICA/*.h)
+$(BUILD)/spu/spe_arm7.elf: ps3/spu/spe_arm7.cpp plugs/caiqueAICA/aica_model.cpp plugs/vbaARM/arm7_p49.h $(wildcard ps3/spu/*.h plugs/caiqueAICA/*.h)
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CXX) $(SPU_CFLAGS) -fno-exceptions -fno-rtti -DCAIQUE_RAM_HOOKS -Iplugs/caiqueAICA -Wl,--gc-sections -s ps3/spu/spe_arm7.cpp plugs/caiqueAICA/aica_model.cpp -L$(PSL1GHT)/spu/lib -lsputhread -o $@

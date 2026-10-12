@@ -3,6 +3,7 @@
 #include "ps3/ps3_aica_spe.h"
 
 u8 *arm_aica_ram;
+extern "C" int get_arm7_str_align_preset();
 //Set to true when aica interrupt is pending
 bool aica_interr=false;
 u32 aica_reg_L=0;
@@ -143,6 +144,14 @@ void fastcall WriteMemArm(u32 addr,T data)
             switch (sz)
             {
                 case 4:
+                {
+                    arm_unal_store(addr);
+                    // ARM7 STR Align (6.8): the ARM7DI and Flycast write the aligned word; OFF scatters 4 bytes.
+                    if (get_arm7_str_align_preset())
+                    {
+                        *(u32*)&arm_aica_ram[addr&ARAM_MASK&~3u]=(u32)data;
+                        break;
+                    }
                     u8 t[4];
                     t[3]=data>>24; t[2]=data>>16; t[1]=data>>8; t[0]=data;
 
@@ -150,6 +159,7 @@ void fastcall WriteMemArm(u32 addr,T data)
                     for(i=0;i<4;++i)
                         arm_aica_ram[((addr+i)^3)&ARAM_MASK]=t[i];
                     break;
+                }
                 default:
                     dbgbreak;
             }

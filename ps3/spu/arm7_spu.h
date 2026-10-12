@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include <string.h>
+#include "../../plugs/vbaARM/arm7_p49.h"
 
 #define A7_ARAM_MASK 0x1FFFFFu
 #define A7_MAX_BLOCK 128u   // instructions per block, as MAX_BLOCK_UOPS
@@ -46,6 +47,7 @@ typedef struct
 	uint32_t decodes, evicts, fiqs;   // stats
 	int32_t budget;          // the running slice's ticks
 	uint32_t races;          // AICA Race Fix: slices extended
+	A7P49 p49;               // P49 census (log only): what a7_decode met
 	uint32_t map[A7_MAP_N];
 } A7Cpu;
 
@@ -317,6 +319,7 @@ static uint32_t a7_decode(A7Cpu* a, uint32_t start)
 		const uint32_t fam = (op >> 26) & 3;
 		int last = 0;
 		a7_scan_insn(&scan, op);
+		a7_p49_scan(&a->p49, pc, op);
 		if (fam == 1)
 		{
 			if (!(op & 0x00100000))

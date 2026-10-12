@@ -2,6 +2,7 @@
 // OPTIMIZATION_PLAN 5.15: shared by the PPU (ps3/ps3_arm_spe.cpp) and the ARM7 SPU (spe_arm7.cpp). The PPU queues
 // MediumUpdates and SH4 register accesses; the SPU runs the ARM7, nullAICA's registers and the caique control twin.
 #include <stdint.h>
+#include "../../plugs/vbaARM/arm7_p49.h"
 
 #define ARM_SPE_STATE_RUNNING 1
 #define ARM_SPE_STATE_EXITED  2
@@ -71,6 +72,7 @@ typedef struct
 #define ARM_SETUP_RING      16u   // P20 G2: the sound SPU's DSP ring (up to 32K words) mirrors wave RAM
 #define ARM_SETUP_RING64    32u   // P20 G3: so does a 64K-word ring, through its line cache
 #define ARM_SETUP_DSPRD     64u   // P20 G4: a read of TEMP, MEMS, MIXS or EFREG asks the sound SPU
+#define ARM_SETUP_STR_ALIGN 128u  // 6.8 "ARM7 STR Align": an unaligned ARM7 word store writes the aligned word
 
 typedef struct
 {
@@ -79,5 +81,15 @@ typedef struct
 	uint32_t aica_bell_ea, aica_echo_ea, aica_log_ea;   // the sound SPU's AicaBell, AicaEcho, AicaShared::log
 	uint32_t flags;          // ARM_SETUP_*
 	uint32_t hz_ea;          // AicaHz (spe_aica.h): the hazard map and counts this SPU puts
-	uint32_t pad[25];
+	uint32_t census_ea;      // ArmCensus; 0 = none
+	uint32_t pad[24];
 } __attribute__((aligned(128))) ArmSetup;
+
+// Plan section 7, bundle 9 (log only): the SPU puts it when a count moved, or each 1024 instructions looked at.
+typedef struct
+{
+	A7P49 p49;               // P49 census of the SPU's ARM7 decoder
+	uint32_t unal;           // unaligned ARM7 word stores (6.8)
+	uint32_t unal_addr[4];   // the first 4
+	uint32_t pad[21];
+} __attribute__((aligned(128))) ArmCensus;

@@ -13,6 +13,182 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-12)
 
+**Next goal after bundle 9 (Matt 2026-10-12: "Can we add the fog as the
+next goal once I'm done with bundle 9?"): 3a, fog (section 3; reference
+`OPTIMIZATION_POTENTIAL.md` P14).** Nothing built. It is in no bundle
+(section 7, "Not bundled"). 3b (offset colour) shares the shader and the
+second colour attribute; Matt named only the fog.
+
+**Bundle 9 CLOSED 2026-10-12, HW SUCCESS. F1 FIXED (Matt: "THE SOUND IS
+FIXED"): the ChuChu Rocket slow effects and echo end with AUDIO -> "ARM7 STR
+Align" ON (section 7 bundle 9, 6.8's unaligned store). The row is default
+ON in source since 2026-10-12 (Matt: "If it yields positive results, we
+close this and we set it as default ON"), not packaged: the package of
+09:34 on 2026-10-12 (`build/notdc_ps3.pkg`, 1537712 bytes) has it OFF;
+Matt's install has it ON. HW runs 1-5: ChuChu Rocket (OFF, ON), Crazy Taxi,
+Sonic Adventure, Looney Tunes. The P49 fix is not built: the census found
+no P49 form in the four games. The census and the op tests stay in.**
+- **HW run 3, 2026-10-12 ~11:21: ChuChu Rocket, ARM7 STR Align ON, JIT IDLE
+  RULE X30** (`b9_run1.txt`, from line 18184; scratchpad of session
+  d13d658e). `[sndcfg] ... Arm7StrAlign=1`. Matt: "THE SOUND IS FIXED".
+  - The boot op tests pass with the row ON too (816 checks, 0 failed):
+    the aligned path of `arm_mem.cpp` is right on hardware.
+  - The driver itself acts in another way: `unaligned str` is 113, 271,
+    954, 1334 in the first four 5 s windows, where run 1 (OFF) had 119,
+    1923, 7461, 15948 and then ~1930 per second. So with OFF a scattered
+    store broke the driver's own data, and it then stored there on each
+    tick. The first addresses are the same (0x0001103A).
+  - SPEED: 39 windows so far, mean 99.52%, none under 97% after the boot.
+    No fault line. Census still A 0, B 0.
+- Cause of F1, as found: an ARM7 word store to an address that is not a
+  multiple of 4. The ARM7DI ignores the low 2 address bits and writes the
+  aligned word (Flycast `arm_mem.h` `writeMem`: the same). Our three
+  engines wrote 4 bytes from the unaligned address (nullDC's rule), so
+  2 bytes went to the wrong place and 2 bytes of the next word were lost.
+  The read side was already right (aligned word, rotated). Not an engine
+  decode fault: P40's tests pass on all three engines.
+- **HW run 4, 2026-10-12 ~11:24-11:31: Sonic Adventure, ARM7 STR Align ON,
+  JIT IDLE RULE X3 BACKWARD** (same log, lines 22288-44177). Matt: "Yes,
+  Sonic Adventure sounded correct. I noticed that some animations looked
+  off, though." (the animations: open issue, point 12 of the list under
+  Bundle 8 in section 7). Boot lines as before (0 failed). Census: A 0,
+  B 0, **unaligned str 0** over 7237 instructions: this driver makes no
+  unaligned word store, so the row cannot change this game. SPEED: 365
+  windows, mean 99.18%; the windows under 97% are at boot (10 in the first
+  27 s) and at loads with no frame drawn (one window at 19.4% at t=250 s:
+  a stall of about 0.8 s, cause not looked for). No fault line, clean JIT
+  EXIT.
+- **HW run 5, 2026-10-12 ~11:32-11:35: Looney Tunes, ARM7 STR Align ON,
+  JIT IDLE RULE X30** (same log, lines 44418-55804). Matt: "Done." (no
+  word on the sound; "Last but not least I will also test Looney Tunes").
+  Boot lines as before (0 failed). Census: A 0, B 0, **unaligned str 0**
+  over 5127 instructions: the row cannot change this game. SPEED: 198
+  windows, mean 99.73%; under 97%: the boot and loads (6 windows in the
+  first 43 s), the demo at 28K vertices (4 windows, 90.7-96.3%) and 4 race
+  windows at 22-34K vertices (92.6-97.0%): the known SH4-bound scenes
+  (point 11 under Bundle 8). No fault line, clean JIT EXIT.
+- Close: `g_arm7_str_align_preset = 1` in `ps3/ps3_presets.cpp`. An
+  install that has the key keeps its value. Of the four games only ChuChu
+  Rocket makes unaligned word stores; the other three cannot change with
+  the row. Left as they are: the `[p49]` census (log only, for the next
+  games) and the boot op tests. The listener of this session is stopped.
+
+**Built 2026-10-12, HW runs 1-2 done (ChuChu Rocket, Crazy Taxi): section 7
+bundle 9 (ARM7 engines), first part (Matt: "proceed with bundle 9"). Package
+of 09:34 on 2026-10-12. It also holds the source defaults of the blocks
+below (JIT IDLE HASH and JIT SQ COPY stay OFF).**
+- **HW run 1, 2026-10-12 ~11:12-11:15: ChuChu Rocket, ARM7 STR Align OFF,
+  SPE ARM7 ON, JIT IDLE RULE X3 BACKWARD (Matt: "Just for curiosity"; his
+  install also has `idlehash=1 sqcopy=1`)** (`b9_run1.txt`, scratchpad of
+  session d13d658e). Matt: "Done." No fault line, clean JIT EXIT.
+  - Boot lines: `[ARM7TEST] PASS: all 45 tests passed.`, `op tests ...
+    816 checks in 338 runs, 0 failed`, `[ARM7JIT] self-test PASS`. The PPU
+    ARM7 JIT passes P40's tests and the STR cases on hardware. So all
+    three engines pass: P40 found no engine fault.
+  - Census: A 0 and B 0 over 42278 instructions looked at. ChuChu
+    Rocket's sound driver has no P49 form: the P49 fix has no target here.
+  - **Unaligned word stores: 91282 in about 65 s, a steady ~1930 per
+    second, about 2 per FIQ (FIQ 996/s). The first 4 are all at 0x0001103A
+    (address & 3 = 2).** With the row OFF each one scatters to bytes
+    3A-3D; the ARM7DI and Flycast write the word at 0x11038. This is the
+    first difference from Flycast found in what this driver's code does,
+    and it is in or near its 1 kHz tick: a candidate for F1 (section 6).
+    Not known yet: the storing instruction and what the word holds.
+  - SPEED at X3 BACKWARD: 80 windows, mean 99.46%; the 4 windows under
+    97% are all in the first 17 s (BIOS, load, the PAL to NTSC switch).
+    No dip in play.
+  - **HW run 2, 2026-10-12 ~11:17-11:21: Crazy Taxi, ARM7 STR Align OFF,
+    JIT IDLE RULE X30** (same log file, lines 5908-17630). Matt: "Crazy
+    Taxi is done." Boot lines as in run 1 (0 failed). Census: A 0, B 0,
+    unaligned str 0 over 7197 instructions (no new decode after the first
+    minute). Crazy Taxi's driver has no P49 form and no unaligned store:
+    the row changes nothing there. SPEED: 213 windows, mean 99.71%; under
+    97% only at boot (2), once at 38 s and in one 17-20K vertex scene (4
+    windows, 87.9-95.8%), the known dense-scene cost. No fault line.
+  - Next: one boot of ChuChu Rocket with ARM7 STR Align ON. In the log:
+    `Arm7StrAlign=1` in `[sndcfg]`; the `unaligned str` count rises as
+    before (the stores are counted, then aligned).
+- Built:
+  1. The P49 census, log only, in the three decoders. `a7_p49_form()`
+     (`plugs/vbaARM/arm7_p49.h`) is the one rule; the hooks are in
+     `arm7_cached.cpp` (block decode), `arm7_jit.cpp` (`compile_block`) and
+     `ps3/spu/arm7_spu.h` (`a7_decode`). Form A: data processing, shift
+     amount in a register, Rn = PC (MOV and MVN have no Rn). Form B: STR or
+     STRB of PC. NV never runs and is not counted. The SPU puts its counts
+     in a new block (`ArmCensus`, `ArmSetup.census_ea`) when a count moves
+     or each 1024 instructions; `arm_spe_stats` prints them.
+  2. P40 as self-tests: `plugs/vbaARM/arm7_optest.h`, Flycast's
+     `AicaArmTest.cpp` line by line as a script (13 groups), and a 14th
+     group for 6.8: STR and STRB forms, one byte lane each, unaligned STR.
+     Two passes: step (one instruction per slice) and block (the ops in one
+     slice, which ends in a `b .`; a PC write is stepped in both). 408
+     checks in 169 runs per pass. `arm_RunSelfTests()` runs both passes
+     after the 45 binaries, so the PPU ARM7 JIT gets them at boot.
+  3. Row AUDIO -> "ARM7 STR Align" (`Arm7StrAlign`), default OFF, set
+     before boot: an unaligned ARM7 word store writes the aligned word, as
+     the ARM7DI and Flycast (`arm_mem.h` `writeMem`). OFF scatters 4 bytes
+     (today). In `arm_mem.cpp` `WriteMemArm` (cached interpreter, and the
+     JIT's slow store path) and in `spe_arm7.cpp` `a7_wr32`
+     (`ARM_SETUP_STR_ALIGN`). The unaligned stores are counted with the
+     census, and the first 4 addresses kept.
+- Not built, as the plan says: the P49 fix and its two self-tests. They
+  wait for the census. The 45 binaries and the op tests hold no form A or B
+  instruction (PC check: 0 decodes), so the boot self-test does not touch
+  the census.
+- Log:
+  - Boot: `[ARM7TEST] PASS: all 45 tests passed.`, then `[ARM7TEST] op
+    tests (Flycast AicaArmTest + STR cases), step and block: 816 checks in
+    338 runs, 0 failed`, then `[ARM7JIT] self-test PASS`. A failed check
+    prints `[ARM7TEST]   FAIL <group> run <n>, op <opcode>, step|block:
+    ...` (first 8), and the JIT falls back to the cached interpreter (old
+    rule).
+  - Every ~5 s when something moved (at least once a minute while the
+    ARM7 decodes new code): `[p49] spu census: scanned <n> insns | A <n>
+    decodes (<sites> sites) | B <n> (<sites>) | unaligned str <n>`. Each
+    new site once: `[p49] spu form A (dp, Rn=pc, shift by reg): pc
+    <addr> op <opcode>`, `[p49] spu form B (str pc): ...`, `[p49] spu
+    unaligned str: addr <addr>`. With SPE ARM7 OFF the same lines say
+    `ppu`. `scanned` above 0 shows that the census runs.
+  - `[sndcfg]` has `Arm7StrAlign=`.
+- PC checks, all PASS:
+  - `misc/arm7spu_check/run.sh` (WSL): the op tests on arm7.cpp +
+    arm7_cached.cpp and on arm7_spu.h, 0 failures over 6528 checks (2
+    cores x step/block x 2 reset modes x the row off/on). The census:
+    `a7_p49_form` against a second reading of the rule over 20M random
+    words and 17 fixed words; the cached decoder's census equals the SPU
+    core's (full map); the list rules. The 8192-entry build has the same 3
+    known mismatches as before.
+  - `misc/arm7spe_check/run.sh` (WSL, after `build_spu.sh`): the real SPU
+    image in the simulator, 50 runs: the 46 old seeds (the census block is
+    now compared after each batch), seed 7 with the row ON (2525 unaligned
+    stores) and seed 9 with the row ON and the three Looney Tunes fixes
+    (2382), `optest 0` and `optest 130`: the 45 conformance binaries (for
+    the first time on the SPU image) and the op tests, 816 checks, through
+    the SPU's command ring.
+  - Mutations: `misc/arm7spu_check/mutate_ops.sh` 26 of 26 (15 engine
+    faults with no random program: 8 of them only the op tests catch, the
+    45 binaries do not: HI, BL's link, STM of PC, STR writeback before and
+    after, a rotated immediate's carry, STRB, a store with a false
+    condition; 11 census faults); `misc/arm7spe_check/mutate.sh`, the 9 new
+    ones (`try9`), 9 of 9; `misc/arm7spu_check/mutate.sh` 10 of 10 (its
+    copy of arm7_spu.h now keeps the tree's shape for the new include).
+  - No PC check runs the PPU ARM7 JIT: its op tests are the boot lines.
+- Result so far: Flycast's tests pass on the cached interpreter and on the
+  SPU engine (x86 build and the real SPU image). P40 found no engine fault
+  there. Open: the JIT (boot lines) and the census.
+- Build: no warning in the files compiled; `.got` 0xD780, 0 `r2off`; the
+  ARM7 SPU image uses 224920 of 262144 bytes of LS (0.5 KB more).
+- HW test (rows as they are, ARM7 STR Align OFF, SPE ARM7 ON):
+  1. Boot ChuChu Rocket, play 1-2 minutes with music and effects.
+  2. Boot Crazy Taxi, drive 1-2 minutes.
+  3. If there is time: Sonic Adventure and Looney Tunes (more sound
+     drivers for the census).
+  Then, from the log: A or B above 0 in a game -> build the P49 fix (own
+  row, 2-3 lines per engine, `gen_arm7_cached.py`, the two self-tests
+  `orr r0,pc,r1,lsl r2` and `str pc,[r1]`). `unaligned str` above 0 in a
+  game -> one boot of that game with ARM7 STR Align ON. All 0 -> the P49
+  fix has no target in these games; Matt decides if it is built.
+
 **Built 2026-10-12, HW run 25 done, no verdict: 5.46 JIT SQ COPY, the
 Sonic Adventure 2 fix (Matt: "Work on the Sonic Adventure 2 fix. Looney Tunes is still
 better at x30 sadly."). Package of 02:30 on 2026-10-12
@@ -4848,7 +5024,8 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart: P47, P21, P23 (TOC fields), P61, P62 built 2026-10-10 in bundle 2 (section 0), HW SUCCESS 2026-10-10, default ON in source |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
-work is section 5, SH4-side speed.
+work is section 5, SH4-side speed. Update 2026-10-12: 3a (fog) is the next
+goal after bundle 9 (Matt, section 0).
 
 All changes are uncommitted in the working tree. Matt commits.
 
@@ -9129,17 +9306,18 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | Item | Fault | Status |
 |---|---|---|
 | 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
-| 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` |
-| 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` |
+| 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` no target left: F3 fixed by 6.5, F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
+| 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` no target left: F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[~]` built 2026-10-11 as "TMU Clock" SH4 / EFF, bundle 7 (section 0), default SH4, no HW run (Matt keeps SH4 Clock 200, where EFF changes nothing); merged 2026-10-06: P11 (built as "TMU Fine TCNT", HW run 2026-10-11, default ON in source), P57 (TMU test, in `misc/timebase_check`) |
 | 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (built 2026-10-11 as "G2 DMA Small", bundle 6, default OFF; HW run 1: no fix for F1 in ChuChu Rocket), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
 | 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
-| 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | - |
+| 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | **F1 FIXED on HW 2026-10-12 by 6.8's unaligned ARM7 word store: row "ARM7 STR Align" ON (bundle 9, section 0; Matt: "THE SOUND IS FIXED")**; default ON in source since 2026-10-12, not packaged |
 
 ### 6.0 Facts set on 2026-10-04
 
-- F1 ChuChu Rocket: Matt compared it with Flycast on a PC. Our sound effects
+- F1 ChuChu Rocket (FIXED 2026-10-12 by "ARM7 STR Align", bundle 9,
+  section 0: the cause was an unaligned ARM7 word store): Matt compared it with Flycast on a PC. Our sound effects
   play slower. That is the "echo".
 - The 2026-09-23 echo tests ran at SH4 Clock 200 MHz (the 150 MHz option
   came later that day). So F1 is not only an underclock effect.
@@ -9603,12 +9781,15 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 - `arm_Reset` (`arm7.cpp:355-395`) does not clear aica_interr, aica_reg_L,
   e68k_out, e68k_reg_L/M (`arm_mem.cpp:6-11`); Flycast does.
 - An unaligned ARM word store scatters 4 bytes (`arm_mem.cpp:129-145`); the
-  ARM7 and Flycast write the aligned word.
+  ARM7 and Flycast write the aligned word. Row "ARM7 STR Align" built
+  2026-10-12 (bundle 9, section 0): HW SUCCESS, it fixes F1; default ON.
 - AICA internal DMA (0x288C DEXE) exists in neither nullAICA nor caique.
 - Sample-rate surplus: floor(150e6/44100) = 3401 gives 44104.7 Hz
   (+106 ppm); with AudioBuffers 0 the ring fill rises about 5 frames/s.
 - nullAICA idle-slot EG readback is 0x3FF; caique and Flycast give 0x1FFF.
 - ARM7 self-test: no STR/STRB, unaligned STR or register-window cases.
+  STR, STRB and unaligned STR cases built 2026-10-12 (`arm7_optest.h`,
+  bundle 9); still no register-window case.
 - `_vmem` handler ids: only ids 0-7 fit (id*4 under HANDLER_MAX 0x1F,
   `dc/mem/_vmem.cpp:16-17`); 8 are registered, so a 9th would break.
 - Merged 2026-10-06 from `OPTIMIZATION_POTENTIAL.md` (not scheduled):
@@ -9628,8 +9809,9 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   - P40: Flycast `tests/src/AicaArmTest.cpp` (13 groups, ~312 checks) as
     self-tests on all three engines (cached, JIT, SPU). A pass rules out an
     engine bug in F1's note-off logic. Test only, no risk. It does not
-    catch P49.
-  - P49: with a register shift, Rn = PC reads insn+8 where the ARM7 reads
+    catch P49. Built 2026-10-12 (bundle 9, section 0): passes on the cached
+    interpreter and the SPU engine (PC); the JIT runs it at boot, no HW run.
+  - P49 (census built 2026-10-12, bundle 9, section 0; no HW run): with a register shift, Rn = PC reads insn+8 where the ARM7 reads
     insn+12 (the Rd = PC forms too), and STR/STRB of PC store a stale
     reg[15], in all three engines (Rm = PC is right). Not in the
     `[ARMHOT]` dumps (ChuChu is in none); a link to F1 is unlikely. Steps:
@@ -9668,7 +9850,7 @@ with GOALS.md G11. Nothing of this is built.
 | 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later |
 | 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[~]` HW runs 1-2 2026-10-11 (Crazy Taxi, ChuChu Rocket; section 0): 5 rows on a new TIMING page; TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset ran with no fault and are default ON (Matt: "Keep them as default, they seem harmless."), in the packages since 22:16 (the package of 21:15 has them OFF); TMU Clock stays SH4, no HW run: EFF needs SH4 Clock 150 to act and Matt keeps 200; **TMU Fine TCNT default OFF again since 2026-10-12 (Matt)**: about 95 ns per TCNT read, Quake3.cdi -10 to -17 SPEED points with it (bundle 8 runs 15 and 17), not packaged; PC checks PASS (`misc/timebase_check`) |
 | 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[x]` HW SUCCESS 2026-10-12 (Matt: "still mark this as a success"): JIT BCACHE default ON, JIT IDLE RULE default X30 with X3 BACKWARD as a level, FPU DN row removed (5.40 no effect), not packaged; open list "more friendly for other users" under Bundle 8; history: the JIT items built 2026-10-11 (Matt: "Ignore the Interpreter parts. I want JIT/Dynarec stuff."; section 0): rows JIT BCACHE, JIT PR MOVES (no fneg), JIT RM 2/3, JIT IDLE RULE and FPU DN on the JIT SPEED page, default OFF, and the JIT MAC fix; a `[ni]` probe for 5.40; PC checks PASS (`misc/jit8_check`, 78 of 78 mutants); package of 22:43; HW run 1 2026-10-11 (Crazy Taxi, rows OFF): clean, and 5.40 CLOSED by Matt (NI does nothing on the PPE); HW run 2 (Looney Tunes, JIT IDLE RULE X3 BACKWARD): the race draws 29.95 frames per emulated second (26.4) but SPEED is 60.9%, 18.2 frames per wall second (Matt: "It runs much worse"); HW run 3 (OFF): the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X30 stays the default; HW run 9 (Sonic Adventure, X3 BACKWARD, JIT BCACHE ON): "VERY smooth" (Matt), 29.69 frames/s (28.65 at X30), 14K+ scenes 29.6 (26.3), SPEED 100%; HW run 10 (Phantasy Star Online, X3 BACKWARD): the 20 fps scene at 30.0 frames/s, SPEED 100%: the level is a per-game matter, open; HW runs 7-8 (Sonic Adventure, Phantasy Star Online, JIT BCACHE ON, X30): clean, frame rates as before; HW run 4 (Crazy Taxi, JIT BCACHE ON): correct (Matt: "Look and sounded fine"), 9255 sites, no gain to see there; HW run 6 (Looney Tunes, JIT BCACHE ON): HW SUCCESS, the race at SPEED 99.95% (97.62% OFF), sleep 58.6 ms/s (24.1), Matt: "It's much better", default ON in source since 2026-10-11 (not packaged); HW run 5 (Looney Tunes, JIT PR MOVES ON) did not hit the row (`prmoves=0`: the wrong game, it has no PR=1 FPU op); JIT PR MOVES, JIT MAC and JIT RM 2/3 have no HW run yet; P46, P32 and P78's RFCR not built; 5.37 done 2026-10-10, HW SUCCESS |
-| 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[ ]` |
+| 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[x]` HW SUCCESS 2026-10-12; built 2026-10-12 (section 0): the P49 census (log only, three decoders), P40's tests and the STR cases (`arm7_optest.h`), row "ARM7 STR Align" on the AUDIO page, default OFF; PC checks PASS; package of 09:34; **HW runs 1-3 2026-10-12: the tests pass on all three engines (the JIT at boot); census A 0, B 0 in ChuChu Rocket and Crazy Taxi (the P49 fix has no target there, not built); "ARM7 STR Align" ON fixes F1, the ChuChu Rocket slow sound (Matt: "THE SOUND IS FIXED")**; HW runs 4-5 (Sonic Adventure, Looney Tunes, row ON): no unaligned store, no P49 form, no fault; **CLOSED 2026-10-12 (Matt), the row default ON in source, not packaged** |
 | 10 | Maple | P29, P9 SB_MDST, P13, P37; P84's stick dead zone added 2026-10-11 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game; a smooth analog stick | `[ ]` |
 | 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note); P75 and P76 added 2026-10-11 | the Crazy Taxi pause freeze (P75, first); 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
 | 12 | HW test tools | P50, P51 (section 0, Soul Calibur faults) | SPEED on the TV without the UDP listener; PNG evidence | `[ ]` |
@@ -10065,6 +10247,49 @@ Main gains:
       Also open with it: the defaults of JIT IDLE HASH and JIT SQ COPY
       (5.46), and a Crazy Taxi and a Looney Tunes run with JIT SQ COPY
       ON for no change.
+  12. **Open issue, Matt 2026-10-12: in Sonic Adventure "some animations
+      looked off"** ("May worth placing that in the issues."). Seen in HW
+      run 4 of bundle 9 (section 0; `b9_run1.txt` lines 22288-44177,
+      scratchpad of session d13d658e). Not known: which animations, in
+      which scene, and since when. Facts of that run: JIT IDLE RULE X3
+      BACKWARD, and three rows that are OFF by default were ON in Matt's
+      install: JIT IDLE HASH, JIT SQ COPY (never run with Sonic Adventure
+      before) and JIT PR MOVES (`[jitcfg] idlerule=1 prmoves=1 idlehash=1
+      sqcopy=1`). On 2026-10-11 (bundle 8 run 9: X3 BACKWARD, JIT BCACHE
+      ON, before these rows) Matt called the same game "VERY smooth" with
+      no word on animations. ARM7 STR Align is not a cause: it acts on
+      ARM7 stores only, and Sonic Adventure made none (`unaligned str 0`).
+      No fault line in the log. First steps when Matt takes it up: ask
+      which animation and scene; then one boot at X30 with the three rows
+      OFF, then one row at a time.
+      **Update, Matt 2026-10-12 (later the same day, his own test, no
+      log: the listener was stopped): "Sonic's animation is still off even
+      with all those 3 set. We may need to look down further."** So it is
+      Sonic's own animation, and the three rows (JIT IDLE HASH, JIT SQ
+      COPY, JIT PR MOVES) are not the cause. Matt confirmed: the three
+      rows were OFF, and the test was at JIT IDLE RULE X3 BACKWARD.
+      **Symptom, Matt 2026-10-12: "It had a jerky movement between pose
+      while also wrong. It was done in the victory screen."** So: in the
+      victory screen at the end of a stage, Sonic's animation moves in
+      jerks between poses, and the poses are wrong too. Still open: since
+      which package, and if other animations have it. Not tested: JIT
+      IDLE RULE X30 (every test so far was at X3 BACKWARD), the other JIT
+      rows (a boot with Dynarec OFF would show if the JIT is in it at
+      all), the renderer rows of bundles 3 and 4, and an older package.
+      **Matt 2026-10-12: "It ran well until one of the recent changes,
+      though."** So it is a regression: a bisect can find it. The last
+      good day is not known yet (ask Matt). The changes of the last days,
+      newest first, as bisect points (commits): `1533cc4` JIT IDLE HASH
+      and JIT SQ COPY (10-12; the two rows are ruled out, their code
+      outside the rows is not), `880e269` and `a306a38` JIT IDLE (10-11
+      to 10-12: JIT IDLE RULE and its X3 BACKWARD level), `4f6b920` bundle
+      7, the TIMING page (10-11: SPG Field Bit FRAME, HBlank IRQ MODES,
+      VBLANK INT Reset FLYCAST are ON in Matt's install; TMU Fine TCNT is
+      OFF again since 10-12), `ad7c1ab` bundle 6, `02444ac` bundle 5,
+      `b76f710` bundle 4 (10-11), `ebc8897` bundles 2 and 3 (10-10). Bundle
+      9 (not committed) acts on the ARM7 only. Rows first, no build: the
+      TIMING rows at their old values and JIT IDLE RULE X30; then
+      packages of older commits.
 
 - Built (Matt 2026-10-11: "Ignore the Interpreter parts. I want JIT/Dynarec
   stuff."): `bcache`, the `JitMac` fix, 5.39 (fmov, flds, fsts; no fneg),
@@ -10102,8 +10327,17 @@ Main gains:
     (RPS against 26.4), Phantasy Star Online, a dense Crazy Taxi drive.
   - P78's RFCR (read-only 17, as Flycast; 2 lines).
 
-### Bundle 9: ARM7 engines  `[ ]`
+### Bundle 9: ARM7 engines  `[x]` HW SUCCESS 2026-10-12, CLOSED (Matt): "ARM7 STR Align" fixes F1 (ChuChu Rocket, "THE SOUND IS FIXED"), default ON in source; tests pass on all three engines; census A 0, B 0 in four games, so no P49 fix (section 0)
 
+- State 2026-10-12 (detail in section 0): step 1 (the census) and step 2
+  (P40's tests with the STR cases) are built, and the unaligned store has
+  its row ("ARM7 STR Align", default OFF in source). HW runs 1-3: the
+  tests pass on all three engines; the census found no P49 form in ChuChu
+  Rocket and Crazy Taxi, so the P49 fix is not built ("fix only if it
+  fires"); ChuChu Rocket makes ~1930 unaligned word stores per second and
+  the row ON fixes its slow sound (F1). HW runs 4-5: Sonic Adventure and
+  Looney Tunes with the row ON make no unaligned store and have no P49
+  form. Closed by Matt 2026-10-12, the row default ON in source.
 - Items: P49 (PC reads with a register shift, STR of PC), P40 (Flycast's
   AicaArmTest as self-tests), 6.8 (no STR, STRB or unaligned STR
   self-tests; an unaligned ARM word store scatters 4 bytes). P44 is done
@@ -10284,7 +10518,8 @@ Main gains:
 - The P25 two-pass trilinear weights: left out of bundle 3 by Matt on
   2026-10-10. Open; they need a shader or an SPU vertex-builder change.
 - P14 (3a, 3b, and 3j bump maps since 2026-10-08): already one shared
-  piece of work in section 3 (a PVR Cg shader in ps3gl).
+  piece of work in section 3 (a PVR Cg shader in ps3gl). 3a (fog) is the
+  next goal after bundle 9 (Matt 2026-10-12, section 0).
 - P42 (b)-(d): stay in 5.12 (active, section 0).
 - P35 (CUE/BIN, CHD) and P39 (reios): section 4 says "Do not take".
 - P15 (5.19): a pacing option, not a speedup.

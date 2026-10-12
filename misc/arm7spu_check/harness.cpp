@@ -3,6 +3,8 @@
 #include "arm7.h"
 #include "arm_mem.h"
 #include "arm7_selftest_data.h"
+#include "arm7_optest.h"
+#include "arm7_p49.h"
 #include <vector>
 
 typedef union { u32 I; } reg_pair;
@@ -34,6 +36,8 @@ void arm_jit_on_reset() {}
 bool g_arm_spe;   // 5.15 hooks in arm7.cpp, off here
 void arm_spe_reset() {}
 void arm_spe_flush() {}
+extern A7P49 g_arm_p49;   // arm7.cpp: the census of arm7_cached's decoder
+void arm_p49_print(int spu, const A7P49* c, u32 unal, const u32* unal_addr);
 bool arm_jit_active() { return false; }
 void arm_jit_run(u32) {}
 void arm_jit_census_dump(double) {}
@@ -50,6 +54,7 @@ struct Side
 	u32 devcnt;
 };
 static bool g_immutable;  // random programs: writes are logged, not applied, so code never changes under a block
+static bool g_str_align;  // "ARM7 STR Align" (6.8): an unaligned word store writes the aligned word
 
 static u32 dev_read(Side& s, u32 a, int sz)
 {
@@ -117,11 +122,11 @@ static void mem_write(Side& s, int sz, u32 addr, u32 v)
 		return;
 	if (sz == 4)
 	{
-		if (addr & 3)
+		if ((addr & 3) && !g_str_align)
 			for (int i = 0; i < 4; i++)
 				s.mem[(addr + i) & ARAM_MASK] = (u8)(v >> (8 * i));
 		else
-			*(u32*)&s.mem[addr & ARAM_MASK] = v;
+			*(u32*)&s.mem[addr & ARAM_MASK & ~3u] = v;
 	}
 	else if (sz == 2)
 		*(u16*)&s.mem[addr & ARAM_MASK] = (u16)v;
@@ -149,6 +154,7 @@ static inline void a7_wr8(uint32_t a, uint32_t v) { mem_write(g_side[1], 1, a, v
 #define A7_MAP_N (1u << 19)
 #endif
 static bool g_trace;
+static u64 g_exec_form[3];   // executed instructions by P49 form (0 = neither)
 static u64 g_cov[8];   // coverage: instructions, failed conditions, dispatches, PC writes, idle branches, caps, shifts by reg
 static inline void a7_cov(int kind, u32 pc, u32 x, int ticks)
 {
@@ -157,6 +163,7 @@ static inline void a7_cov(int kind, u32 pc, u32 x, int ticks)
 	if (kind == 'I')
 	{
 		g_cov[0]++;
+		g_exec_form[a7_p49_form(x)]++;
 		if (((x >> 26) & 3) == 0 && !(x & 0x02000000) && (x & 0x10) && (x & 0x0FC000F0) != 0x90) g_cov[6]++;
 		if (((x >> 12) & 0xF) == 15) g_cov[3]++;
 	}
@@ -535,6 +542,156 @@ static int run_selftests()
 	return failed;
 }
 
+// ---- the op tests (arm7_optest.h) on both cores: step and block, both reset modes, ARM7 STR Align off and on ----
+struct SpuIo
+{
+	void reset() { spu_set_enabled(0); spu_set_enabled(1); }
+	void flush() { a7_flush(&g_cpu); }
+	u32 reg(int n) { return g_cpu.r[n]; }
+	void set_reg(int n, u32 v) { g_cpu.r[n] = v; }
+	u32 nzcv() { return (u32)g_cpu.n << 31 | (u32)g_cpu.z << 30 | (u32)g_cpu.c << 29 | (u32)g_cpu.v << 28; }
+	void set_nzcv(u32 v)
+	{
+		g_cpu.n = (v >> 31) & 1;
+		g_cpu.z = (v >> 30) & 1;
+		g_cpu.c = (v >> 29) & 1;
+		g_cpu.v = (v >> 28) & 1;
+	}
+	u32 rd32(u32 a) { return *(u32*)&g_side[1].mem[a & ARAM_MASK & ~3u]; }
+	void wr32(u32 a, u32 v) { *(u32*)&g_side[1].mem[a & ARAM_MASK & ~3u] = v; }
+	u32 pc() { return g_cpu.next_pc; }
+	void set_pc(u32 pc) { g_cpu.next_pc = pc; g_cpu.r[15] = pc + 4; }
+	void run(u32 t) { a7_run(&g_cpu, t); g_side[1].log.clear(); }
+	bool str_align() { return g_str_align; }
+};
+
+struct RefIo
+{
+	void reset() { arm_SetEnabled(false); arm_SetEnabled(true); }
+	void flush() { arm_FlushCode(); }
+	u32 reg(int n) { return arm_GetReg(n); }
+	void set_reg(int n, u32 v) { arm_SetReg(n, v); }
+	u32 nzcv() { return arm_GetNZCV(); }
+	void set_nzcv(u32 v) { arm_SetNZCV(v); }
+	u32 rd32(u32 a) { return *(u32*)&g_side[0].mem[a & ARAM_MASK & ~3u]; }
+	void wr32(u32 a, u32 v) { *(u32*)&g_side[0].mem[a & ARAM_MASK & ~3u] = v; }
+	u32 pc() { return arm_GetNextPC(); }
+	void set_pc(u32 pc) { arm_SetNextPC(pc); arm_SetReg(15, pc + 4); }
+	void run(u32 t) { arm_Run(t); g_side[0].log.clear(); }
+	bool str_align() { return g_str_align; }
+};
+
+static int run_optests()
+{
+	A7TStats st = { 0, 0, 0 };
+	g_immutable = false;
+	g_race = 0;
+	g_spu_e68k = e68k_out = false;
+	for (int k = 0; k < 4; k++)
+	{
+		g_reset_fix = k & 1;
+		g_cpu.reset_svc = (uint8_t)(k & 1);
+		g_str_align = (k & 2) != 0;
+		for (int block = 0; block < 2; block++)
+		{
+			SpuIo sio;
+			RefIo rio;
+			a7t_run(sio, block != 0, "OPTEST spu", st);
+			a7t_run(rio, block != 0, "OPTEST ref", st);
+		}
+	}
+	g_str_align = false;
+	printf("optest: %u failures over %u checks in %u runs (2 cores x step/block x 2 reset modes x STR Align off/on)\n",
+	       st.fails, st.checks, st.runs);
+	return (int)st.fails;
+}
+
+// ---- P49 census: a7_p49_form against a second reading of the same rule, written from the instruction fields ----
+static int ref_form(u32 op)
+{
+	const u32 cond = op >> 28, cls = (op >> 26) & 3, imm = (op >> 25) & 1;
+	const u32 rn = (op >> 16) & 15, rd = (op >> 12) & 15;
+	if (cond == 15)
+		return 0;
+	if (cls == 1)
+		return (!((op >> 20) & 1) && rd == 15) ? 2 : 0;
+	if (cls != 0 || imm || !(op & 0x10))
+		return 0;
+	const bool mul = ((op >> 22) & 0x3F) == 0 && ((op >> 4) & 15) == 9;
+	const bool swp = ((op >> 23) & 0x1F) == 2 && ((op >> 20) & 3) == 0 && ((op >> 4) & 0xFF) == 9;
+	const u32 opcode = (op >> 21) & 15;
+	const bool psr = opcode >= 8 && opcode <= 11 && !((op >> 20) & 1);
+	if (mul || swp || psr)
+		return 0;
+	return (opcode != 13 && opcode != 15 && rn == 15) ? 1 : 0;
+}
+
+static int check_census()
+{
+	int bad = 0;
+	u64 hits[3] = { 0, 0, 0 };
+	for (u32 i = 0; i < 20000000; i++)
+	{
+		const u32 op = rnd();
+		const int f = a7_p49_form(op);
+		hits[f]++;
+		if (f != ref_form(op) && bad++ < 5)
+			printf("CENSUS form of %08X: %d, reference %d\n", op, f, ref_form(op));
+	}
+	// Fixed words: the plan's two cases, then near misses (Rm = PC, shift by immediate, MOV, LDR, NV, MUL, SWP, MSR)
+	static const struct { u32 op; int f; } fixed[] = {
+		{ 0xE18F0211, 1 }, { 0xE581F000, 2 }, { 0xE5C1F000, 2 }, { 0x0781F002, 2 }, { 0xE09F1312, 1 }, { 0xE15F0211, 1 },
+		{ 0xE180021F, 0 }, { 0xE18F0101, 0 }, { 0xE1A0021F, 0 }, { 0xE591F000, 0 }, { 0xF18F0211, 0 }, { 0xF581F000, 0 },
+		{ 0xE00F0291, 0 }, { 0xE10F0091, 0 }, { 0xE12FF210, 0 }, { 0xE38F0010, 0 }, { 0xE58F1000, 0 },
+	};
+	for (const auto& x : fixed)
+		if (a7_p49_form(x.op) != x.f && bad++ < 10)
+			printf("CENSUS form of %08X: %d, want %d\n", x.op, a7_p49_form(x.op), x.f);
+	// The list rules: a pair goes in once, and the list stops at A7_P49_KEEP pairs
+	A7P49 t;
+	memset(&t, 0, sizeof(t));
+	const int r1 = a7_p49_scan(&t, 0x100, 0xE581F000), r2 = a7_p49_scan(&t, 0x100, 0xE581F000);
+	const int r3 = a7_p49_scan(&t, 0x104, 0xE581F000);
+	for (u32 i = 0; i < 10; i++)
+		a7_p49_scan(&t, 0x200 + 4 * i, 0xE18F0211);
+	a7_p49_scan(&t, 0x300, 0xE1A00000);
+	if (r1 != 2 || r2 != 0 || r3 != 2 || t.n[1] != 3 || t.kept[1] != 2 || t.n[0] != 10 || t.kept[0] != A7_P49_KEEP ||
+	    t.scan != 14 || t.pc[0][A7_P49_KEEP - 1] != 0x200 + 4 * (A7_P49_KEEP - 1) || t.pc[1][1] != 0x104)
+		printf("CENSUS list rules: %d %d %d, B %u/%u, A %u/%u, scan %u\n", r1, r2, r3, t.n[1], t.kept[1], t.n[0], t.kept[0],
+		       t.scan), bad++;
+	const A7P49& c = g_cpu.p49;
+	for (int k = 0; k < 2; k++)
+	{
+		if ((g_exec_form[k + 1] && !c.n[k]) || c.kept[k] > A7_P49_KEEP || c.kept[k] > c.n[k] || (c.n[k] && !c.kept[k]))
+			printf("CENSUS form %d: executed %llu, decodes %u, kept %u\n", k + 1, (unsigned long long)g_exec_form[k + 1],
+			       c.n[k], c.kept[k]), bad++;
+		for (u32 i = 0; i < c.kept[k]; i++)
+		{
+			if (a7_p49_form(c.op[k][i]) != k + 1)
+				printf("CENSUS list %d entry %u: %08X is not of the form\n", k + 1, i, c.op[k][i]), bad++;
+			for (u32 j = 0; j < i; j++)
+				if (c.pc[k][j] == c.pc[k][i] && c.op[k][j] == c.op[k][i])
+					printf("CENSUS list %d: entry %u repeats %u\n", k + 1, i, j), bad++;
+		}
+	}
+#if A7_MAP_N == (1u << 19)
+	// With the full map both decoders meet the same instructions: the cached engine's census must be the same.
+	if (memcmp(&g_arm_p49, &c, sizeof(c)))
+		printf("CENSUS cached %u/%u/%u (scan %u) differs from the SPU core's %u/%u/%u (scan %u)\n", g_arm_p49.n[0],
+		       g_arm_p49.n[1], g_arm_p49.kept[0], g_arm_p49.scan, c.n[0], c.n[1], c.kept[0], c.scan), bad++;
+#endif
+	// The [p49] lines as the PS3 log gets them: the pairs and counts, nothing on a call with no change, then one new store
+	static const u32 ua[4] = { 0x00012347, 0, 0, 0 };
+	arm_p49_print(1, &c, 0, ua);
+	arm_p49_print(1, &c, 0, ua);
+	arm_p49_print(1, &c, 1, ua);
+	printf("census: fuzz forms %llu / %llu / %llu | executed A %llu B %llu | decodes A %u B %u, kept %u %u, scanned %u: %s\n",
+	       (unsigned long long)hits[0], (unsigned long long)hits[1], (unsigned long long)hits[2],
+	       (unsigned long long)g_exec_form[1], (unsigned long long)g_exec_form[2], c.n[0], c.n[1], c.kept[0], c.kept[1],
+	       c.scan, bad ? "FAIL" : "ok");
+	return bad;
+}
+
 int main(int argc, char** argv)
 {
 	const u32 progs = argc > 1 ? (u32)strtoul(argv[1], 0, 10) : 200;
@@ -547,6 +704,7 @@ int main(int argc, char** argv)
 	arm_Init();
 	a7_init(&g_cpu, 0);
 	int bad = run_selftests();
+	bad += run_optests();
 	g_immutable = true;
 	u32 okp = 0;
 	for (u32 p = 0; p < progs; p++)
@@ -575,6 +733,7 @@ int main(int argc, char** argv)
 	       (unsigned long long)g_cov[2], (unsigned long long)g_cov[3], (unsigned long long)g_cov[4],
 	       (unsigned long long)g_cov[5], (unsigned long long)g_cov[6]);
 	bad += (int)(progs - okp);
+	bad += check_census();
 	printf("%s\n", bad ? "FAIL" : "PASS");
 	return bad ? 1 : 0;
 }

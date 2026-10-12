@@ -36,5 +36,27 @@ try "race fix flag lost" 's/ac.race_fix = (setup.flags \& ARM_SETUP_RACE_FIX) !=
 try "CA clamp flag lost" 's/ac.ca_clamp = (setup.flags \& ARM_SETUP_CA_CLAMP) != 0;/ac.ca_clamp = 0;/'
 try "echo misses the extensions" 's/st.races = cpu.races;/st.races = 0;/'
 try "ARM_CMD_RESET keeps the latch" '/case ARM_CMD_RESET:/,/break;/s/arm_reset_edge();/aram_invalidate_all();/'
+# Bundle 9 (ARM7 STR Align, the census block): the op tests with the row off and on, then seed 7 with the row on
+try9() {
+	total=$((total + 1))
+	sed "$2" ../../ps3/spu/spe_arm7.cpp > $M
+	if cmp -s $M ../../ps3/spu/spe_arm7.cpp; then echo "MUTATION DID NOT APPLY: $1"; return; fi
+	SRC=misc/arm7spe_check/$M sh build_spu.sh > out/mut_build.log 2>&1 || { echo "BUILD FAILED: $1"; return; }
+	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/arm7spe_check && ./out/harness out/spe_arm7_sim.elf out/syms.txt optest 0 > out/mut_run.log 2>&1 && ./out/harness out/spe_arm7_sim.elf out/syms.txt optest 130 >> out/mut_run.log 2>&1 && ./out/harness out/spe_arm7_sim.elf out/syms.txt 7 1500 128 >> out/mut_run.log 2>&1'; then
+		echo "NOT CAUGHT: $1"
+	else
+		echo "caught: $1"
+		caught=$((caught + 1))
+	fi
+}
+try9 "STR Align ignored" 's/if (!(setup.flags \& ARM_SETUP_STR_ALIGN))/if (1)/'
+try9 "STR Align always on" 's/if (!(setup.flags \& ARM_SETUP_STR_ALIGN))/if (0)/'
+try9 "aligned store at the unaligned address" 's/^\t\taddr \&= ~3u;/\t\t;/'
+try9 "unaligned stores not counted" 's/^\t\ts_unal++;/\t\t;/'
+try9 "first unaligned addresses not kept" 's/s_unal_addr\[s_unal\] = addr;/;/'
+try9 "census never put" 's/^\t\tcensus_put();/\t\t;/'
+try9 "census put without the lists" 's/^\tcen.p49 = cpu.p49;/\tcen.p49.scan = cpu.p49.scan;/'
+try9 "census key without the store count" 's/ + s_unal + (cpu.p49.scan >> 10);/ + (cpu.p49.scan >> 10);/'
+try9 "census key without the scan count" 's/ + s_unal + (cpu.p49.scan >> 10);/ + s_unal;/'
 echo "$caught of $total mutations caught"
 SRC= sh build_spu.sh > out/mut_build.log 2>&1

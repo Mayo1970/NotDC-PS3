@@ -1,6 +1,7 @@
 #include "arm7.h"
 #include "arm_mem.h"
 #include "arm7_jit.h"
+#include "arm7_p49.h"
 #include "ps3/ps3_arm_spe.h"
 
 #define ARM7_FIQ_DIAG 0   // 1 = count real FIQs serviced per second (see CPUFiq)
@@ -114,6 +115,71 @@ bool arm_reset_latch();   // arm_mem.cpp
 // [aicafix]: AICA Race Fix slice extensions (arm7_cached.cpp, arm7_jit.cpp); ARM7 Reset Fix resets, and how many found
 // the FIQ latch or the pending level still set.
 u32 g_arm_races, g_arm_resets, g_arm_stale;
+
+// P49 census (log only) of the PPU engines' decoders, and their unaligned word stores (6.8, arm_mem.cpp). Quiet while
+// the self-tests run.
+A7P49 g_arm_p49;
+u32 g_arm_unal, g_arm_unal_addr[4];
+bool g_arm_p49_quiet;
+
+void arm_p49_scan(u32 pc, u32 op)
+{
+	if (!g_arm_p49_quiet)
+		a7_p49_scan(&g_arm_p49, pc, op);
+}
+
+void arm_unal_store(u32 addr)
+{
+	if (g_arm_p49_quiet)
+		return;
+	if (g_arm_unal < 4)
+		g_arm_unal_addr[g_arm_unal] = addr;
+	g_arm_unal++;
+}
+
+// [p49] lines for one side (0 the PPU engines, 1 the SPU's): each new pair and address once, then the counts at the
+// first call, when one moved or the scan left 0, and each 12th call when only the scan count moved.
+void arm_p49_print(int spu, const A7P49* c, u32 unal, const u32* unal_addr)
+{
+	static A7P49 seen[2];
+	static u32 seen_unal[2], calls[2];
+	static const char* const k_form[2] = { "A (dp, Rn=pc, shift by reg)", "B (str pc)" };
+	const char* eng = spu ? "spu" : "ppu";
+	if (c->scan < seen[spu].scan)   // the engine started again from 0
+	{
+		memset(&seen[spu], 0, sizeof(seen[spu]));
+		seen_unal[spu] = calls[spu] = 0;
+	}
+	bool moved = calls[spu] == 0;
+	for (int k = 0; k < 2; k++)
+	{
+		for (u32 i = seen[spu].kept[k]; i < c->kept[k] && i < A7_P49_KEEP; i++)
+			printf("[p49] %s form %s: pc %08X op %08X\n", eng, k_form[k], c->pc[k][i], c->op[k][i]);
+		moved = moved || c->n[k] != seen[spu].n[k];
+	}
+	for (u32 i = seen_unal[spu]; i < unal && i < 4; i++)
+		printf("[p49] %s unaligned str: addr %08X\n", eng, unal_addr[i]);
+	moved = moved || unal != seen_unal[spu] || (!seen[spu].scan && c->scan) ||
+	        (calls[spu] % 12 == 0 && c->scan != seen[spu].scan);
+	calls[spu]++;
+	if (!moved)
+		return;
+	printf("[p49] %s census: scanned %u insns | A %u decodes (%u sites) | B %u (%u) | unaligned str %u\n", eng, c->scan,
+	       c->n[0], c->kept[0], c->n[1], c->kept[1], unal);
+	seen[spu] = *c;
+	seen_unal[spu] = unal;
+}
+
+// SPG stats block, once per second: the PPU engines' census every ~5 s (with SPE ARM7, arm_spe_stats prints the SPU's).
+void arm_p49_dump(double wall_s)
+{
+	static double acc;
+	acc += wall_s;
+	if (g_arm_spe || acc < 5.0)
+		return;
+	acc = 0.0;
+	arm_p49_print(0, &g_arm_p49, g_arm_unal, g_arm_unal_addr);
+}
 
 BYTE cpuBitsSet[256];
 
@@ -518,3 +584,25 @@ u32  arm_GetReg(int n)            { return arm_Reg[n].I; }
 void arm_SetReg(int n, u32 value) { arm_Reg[n].I = value; }
 u32  arm_GetNextPC()             { return arm_ArmNextPC; }
 void arm_SetNextPC(u32 value)    { arm_ArmNextPC = value; }
+// N, Z, C, V at their CPSR bits (31-28)
+u32  arm_GetNZCV()
+{
+	return ((u32)N_FLAG << 31) | ((u32)Z_FLAG << 30) | ((u32)C_FLAG << 29) | ((u32)V_FLAG << 28);
+}
+void arm_SetNZCV(u32 value)
+{
+	N_FLAG = (value >> 31) & 1;
+	Z_FLAG = (value >> 30) & 1;
+	C_FLAG = (value >> 29) & 1;
+	V_FLAG = (value >> 28) & 1;
+}
+// The self-tests keep the census and the unaligned-store counts clean: off before, on (and zeroed) after.
+void arm_p49_quiet(bool quiet)
+{
+	g_arm_p49_quiet = quiet;
+	if (!quiet)
+	{
+		memset(&g_arm_p49, 0, sizeof(g_arm_p49));
+		g_arm_unal = 0;
+	}
+}

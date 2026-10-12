@@ -23,6 +23,8 @@ extern "C" int get_spe_aica_dsp_preset();
 extern "C" int get_spe_aica_sync_preset();
 extern "C" int get_dsp_reg_read_preset();
 extern "C" int get_aica_lfore_preset();
+extern "C" int get_arm7_str_align_preset();
+void arm_p49_print(int spu, const A7P49* c, u32 unal, const u32* unal_addr);   // plugs/vbaARM/arm7.cpp
 void FASTCALL gdrom_get_cdda(s16* sector);   // dc/gdrom/gdromv3.cpp
 bool aica_sh4_irq_apply(bool on);            // plugs/nullAICA/aica.cpp
 extern u64 AicaTicks;
@@ -58,6 +60,9 @@ static AicaHz s_hz;
 static u32 s_hz_ppu[6];   // this window: map hits by the SH4, by a G2 DMA, with a stale map; requests, misses, wait ticks
 static u32 s_hz_synced_at, s_hz_blk, s_hz_reqs, s_cfg_sent;
 static bool s_hz_ring;    // a DSP ring row is on: the SPU keeps the map even with SPE AICA Sync off
+
+// Section 7, bundle 9 (log only): the SPU's P49 census and unaligned-store counts
+static ArmCensus s_census;
 
 static inline const volatile ArmEcho* echo() { return &s_echo; }
 
@@ -329,7 +334,10 @@ bool arm_spe_init(u8* aica_ram)
 	                (get_aica_ca_clamp_preset() ? ARM_SETUP_CA_CLAMP : 0) |
 	                (get_aica_lfore_preset() ? ARM_SETUP_LFORE : 0) | ((af & AICA_SETUP_RING) ? ARM_SETUP_RING : 0) |
 	                ((af & AICA_SETUP_RING64) ? ARM_SETUP_RING64 : 0) |
-	                (get_dsp_reg_read_preset() && get_spe_aica_dsp_preset() ? ARM_SETUP_DSPRD : 0);
+	                (get_dsp_reg_read_preset() && get_spe_aica_dsp_preset() ? ARM_SETUP_DSPRD : 0) |
+	                (get_arm7_str_align_preset() ? ARM_SETUP_STR_ALIGN : 0);
+	memset(&s_census, 0, sizeof(s_census));
+	s_setup.census_ea = (u32)(uintptr_t)&s_census;
 	memset(&s_hz, 0, sizeof(s_hz));
 	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
 	s_setup.hz_ea = (u32)(uintptr_t)&s_hz;
@@ -453,4 +461,15 @@ void arm_spe_stats(double)
 	s_wait_ticks = 0;
 	ps3aica_hz_print(&s_hz, w, s_hz_ppu);
 	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
+	// The SPU's put is not atomic over the two lines: take a copy that reads the same twice.
+	static ArmCensus ca, cb;
+	for (int tries = 0; tries < 4; tries++)
+	{
+		memcpy(&ca, (const void*)&s_census, sizeof(ca));
+		__asm__ volatile("lwsync" ::: "memory");
+		memcpy(&cb, (const void*)&s_census, sizeof(cb));
+		if (!memcmp(&ca, &cb, sizeof(ca)))
+			break;
+	}
+	arm_p49_print(1, &ca.p49, ca.unal, ca.unal_addr);
 }

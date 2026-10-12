@@ -1,9 +1,12 @@
 // OPTIMIZATION_PLAN 5.15 B2: the spe_arm7 SPU image in misc/spu_sim against an x86 reference made of the same ARM7
 // core, aica_ctl.h and caique model on flat memory, fed the same SH4 commands. Usage: harness elf syms seed batches
+// [flags], or harness elf syms optest flags (bundle 9: the conformance binaries and the op tests on the SPU image).
 #include "spusim.h"
 #include "aica_model.h"
 #include "spe_aica.h"
 #include "spe_arm7.h"
+#include "../../plugs/vbaARM/arm7_selftest_data.h"
+#include "../../plugs/vbaARM/arm7_optest.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,13 +28,15 @@ static const u32 ARAM = 2u << 20;
 
 // ---- main memory as the SPU sees it (big-endian data) ----
 enum : u64 { EA_BELL = 0x10000000, EA_ECHO = 0x10000100, EA_SETUP = 0x10000200, EA_ABELL = 0x10000300,
-             EA_AECHO = 0x10000400, EA_HZ = 0x10001000, EA_RING = 0x10010000, EA_LOG = 0x10100000, EA_ARAM = 0x20000000 };
+             EA_AECHO = 0x10000400, EA_HZ = 0x10001000, EA_CENSUS = 0x10002000, EA_RING = 0x10010000,
+             EA_LOG = 0x10100000, EA_ARAM = 0x20000000 };
 static u8 g_bell[128], g_echo[128], g_setup[128], g_abell[128], g_aecho[256], g_hz[sizeof(AicaHz)];
+static u8 g_census[sizeof(ArmCensus)];
 static u8 g_ring[ARM_CMDS * 16];
 static u8* g_log;
 static u8* g_aram;
 struct Region { u64 ea; u32 size; u8* p; };
-static Region g_rg[9];
+static Region g_rg[10];
 
 static u8* ea_fn(void*, u64 ea, u32 size)
 {
@@ -48,6 +53,9 @@ static void ac_dsp_read(uint32_t a);
 #include "aica_ctl.h"
 static void r_arm_store(u32 h, u32 n);   // spe_arm7.cpp aram_store: the hazard test before the store
 static void r_arm_stored(u32 h);         // and the ring's dirty line after it
+// ArmSetup.flags: the Looney Tunes fixes (plan 6.5, P44, P31) from the seed's bits 3-5; bundle 5 from seed 100;
+// bundle 9's ARM7 STR Align by argv[5]. r_unal: the reference's unaligned word stores.
+static u32 g_flags, r_resets, r_unal, r_unal_addr[4];
 
 static inline uint32_t a7_fetch(uint32_t a) { return be32(&g_raram[a & 0x1FFFFC]); }
 static uint32_t a7_rd32(uint32_t addr)
@@ -78,14 +86,21 @@ static void a7_wr32(uint32_t addr, uint32_t v)
 	}
 	if (addr & 3)
 	{
-		for (u32 i = 0; i < 4; i++)
+		if (r_unal < 4)
+			r_unal_addr[r_unal] = addr;
+		r_unal++;
+		if (!(g_flags & ARM_SETUP_STR_ALIGN))
 		{
-			const u32 h = ((addr + i) ^ 3) & 0x1FFFFF;
-			r_arm_store(h, 1);
-			g_raram[h] = (u8)(v >> (8 * i));
-			r_arm_stored(h);
+			for (u32 i = 0; i < 4; i++)
+			{
+				const u32 h = ((addr + i) ^ 3) & 0x1FFFFF;
+				r_arm_store(h, 1);
+				g_raram[h] = (u8)(v >> (8 * i));
+				r_arm_stored(h);
+			}
+			return;
 		}
-		return;
+		addr &= ~3u;
 	}
 	r_arm_store(addr & 0x1FFFFF, 4);
 	put32(&g_raram[addr & 0x1FFFFF], v);
@@ -109,9 +124,6 @@ static void a7_wr8(uint32_t addr, uint32_t v)
 
 static A7Cpu g_cpu;
 static void ac_race(void) { a7_race(&g_cpu); }
-
-// The Looney Tunes fixes (plan 6.5, P44, P31) from the seed's bits 3-5, as ArmSetup.flags; bundle 5 from seed 100
-static u32 g_flags, r_resets;
 
 // spe_arm7.cpp arm_reset_edge: an ARM7 reset; ARM7 Reset Fix also clears the FIQ latch
 static void ref_reset_edge()
@@ -735,6 +747,17 @@ static bool compare(bool rd, u32 rd_seq, u32 rd_val, int hz_res = -1)
 			return fail("echo fix count", i, be32(e + offsetof(ArmEcho, races) + 4 * i), fx[i]);
 	if (be32(e + offsetof(ArmEcho, log_drops)) || be32(e + offsetof(ArmEcho, cdda_under)))
 		return fail("log drops / cdda under", be32(e + offsetof(ArmEcho, log_drops)), be32(e + offsetof(ArmEcho, cdda_under)), 0);
+	// Bundle 9: the census block as the SPU last put it. Its scan count moves in steps of 1024; the rest is current.
+	for (u32 f = 0; f < sizeof(A7P49); f += 4)
+		if (f != offsetof(A7P49, scan) && be32(g_census + f) != *(const u32*)((const u8*)&g_cpu.p49 + f))
+			return fail("census word", f, be32(g_census + f), *(const u32*)((const u8*)&g_cpu.p49 + f));
+	if ((be32(g_census + offsetof(A7P49, scan)) >> 10) != (g_cpu.p49.scan >> 10))
+		return fail("census scan", be32(g_census + offsetof(A7P49, scan)), g_cpu.p49.scan, 0);
+	if (be32(g_census + offsetof(ArmCensus, unal)) != r_unal)
+		return fail("census unaligned stores", be32(g_census + offsetof(ArmCensus, unal)), r_unal, 0);
+	for (u32 i = 0; i < 4; i++)
+		if (be32(g_census + offsetof(ArmCensus, unal_addr) + 4 * i) != r_unal_addr[i])
+			return fail("census unaligned address", i, be32(g_census + offsetof(ArmCensus, unal_addr) + 4 * i), r_unal_addr[i]);
 	// The SPU's ARM7 and AICA state, read from its LS
 	const u8* c = g_sim->ls + g_cpu_ea;
 	for (u32 i = 0; i < 47; i++)
@@ -769,6 +792,99 @@ static bool compare(bool rd, u32 rd_seq, u32 rd_val, int hz_res = -1)
 	return take_log();
 }
 
+// ---- bundle 9: the 45 conformance binaries and arm7_optest.h on the SPU image, through its command ring ----
+static bool g_sim_dead;
+struct SimIo
+{
+	u8* c() { return g_sim->ls + g_cpu_ea; }
+	void cmd(u8 op, u8 flags, u16 a, u32 b, u32 sz)
+	{
+		const Cmd x = { op, flags, a, b, sz };
+		push_cmd(x);
+	}
+	void go()
+	{
+		if (!g_sim_dead && !run_spu())
+			g_sim_dead = true;
+	}
+	// ARMRST held, then released: the core resets
+	void reset()
+	{
+		cmd(ARM_CMD_WR, 0, 0x2C00, 1, 2);
+		cmd(ARM_CMD_WR, 0, 0x2C00, 0, 2);
+		go();
+	}
+	void flush() { cmd(ARM_CMD_FLUSH, 0, 0, 0, 0); }
+	u32 reg(int n) { return be32(c() + 4 * n); }
+	void set_reg(int n, u32 v) { put32(c() + 4 * n, v); }
+	u32 nzcv()
+	{
+		const u8* f = c() + offsetof(A7Cpu, n);
+		return (u32)f[0] << 31 | (u32)f[1] << 30 | (u32)f[2] << 29 | (u32)f[3] << 28;
+	}
+	void set_nzcv(u32 v)
+	{
+		u8* f = c() + offsetof(A7Cpu, n);
+		for (int i = 0; i < 4; i++)
+			f[i] = (v >> (31 - i)) & 1;
+	}
+	u32 rd32(u32 a) { return be32(g_aram + (a & 0x1FFFFC)); }
+	void wr32(u32 a, u32 v) { aram_write(a & 0x1FFFFC, v, 4); }
+	u32 pc() { return be32(c() + offsetof(A7Cpu, next_pc)); }
+	void set_pc(u32 pc)
+	{
+		put32(c() + offsetof(A7Cpu, next_pc), pc);
+		set_reg(15, pc + 4);
+	}
+	// One MediumUpdate of 20 SH4 cycles per tick, no AICA sample
+	void run(u32 ticks)
+	{
+		cmd(ARM_CMD_MU, 1, 0, 20 * ticks, 0);
+		go();
+	}
+	bool str_align() { return (g_flags & ARM_SETUP_STR_ALIGN) != 0; }
+};
+
+static int run_optest()
+{
+	SimIo io;
+	int failed = 0;
+	for (int t = 0; t < arm7_selftest_count; t++)
+	{
+		const Arm7SelfTest& x = arm7_selftests[t];
+		memset(g_aram, 0, ARAM);
+		for (u32 i = 0; i < x.size; i++)
+			g_aram[i ^ 3] = x.data[i];
+		g_dlo = 0;
+		g_dhi = ARAM / 128 - 1;
+		io.reset();
+		io.set_pc(0);
+		u32 n = 0;
+		while (!g_sim_dead && io.rd32(io.pc()) != 0xDEADBEEFu && n < 100000)
+		{
+			io.run(1);
+			n++;
+		}
+		if (g_sim_dead || n >= 100000 || (io.reg(1) & 0x3FFFFFFFu))
+		{
+			failed++;
+			printf("SELFTEST FAIL spu image %-10s r1=%08X%s\n", x.name, io.reg(1), n >= 100000 ? " (timeout)" : "");
+		}
+	}
+	memset(g_aram, 0, ARAM);
+	g_dlo = 0;
+	g_dhi = ARAM / 128 - 1;
+	A7TStats st = { 0, 0, 0 };
+	a7t_run(io, false, "OPTEST spu image", st);
+	a7t_run(io, true, "OPTEST spu image", st);
+	const u32 unal = be32(g_census + offsetof(ArmCensus, unal));
+	const bool ok = !failed && !st.fails && !g_sim_dead && unal;
+	printf("optest (flags %u): selftest %d failures of %d | op tests %u failures over %u checks in %u runs | unaligned"
+	       " stores counted %u | %llu SPU insns: %s\n", g_flags, failed, arm7_selftest_count, st.fails, st.checks, st.runs,
+	       unal, (unsigned long long)g_sim->insns, ok ? "PASS" : "FAIL");
+	return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
 	if (argc < 5)
@@ -790,6 +906,7 @@ int main(int argc, char** argv)
 		fprintf(stderr, "no cpu/ac symbols in %s\n", argv[2]);
 		return 2;
 	}
+	const bool optest = !strcmp(argv[3], "optest");
 	const u32 seed = (u32)strtoul(argv[3], 0, 0), batches = (u32)strtoul(argv[4], 0, 0);
 	g_flags = argc > 5 ? (u32)strtoul(argv[5], 0, 0) : ((seed >> 3) & 1 ? ARM_SETUP_RACE_FIX : 0) | ((seed >> 4) & 1 ? ARM_SETUP_RESET_FIX : 0) |
 	          ((seed >> 5) & 1 ? ARM_SETUP_CA_CLAMP : 0);
@@ -802,6 +919,8 @@ int main(int argc, char** argv)
 		g_flags = ARM_SETUP_RACE_FIX | ARM_SETUP_RESET_FIX | ARM_SETUP_CA_CLAMP | (hzk & 1 ? ARM_SETUP_LFORE : 0) |
 		          (hzk & 2 ? ARM_SETUP_RING : 0) | (hzk & 4 ? ARM_SETUP_RING64 : 0) | (hzk & 8 ? ARM_SETUP_DSPRD : 0);
 	const bool hz_sync = (hzk & 16) != 0;
+	if (optest)
+		g_flags = batches;
 	g_rng = 0x9E3779B97F4A7C15ull * (seed + 1);
 	g_storm = (seed % 4) == 3;
 	g_lag = g_storm && !g_hz_seed;   // a lagging sound SPU would not answer in time
@@ -817,6 +936,7 @@ int main(int argc, char** argv)
 	g_rg[6] = { EA_LOG, AICA_LOG * 16, g_log };
 	g_rg[7] = { EA_ARAM, ARAM, g_aram };
 	g_rg[8] = { EA_HZ, sizeof(g_hz), g_hz };
+	g_rg[9] = { EA_CENSUS, sizeof(g_census), g_census };
 	put32(g_setup + offsetof(ArmSetup, ring_ea), (u32)EA_RING);
 	put32(g_setup + offsetof(ArmSetup, aram_ea), (u32)EA_ARAM);
 	put32(g_setup + offsetof(ArmSetup, aica_bell_ea), (u32)EA_ABELL);
@@ -824,6 +944,7 @@ int main(int argc, char** argv)
 	put32(g_setup + offsetof(ArmSetup, aica_log_ea), (u32)EA_LOG);
 	put32(g_setup + offsetof(ArmSetup, flags), g_flags);
 	put32(g_setup + offsetof(ArmSetup, hz_ea), (u32)EA_HZ);
+	put32(g_setup + offsetof(ArmSetup, census_ea), (u32)EA_CENSUS);
 	gen_program(g_aram);
 	memcpy(g_raram, g_aram, ARAM);
 
@@ -853,6 +974,8 @@ int main(int argc, char** argv)
 		printf("seed %u: SPU boot failed: %s\n", seed, g_sim->msg);
 		return 1;
 	}
+	if (optest)
+		return run_optest();
 
 	const u32 batch_pref = 1 + seed % 4, safe0 = (seed >> 2) & 1;
 	u32 safe = safe0, acc = 0, rd_seq = 0, cdda_index = AICA_CDDA_WORDS << 1, n_wr = 0, n_rd = 0, n_aram = 0, n_rst = 0;
@@ -1067,11 +1190,13 @@ int main(int argc, char** argv)
 		       r_hz.ring_hits, r_hz.ring_recs, r_hz.syncs, r_hz.miss, n_ppu_miss, r_hz.dsp_rd[0], r_hz.dsp_rd[1]);
 	printf("seed %u: %s | fixes %u: races %u raises %u resets %u stale %u ca %u/%u | batches %u cmds %llu | samples %u"
 	       " recs %zu (checks %u) | arm runs %u fiqs %u decodes %u evicts %u"
-	       " | aram misses %u puts %u | sh4 wr %u rd %u aram %u armrst %u | log waits %u limit runs %llu | %llu insns\n",
+	       " | aram misses %u puts %u | sh4 wr %u rd %u aram %u armrst %u | log waits %u limit runs %llu | %llu insns"
+	       " | census A %u B %u scan %u, unaligned str %u\n",
 	       seed, ok ? "PASS" : "FAIL", g_flags, g_cpu.races, ac.raises, r_resets, ac.stale, ac.ca_clamped, ac.ca_reads,
 	       batches, (unsigned long long)g_cmds, ac.smp, g_rlog.size(), r_checks,
 	       be32(g_echo + offsetof(ArmEcho, runs)), g_cpu.fiqs, g_cpu.decodes, g_cpu.evicts,
 	       be32(g_echo + offsetof(ArmEcho, misses)), be32(g_echo + offsetof(ArmEcho, puts)), n_wr, n_rd, n_aram, n_rst,
-	       be32(g_echo + offsetof(ArmEcho, log_waits)), (unsigned long long)g_limit_runs, (unsigned long long)g_sim->insns);
+	       be32(g_echo + offsetof(ArmEcho, log_waits)), (unsigned long long)g_limit_runs, (unsigned long long)g_sim->insns,
+	       g_cpu.p49.n[0], g_cpu.p49.n[1], g_cpu.p49.scan, r_unal);
 	return ok ? 0 : 1;
 }

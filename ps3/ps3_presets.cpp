@@ -22,6 +22,7 @@ int g_arm7_idle_skip_preset = 0;  // 0 OLD: +100 ticks on any store-free self-lo
 int g_aica_kyonb_preset    = 0;   // 0 nullAICA clears KYONB on release, 1 never cleared, as on hardware (6.1)
 int g_aica_race_fix_preset = 1;   // 1 = Flycast's SH4/ARM7 race fixes: G2 DMA guards, +50 ARM7 ticks per SH4 interrupt (6.5, HW)
 int g_arm7_reset_fix_preset = 1;  // 1 = an ARM7 reset enters SVC mode and clears the FIQ latch, as Flycast (P44, 6.8, HW)
+int g_arm7_str_align_preset = 1;  // 1 = an unaligned ARM7 word store writes the aligned word, as the ARM7DI and Flycast (6.8, HW: ChuChu Rocket)
 int g_aica_ca_clamp_preset = 1;   // 1 = CA reads stop at LEA-3 in the SPE AICA paths too, as nullAICA's (P31, HW)
 int g_audio_buffers_preset = -1;  // -1 leaves the nullDC.cfg value alone
 int g_exit_fix_preset      = 1;
@@ -191,6 +192,7 @@ static const CfgItem s_items[] = {
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
 	{ "AicaRaceFix",   &g_aica_race_fix_preset },
 	{ "Arm7ResetFix",  &g_arm7_reset_fix_preset },
+	{ "Arm7StrAlign",  &g_arm7_str_align_preset },
 	{ "AicaCaClamp",   &g_aica_ca_clamp_preset },
 	{ "AudioBuffers",  &g_audio_buffers_preset },
 	{ "ExitFix",       &g_exit_fix_preset },
@@ -349,6 +351,7 @@ static const CfgItem s_snd_items[] = {
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
 	{ "AicaRaceFix",   &g_aica_race_fix_preset },
 	{ "Arm7ResetFix",  &g_arm7_reset_fix_preset },
+	{ "Arm7StrAlign",  &g_arm7_str_align_preset },
 	{ "AicaCaClamp",   &g_aica_ca_clamp_preset },
 	{ "AicaFast",      &g_aica_fast_preset },
 	{ "MutePcm16",     &g_mute_pcm16_preset },
@@ -587,6 +590,8 @@ int get_spe_arm7_preset()      { return g_spe_arm7_preset; }
 int get_aica_race_fix_preset() { return g_aica_race_fix_preset; }
 int get_arm7_reset_fix_preset() { return g_arm7_reset_fix_preset; }
 int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 9: the PPU engines read it at each unaligned store, the SPU once in InitAica.
+int get_arm7_str_align_preset() { return g_arm7_str_align_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 5. SPE AICA Sync is read at each MediumUpdate; the rest once in InitAica.
 int get_spe_aica_sync_preset() { return g_spe_aica_sync_preset; }
 int get_dsp_ring_ram_preset()  { return g_dsp_ring_ram_preset; }
