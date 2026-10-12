@@ -16,6 +16,7 @@ struct TaSplit
 extern TaSplit g_ta_split;
 extern u32 g_jit_sq_sites;   // Step 3: store sites the JIT gave the store-queue shape (ps3_driver.cpp)
 extern u32 g_jit_sq_la_sites, g_jit_sq_cold_sites;   // plan 5.27: look-ahead shapes, cold-path SQ tests
+extern u32 g_jit_sq_cp_sites;   // JIT SQ COPY: shapes picked through a register copy
 
 void ta_split_leave(u64 t_entry);
 void ta_split_dump(double seconds);

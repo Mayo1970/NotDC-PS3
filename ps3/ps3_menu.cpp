@@ -324,6 +324,7 @@ static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
 static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
 static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
 static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", NULL };
+static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
@@ -540,6 +541,8 @@ static Option s_jit[] = {
 	  "bt.s/bf.s take T from the compare's register copy, not memory. Set before boot." },
 	{ "JIT SQ MISS",     &g_jit_sq_miss_preset,   OPT_CHOICE, k_sqmiss,    0, 0,0,0, NULL,
 	  "Missed SQ stores skip the table; LA STEPS looks past @-Rn stores. Set before boot." },
+	{ "JIT SQ COPY",     &g_jit_sq_copy_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SQ stores stay inline when the PREF uses a copy of their register. Set before boot." },
 	{ "JIT MFOCRF",      &g_jit_mfocrf_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Compares read CR0 with mfocrf, not the microcoded mfcr. Set before boot." },
 	{ "JIT FPUL MOVES",  &g_jit_fpul_moves_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
@@ -558,6 +561,8 @@ static Option s_jit[] = {
 	  "ACCEPT: FPSCR.RM 2 or 3 runs as round to nearest, no hang (P57). Set before boot." },
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
 	  "X3 BACKWARD: more frames in some games, slower in others (P71). Set before boot." },
+	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
+	  "A listed wait loop ends the timeslice (Looney Tunes), as Reicast. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

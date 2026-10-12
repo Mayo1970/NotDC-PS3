@@ -9,6 +9,7 @@
 #include "dc/mem/sh4_mem.h"
 #include "decoder_opcodes.h"
 #include "idle_loop.h"
+#include "idle_hash.h"
 #include "div32_match.h"
 
 #define NullAddress 0xFFFFFFFF
@@ -47,6 +48,7 @@ void DecodedBlock::Setup(u32 rpc)
 
 	has_store=false;
 	idle_loop=false;
+	idle_hash=false;
 }
 
 DecodedBlock block;
@@ -57,6 +59,9 @@ extern "C" int get_jit_pr_moves_preset();
 extern "C" int get_jit_idle_rule_preset();
 // Since boot, for the [jit8] line: PR=1 moves kept native, blocks the idle rule billed, blocks with RM 2 or 3.
 u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
+// JIT IDLE HASH (bundle 8, way B): 0 off, 1 our list, 2 also Reicast's. Blocks that end the slice, since boot.
+extern "C" int get_jit_idle_hash_preset();
+u32 g_dec_hash_blocks;
 
 struct
 {
@@ -1251,6 +1256,35 @@ int stuffcmp(const void* p1,const void* p2)
 
 	return b->fallbacks-a->fallbacks;
 }
+
+// JIT IDLE HASH: true = this block ends the timeslice. Level 1 acts on our list and only logs a block of
+// Reicast's list; level 2 acts on both. The first hits of each list go to the log in hash()'s full form.
+static bool dec_idle_hash(int level)
+{
+	if (block.opcodes==0 || block.opcodes>IDLE_HASH_MAX_OPS)
+		return false;
+	u8 code[IDLE_HASH_MAX_OPS];
+	for (u32 i=0;i<block.opcodes;i++)
+		code[i]=ReadMem8(block.start+i);
+	char full[IDLE_HASH_STR];
+	const int list=idle_hash_listed(block.start,block.opcodes,code,full);
+	if (list==IDLE_LIST_NONE)
+		return false;
+	const bool act=list==IDLE_LIST_OWN || level>=2;
+	// A log share per list: Reicast's entries hit dozens of blocks in a boot and must not hide ours.
+	static u32 logged[2];
+	u32& lines=logged[list==IDLE_LIST_OWN];
+	if (lines<24)
+	{
+		lines++;
+		printf("[idlehash] %s %s: %s\n",full,list==IDLE_LIST_OWN?"our list":"Reicast's list",
+		       act?"ends the slice":"log only");
+	}
+	if (act)
+		g_dec_hash_blocks++;
+	return act;
+}
+
 DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 {
 	block.Setup(startpc);
@@ -1339,6 +1373,8 @@ _end:
 	block.BranchBlock=state.JumpAddr;
 	block.BlockType=state.BlockType;
 	block.has_store=idle_block_stores(block);
+	const int idle_hash_level=get_jit_idle_hash_preset();
+	block.idle_hash=idle_hash_level && dec_idle_hash(idle_hash_level);
 
 	//cycle tricks
 	{

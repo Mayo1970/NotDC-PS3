@@ -169,6 +169,8 @@ int g_jit_bcache_preset    = 1;   // 1 = dynamic block ends look up the flat {ad
 int g_jit_pr_moves_preset  = 0;   // 1 = fmov, flds and fsts stay native in a PR=1 block (5.39)
 int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to nearest; 0 hangs in a verify (P57)
 int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles (P71)
+int g_jit_idle_hash_preset = 0;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
+int g_jit_sq_copy_preset   = 0;   // 1 = SQ shape for stores whose block PREFs through a copy of their base register
 
 struct CfgItem { const char* key; int* val; };
 
@@ -318,6 +320,8 @@ static const CfgItem s_items[] = {
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
 	{ "JitIdleRule",   &g_jit_idle_rule_preset },
+	{ "JitIdleHash",   &g_jit_idle_hash_preset },
+	{ "JitSqCopy",     &g_jit_sq_copy_preset },
 };
 
 void ps3_presets_load(void)
@@ -605,6 +609,7 @@ int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
 int get_jit_rm_any_preset()    { return g_jit_rm_any_preset; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
+int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 
 // JIT backend presets; the fixed 0 ones wait for OPTIMIZATION_PLAN 5. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).
@@ -625,6 +630,7 @@ int get_jit_cycle_check_preset() { return g_jit_cycle_check_preset; }
 int get_jit_idle_skip_preset() { return g_jit_idle_skip_preset; }
 int get_jit_tcopy_preset()     { return g_jit_tcopy_preset; }
 int get_jit_sq_miss_preset()   { return g_jit_sq_miss_preset; }
+int get_jit_sq_copy_preset()   { return g_jit_sq_copy_preset; }
 int get_jit_mfocrf_preset()    { return g_jit_mfocrf_preset; }
 int get_jit_fpul_moves_preset() { return g_jit_fpul_moves_preset; }
 int get_jit_frchg_preset()     { return g_jit_frchg_preset; }

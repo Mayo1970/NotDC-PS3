@@ -289,6 +289,11 @@ extern "C" int get_jit_sq_miss_preset();
 u32 g_jit_sq_la_sites, g_jit_sq_cold_sites;
 static u32 sqla_read16(u32 addr) { return ReadMem16(addr); }
 
+// JIT SQ COPY: store-queue shape for stores whose block PREFs through a copy of their base register (the Sonic
+// Adventure 2 vertex loop: stores through r6, `pref @r3; mov r6,r3`). Sites since boot, part of g_jit_sq_sites.
+extern "C" int get_jit_sq_copy_preset();
+u32 g_jit_sq_cp_sites;
+
 // JIT FTRV (plan 5.20): ftrv/fipr without FPR copies, ftrv's sums interleaved, fldi from a table.
 extern "C" int get_jit_ftrv_preset();
 
@@ -334,6 +339,9 @@ extern "C" int get_jit_pr_moves_preset();
 extern "C" int get_jit_rm_any_preset();
 extern u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static u32 s_bcache_sites, s_mac_sites;
+// JIT IDLE HASH (bundle 8, way B), also on the [jit8] line: listed blocks compiled since boot.
+extern "C" int get_jit_idle_hash_preset();
+extern u32 g_dec_hash_blocks;
 
 // Plan 5.31 JIT GUARD REUSE: this block's plan (each memory op's check, then the roles); sites since boot.
 extern "C" int get_jit_guard_reuse_preset();
@@ -466,6 +474,10 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	// JIT IDLE SKIP: a block that may store marks the turn as work, so the next idle check runs on.
 	if (get_jit_idle_skip_preset() && block->has_store)
 		emit_idle_mark(ppc_contex,offsetof(Sh4Context,jit_idle_work));
+
+	// JIT IDLE HASH: a known wait loop's block drops the rest of the timeslice, so the next poll ends it.
+	if (block->idle_hash)
+		ppc_li(ppc_cycles,0);
 
 	// No GPR reload: pinned r14..r28 hold the SH4 GPRs across blocks, loaded once in the mainloop prologue and
 	// resynced only around shop_ifb and the canonical fallback.
@@ -1962,12 +1974,13 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	}
 
 	static u32 jit8_last;
-	const u32 jit8_n=s_bcache_sites+s_mac_sites+g_dec_pr_moves+g_dec_rule_blocks+g_dec_rm23_blocks;
+	const u32 jit8_n=s_bcache_sites+s_mac_sites+g_dec_pr_moves+g_dec_rule_blocks+g_dec_rm23_blocks+g_dec_hash_blocks;
 	if (jit8_n!=jit8_last)
 	{
 		jit8_last=jit8_n;
-		printf("[jit8] sites: bcache=%u mac=%u prmoves=%u | blocks: idle rule %d billed=%u rm23=%u\n", s_bcache_sites,
-		       s_mac_sites, g_dec_pr_moves, get_jit_idle_rule_preset(), g_dec_rule_blocks, g_dec_rm23_blocks);
+		printf("[jit8] sites: bcache=%u mac=%u prmoves=%u | blocks: idle rule %d billed=%u rm23=%u idle hash %d"
+		       " listed=%u\n", s_bcache_sites, s_mac_sites, g_dec_pr_moves, get_jit_idle_rule_preset(),
+		       g_dec_rule_blocks, g_dec_rm23_blocks, get_jit_idle_hash_preset(), g_dec_hash_blocks);
 	}
 
 	if (get_jit_idle_skip_preset() && seconds>0.0)
@@ -2866,7 +2879,8 @@ static void gr_prepare(DecodedBlock* block)
 			k=GR_RAM;
 			if (o.op==shop_writem && get_jit_sq_store_preset() && (o.flags==4 || o.flags==8) &&
 			    (sq_store_guess(block,i) ||
-			     (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16,get_jit_sq_miss_preset()>=3))))
+			     (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16,get_jit_sq_miss_preset()>=3)) ||
+			     (get_jit_sq_copy_preset() && sqcp_guess(block,i))))
 				k=GR_SQ;
 		}
 		s_gr_kind[i]=k;
@@ -3413,6 +3427,10 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					bool sq_la=false;
 					if (!sq_guess && sqm>=2 && get_jit_sq_store_preset() && sq_size)
 						sq_guess=sq_la=sqla_guess(block,i,sqla_read16,sqm>=3);
+					// JIT SQ COPY: the PREF goes through a copy of the base register.
+					bool sq_cp=false;
+					if (!sq_guess && get_jit_sq_copy_preset() && get_jit_sq_store_preset() && sq_size)
+						sq_guess=sq_cp=sqcp_guess(block,i);
 
 					// JIT GUARD REUSE (plan 5.31): an earlier check of this base register stands in for this one.
 					const u8 gr=gr_role(s_gr,(u32)i);
@@ -3439,6 +3457,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						             fdirect?fs1:(u32)ppc_rarg3,sqb);
 						g_jit_sq_sites++;
 						g_jit_sq_la_sites+=sq_la;
+						g_jit_sq_cp_sites+=sq_cp;
 					}
 					else
 					{
@@ -4616,8 +4635,8 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
-	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d\n", get_jit_idle_rule_preset(), get_jit_pr_moves_preset(),
-	       get_jit_rm_any_preset());
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d\n", get_jit_idle_rule_preset(),
+	       get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(), get_jit_sq_copy_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each

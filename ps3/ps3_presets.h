@@ -151,6 +151,8 @@ extern int g_jit_bcache_preset;
 extern int g_jit_pr_moves_preset;
 extern int g_jit_rm_any_preset;
 extern int g_jit_idle_rule_preset;
+extern int g_jit_idle_hash_preset;
+extern int g_jit_sq_copy_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 
 // cfgOpen() must have run first.

@@ -137,3 +137,32 @@ static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u
 		return false;
 	}
 }
+
+// JIT SQ COPY: the block PREFs through Rm, and Rm's only writer in the block is `mov Rn,Rm` with Rn the store's
+// base (before or after the PREF: a loop carries the copy to its next turn). It only picks the shape, as above.
+static inline bool sqcp_guess(const DecodedBlock* block, size_t i)
+{
+	const shil_param& base = block->oplist[i].rs1;
+	if (!base.is_r32i() || base._reg > reg_r15)
+		return false;
+	u32 copies = 0, others = 0, prefs = 0;	// one bit per GPR
+	for (size_t j = 0; j < block->oplist.size(); j++)
+	{
+		const shil_opcode& o = block->oplist[j];
+		// The interpreter and a bank switch can write any GPR.
+		if (o.op == shop_sync_sr || o.op == shop_ifb)
+			return false;
+		if (o.op == shop_pref)
+		{
+			if (o.rs1.is_r32i() && o.rs1._reg <= reg_r15)
+				prefs |= 1u << o.rs1._reg;
+			continue;
+		}
+		const bool copy = o.op == shop_mov32 && o.rs1.is_r32i() && o.rs1._reg == base._reg;
+		if (o.rd.is_r32i() && o.rd._reg <= reg_r15)
+			(copy ? copies : others) |= 1u << o.rd._reg;
+		if (o.rd2.is_r32i() && o.rd2._reg <= reg_r15)
+			others |= 1u << o.rd2._reg;
+	}
+	return (prefs & copies & ~others) != 0;
+}

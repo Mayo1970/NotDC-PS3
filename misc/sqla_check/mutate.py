@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# Plans 5.27 and 5.43 (WSL): plants one bug at a time in a copy of ps3_jit_sqla.h; run.sh must FAIL on each.
+# Plans 5.27, 5.43 and JIT SQ COPY (WSL): plants one bug at a time in a copy of ps3_jit_sqla.h; run.sh must FAIL on
+# each. Args: scan fuzz count, a text the names hold.
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -58,6 +59,28 @@ MUTANTS = [
      '\tcase BET_StaticJump:\n\t\treturn sqla_scan(block->BranchBlock, n, rd16);'),
     ('fall-through scan drops the steps flag', '|| sqla_scan(block->NextBlock, n, rd16, steps);',
      '|| sqla_scan(block->NextBlock, n, rd16);'),
+    # JIT SQ COPY
+    ('cp: copy from any register', 'o.rs1.is_r32i() && o.rs1._reg == base._reg;', 'o.rs1.is_r32i();'),
+    ('cp: copy from the next register', 'o.rs1._reg == base._reg;', 'o.rs1._reg == base._reg + 1;'),
+    ('cp: any op with the base as its source is a copy', 'const bool copy = o.op == shop_mov32 && ', 'const bool copy = '),
+    ('cp: copy source may be an immediate', 'o.op == shop_mov32 && o.rs1.is_r32i() && o.rs1._reg == base._reg;',
+     'o.op == shop_mov32 && o.rs1._reg == base._reg;'),
+    ('cp: other writers ignored', 'return (prefs & copies & ~others) != 0;', 'return (prefs & copies) != 0;'),
+    ('cp: PREF not needed', 'return (prefs & copies & ~others) != 0;', 'return (copies & ~others) != 0;'),
+    ('cp: copy not needed', 'return (prefs & copies & ~others) != 0;', 'return (prefs & ~others) != 0;'),
+    ('cp: copy and PREF on different registers', 'return (prefs & copies & ~others) != 0;',
+     'return prefs != 0 && (copies & ~others) != 0;'),
+    ('cp: rd2 writers ignored', '\t\tif (o.rd2.is_r32i() && o.rd2._reg <= reg_r15)\n\t\t\tothers |= 1u << o.rd2._reg;\n', ''),
+    ('cp: copy through rd2', '\t\t\tothers |= 1u << o.rd2._reg;', '\t\t\t(copy ? copies : others) |= 1u << o.rd2._reg;'),
+    ('cp: ifb passes', 'if (o.op == shop_sync_sr || o.op == shop_ifb)', 'if (o.op == shop_sync_sr)'),
+    ('cp: sync_sr passes', 'if (o.op == shop_sync_sr || o.op == shop_ifb)', 'if (o.op == shop_ifb)'),
+    ('cp: PREF through any register', 'prefs |= 1u << o.rs1._reg;', 'prefs |= 0xFFFF;'),
+    ('cp: constant PREF counts', '\t\t\tif (o.rs1.is_r32i() && o.rs1._reg <= reg_r15)\n\t\t\t\tprefs |= 1u << o.rs1._reg;',
+     '\t\t\tprefs |= 1u << (o.rs1._reg & 15);'),
+    ('cp: immediate base', 'if (!base.is_r32i() || base._reg > reg_r15)', 'if (base._reg > reg_r15)'),
+    ('cp: base outside the GPRs', 'if (!base.is_r32i() || base._reg > reg_r15)', 'if (!base.is_r32i())'),
+    ('cp: scan from the store on', 'for (size_t j = 0; j < block->oplist.size(); j++)\n\t{\n\t\tconst shil_opcode& o = block->oplist[j];\n\t\t// The interpreter',
+     'for (size_t j = i + 1; j < block->oplist.size(); j++)\n\t{\n\t\tconst shil_opcode& o = block->oplist[j];\n\t\t// The interpreter'),
 ]
 
 def main():
@@ -65,7 +88,12 @@ def main():
     src = open(os.path.join(ROOT, HDR), encoding='utf-8').read()
     caught = ref_caught = 0
     os.makedirs(os.path.dirname(TMP), exist_ok=True)
+    todo = [m for m in MUTANTS if len(sys.argv) < 3 or sys.argv[2].lower() in m[0].lower()]
     for name, find, repl in MUTANTS:
+        if src.count(find) != 1:
+            print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
+            sys.exit(2)
+    for name, find, repl in todo:
         if src.count(find) != 1:
             print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
             sys.exit(2)
@@ -81,7 +109,7 @@ def main():
         first = next((l for l in out if 'CHECK' in l or 'wrong' in l and not l.endswith(' 0 wrong') or
                       l.startswith('class') or l.startswith('scan pc')), out[0] if out else '')
         print(f"{'CAUGHT' if ok else 'MISSED'} ref:{'yes' if a.returncode else 'no '}  {name}: {first[:100]}")
-    print(f'{caught}/{len(MUTANTS)} mutants caught, {ref_caught} by the reference checks alone')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught}/{len(todo)} mutants caught, {ref_caught} by the reference checks alone')
+    sys.exit(0 if caught == len(todo) else 1)
 
 main()

@@ -47,6 +47,7 @@ public:
 
 	bool has_store;	// may write guest memory (plan 5.25)
 	bool idle_loop;	// idle-rule block whose backward branch closes a turn that keeps no state (plan 5.25)
+	bool idle_hash;	// in a list of known wait loops: the block drops the rest of the timeslice (bundle 8, way B)
 
 	void Emit(shilop op,shil_param rd=shil_param(),shil_param rs1=shil_param(),shil_param rs2=shil_param(),u32 flags=0,shil_param rs3=shil_param(),shil_param rd2=shil_param())
 	{

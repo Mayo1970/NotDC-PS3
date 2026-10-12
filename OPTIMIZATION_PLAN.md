@@ -13,6 +13,272 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-12)
 
+**Built 2026-10-12, HW run 25 done, no verdict: 5.46 JIT SQ COPY, the
+Sonic Adventure 2 fix (Matt: "Work on the Sonic Adventure 2 fix. Looney Tunes is still
+better at x30 sadly."). Package of 02:30 on 2026-10-12
+(`build/notdc_ps3.pkg`, 1531696 bytes); it also holds the second Looney
+Tunes entry and the `[idlehash]` log fix of the block below.**
+- Matt on Looney Tunes with the package of 02:17 or 02:30 (2026-10-12):
+  "x30 is still preferred for Looney Tunes, although it has microstutters
+  that didn't appear while on x3 backwards." My reading: the stutter at
+  X30 is the frames the game drops in emulated time (27.3 of 30 per
+  second, runs 6 and 20); X3 draws 29.9 but runs 12% slow (run 19).
+- Matt runs Sonic Adventure 2 with JIT SQ COPY ON only ("We already have
+  enough samples with it off by default."): the compare is against runs
+  21 (90.6% at 14K+) and the X3 run of 2026-10-11 (92.5%).
+- **HW run 25, 2026-10-12 ~02:40-02:45: Sonic Adventure 2, X3 BACKWARD,
+  JIT SQ COPY ON, JIT HOTBLOCKS OFF, package of 02:30** (`[jitcfg]
+  sqcopy=1`, `[ta-split] sqcp=25` sites; `b8_sqcopy_sa2.txt`, scratchpad
+  of session 1c8776dd). Matt: "Done." No fault line, clean JIT EXIT. No
+  word from Matt on how it looked. The OFF runs are run 21 (today) and
+  the X3 run of 2026-10-11, other play each time:
+
+  | SPEED by vertices (windows) | SQ COPY ON | OFF, run 21 | OFF, 2026-10-11 |
+  |---|---|---|---|
+  | 3-8K | 100.0% (52) | 100.3% (44) | 100.2% (85) |
+  | 8-14K | 100.0%, sleep 71 ms/s (58) | 99.2%, 50 (61) | 99.8%, 55 (52) |
+  | 14-16K | 98.8% (7) | 95.6% (10) | 100.9% (4) |
+  | 16-18K | 97.3%, sleep 56 ms/s (22) | 93.2%, 3 (21) | 95.6%, 0 (15) |
+  | 18-20K | 90.8% (9) | 88.8% (15) | 90.9% (10) |
+  | 20K+ | 89.0% (8) | 84.8% (13) | 87.5% (13) |
+  | 14K+, all | 94.8%, min 85.2, sleep 27 (46) | 90.6%, min 72.8, sleep 2 (59) | 92.5%, min 83.4, sleep 1 (42) |
+
+  - Reading: a gain of about 1.5 to 3 SPEED points at the same load,
+    under the 3 to 5 of the estimate. The two OFF runs differ by about 2
+    points from each other, so the gain is at the edge of the run-to-run
+    spread; the sleep at 16-18K (56 ms/s against 0-3) is the clearest
+    sign. Above 18K the SH4 thread still has no time left (sleep 0).
+  - Not done: a JIT HOTBLOCKS run with the row ON, to see `coldin/s` of
+    8C141BBA at 0. No verdict from Matt on the default.
+- **HW run 24, 2026-10-12 ~02:20-02:35, package of 02:17: two Looney
+  Tunes boots, X3 BACKWARD and X30, JIT IDLE HASH ON** (`b8_hash2_lt_x3.txt`,
+  `b8_hash2_lt_x30.txt`; Matt's verdict on Looney Tunes above came
+  after them). The log fix works: both entries print (`8C19D168` and
+  `8C014544`, `our list: ends the slice`, `listed=2`). No fault line,
+  clean JIT EXITs.
+  - The demo at X3: SPEED 96.9% and 99.8% in its 2 windows (27-28K
+    vertices; Matt left the demo then), 67.7% before the second entry.
+    The menus after it: 99-101%. A small sample.
+  - The demo at X30: 92.7-96.5% in 4 windows (89.1% in run 20, 96.9% in
+    run 6). The races: X3 85.8% (35 windows, 27.4K vertices), X30 99.8%,
+    26.9 frames per second (92 windows): as runs 19 and 20.
+- Matt 2026-10-12, after run 25: "So for Sonic Adventure 2 there's no
+  hope? And what about Space Race's stutters?" Read from the logs, no new
+  run (`frame_cmp.py`, scratchpad of session 1c8776dd):
+  - The Looney Tunes race costs the same SH4 work per frame at both
+    levels: 23.0M JIT host instructions per rendered frame at X30
+    (`run_prof.txt`, 2026-10-08, census 4 to 25) and 23.2M at X3 + hash
+    (run 22, census 2 to 11); no block of the X3 top 64 runs more often
+    per frame. So the level only picks what the shortfall looks like:
+    X30 drops frames (27.3 of 30, the stutter), X3 slows the game (88%).
+  - Not explained: at X30 the SH4 thread sleeps 55-108 ms/s in the race
+    while frames drop, and the host time per frame is 33-35 ms at X30
+    against 37 ms at X3 (no profile). The sound control step (`[sys]
+    arm`) is 29 ms/s at X30 and 50 ms/s at X3. A bill between the two
+    levels could turn the sleep into frames: not tried.
+  - Where the SH4 thread's time goes when it is host-bound (Sonic
+    Adventure 2 at 18K+, SPEED 89.9%, 17 windows of run 25): JIT code
+    about 77%, the store-queue call into the TA 11.4% (1.24M calls/s,
+    170 ns each; 7.8-8.1% in the Looney Tunes race), `[sys]` 10.6% (of
+    it the sound control step 6.1%). Sonic Adventure 2 above 18K lacks
+    about 10 SPEED points at X3; the Looney Tunes race lacks about 12.
+  - Candidates named to Matt, none built: a number row for the idle
+    rule's factor (a test for the Looney Tunes stutter), the store-queue
+    call per vertex (both games), 5.23 `fmov.s @Rm+` pair fusion (both
+    vertex loops read with it).
+  - **OPEN ISSUE, PARKED by Matt 2026-10-12: "Save this for the future
+    as an open issue. We'll get back to it at the end."** It is point 11
+    of the list under "Bundle 8" in section 7. Do not start a candidate
+    before Matt comes back to it. Left as they are: JIT IDLE HASH and
+    JIT SQ COPY default OFF, no verdict on either default; the package
+    of 02:30; no commit.
+- Why: HW run 23 (below). The game's vertex loop 8C141BBA is 22-26% of
+  the JIT's hot instructions at 14K+ vertices, and each of its 5
+  store-queue stores per vertex fails the RAM test and goes out of line
+  (`coldin/s` 5.0 per turn). JIT SQ STORES wants a `pref` on the store's
+  own register in the block; JIT SQ MISS's look-ahead wants it in the
+  first 6 ops of a successor. This loop stores through r6 and does `pref
+  @r3; mov r6,r3`.
+- What: row JIT SPEED -> "JIT SQ COPY" (`JitSqCopy`), default OFF, set
+  before boot. `sqcp_guess()` (`ps3/ps3_jit_sqla.h`): the block PREFs
+  through Rm, and Rm's only writer in the block is `mov Rn,Rm` with Rn
+  the store's base; no interpreter op and no SR sync in the block. It
+  only picks the shape (store-queue test inline, RAM in the cold path):
+  `emit_sq_check` still tests the address, so a wrong guess costs speed,
+  not correctness. It needs JIT SQ STORES ON. Both guess sites take it
+  (`gr_prepare` and the `shop_writem` case of `ps3/ps3_driver.cpp`).
+- Log: `[jitcfg] sqcopy=`, `[ta-split] ... sqcp=<sites since boot>`.
+  With JIT HOTBLOCKS: `coldin/s` of 8C141BBA must fall from 5 per turn
+  to 0.
+- Checks: `misc/sqla_check` PASS (the Sonic Adventure 2 block: 5 of 5
+  stores by the copy rule, 0 by the look-ahead at either level; copy
+  fuzz 100000 blocks against a per-register reference, 0 wrong);
+  `mutate.py 100000 "cp: "` 17 of 17; `misc/jit8_check` PASS. Build clean
+  (the 7 old warnings).
+- HW test: Sonic Adventure 2, the same heavy scenes, X3 BACKWARD, JIT
+  HOTBLOCKS OFF, one boot with JIT SQ COPY OFF and one with ON. Compare
+  by vertex load against each other (and run 21: 90.6% at 14K+). My
+  estimate, not measured: 3 to 5 SPEED points at 14K+. Then Crazy Taxi
+  and Looney Tunes with the row ON for no change (their loops have no
+  copy).
+
+**Built 2026-10-12, HW runs 19 to 23 done, no verdict from Matt yet: JIT
+IDLE HASH, way (B) of bundle 8's list "more friendly for other users"
+(Matt: "In Bundle 8, let's go with Reicast's approach for the JIT. It's
+worth a shot."). Runs 19 to 23 used the package of 01:37 on 2026-10-12
+(one entry). Latest package: 02:17 on 2026-10-12 (`build/notdc_ps3.pkg`,
+1530800 bytes): a second Looney Tunes entry (the demo's wait, run 22)
+and the log fix; no HW run with it. The detail is in section 7, Bundle 8,
+point 3.**
+- **HW run 19, 2026-10-12 ~01:43-01:47: Looney Tunes, one race, JIT IDLE
+  RULE X3 BACKWARD + JIT IDLE HASH ON** (`[jitcfg] idlerule=1 idlehash=1
+  bcache=1 finetcnt=0`; `b8_hash_run1.txt`, first boot, scratchpad of
+  session 1c8776dd; `ltcmp.py` of session 55d01e77). Matt: "Done." No
+  fault line, clean JIT EXIT. `[jit8] idle hash 1 listed=1`: our block
+  compiled once.
+
+  | Looney Tunes race | X30 (run 6) | X3 (run 2) | X3 + HASH ON (89 windows) |
+  |---|---|---|---|
+  | SPEED | 99.95% | 59.8% | 88.4% (min 72.5; 14% of the windows at full speed) |
+  | Frames per emulated second | 27.2 | 29.95 | 29.9 |
+  | Frames per wall second | 27.2 | 17.9 | 26.4 |
+  | `[stall]` sleep | 58.6 ms/s | 0.3 | 8.8 |
+  | SPEED at 10-20K / 25-30K / 30K+ vertices | - | - | 98.8% / 87.3% / 81.7% |
+
+  - The listed wait loop was most of X3's cost in this game (SPEED 60 ->
+    88%). The rest is not waiting in that loop: the host has no time
+    left (sleep 8.8 ms/s), so the game and its sound run 12% slow, and
+    the frames per wall second are as at X30. X30 stays the better level
+    for this game. Runs 2 and 6 had other settings (TMU Fine TCNT ON, run
+    2 JIT BCACHE OFF): the compare is not same-settings.
+  - The demo scene (60 frames kind) did not move: SPEED 67.7% (67.8% in
+    run 2, 96.9% at X30). Its wait is another loop; no profile of it at
+    X3 with the row ON.
+  - Reicast's list on HW, log only: in the 48 lines that the log holds
+    (the boot up to the menus), its hashes matched 40 blocks, 32 of them
+    through `04:DB35BCA0` (the function return). That confirms the PC
+    check.
+  - Defect of the build: the 48 `[idlehash]` lines were all used by the
+    log-only hits, so the line of our own block is not in the log. Fixed
+    in source after the run (24 lines per list; `misc/jit8_check` PASS,
+    331 checks). **Not packaged**: the package of 01:37 has the old log
+    limit.
+- **HW run 20, 2026-10-12 ~01:47-01:52: Looney Tunes, one race, JIT IDLE
+  RULE X30 + JIT IDLE HASH ON** (`idlerule=0 idlehash=1`, the other
+  settings as run 19; the second boot of `b8_hash_run1.txt`, cut as
+  `b8_hash_x30.txt`). Matt: "I'm done with the x30 + idle hash on." No
+  fault line, clean JIT EXIT, `listed=1`.
+  - Race, 104 windows: SPEED 99.90% (min 92.5), 27.3 frames per second,
+    sleep 108.2 ms/s. Run 6 (X30, no hash): 99.95%, 27.2, sleep 58.6. So
+    at X30 the row changes no frame rate here (the loop is 0.28% of the
+    JIT weight at X30). The sleep is not a same-settings compare (run 6
+    had TMU Fine TCNT ON).
+  - Next, proposed to Matt: one profile run (X3 BACKWARD + JIT IDLE HASH
+    ON + JIT HOTBLOCKS ON, the demo for 30 s, then one race), to find
+    the demo's wait loop and what costs the race its last 12 points. Not
+    run: Matt took Sonic Adventure 2 ("It's the only one with the
+    unknown cost"), without the profile ("We'll see the speed.").
+- **HW run 21, 2026-10-12 ~01:57-02:01: Sonic Adventure 2 at X3 BACKWARD,
+  JIT IDLE HASH ON, JIT HOTBLOCKS OFF** (`b8_hash_sa2.txt`, cut of the
+  same file; `binspeed.py` of session 55d01e77, `hbprof.py` of session
+  1c8776dd). Matt: "SA's run is done." No fault line, clean JIT EXIT.
+  `listed=0`: the row does nothing in this game, so this is a second X3
+  run.
+
+  | Sonic Adventure 2, X3 | 2026-10-11 (`b8_sa2_x3.txt`) | this run |
+  |---|---|---|
+  | 3-8K vertices | SPEED 100.2%, sleep 226 ms/s (85 windows) | 100.3%, 211 (44) |
+  | 8-14K | 99.8%, 55 (52) | 99.2%, 50 (61) |
+  | 14K+ | 92.5%, min 83.4, sleep 1 (42) | 90.6%, min 72.8, sleep 2 (59) |
+  | Frames per emulated second | 59.9 | 59.7-59.9 in each range |
+
+  - The same result as the first X3 run (other play, more heavy
+    windows).
+  - A reading without a profile, from the `[hb]` pc samples (one per
+    second, the pc of the last slice end, so a sample of emulated
+    cycles) and the `[idle]` lines, the same in both X3 runs: the
+    library wait loop (8C12CB98-8C12CBC0, Reicast's SC entry) is
+    skipped by JIT IDLE SKIP (72K checks/s, 72K skips/s) and holds
+    36-39% of the samples at 3-8K, 7-10% at 8-14K, 0-7% at 14K+. One pc,
+    8C141BBA, holds 0% at 3-8K and 17% at 14K+ in both runs (3% at X30,
+    `sa2_step2.txt`). A share that grows with the load is work, not a
+    wait. So the cost at 14K+ is game work that the host cannot pay: no
+    list entry can give it back. Not proven: no log holds the code of
+    8C141BBA (59 and 42 samples); a JIT HOTBLOCKS run would show it.
+- **HW run 22, 2026-10-12 ~02:03-02:10: the Looney Tunes profile. X3
+  BACKWARD, JIT IDLE HASH ON, JIT HOTBLOCKS ON** (`b8_hash_lt_hot.txt`,
+  11 censuses, 128 block dumps; `census_phase.py` of session 1c8776dd
+  takes one census from another, so each phase has its own numbers).
+  Matt: "Looney Tunes' run is done." No fault line, clean JIT EXIT. With
+  the counters: race SPEED 83.4% (91 windows), demo 65.3% (10).
+  - **The race (census 2 to 11, 91 s) has no wait loop left.** The
+    profile is flat: the first block is 5.5% of the JIT's host
+    instructions, the first 30 are 44%. On top is the vertex loop
+    8C08738C / 8C0873A6 (`ftrv`, `fdiv`, `fipr`, store-queue `pref`,
+    `dt; bf.s`; 267-320K turns/s, 10.8%), then large blocks at
+    8C0688xx-8C0699xx. The listed frame wait is out of the 64 rows. So
+    the 12 points that X3 still costs in the race are game work: the
+    host draws about 26-27 race frames per wall second at either level.
+  - **The demo (census 1, 10 s) is one wait loop: over 51% of the JIT's
+    host instructions, 1.03M turns/s**, in 12 blocks (8C19D160,
+    8C19D164, 8C19D168, 8C19CC0E-8C19CC72, 8C1ADD60, 8C1ADD7A,
+    8C1ABDE0): `do { hook(7); bit = find_event(); } while (bit == -1);`.
+    `hook(7)` is the library dispatcher 8C1ADD60 (Reicast's `0D:DF0C1754`
+    entry) and calls an empty function; `find_event` scans a mask that
+    interrupt handlers set. JIT IDLE SKIP cannot take it: the dispatcher
+    pushes on the stack (a store). It runs 0.83M turns/s in the menus
+    after the demo and 344/s in the race.
+  - **New entry, in source: 8C19D168**, the block that closes that loop
+    (`cmp/eq #-1,r0; bt.s 8C19D160; mov r0,r13`,
+    `>:1:8C19D168:03:D81E7C3D:...`). `misc/jit8_check` PASS (376 checks).
+    **Package of 02:17 on 2026-10-12 (1530800 bytes), with the log fix;
+    no HW run.** Expected, not measured: the demo scene near full speed
+    at X3 (67.7% now), and a gain at X30 too (the loop's small blocks
+    are billed x30 there).
+- **HW run 23, 2026-10-12 ~02:10-02:15: the Sonic Adventure 2 profile.
+  X3 BACKWARD, JIT IDLE HASH ON, JIT HOTBLOCKS ON** (`b8_hash_sa2_hot.txt`,
+  18 censuses, 128 block dumps). Matt: "Done with both." No fault line,
+  clean JIT EXIT. With the counters: SPEED 82.8% at 14K+ (71 windows).
+  - **The cost at 14K+ is game work; run 21's reading holds.** 8C141BBA
+    is the game's vertex loop (4 `fmov.s @Rm+`, `ftrv`, `fsrra`, `fmul`,
+    `fmac`, 5 `fmov.s FRm,@-R6` into the store queue, 2 `pref`, `dt;
+    bf.s`; 29 ops). It is the first block of every census: 22-26% of
+    the JIT's hot instructions in the heavy phases (525-656K turns/s,
+    census 2 to 3 and 16 to 17), 2.5% in a light one (45K turns/s,
+    census 10 to 11). The library wait 8C12CBB8 is 1.1-1.2% and skipped.
+    No block of this game is a wait loop that a list entry could take.
+  - **Lead for SH4 speed, not examined:** this loop enters its
+    out-of-line paths 5.0 times per turn (`coldin/s` 1.86M against
+    371K entries/s; 73% of the game's 2.55M cold entries/s). It has 5
+    store-queue stores per turn, and its `pref @r3` takes r3 from a copy
+    of r6 made one turn before, so JIT SQ STORES cannot tie the stores
+    to a `pref`. The vertex loops of Looney Tunes (8C08738C, 8C0873A6,
+    `pref @r6` after the stores) have `coldin/s` 0. Estimate from the
+    block sizes (688 B hot, 1040 B cold in 9 pieces): the cold paths
+    add about 145 instructions to the 172 of a turn.
+- The same file holds a Space Channel 5 boot at X3 BACKWARD (23 windows,
+  no word from Matt, `b8_hash_sc5.txt`): its last 9 windows ran at SPEED
+  62-70%, 0.01K vertices, about 17 frames per wall second (PAL mode).
+  Not looked at further.
+- Row JIT SPEED -> "JIT IDLE HASH" (`JitIdleHash`, `[jitcfg] idlehash=`),
+  set before boot: OFF (default) / ON / + REICAST LIST. A listed block
+  drops the rest of its timeslice. ON acts on our list (one entry: the
+  Looney Tunes frame wait, block 8C014544) and only logs a block of
+  Reicast's list. + REICAST LIST acts on Reicast's 12 hashes too; two of
+  them match plain function returns (point 3), so it is for a test only.
+- The package holds the whole source: the verdicts below (JIT BCACHE ON,
+  no FPU DN row, TMU Fine TCNT OFF) and the cfg name `NotDC.cfg`. The
+  first boot starts from the source defaults (the old `nullDC.cfg` is not
+  read).
+- HW test: Looney Tunes, one race, JIT IDLE RULE X3 BACKWARD + JIT IDLE
+  HASH ON. References: run 2 (X3: SPEED 61%), run 6 (X30: 26.4 frames/s
+  at SPEED 100%). Then the games that X3 helps (Sonic Adventure, Phantasy
+  Star Online) for no change.
+- Checks: `misc/jit8_check` PASS (18 source lines; 400048, 798767 and 331
+  checks; the new `hash8_check`), `mutate.py 2000 "idle hash"` 31 of 31
+  before the log fix, its 2 log mutants caught after it. Build clean (the
+  7 old warnings).
+
 **HW SUCCESS (Matt 2026-10-12: "still mark this as a success", and after
 the last run and the checks: "SUCCESS."): bundle 8,
 the JIT items (section 7; Matt 2026-10-11: "Work on Bundle 8. Ignore the
@@ -5012,6 +5278,7 @@ speed feature OFF. Matt allowed the Wii-era JIT code for this work.
 | 5.43 | JIT SQ MISS "+ LA STEPS": the look-ahead passes `@-Rn` stores and `add #imm,Rn` on the store's base register (candidate 2) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10: 4th value of JIT SQ MISS (`JitSqMiss=3`); sqla_check PASS (35/35 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
 | 5.44 | RAM SQ Direct: a store-queue flush to main RAM is a 32-byte copy inside `do_sqw_nommu` (candidate 3) | `[x]` HW SUCCESS 2026-10-10; built + PC tested 2026-10-10: VIDEO / DEBUG "RAM SQ Direct" (`RamSqDirect`), live; ramsq_check PASS (18/18 mutants fail); package of 14:26; HW run 2026-10-10 with the four Step 2 settings ON together: logs clean, sleep +36 ms/s in the Looney Tunes race and +63 ms/s in Crazy Taxi at 6K+ (not split per setting); HW SUCCESS (Matt: "everything looked like before"); default ON since the package of 15:49 on 2026-10-10 (Matt) (section 0) |
 | 5.45 | SH4 Clock above 200 MHz: the SH4 gets clock/200 times the cycles per slice, the modules keep 200 MHz time (Looney Tunes race Step 3) | `[x]` closed 2026-10-10 (Matt: "Keep at 200 MHz. Clearly not the right approach on this issue."), default 200; built + PC tested 2026-10-10 (Matt: "CPU cycles per slice", limit 250 MHz): EMULATION "SH4 Clock" 150-250, default 200, set before boot; clock_check PASS (22/22 mutants fail); package of 16:30; HW Looney Tunes race: logs clean, 28.0 frames per emulated second at 220 and 28.2 at 250 (26.4 at 200), SPEED 97.5% and 86.6% (100.0%); Matt: 220 "basically the same", "250 feels worse" (section 0) |
+| 5.46 | JIT SQ COPY: store-queue shape for stores whose block PREFs through a copy of their base register (the Sonic Adventure 2 vertex loop 8C141BBA: stores through r6, `pref @r3; mov r6,r3`; 5 out-of-line stores per vertex, HW run 23) | `[~]` built + PC tested 2026-10-12 (Matt: "Work on the Sonic Adventure 2 fix."): JIT SPEED "JIT SQ COPY" (`JitSqCopy`), default OFF, set before boot; `sqcp_guess` in `ps3/ps3_jit_sqla.h`; `[ta-split] sqcp=` sites, `[jitcfg] sqcopy=`; sqla_check PASS (17/17 new mutants fail); package of 02:30 on 2026-10-12; HW run 25 (Sonic Adventure 2, row ON): clean log, 14K+ SPEED 94.8% (90.6% and 92.5% in the OFF runs), about 1.5 to 3 points at the same load; no verdict from Matt (section 0) |
 
 FSCHG, FSQRT, NewOps, FPU PIN, TFWD and CR0 are default ON since 2026-09-23 (Matt).
 Dynarec, JIT Fastmem, TA SQ Direct, JIT SQ STORES, JIT FTRV, JIT CONSTPROP, SPE AICA Sound and SPE ARM7 are
@@ -9678,7 +9945,8 @@ Main gains:
      per game (Matt's parked idea of a per-game ID checker); a rule that
      uses X3 only while the host has spare time (not designed; the bill
      is in the compiled block today); or X3 for all games after the wait
-     loops below cost nothing.
+     loops below cost nothing (points 2 to 4: way (A), way (B) as
+     Reicast, the timer poll).
   2. Way (A), the wider JIT IDLE SKIP: Looney Tunes waits on a memory
      counter in a 3-block loop (8C01453E, 8C0713D0, 8C014544; 46.6% of
      the JIT weight at X3, run 12). The candidates would take a closing
@@ -9686,21 +9954,117 @@ Main gains:
      stays (no store, the same register hash, plus the block's FPU
      inputs). About 50 lines and `misc/idle_check`. Risk: a work loop
      taken for a wait loop loses frame rate in that place.
-  3. The timer-poll wait: Quake3.cdi reads TCNT 18-59K times per emulated
-     vblank until its time is over (run 16). Way (A) does not catch it.
-     Capcom vs. SNK 2's menus are the same class (area 7 reads).
-  4. A profile of Sonic Adventure 2 at X3 BACKWARD (JIT HOTBLOCKS, a
+  3. Way (B), Reicast's approach (Matt 2026-10-12: "can you also mention
+     the Reicast 'approach' we thought of? It may be worth a check."): a
+     list of known wait loops. Reicast and Minicast
+     (`libswirl/hw/sh4/dyna/decoder.cpp:30-63`, `:1147-1154`) keep
+     `idle_hash`, 12 SHA-1 hashes of block code (4 BIOS, 3 "SC", 2 "HH", 3
+     more); a block whose hash is in the list bills `max_cycles`, so its
+     turn ends the timeslice. Its x3 rule is our X3 BACKWARD already.
+     - For us: the same list with our own entries, and a listed block
+       ends the slice through JIT IDLE SKIP's exit. First entries from
+       this bundle's logs: Looney Tunes 8C014544 (the block that closes
+       the 3-block wait, run 12), Quake3.cdi 8C08467C and 8C08468A (the
+       two JIT IDLE SKIP candidates of its timer poll, run 16; not yet
+       proven by a profile to be the whole loop).
+     - What it gives over way (A): no proof at run time, so it also
+       fits a timer poll, where the read value moves and way (A) cannot
+       hold. A listed loop costs about one turn per slice.
+     - What it costs: data per game. Each new game needs a JIT
+       HOTBLOCKS run at X3 BACKWARD and a new entry, and a wrong entry
+       (a work block) starves that game. It is a per-game table inside
+       the emulator: check it against Matt's "no game presets" rule
+       before a build.
+     - The check that is worth it first (no build of the skip): port
+       Reicast's `hash()` and log which compiled blocks match its 12
+       entries in the BIOS, Soul Calibur and Ikaruga. If they match,
+       Reicast's own list comes for free. Trap: `hash()` reads the code
+       through a `u8*` (`u16 data=ptr[i]`), so it hashes the block's
+       first `guest_opcodes` bytes, each as 2 bytes, and its `0xD`
+       reloc mask never acts; on our big-endian host feed the bytes
+       {b, 0}. About 80 lines with the SHA-1.
+     - Ways (A) and (B) can live together: (A) for the loops it can
+       prove, (B) for the others.
+     - **Matt 2026-10-12: "In Bundle 8, let's go with Reicast's approach
+       for the JIT. It's worth a shot." Built 2026-10-12 as the row JIT
+       IDLE HASH, default OFF, package of 01:37. HW run 19 (section 0):
+       Looney Tunes race at X3 BACKWARD, SPEED 60 -> 88%, 29.9 frames per
+       emulated second; not full speed. No verdict from Matt yet.**
+     - The check of Reicast's 12 hashes, done on the PC with the old HW
+       logs (7713 dumped blocks, `[HOT]` and `[idle]` dumps of every
+       session; `scan_logs.py`, scratchpad of session 1c8776dd). The
+       reading of `hash()` is right: the BIOS wait 8C0BA526 gives
+       Reicast's second BIOS entry. Six entries match our blocks:
+
+       | Entry | Blocks in our logs | What it is |
+       |---|---|---|
+       | BIOS `04:CB0C9B99` | 8C0BA526 in every game; 8C06155A in Sonic Adventure | the BIOS wait; the Sonic block is a loop with calls and a store |
+       | SC `04:DD9FDF9D` | Crazy Taxi 0C15A678, Soul Calibur 8C224818, Sonic Adventure 8C645DB8, Sonic Adventure 2 8C12CBB8, ChuChu 8C0FE5B8, Jet Grind Radio 8C226258, Phantasy Star Online 8C3C53F8 | the library wait loop that JIT IDLE SKIP skips already |
+       | SC `04:BC1C1C9C`, `0A:5693F8B9` | Crazy Taxi 0C15A658, 0C15A660 | the head and the middle of the same loop |
+       | IKA/HH `0D:DF0C1754` | Looney Tunes 8C1ADD60 | a function entry, 1.24M runs/s in the first 10 s of 3D, then none |
+       | IKA/HH `04:DB35BCA0` | Looney Tunes 8C1ADD7A, 8C090918 | `add #8,r15; lds.l @r15+,PR; rts`: the return of any function with that end; 8C090918 runs 33-43K times/s |
+
+       So Reicast's list gives us no new wait loop in these games, and
+       its half-block hash makes two entries match work code (4 opcodes
+       = the first 4 bytes = 2 opcodes). With the slice end, 8C090918
+       alone would cost Looney Tunes up to a fifth of its SH4 cycles
+       (estimate: 43K half slices per second). Reicast's own bill there
+       is 224 cycles per run.
+     - What is built, for that reason: our entries are in `hash()`'s full
+       form, with the block address, so the same bytes in another game do
+       not match. Levels: ON = our list acts, a block of Reicast's list
+       is logged only (`[idlehash] ... Reicast's list: log only`); +
+       REICAST LIST = both act. `dc/sh4/rec_v2/idle_hash.h` (SHA-1, the
+       two lists, `idle_hash_listed`), `dec_idle_hash()` in the decoder
+       (blocks up to 64 opcodes), `block.idle_hash`, and one `li
+       cycles,0` after the block's bill in `ngen_Begin`: the next poll
+       ends the slice, about one turn per slice. `[jit8]` prints `idle
+       hash <level> listed=<blocks>`.
+     - Our list has one entry: Looney Tunes 8C014544
+       (`>:1:8C014544:06:82CA5453:...`). Quake3.cdi has none: the logs
+       hold no code for 8C08467C and 8C08468A (the 64 `[idle]` dumps ran
+       out before them). A new entry needs the block's words from a JIT
+       HOTBLOCKS run: `/tmp/hash8_check <address> <words>` prints the
+       line (after `misc/jit8_check/run.sh`).
+  4. The timer-poll wait: Quake3.cdi reads TCNT 18-59K times per emulated
+     vblank until its time is over (run 16). Way (A) does not catch it;
+     way (B) can. Capcom vs. SNK 2's menus are the same class (area 7
+     reads).
+  5. A profile of Sonic Adventure 2 at X3 BACKWARD (JIT HOTBLOCKS, a
      heavy scene), to see which kind of wait costs its 7.5 points.
-  5. The level OFF of JIT IDLE RULE is worse than X3 in every run (the
+  6. The level OFF of JIT IDLE RULE is worse than X3 in every run (the
      boot at SPEED 12.8% after the BIOS logo): take it out of the row.
-  6. Rows a user cannot judge: JIT PR MOVES (hit by Quake3.cdi and Space
+  7. Rows a user cannot judge: JIT PR MOVES (hit by Quake3.cdi and Space
      Channel 5 only; needs a look at the image, then a default), JIT MAC
      and JIT RM 2/3 (no game known). With GOALS.md G13 they are rows to
      hide.
-  7. The `[ni]` boot probe has done its job (5.40 closed): take it out.
-  8. TMU Fine TCNT (bundle 7) is OFF for speed. If it must come back ON,
+  8. The `[ni]` boot probe has done its job (5.40 closed): take it out.
+  9. TMU Fine TCNT (bundle 7) is OFF for speed. If it must come back ON,
      `tmu_tcnt_now()` needs a short path (95 ns per read today).
-  9. A package: the one of 22:43 on 2026-10-11 has none of the verdicts.
+  10. A package: the one of 22:43 on 2026-10-11 has none of the verdicts.
+      (2026-10-12: the package of 02:30 has them, with JIT IDLE HASH and
+      JIT SQ COPY, both OFF.)
+  11. **Open issue, parked by Matt 2026-10-12 for the end: the scenes
+      where real SH4 work is the limit.** Sonic Adventure 2 above about
+      18K vertices lacks about 10 SPEED points at X3 BACKWARD (50-52
+      frames in place of 60 at X30). The Looney Tunes race lacks about
+      12 (X30: 27 of 30 frames, the microstutter Matt sees; X3: SPEED
+      88%). No wait loop is left in either (HW runs 22 and 23), and the
+      Looney Tunes race costs the same JIT work per frame at both
+      levels. The numbers and the reading are in section 0. Candidates,
+      in the order recommended to Matt, none built:
+      a. A number row for the idle rule's factor (3 to 30): at X30 the
+         SH4 thread sleeps 55-108 ms/s in the Looney Tunes race while
+         frames drop. Estimate, not measured: 28-30 frames per second
+         near full speed at about 15.
+      b. The store-queue call into the TA, one per vertex: 11.4% of the
+         SH4 thread in Sonic Adventure 2 at 18K+ (1.24M calls/s, 170 ns
+         each), 8% in the Looney Tunes race. Read the code first.
+      c. 5.23, `fmov.s @Rm+` pair fusion: both vertex loops read with
+         it. Estimate 1-2 points.
+      Also open with it: the defaults of JIT IDLE HASH and JIT SQ COPY
+      (5.46), and a Crazy Taxi and a Looney Tunes run with JIT SQ COPY
+      ON for no change.
 
 - Built (Matt 2026-10-11: "Ignore the Interpreter parts. I want JIT/Dynarec
   stuff."): `bcache`, the `JitMac` fix, 5.39 (fmov, flds, fsts; no fneg),

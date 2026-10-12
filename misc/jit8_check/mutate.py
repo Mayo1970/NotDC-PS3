@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Plan section 7, bundle 8 (WSL): plants one bug at a time in a copy of a source; run.sh must FAIL on each. The
-# header bugs run with "model" (no ppu-as words), but the ones that only the words can see.
+# Plan section 7, bundle 8 (WSL): plants one bug at a time in a copy of a source; run.sh must FAIL on each. Header
+# bugs run with "model" (no ppu-as words), but the ones only the words can see. Args: cases, a text the names hold.
 import os, shutil, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -13,6 +13,7 @@ BMC = 'dc/sh4/rec_v2/blockmanager.cpp'
 REG = 'dc/sh4/sh4_registers.cpp'
 DRV = 'ps3/ps3_driver.cpp'
 PRE = 'ps3/ps3_presets.cpp'
+HASH = 'dc/sh4/rec_v2/idle_hash.h'
 
 IDX = 'ppc_rlwinmx(i, pc, 1, 15, 28, 0);'
 BNE = 'ppc_bcx(BO_FALSE, BI_CR0_EQ, 4, 0, 0);'
@@ -110,6 +111,45 @@ MUTANTS = [
     (PRE, 'presets: bcache getter fixed', '{ return g_jit_bcache_preset; }', '{ return 0; }'),
     (PRE, 'presets: idle rule default X3', 'int g_jit_idle_rule_preset = 0;', 'int g_jit_idle_rule_preset = 1;'),
     (PRE, 'presets: bcache default OFF', 'int g_jit_bcache_preset    = 1;', 'int g_jit_bcache_preset    = 0;'),
+
+    (HASH, 'idle hash: bytes as {0, byte}', 'msg[i * 2] = code[i];\n\t\tmsg[i * 2 + 1] = 0;',
+     'msg[i * 2] = 0;\n\t\tmsg[i * 2 + 1] = code[i];'),
+    (HASH, 'idle hash: plain bytes', 'idle_sha1(msg, opcodes * 2, h);', 'idle_sha1(code, opcodes, h);'),
+    (HASH, 'idle hash: the whole block as bytes', 'idle_sha1(msg, opcodes * 2, h);', 'idle_sha1(code, opcodes * 2, h);'),
+    (HASH, 'idle hash: sha1 rotate by 6', 'idle_rol(a, 5)', 'idle_rol(a, 6)'),
+    (HASH, 'idle hash: sha1 length in bytes', 'w[15] = n * 8;', 'w[15] = n;'),
+    (HASH, 'idle hash: sha1 one block only', 'const u32 total = (n + 9 + 63) & ~63u;', 'const u32 total = 64;'),
+    (HASH, 'idle hash: sha1 second block one byte late', '(n + 9 + 63) & ~63u', '(n + 8 + 63) & ~63u'),
+    (HASH, 'idle hash: sha1 without the pad bit', 'p == n ? 0x80u : 0u', 'p == n ? 0x00u : 0u'),
+    (HASH, 'idle hash: sha1 round constant', '0x8F1BBCDCu', '0x8F1BBCDDu'),
+    (HASH, 'idle hash: sha1 majority as parity', '((b & c) | (d & (b | c)))', '(b ^ c ^ d)'),
+    (HASH, 'idle hash: our list without the address', 'if (strstr(idle_hash_own, full))', 'if (strstr(idle_hash_own, brief))'),
+    (HASH, 'idle hash: Reicast list with the address', 'if (strstr(idle_hash_reicast, brief))',
+     'if (strstr(idle_hash_reicast, full))'),
+    (HASH, 'idle hash: dead entry made live', '">1:08:AF4AC687', '">:1:08:AF4AC687'),
+    (HASH, 'idle hash: Looney Tunes entry on the head block', '">:1:8C014544:06:', '">:1:8C01453E:06:'),
+    (HASH, 'idle hash: Looney Tunes entry with a wrong word', ':82CA5453:', ':82CA5452:'),
+    (HASH, 'idle hash: a Reicast entry with a wrong word', ':DD9FDF9D:', ':DD9FDF9C:'),
+    (HASH, 'idle hash: limit one too high', 'opcodes > IDLE_HASH_MAX_OPS)', 'opcodes > IDLE_HASH_MAX_OPS + 1)'),
+    (HASH, 'idle hash: full form with decimal opcodes', '">:1:%08X:%02X:', '">:1:%08X:%02d:'),
+    (HASH, 'idle hash: brief form with decimal opcodes', '">:1:%02X:%08X', '">:1:%02d:%08X'),
+    (DEC, 'idle hash: level 1 acts on the Reicast list', 'const bool act=list==IDLE_LIST_OWN || level>=2;',
+     'const bool act=list==IDLE_LIST_OWN || level>=1;'),
+    (DEC, 'idle hash: level 2 leaves the Reicast list', 'const bool act=list==IDLE_LIST_OWN || level>=2;',
+     'const bool act=list==IDLE_LIST_OWN;'),
+    (DEC, 'idle hash: every second byte', 'code[i]=ReadMem8(block.start+i);', 'code[i]=ReadMem8(block.start+i*2);'),
+    (DEC, 'idle hash: decoder limit one too high', 'block.opcodes>IDLE_HASH_MAX_OPS)', 'block.opcodes>IDLE_HASH_MAX_OPS+1)'),
+    (DEC, 'idle hash: not counted', '\tif (act)\n\t\tg_dec_hash_blocks++;\n', ''),
+    (DEC, 'idle hash: log without a limit', 'if (lines<24)', 'if (lines<2400)'),
+    (DEC, 'idle hash: one log share for both lists', 'u32& lines=logged[list==IDLE_LIST_OWN];', 'u32& lines=logged[0];'),
+    (DEC, 'idle hash: decoder without its row', 'block.idle_hash=idle_hash_level && dec_idle_hash(idle_hash_level);',
+     'block.idle_hash=dec_idle_hash(2);'),
+    (DEC, 'idle hash: flag kept from the last block', '\tidle_loop=false;\n\tidle_hash=false;\n', '\tidle_loop=false;\n'),
+    (DRV, 'idle hash: driver keeps one cycle', '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,0);\n',
+     '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,1);\n'),
+    (DRV, 'idle hash: driver on every idle-rule loop', '\tif (block->idle_hash)\n', '\tif (block->idle_loop)\n'),
+    (PRE, 'idle hash: presets default ON', 'int g_jit_idle_hash_preset = 0;', 'int g_jit_idle_hash_preset = 1;'),
+    (PRE, 'idle hash: presets getter fixed', '{ return g_jit_idle_hash_preset; }', '{ return 0; }'),
 ]
 
 # The same results on the model through another instruction: only the ppu-as words catch it.
@@ -117,8 +157,9 @@ WORDS_ONLY = {'mac mullw, not mulld'}
 
 def main():
     iters = sys.argv[1] if len(sys.argv) > 1 else '20000'
+    todo = [m for m in MUTANTS if len(sys.argv) < 3 or sys.argv[2] in m[1]]
     caught = 0
-    for path, name, find, repl in MUTANTS:
+    for path, name, find, repl in todo:
         src = open(os.path.join(ROOT, path), encoding='utf-8', newline='').read().replace('\r\n', '\n')
         if src.count(find) != 1:
             print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
@@ -133,7 +174,7 @@ def main():
         ok = r.returncode != 0
         caught += ok
         print(f"{'caught' if ok else 'MISSED'}: {name}: {(out[0] if out else '')[:110]}", flush=True)
-    print(f'{caught} of {len(MUTANTS)} mutants fail run.sh')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught} of {len(todo)} mutants fail run.sh')
+    sys.exit(0 if caught == len(todo) else 1)
 
 main()
