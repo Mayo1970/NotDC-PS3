@@ -9,6 +9,7 @@
 #include "dc/pvr/pvr_if.h"
 #include "dc/sh4/sh4_registers.h"
 #include "dc/dc.h"
+#include "ps3/ps3_presets.h"
 #include "_vmem.h"
 #include "mmu.h"
 
@@ -133,6 +134,15 @@ void mem_map_defualt()
 
 	// P4 – on-chip / internal registers
 	map_p4();
+
+	// P30 (Flycast 156aafe95): outside the store queues, the arrays and the registers, P4 mirrors the areas. The
+	// two with memory in them: VRAM at E4-E7, main RAM at EC-EF.
+	if (g_p4_mirror_preset)
+	{
+		map_area1(0xE0);
+		map_area3(0xE0);
+	}
+	printf("[p4] P4 Mirrors %s\n", g_p4_mirror_preset ? "ON: E4-E7 = VRAM, EC-EF = RAM" : "OFF");
 }
 
 // -- Lifecycle ---------------------------------------------------------------

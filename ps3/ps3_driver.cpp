@@ -2868,7 +2868,7 @@ static bool sq_store_guess(DecodedBlock* block,size_t i)
 static void gr_prepare(DecodedBlock* block)
 {
 	s_gr.n=0;
-	if (!get_jit_guard_reuse_preset() || !fm_on() || CCN_MMUCR.AT || block->oplist.size()>GR_MAX_OPS)
+	if (!get_jit_guard_reuse_preset() || !fm_on() || mmucr_at() || block->oplist.size()>GR_MAX_OPS)
 		return;
 	for (size_t i=0;i<block->oplist.size();i++)
 	{
@@ -4366,7 +4366,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			break;
 
 		// pref: only SQ addresses ((addr>>26) == 0x38) flush the store queue; else a no-op, or with JIT PREFETCH
-		// (plan 5.30) a host prefetch of the RAM line. MMU or not is chosen at compile time from CCN_MMUCR.AT.
+		// (plan 5.30) a host prefetch of the RAM line. MMU or not is chosen at compile time from MMUCR.AT.
 		case shop_pref:
 			{
 				ppc_sh_load(ppc_rarg0,op->rs1);
@@ -4375,13 +4375,13 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_cmpi(ppc_cr0,ppc_rarg1,0x38,0);		// SQ region?
 				ppc_label* skip=ppc_CreateLabel();
 				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne skip (not SQ -> no-op)
-				if (CCN_MMUCR.AT)
+				if (mmucr_at())
 					ppc_call_c(&do_sqw_mmu);			// do_sqw reloads rarg0=addr arg
 				else if (s_ta_peak_frame)
 					ppc_call_c(&do_sqw_nommu_frame);
 				else
 					ppc_call_c(&do_sqw_nommu);
-				if (get_jit_prefetch_preset() && s_fm_ok && !CCN_MMUCR.AT)
+				if (get_jit_prefetch_preset() && s_fm_ok && !mmucr_at())
 				{
 					ppc_label* done=ppc_CreateLabel();
 					ppc_bx(0,0,0);				// b done

@@ -720,6 +720,19 @@ static Option s_screen[] = {
 	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot." },
 };
 
+// Plan section 7, bundle 13: one row per item; the first value is the old path. Bundle 1's LMMODE, VRAM Direct and
+// FB Write Watch stay on VIDEO / DEBUG.
+static Option s_memory[] = {
+	{ "MMUCR Bits",      &g_mmu_bits_preset,      OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: the MMU control bits are read where the SH4 has them (P58, Rez). Set before boot." },
+	{ "P4 Mirrors",      &g_p4_mirror_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Addresses E4-E7 and EC-EF reach VRAM and main RAM (P30, NHL 2K2). Set before boot." },
+	{ "Cache RAM Banks", &g_ocr_banks_preset,     OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: the on-chip RAM bank is address bit 13, or bit 25 (P30, NHL 2K2). Set before boot." },
+	{ "Ch2 DMA Rules",   &g_ch2_dma_fix_preset,   OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: a channel 2 DMA always ends, 0x12 is the TA, DMAOR keeps its real bits (P65). Live." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -767,6 +780,7 @@ static Page s_opt_pages[] = {
 	{ "TIMING",        s_timing, (int)(sizeof(s_timing) / sizeof(s_timing[0])) },
 	{ "OUTPUT",        s_output, (int)(sizeof(s_output) / sizeof(s_output[0])) },
 	{ "SCREEN",        s_screen, (int)(sizeof(s_screen) / sizeof(s_screen[0])) },
+	{ "MEMORY",        s_memory, (int)(sizeof(s_memory) / sizeof(s_memory[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1233,6 +1247,7 @@ static int* const k_live_opts[] = {
 	&g_hblank_irq_preset, &g_rtt_readback_preset, &g_rtt_scaler_preset, &g_rtt_size_preset, &g_rtt_pack_preset,
 	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,
 	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
+	&g_ch2_dma_fix_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
@@ -1420,6 +1435,7 @@ void ps3_menu_ingame(void)
 		ps3_timecfg_print("menu", false);
 		ps3_outcfg_print("menu", false);
 		ps3_scrcfg_print("menu", false);
+		ps3_memcfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1513,5 +1529,6 @@ int ps3_menu_run(void)
 	ps3_padcfg_print("boot", true);
 	ps3_outcfg_print("boot", true);
 	ps3_scrcfg_print("boot", true);
+	ps3_memcfg_print("boot", true);
 	return 1;
 }

@@ -21,6 +21,250 @@ old 11 (Output stage) is 11 and 12, 13 and 15 grew, 16-21 are new.
 Nothing is built by the re-cut. Recommended order: 11, 13, 14, 10, 15,
 19, 17, 12, 16, 18, 20, then 21, then G11, then G10 with G13.**
 
+**Bundle 13 (MMU and memory) built 2026-10-12 (Matt: "We will now work on
+Bundle 13."), HW SUCCESS 2026-10-13 after HW runs 1 and 2 (Matt: "Mark it
+as a success, and we will check the Ikaruga and Rez issues later on.").
+Those issues are the SH4-bound heavy scenes of the two games: now item 7
+of bundle 21 (section 7). HW run 1, 2026-10-12: with MMUCR Bits FIXED,
+Border Down, Sonic Shuffle, Ikaruga and Rez all get past the BIOS logo and
+play (Matt: "The game ran fine!", "Ikaruga runs!", "Rez ran fine!").
+Package of 23:15
+on 2026-10-12 (`build/notdc_ps3.pkg`, 1602352 bytes) = commit 27f2a65 +
+this bundle. **MMUCR Bits is default FIXED in source since 2026-10-12
+(Matt: "Let's keep the MMUCR Bits default in FIXED."), not packaged: the
+package of 23:15 has OLD, and Matt's settings file has FIXED.** The other
+three rows stay at their old path (no default named). HW run 2: Crazy
+Taxi, Looney Tunes and Sonic Adventure are unchanged with FIXED. Not run
+yet: FB Write Watch ON (Ikaruga), the other three rows. LMMODE has no
+test: no game in the logs sends a store-queue block to VRAM.**
+- **HW run 2, 2026-10-12 23:48 to 2026-10-13 00:18: no change in the
+  three regression games** (Matt on Looney Tunes: "It worked right.").
+  Same log file, lines 362471-393377; the cut is `b13_run2.txt` in the
+  same scratchpad. Package of 23:15, MMUCR Bits FIXED, the other three
+  rows OFF. No fault line, 0 `Write to Boot ROM`, 0 `[p4]` access, `[ocr]`
+  and `DMAC: Ch2` lines in the three boots.
+  - None of the three turns the MMU on. Crazy Taxi writes MMUCR 3 times,
+    each time 0; Looney Tunes and Sonic Adventure have only the BIOS's two
+    writes of 0. Looney Tunes' 100 `MEM remap [0]` lines are there as
+    before. So the fix has no path into these games.
+  - Crazy Taxi (X30): 16373 renders, 0 dropped, SPEED 99.6% as the mean.
+    By the survey's rule (2K+ vertices, 5+ renders/s): 21 of 257 windows
+    slow (8.2%), 93.6% in them at 14.4K vertices. The survey of P86 has
+    3-9% and 92.6-94.8% for Crazy Taxi at X30.
+  - Looney Tunes (X30): 8815 renders, 0 dropped, the intro video decoded
+    (YUV DMA in 12 windows), SPEED 99.6% as the mean. 12 of 249 windows
+    slow (4.8%): 4 at 90-97% with 28.4K vertices, 8 at 85-89% with 32.2K.
+    Of the 166 race windows (20K+ vertices), 11 have no sleep of the SH4
+    thread (the host limit), and 130 are at SPEED 100% with 25-27
+    renders/s and sleep in about half of the pace calls (the X30 rule's
+    frame drops in emulated time). Matt: "I'm not sure if we can still
+    pinpoint about the stutters": the log still separates the two kinds;
+    both are bundle 21's.
+  - Sonic Adventure (X3 BACKWARD): 9838 renders, 0 dropped, SPEED 99.5%
+    as the mean, 30.6 renders/s in 230 game windows, none slow.
+- **HW run 1, 2026-10-12 ~23:24-23:45: the fix works** (Matt, per game,
+  above). Log: `sa_anim1.txt` of session d13d658e (its listener held the
+  port), lines 344370-362470; the cut is `b13_run1.txt` in the scratchpad
+  of session ff1f423e. Six boots, each with `[memcfg] boot: MmuBits=1
+  P4Mirror=0 OcrBanks=0 Ch2DmaFix=0 Lmmode=0 VramDirect=0 DmaFix=1`.
+  - The self-test line in each boot: `bitfield AT=0 TI=0 SV=0 URC=2, masks
+    AT=1 TI=1 SV=1 URC=42`. So the PS3 build reads the bitfield as
+    `bitfield_ppu.sh` says.
+  - The MMUCR writes, the same in the four games: two writes of 0 by the
+    BIOS, then one write of `00040005` by the game (AT, TI, URB = 1; pc
+    8C03D336 Border Down, 8C05C8C6 Sonic Shuffle, 8C044386 Ikaruga,
+    8C0517FA Rez). Then `MMU address translation ENABLED`, `TLB
+    invalidate`, a `recSh4: cache clear` at the same pc, and after that
+    the 50 `SQ remap` lines, each one with V=1. So TI comes before the
+    entries: the "TI keeps the remap table" rule and the V = 0 skip had
+    nothing to do in these games (0 `not valid` lines).
+  - 0 `Write to Boot ROM` lines in the four games (old logs: Border Down
+    11592 and 45848, Sonic Shuffle 50048). 0 `[p4]` access lines, 0 `[ocr]` lines, 0 `DMAC: Ch2`
+    lines in the six boots: none of these games uses a P4 mirror page, an
+    on-chip RAM address that changes bank, or a ch2 DMA that the rules
+    change. Each game left with a clean exit to the XMB.
+  - Border Down (JIT IDLE RULE X3 BACKWARD, set by Matt: "Speed is wrong
+    because I put the speed at x3 REVERSE", so the speed does not count):
+    66 of 76 windows with renders, 34 renders/s; about 390K store-queue
+    flushes/s to RAM.
+  - Sonic Shuffle at X30: 97 of 112 windows with renders, SPEED 99.2% as
+    the mean; 36.5K flushes/s to the TA and 77.7K to RAM. 24-25 renders/s,
+    19.9 in the scenes over 4K vertices (at SPEED 100%). A second boot at
+    X3 BACKWARD: SPEED 80% in the menus and 56% in scenes of 0.5-4K
+    vertices, 14 renders per wall second there. Matt: "It runs better at
+    x30. But It's too heavy for now." One more game for bundle 21 (the
+    idle rule, heavy scenes).
+  - Ikaruga at X30: 3068 renders, 0 dropped, 47 renders/s, SPEED 99.1% as
+    the mean. 5 of 67 windows are slow (75-91%) at 11.7-20.1K vertices:
+    `[pace] slept=0`, 952K flushes/s (543K to the TA, 409K to RAM) at 336
+    ns each, `sq path 15.2%`. LMMODE1 = 1 from the game, but no SQ block
+    and no DMA went to VRAM by the 32-bit bus; `FbWatch=0`, `fb=1 fbw=0`.
+  - Rez at X30 (NTSC 60): 105 of 110 windows with renders, 43 renders/s,
+    SPEED 99.0% as the mean. 11 windows are slow; 8 of them are 87-95% at
+    10.8-12.3K vertices and 55-57 renders/s: `[pace] slept=0`, 849K
+    flushes/s, all to RAM, at 174 ns each, `path 11.2%`; the TA data goes
+    by ch2 DMA (15 MB/s). No SQ block to VRAM in this boot (`v64=0 v32=0`),
+    VRAM DMA in 7 windows with LMMODE0 = 0 (the old path). So LMMODE had
+    nothing to change in Rez here.
+  - Sega Rally 2 (Windows CE): `MMUCR write 00000005`, `ldtlb 0/0`, `MEM
+    remap [0] : virt=0x00005800 -> phys=0x0C131800`, then `Unimplemented
+    opcode` and boot ROM writes: it needs the full MMU (P38), as the trap
+    below says. Matt: "Windows CE games still hang uh."
+  - The plan's condition for P74 is met: Ikaruga and Rez are SH4-bound in
+    their heavy scenes, and the old chain takes 15.2% and 11.2% of the SH4
+    thread there. Not built: Matt 2026-10-13, "we will check the Ikaruga
+    and Rez issues later on" (bundle 21, item 7).
+- The cause is confirmed with the PS3 compiler
+  (`misc/mmu_check/bitfield_ppu.sh`, the build image's ppu-g++ at -O2):
+  the MMUCR bitfield reads AT from bit 4, TI from bit 6, SV from bit 12,
+  SQMD from bit 13, URC from bits 19-14 and URB from bits 25-20. Only LRUI
+  is at its bits. So the emulator never sees a game turn the MMU on.
+- A new MEMORY page (page 11 of 11; a `[memcfg]` line at boot and at a
+  menu change):
+  - MMUCR Bits: OLD / FIXED (set before boot). FIXED:
+    - The fields come from masks on the register word, at the manual's
+      bits (AT 0, TI 2, URC 15-10, URB 23-18). The readers are the MMUCR
+      write, `ldtlb`, the interpreters' PREF and the JIT (PREF target,
+      JIT PREFETCH, JIT GUARD REUSE). OLD reads the bitfield as before.
+    - A write keeps the real bits only (0xFCFCFF05, Flycast).
+    - An AT change clears the JIT code cache, on both edges (Flycast): the
+      JIT reads AT when it compiles a block.
+    - TI clears the V bit of each TLB entry and keeps the store-queue
+      remap table (Flycast's `mmu_flush_table`). OLD clears the table too.
+      The reason: no TLB miss comes to the emulator, so nothing loads a
+      cleared slot again. P58's text counted "the table is not cleared" as
+      a fault; that part is not taken.
+    - A UTLB entry in the store-queue area with V = 0 leaves its remap
+      slot as it is (Flycast's `UTLB_Sync` without FAST_MMU).
+    - A UTLB or ITLB data-array write with address bit 23 goes to the
+      assistance word (data array 2), not into PPN and V (Flycast,
+      Reicast). The reads are as before (Flycast returns data array 1).
+  - P4 Mirrors: OFF / ON (set before boot). ON maps VRAM at 0xE4-0xE7 and
+    main RAM at 0xEC-0xEF, after the P4 handler (Flycast 156aafe95). OFF:
+    those pages read 0 and drop writes, as before. The other pages of
+    Flycast's mirror hold nothing in our map (areas 2, 4, 5, 6).
+  - Cache RAM Banks: OLD / FLYCAST (set before boot). FLYCAST: the on-chip
+    RAM is two 4 KB banks; the bank is address bit 13, or bit 25 when
+    CCR.OIX is set. OLD takes the low 13 address bits, so 0x7C000000 and
+    0x7C002000 are the same bytes (on the SH4 they are bank 1 and bank 2).
+  - Ch2 DMA Rules: OLD / FLYCAST (live). FLYCAST:
+    - The target is (SB_C2DSTAT & 0x03FFFFE0) | 0x10000000 and the length
+      is SB_C2DLEN & 0x00FFFFE0, applied when the DMA starts (Flycast
+      masks at the register write; the registers' read-back is not
+      changed here).
+    - Nothing is refused: an odd length is cut, a zero length ends at
+      once, both with TE and the end interrupt. OLD returns with no
+      interrupt and SB_C2DST still 1.
+    - 0x12xxxxxx is the TA's mirror (polygons and YUV). OLD moves no data
+      there.
+    - A DMAOR write keeps bits 15, 9, 8 and 2-0 (0x8307). This also
+      helps the PVR and GD-ROM DMAs, which test the same register.
+- Bundle 1's rows for these games stay on VIDEO / DEBUG, with no code
+  change: LMMODE (test: Rez), FB Write Watch (test: Ikaruga), VRAM Direct.
+- Not built: the flat store-queue flush for AT = 1 (P74). The plan takes
+  it only if one of the four games is SH4-bound after the fix. Until then
+  a flush with AT = 1 takes the old chain (`do_sqw_mmu`): TA SQ Direct and
+  RAM SQ Direct do not act for these games.
+- Log:
+  - `[mmu] MMUCR Bits OLD | self-test 0000A905: bitfield AT=0 TI=0 SV=0
+    URC=2, masks AT=1 TI=1 SV=1 URC=42` at boot. These numbers are the
+    proof of P58 on the PS3 itself; other bitfield numbers mean that the
+    compiler's layout is not the one of `bitfield_ppu.sh`.
+  - `CCN: MMUCR write V (was W): AT= TI= SV= SQMD= URC= URB= LRUI=, acts
+    on AT= TI= (pc=)`: the first 64 writes, in both row states. The values
+    and their order in the four games were not known.
+  - `CCN: MMU address translation ENABLED` and `recSh4: cache clear` at an
+    AT edge with FIXED.
+  - `SQ remap [n] slot= : virt= -> phys= V=` (V is new), and with FIXED
+    `SQ remap [n] slot= : virt= not valid, slot stays 0x...`.
+  - `[p4] P4 Mirrors OFF` at boot, and `[p4] read32 at 0xEC......: P4
+    Mirrors is OFF, no memory there (pc=)`: the first 8 accesses to a page
+    that the row maps. No old log has this (the old build was silent).
+  - `[ocr] 0x7C002000 OIX=0: offset 0x0000 with OLD, 0x1000 with FLYCAST;
+    Cache RAM Banks is OLD (pc=)`: the first 8 accesses where the two rules
+    differ.
+  - `DMAC: Ch2 length cut`, `Ch2 ends at once`, `Ch2 target 0x12...... is
+    the TA mirror`: the first of each kind (each one with OLD, as before).
+- Code: `dc/sh4/ccn.h` (the masks, `mmucr_at()`, `mmucr_urc()`,
+  `mmucr_urb()`), `dc/sh4/ccn.cpp` (`CCN_MMUCR_write()`,
+  `ccn_mmucr_selftest()`), `dc/mem/mmu.cpp` and `mmu.h`
+  (`mmu_InvalidateTLB()`, `UTLB_Sync()`, the assistance word),
+  `dc/mem/sh4_internal_reg.cpp` (the F3 and F7 writes, `p4_stray_note()`,
+  `ocr_offset()`), `dc/mem/sh4_mem.cpp` (the mirror), `dc/sh4/dmac.cpp`
+  (`DMAC_Ch2St()`, `WriteDMAOR()`), `dc/sh4/sh4_cpu_misc.h`,
+  `dc/sh4/rec_v2/shil_canonical.h`, `ps3/ps3_driver.cpp` (the readers),
+  `ps3/ps3_menu.cpp`, `ps3/ps3_presets.cpp`.
+- Traps:
+  - A game that turns AT on then sends every store-queue flush through
+    its TLB entries. A game with AT = 1 and no entry for an address
+    writes to area 0 (`Write to Boot ROM`).
+  - After an AT edge the running block goes on, and the blocks it is
+    linked to are still the old code until the next block lookup (how
+    long that is was not measured). A PREF there takes the old target.
+  - Windows CE games (Sega Rally 2 in the logs: `ldtlb 0/0`) need the
+    full MMU (P38). FIXED does not make them run.
+  - Looney Tunes writes UTLB entry 0 with zeros 100 times at boot (`MEM
+    remap [0]`). Its MMUCR writes are not known: the regression run with
+    FIXED tells.
+- PC checks, WSL:
+  - `misc/mmu_check/run.sh`: PASS. It builds the marked sections of the
+    five real sources twice: the new code, and the code of commit 27f2a65
+    (`ref_*.inc`). 300 cases of 400 register operations (MMUCR writes,
+    TLB array writes and reads, store-queue addresses, on-chip RAM, ch2
+    DMAs): with every row OFF the two give the same state after each
+    operation, and both agree with a model. With the rows ON at random
+    (the live rows also change in play) the new code agrees with the
+    model: 4549 AT edges, 3898 TI writes, 1937 V = 0 entries kept, 3053
+    data array 2 writes, 2610 on-chip RAM accesses that change bank, 2729
+    ch2 DMAs to the TA (1124 to 0x12), 715 odd and 736 zero lengths. Then
+    45 source line checks (the JIT and interpreter readers, the mirror,
+    the rows, the defaults).
+  - `misc/mmu_check/mutate.py`: 75 of 75 mutants fail.
+  - `misc/mmu_check/bitfield_ppu.sh` (Git Bash with Docker, not WSL):
+    PASS, 19 values.
+  - The 14 older checks that name a changed file: PASS (`div32_check`,
+    `carry_check`, `constprop_check`, `clock_check`, `exit_check`,
+    `jit8_check`, `sqstore_check`, `sysgate_check`, `tcopy_check`,
+    `timebase_check`, `pad_check`, `rtt_check`, `screen_check`,
+    `ta4_check`). Their mutation runs were not repeated. `ramsq_check`
+    names `sh4_mem.cpp` and does not build since bundle 4 (not repaired).
+  - The PC is little endian: there the old bitfield has AT and TI at the
+    right bits. So the PC check proves "OFF is the old code" and "ON is
+    the model"; the wrong bits of the PS3 build are proved by
+    `bitfield_ppu.sh` and by the boot self-test line.
+- Link: `r2off` 0, `.got` 0xE2F8 (0xE180 before; the limit is 0x10000). No
+  warning in the changed files.
+- Not checked on the PC: the JIT cache clear inside a running block (the
+  same call as the CCR I-cache invalidate, which each boot runs), the
+  flushes of the four games through `do_sqw_mmu`, the memory map of P4
+  Mirrors, the menu page.
+- HW steps (UDP listener on port 18194, only when Matt says so). An
+  install keeps the settings; every new row starts at its first value.
+  1. Front menu, OPTIONS, page MEMORY (the last page): MMUCR Bits FIXED.
+     Leave the other three rows as they are.
+  2. Boot Border Down. Expected: a picture after the BIOS logo. Log:
+     `[mmu] MMUCR Bits FIXED | self-test ...` with the numbers above, 50
+     `SQ remap` lines (the old logs have them), `CCN: MMUCR write` lines
+     of which one has `acts on AT=1`, then `CCN: MMU address translation
+     ENABLED` and a `recSh4: cache clear`. No `Write to Boot ROM` line
+     (the old logs have 11592 and 45848 of them). Not known: if the
+     writes come before or after the `SQ remap` lines.
+  3. The same with Rez, Ikaruga and Sonic Shuffle (old logs: 50 `SQ
+     remap` lines each; Sonic Shuffle 50048 `Write to Boot ROM` lines).
+  4. No change expected, MMUCR Bits still FIXED: Crazy Taxi, Sonic
+     Adventure, Looney Tunes (boot, the intro video, a race).
+  5. Bundle 1's rows, when their game runs. Rez: VIDEO / DEBUG -> LMMODE
+     ON (live); the textures must stay right; log `[vram] LMMODE0=
+     LMMODE1=` and `sq/s ... v64= v32=` above 0. Ikaruga: FB Write Watch
+     ON; the loading screens; log `fbw=`.
+  6. No test game is known for the other three rows. The old logs have no
+     refused ch2 DMA in any game, and the old build did not log the P4
+     pages or the on-chip RAM. A boot of any game with the rows OFF now
+     shows `[p4]` and `[ocr]` lines if the game uses those paths. Flycast
+     names NHL 2K2 for P4 Mirrors and Cache RAM Banks.
+  7. On a fault: the row back to its first value; note the game and
+     when.
+
 **Bundle 12 (Screen format and test tools) built 2026-10-12 (Matt: "Work
 on Bundle 12"), HW SUCCESS 2026-10-12 after HW run 1 (Matt: "Success!").
 Package of 21:37 on 2026-10-12 (`build/notdc_ps3.pkg`, 1599472 bytes) =
@@ -3950,6 +4194,10 @@ evidence and the DC rule (3j).
   6. Log: `[tex] bump maps ON`, `bump strips=` above 0 and `ppu=` near the
      renders in the Rayman 2 level, `[texfmt] bump=`.
   7. On a fault: Bump Maps OFF (live).
+
+**CLOSED 2026-10-13: MMUCR Bits FIXED (bundle 13, the first block of this
+section) lets Rez, Ikaruga, Sonic Shuffle and Border Down boot and play
+on HW. The text below is the state of 2026-10-08.**
 
 **Open, separate (Matt 2026-10-08: "Also write down the Ikaruga and Rez
 issues. We may be able to get back to them later on."): Rez and Ikaruga
@@ -10566,7 +10814,7 @@ Nothing of the open bundles is built by this re-cut.
 | 10 | Controllers (re-cut 2026-10-12; was Maple) | P84's stick dead zone, GOALS.md G12 (the second stick), P13, the DS3 remap of G10 | a smooth analog stick; the right stick; DS3 rumble; button maps | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): Controller FULL works in Quake III Arena (Matt: "Quake 3 double sticks works"; G12 done); built 2026-10-12 with bundle 11 (Matt: "Let's go with Bundle 10 and 11 together."): the CONTROLS page has Controller (STANDARD PAD / FULL (2 STICKS)), Stick Dead Zone (AXIS / RADIAL), Rumble Pack (OFF / ON) and 15 button-map rows; every default is the old path (Matt named none); PC checks PASS (`misc/pad_check`, 37 of 37 mutants); package of 17:40; no HW run: Stick Dead Zone RADIAL, Rumble Pack, a button-map change |
 | 11 | Render to texture and present (re-cut 2026-10-12; was Output stage) | P75 (first), P66's RTT scaler, P76, P54, P60, P26 reads | the Crazy Taxi pause freeze; RTT games; no flashing screens or mirrors; interlaced and 24-bit 2D screens | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): RTT Read-back FIXED ends the Crazy Taxi pause freeze (Matt: "works as intended"); built 2026-10-12 with bundle 10: 10 rows on a new OUTPUT page (RTT Read-back, RTT Scaler, RTT Size, RTT Pack, Draw Retry, FB Line Double, Blank Video, Present Rule, Region Scissor, FB Reads), every default is the old path (Matt named none), so the Crazy Taxi pause still freezes until RTT Read-back is FIXED; PC checks PASS (`misc/rtt_check`, 88 of 88 mutants); package of 17:40; no HW run: Present Rule, RTT Size TILE CLIP; left: the Looney Tunes boot videos (not on the TV, cause not known); **the fix for the Looney Tunes race loading screen (black but the bar with Region Scissor ON), asked for by Matt after the verdict ("Fix it."): row "Keep Last Frame" (OFF / ON) built 2026-10-12, package of 19:52, PC checks PASS, HW SUCCESS 2026-10-12 (Looney Tunes, Matt: "Success! The image stays."; Crazy Taxi), default ON in source since 2026-10-12 (Matt: "Keep it up as default."), not packaged; it acts only with Region Scissor, which is still default OFF**; not built: the fb_concat bits of P26, P54's writers for pack modes 4 and 5 |
 | 12 | Screen format and test tools (re-cut 2026-10-12; was HW test tools) | P50, P51, P53, P69's stretch, P10 (clip, scaler), P36 | SPEED on the TV without the UDP listener; PNG evidence; 16:9 output | `[x]` HW SUCCESS 2026-10-12 (Matt: "Success!"; section 0): Sonic Adventure with FPS Overlay ON, Screen Format 16:9 WIDE and Screen Scaler ON, SPEED median 99.99%, no fault; Matt named no default, every row stays at its old path; no HW run: the screenshot, 16:9 STRETCH, Cheats; built 2026-10-12 (Matt: "Work on Bundle 12"): a new SCREEN page with FPS Overlay (OFF / ON), Screen Format (4:3 / 16:9 STRETCH / 16:9 WIDE), Screen Scaler (OFF / ON) and Cheats (OFF / ON), every default is the old path; the screenshot is SQUARE in the in-game menu (no row); PC checks PASS (`misc/screen_check`, 178 of 178 mutants); package of 21:37; P10's FB clip was already Region Scissor (bundle 11); not built: Flycast's per-game widescreen table |
-| 13 | MMU and memory (re-cut 2026-10-12; was MMU store queues) | P58, P78 (MMUCR mask, TLB data array 2), P74, P30, P65, bundle 1's P7, P26 write watch and P55 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; bundle 1's rows get their first run; NHL 2K2 | `[ ]` |
+| 13 | MMU and memory (re-cut 2026-10-12; was MMU store queues) | P58, P78 (MMUCR mask, TLB data array 2), P74, P30, P65, bundle 1's P7, P26 write watch and P55 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; bundle 1's rows get their first run; NHL 2K2 | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Mark it as a success, and we will check the Ikaruga and Rez issues later on."; section 0): with MMUCR Bits FIXED, Border Down, Sonic Shuffle, Ikaruga and Rez get past the BIOS logo and play (HW run 1 2026-10-12; Matt: "The game ran fine!", "Ikaruga runs!", "Rez ran fine!")**; left for later: the SH4-bound heavy scenes of Ikaruga and Rez (bundle 21, item 7); MMUCR Bits default FIXED in source since 2026-10-12 (Matt), not packaged (the package of 23:15 has OLD); HW run 2: Crazy Taxi, Looney Tunes and Sonic Adventure unchanged with FIXED (none turns the MMU on); not run: FB Write Watch ON (Ikaruga), the other three rows; LMMODE has no test game; P74's condition is met (Ikaruga and Rez are SH4-bound in heavy scenes, the old chain takes 15.2% and 11.2% of the SH4 thread); built 2026-10-12 (Matt: "We will now work on Bundle 13."): a new MEMORY page with MMUCR Bits (OLD / FIXED), P4 Mirrors (OFF / ON), Cache RAM Banks (OLD / FLYCAST) and Ch2 DMA Rules (OLD / FLYCAST), every default is the old path, so the four games still stop until MMUCR Bits is FIXED; the PS3 compiler confirms the wrong bits (`misc/mmu_check/bitfield_ppu.sh`); PC checks PASS (`misc/mmu_check`, 75 of 75 mutants); package of 23:15; bundle 1's LMMODE, FB Write Watch and VRAM Direct have no code change and wait for the HW run; P74 not built (the plan: only if a game is SH4-bound after the fix) |
 | 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[ ]` added 2026-10-11 |
 | 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[ ]` |
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[ ]` |
@@ -11586,8 +11834,12 @@ Main gains:
 - HW: any game for the text in the left pillarbox bar and a PNG under
   `/dev_hdd0/data/NotDC/`; Crazy Taxi and Sonic Adventure at 16:9.
 
-### Bundle 13: MMU and memory  `[ ]` re-cut 2026-10-12 (was "MMU store queues"; it takes P30, P65 and the three rows of bundle 1 that never ran)
+### Bundle 13: MMU and memory  `[x]` HW SUCCESS 2026-10-13 (Matt): MMUCR Bits FIXED lets Border Down, Sonic Shuffle, Ikaruga and Rez boot and play, default FIXED in source; built 2026-10-12, the other three rows at their old path with no HW run; left: FB Write Watch with Ikaruga, the heavy scenes of Ikaruga and Rez (bundle 21) (section 0); re-cut 2026-10-12 (was "MMU store queues"; it takes P30, P65 and the three rows of bundle 1 that never ran)
 
+- Built 2026-10-12 (section 0 has the rows, the log lines, the checks and
+  the HW steps): steps 1, 2 and 4 of the order below. Step 3 has no code:
+  its rows are of bundle 1 and wait for the HW run. Step 5 (P74) is not
+  built.
 - Items: P58 (the MMUCR fields on big endian, with the JIT cache clear and
   the V = 0 skip), P78 (the MMUCR write mask, the TLB data array 2
   writes), P74 (a flat store-queue flush for AT = 1), P30 (P4 mirrors and
@@ -11804,6 +12056,15 @@ Main gains:
   6. Settings per game (Matt's idea of a product-ID table: the idle rule
      level, the TR Triangle Sort level). It changes the rule "no per-game
      lists": ask Matt for the scope before a design.
+  7. Added 2026-10-13, from bundle 13's HW runs (Matt: "we will check the
+     Ikaruga and Rez issues later on"): Ikaruga and Rez are SH4-bound in
+     their heavy scenes (SPEED 75-91% at 11.7-20.1K vertices, 87-95% at
+     10.8-12.3K). With MMUCR.AT = 1 their store-queue flushes take the old
+     chain: 952K/s at 336 ns (15.2% of the SH4 thread) and 849K/s at 174
+     ns (11.2%). The candidate is P74, the flat flush for AT = 1 (about 20
+     lines, own row; not built). Sonic Shuffle: 19.9 renders/s above 4K
+     vertices at X30 and SPEED 100%; X3 BACKWARD runs it at SPEED 56%
+     (Matt: "It runs better at x30. But It's too heavy for now.").
 - Shared code: the idle rule in `dc/sh4/rec_v2/decoder.cpp`,
   `ps3/ps3_jit_idle.h`, the SYS GATE and `dc/sh4/tmu.cpp`, the JIT
   store-queue paths.

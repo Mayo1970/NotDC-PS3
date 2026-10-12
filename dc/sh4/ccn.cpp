@@ -27,30 +27,64 @@ CCN_PTEA_type  CCN_PTEA;
 CCN_QACR_type  CCN_QACR0;
 CCN_QACR_type  CCN_QACR1;
 
-// ---- MMUCR write handler: logs MMU enable/disable transitions, clears the self-clearing TI bit ----
+// mmu_check: begin ccn
+// P58 probe: the first writes, with the manual's fields and the two bits the emulator acts on.
+#define MMUCR_LOG_MAX 64
+static u32 s_mmucr_writes;
+
+// ---- MMUCR write handler: logs the write and the MMU enable/disable edges, clears the self-clearing TI bit ----
 static void CCN_MMUCR_write(u32 value)
 {
+    const bool fixed = g_mmu_bits_preset != 0;
     CCN_MMUCR_type temp;
-    temp.reg_data = value;
+    temp.reg_data = fixed ? value & MMUCR_WMASK : value;
 
-    if (temp.AT != CCN_MMUCR.AT)
+    const u32 at = fixed ? MMUCR_AT(temp.reg_data) : temp.AT;
+    const u32 ti = fixed ? MMUCR_TI(temp.reg_data) : temp.TI;
+    const bool at_edge = at != mmucr_at();
+
+    if (s_mmucr_writes++ < MMUCR_LOG_MAX)
+        printf("CCN: MMUCR write %08X (was %08X): AT=%u TI=%u SV=%u SQMD=%u URC=%u URB=%u LRUI=%u, acts on AT=%u TI=%u"
+               " (pc=%08X)\n", value, CCN_MMUCR.reg_data, MMUCR_AT(value), MMUCR_TI(value), MMUCR_SV(value),
+               MMUCR_SQMD(value), MMUCR_URC(value), MMUCR_URB(value), MMUCR_LRUI(value), at, ti, curr_pc);
+
+    if (at_edge)
     {
         printf("CCN: MMU address translation %s (pc=%08X)\n",
-               temp.AT ? "ENABLED - only SQ remaps supported" : "disabled",
+               at ? "ENABLED - only SQ remaps supported" : "disabled",
                curr_pc);
     }
 
-    // TI = self-clearing write-only TLB invalidate. It used to only log and clear the bit, so stale entries (and the
-    // sq_remap table derived from them) survived a flush the guest believed done; now it invalidates, as the PSP port.
-    if (temp.TI)
+    // TI = self-clearing write-only TLB invalidate; mmu_InvalidateTLB says what it drops.
+    if (ti)
     {
         printf("CCN: TLB invalidate (pc=%08X)\n", curr_pc);
         mmu_InvalidateTLB();
-        temp.TI = 0;
+        if (fixed)
+            temp.reg_data &= ~MMUCR_TI_BIT;
+        else
+            temp.TI = 0;
     }
 
     CCN_MMUCR = temp;
+
+    // P58 (Flycast CCN_MMUCR_write): the JIT takes the PREF target, JIT PREFETCH and JIT GUARD REUSE from AT when it
+    // compiles, so the blocks of before an AT edge must go.
+    if (fixed && at_edge)
+        sh4_cpu.ResetCache();
 }
+
+// P58 self-test at boot: one word through the bitfield and through the masks. On big endian the bitfield must print
+// AT=0 TI=0 URC=2, the masks AT=1 TI=1 URC=42.
+static void ccn_mmucr_selftest()
+{
+    CCN_MMUCR_type t;
+    t.reg_data = 0x0000A905;
+    printf("[mmu] MMUCR Bits %s | self-test %08X: bitfield AT=%u TI=%u SV=%u URC=%u, masks AT=%u TI=%u SV=%u URC=%u\n",
+           g_mmu_bits_preset ? "FIXED" : "OLD", t.reg_data, (u32)t.AT, (u32)t.TI, (u32)t.SV, (u32)t.URC,
+           MMUCR_AT(t.reg_data), MMUCR_TI(t.reg_data), MMUCR_SV(t.reg_data), MMUCR_URC(t.reg_data));
+}
+// mmu_check: end ccn
 
 // ---- CCR write handler: handles the self-clearing ICI/OCI invalidate bits, logs cache enable/disable changes ----
 static void CCN_CCR_write(u32 value)
@@ -171,6 +205,8 @@ void ccn_Init()
     CCN[(CCN_QACR1_addr&0xFF)>>2].readFunction  = 0;
     CCN[(CCN_QACR1_addr&0xFF)>>2].writeFunction = 0;
     CCN[(CCN_QACR1_addr&0xFF)>>2].data32        = &CCN_QACR1.reg_data;
+
+    ccn_mmucr_selftest();
 }
 
 // ---- ccn_Reset: restore power-on / reset values per the SH7091 hardware manual ----
@@ -180,6 +216,7 @@ void ccn_Reset(bool Manual)
     CCN_TRA            = 0x00000000;
     CCN_EXPEVT         = Manual ? 0x00000020 : 0x00000000;
     CCN_MMUCR.reg_data = 0x00000000;
+    s_mmucr_writes     = 0;
     CCN_CCR.reg_data   = 0x00000000;
 }
 

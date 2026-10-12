@@ -198,6 +198,12 @@ int g_fps_overlay_preset   = 0;   // 1 = FPS and SPEED on the screen's left edge
 int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture on every column (P69), 2 = more canvas at the sides (P53)
 int g_screen_scaler_preset = 0;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
 int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
+// OPTIMIZATION_PLAN section 7, bundle 13 (MMU and memory): 0 is the old path in every one; a row is off until it is
+// cleared on hardware. MMUCR Bits is FIXED since 2026-10-12 (Matt): Border Down, Sonic Shuffle, Ikaruga and Rez boot.
+int g_mmu_bits_preset      = 1;   // 1 = MMUCR's fields at the manual's bits, its write mask, a JIT cache clear on an AT edge (P58, P78, HW)
+int g_p4_mirror_preset     = 0;   // 1 = P4 pages E4-E7 and EC-EF mirror VRAM and main RAM, as Flycast 156aafe95 (P30)
+int g_ocr_banks_preset     = 0;   // 1 = the on-chip RAM bank is address bit 13, or bit 25 with CCR.OIX (P30)
+int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and length masked, 0x12 is the TA, DMAOR & 0x8307 (P65)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -373,6 +379,10 @@ static const CfgItem s_items[] = {
 	{ "ScreenFormat",  &g_screen_format_preset },
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
+	{ "MmuBits",       &g_mmu_bits_preset },
+	{ "P4Mirror",      &g_p4_mirror_preset },
+	{ "OcrBanks",      &g_ocr_banks_preset },
+	{ "Ch2DmaFix",     &g_ch2_dma_fix_preset },
 	{ "RttReadback",   &g_rtt_readback_preset },
 	{ "RttScaler",     &g_rtt_scaler_preset },
 	{ "RttSize",       &g_rtt_size_preset },
@@ -558,6 +568,18 @@ static const CfgItem s_scr_items[] = {
 };
 #define SCR_ITEMS (sizeof(s_scr_items) / sizeof(s_scr_items[0]))
 
+// The bundle 13 rows (plan section 7), in the MEMORY page's order, then bundle 1's rows that its games test.
+static const CfgItem s_mem_items[] = {
+	{ "MmuBits",       &g_mmu_bits_preset },
+	{ "P4Mirror",      &g_p4_mirror_preset },
+	{ "OcrBanks",      &g_ocr_banks_preset },
+	{ "Ch2DmaFix",     &g_ch2_dma_fix_preset },
+	{ "Lmmode",        &g_lmmode_preset },
+	{ "VramDirect",    &g_vram_direct_preset },
+	{ "DmaFix",        &g_dma_fix_preset },
+};
+#define MEM_ITEMS (sizeof(s_mem_items) / sizeof(s_mem_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -633,6 +655,13 @@ void ps3_scrcfg_print(const char* when, bool always)
 	static int last[SCR_ITEMS];
 	static bool printed;
 	cfg_print("scrcfg", s_scr_items, SCR_ITEMS, last, &printed, when, always);
+}
+
+void ps3_memcfg_print(const char* when, bool always)
+{
+	static int last[MEM_ITEMS];
+	static bool printed;
+	cfg_print("memcfg", s_mem_items, MEM_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {

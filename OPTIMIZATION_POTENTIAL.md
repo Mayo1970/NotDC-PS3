@@ -921,7 +921,7 @@ Adventure intro FMV, `[stall] dma`.
   Low.
 - Order: after P72, which takes the larger share.
 
-### P74 Store-queue flushes with AT = 1 take the old chain  `[ ]`
+### P74 Store-queue flushes with AT = 1 take the old chain  `[ ]` not built with bundle 13 (2026-10-12): the plan takes it only if one of the four games is SH4-bound after P58; HW run 1 of bundle 13: that condition is met (Ikaruga 952K flushes/s at 336 ns, 15.2% of the SH4 thread; Rez 849K/s at 174 ns, 11.2%); for later (Matt 2026-10-13: "we will check the Ikaruga and Rez issues later on"), plan bundle 21 item 7
 
 - After P58, a game with MMUCR.AT = 1 flushes through `do_sqw_mmu`
   (`dc/sh4/sh4_sqw.h:15-47`; from the JIT PREF, `ps3/ps3_driver.cpp:4343`
@@ -1636,7 +1636,7 @@ Each one is small and needs no shader.
   the XOR-3 w8/w16 writes (`maple_devs.cpp:100-101`) stay valid, then copy
   words. Pair it with the P9 SB_MDST fix. Low risk.
 
-### P30 P4 mirrors and operand-cache RAM banks  `[ ]`
+### P30 P4 mirrors and operand-cache RAM banks  `[~]` "P4 Mirrors" and "Cache RAM Banks" built 2026-10-12, bundle 13 (plan section 0), default OFF and OLD, no HW run; no game in Matt's set is known to use either (the new `[p4]` and `[ocr]` log lines tell)
 
 - Flycast `core/hw/sh4/sh4_mem.cpp:160-174` mirrors areas 0-6 into
   0xE0-0xFF; the P4 handlers cover only E0-E3, F0-F7 and FF.
@@ -1920,7 +1920,7 @@ Flycast's RTT games).
   cycles inside the current timeslice), so they fail on ours today. About
   100 lines of harness. Only together with P11.
 
-### P58 MMUCR fields read the wrong bits on big endian  `[ ]`
+### P58 MMUCR fields read the wrong bits on big endian  `[x]` HW SUCCESS 2026-10-13 (Matt): "MMUCR Bits" built 2026-10-12, bundle 13 (plan section 0), default FIXED in source since 2026-10-12 (Matt); HW runs 1-2 at FIXED: Border Down, Sonic Shuffle, Ikaruga and Rez boot and play, Crazy Taxi, Looney Tunes and Sonic Adventure unchanged; the bits are confirmed with the build image's ppu-g++ (`misc/mmu_check/bitfield_ppu.sh`)
 
 - Ours: `CCN_MMUCR_type` (`dc/sh4/ccn.h:81-108`) declares 28 bits: AT:1,
   res:1, TI:1, res_2:5, SV:1, SQMD:1, URC:6, URB:6, LRUI:6, and the same
@@ -2148,7 +2148,7 @@ Flycast's RTT games).
 - 1 line. Byte order: none. The named game is WinCE (P38); no game in
   Matt's set is known to need it.
 
-### P65 Channel 2 DMA: length, the 0x12 mirror and DMAOR  `[ ]`
+### P65 Channel 2 DMA: length, the 0x12 mirror and DMAOR  `[~]` "Ch2 DMA Rules" built 2026-10-12, bundle 13 (plan section 0), default OLD, no HW run; no old HW log has a refused ch2 DMA, so no test game is known
 
 - Flycast `0d81c9fb0` ("clean dmac module, correct address/len mask, add
   missing mirror"; "fix infinite loop", no game named): a ch2 DMA always
@@ -2443,7 +2443,7 @@ None of the named games is in Matt's set.
 - HW (Disc Swap has no HW test yet, bundle 2): a 2-disc game at its swap
   prompt.
 
-### P78 Small MMU and BSC register fixes  `[ ]`
+### P78 Small MMU and BSC register fixes  `[~]` the MMUCR write mask and the data array 2 writes built 2026-10-12 inside "MMUCR Bits", bundle 13 (plan section 0), default OLD, no HW run; RFCR not built (bundle 20)
 
 - MMUCR write mask: Flycast masks the written value with 0xfcfcff05
   (`core/hw/sh4/modules/ccn.cpp:41`); ours stores it raw

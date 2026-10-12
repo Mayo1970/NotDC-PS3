@@ -41,6 +41,7 @@ u32              DMAC_DMATCR[4];   // only lower 24 bits are valid per channel
 DMAC_CHCR_type   DMAC_CHCR[4];
 DMAC_DMAOR_type  DMAC_DMAOR;
 
+// mmu_check: begin dmac
 // Address range helpers (makes intent explicit, avoids magic numbers)
 static inline bool isDstTA(u32 dst)         { return dst >= 0x10000000u && dst <= 0x10FFFFFFu; }
 static inline bool isDstVRAM_LM0(u32 dst)  { return dst >= 0x11000000u && dst <= 0x11FFFFE0u; }
@@ -49,14 +50,20 @@ static inline bool isDstVRAM_LM1(u32 dst)  { return dst >= 0x13000000u && dst <=
 // Disproven Rez experiment: a deferred ch2 IRQ (CH2_IRQ_DELAY_CYCLES, even 65536) changed nothing, so the
 // IRQ is synchronous again as in the PSP port; bring the delay back only if a timing hang shows up.
 
+// P65 probe: the ch2 DMAs that Ch2 DMA Rules changes, the first of each kind.
+static u32 s_ch2_odd, s_ch2_zero, s_ch2_mirror;
+
 // Channel 2 DMA to the TA / VRAM; started by a write to SB_C2DST.
 void DMAC_Ch2St()
 {
 	StallScope st_(ST_DMA);
+	// P65 (Flycast 0d81c9fb0): the hardware keeps bits 25-5 of the target, in 0x10000000, and bits 23-5 of the
+	// length, so a ch2 DMA always ends: nothing is refused, and 0x12 is the TA's mirror.
+	const bool fix   = g_ch2_dma_fix_preset != 0;
 	const u32 dmaor  = DMAC_DMAOR.full;
-	const u32 dst    = SB_C2DSTAT;
+	const u32 dst    = fix ? (SB_C2DSTAT & 0x03FFFFE0u) | 0x10000000u : SB_C2DSTAT;
 	u32       src    = DMAC_SAR[2];
-	u32       len    = SB_C2DLEN;
+	u32       len    = fix ? SB_C2DLEN & 0x00FFFFE0u : SB_C2DLEN;
 
 	// Validate DMAOR: must have DME set and DDT mode, no error flags
 	if ((dmaor & DMAOR_MASK) != 0x8201u)
@@ -65,24 +72,30 @@ void DMAC_Ch2St()
 		return;
 	}
 
-	// SB_C2DLEN must be a multiple of 32 bytes
-	if (len & 0x1Fu)
+	if (SB_C2DLEN & 0x1Fu)
 	{
-		printf("DMAC: Ch2 abort - SB_C2DLEN not 32-byte aligned (0x%X)\n", len);
-		return;
+		if (!s_ch2_odd++ || !fix)
+			printf("DMAC: Ch2 %s - SB_C2DLEN not 32-byte aligned (0x%X)\n", fix ? "length cut" : "abort", SB_C2DLEN);
+		if (!fix)
+			return;
 	}
 
-	// Guard against zero-length transfer
 	if (len == 0)
 	{
-		printf("DMAC: Ch2 abort - SB_C2DLEN is zero\n");
-		return;
+		if (!s_ch2_zero++ || !fix)
+			printf("DMAC: Ch2 %s - SB_C2DLEN is zero\n", fix ? "ends at once" : "abort");
+		if (!fix)
+			return;
 	}
 
 	//printf("DMAC: Ch2 DMA  SRC=0x%08X  DST=0x%08X  LEN=0x%X\n", src, dst, len);
 
+	const bool mirror = (dst & 0xFF000000u) == 0x12000000u;
+	if (mirror && !s_ch2_mirror++)
+		printf("DMAC: Ch2 target 0x%08X is the TA mirror: %s\n", dst, fix ? "sent to the TA" : "no data moves");
+
 	// --- Transfer to TA (display list) address space ---
-	if (isDstTA(dst))
+	if (isDstTA(dst) || (fix && mirror))
 	{
 		while (len)
 		{
@@ -225,11 +238,14 @@ static void WriteCHCR(u32 data)
 	//printf("DMAC: Write CHCR%u = 0x%08X\n", ch, data);
 }
 
+// P65 (Flycast 8001af974): DMAOR has bits 15, 9, 8 and 2-0 only. OLD keeps every bit, and a set bit in 31-16 fails
+// the 0x8201 test of the ch2, PVR and GD-ROM DMAs, which then end with no interrupt.
 static void WriteDMAOR(u32 data)
 {
-	DMAC_DMAOR.full = data;
+	DMAC_DMAOR.full = g_ch2_dma_fix_preset ? data & 0x8307u : data;
 	//printf("DMAC: Write DMAOR = 0x%08X\n", data);
 }
+// mmu_check: end dmac
 
 // Registers the DMAC MMIO registers (0xFFA00000 P4 / 0x1FA00000 physical, 4-byte aligned).
 

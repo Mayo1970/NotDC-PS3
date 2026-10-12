@@ -177,6 +177,11 @@ extern int g_fps_overlay_preset;
 extern int g_screen_format_preset;
 extern int g_screen_scaler_preset;
 extern int g_cheats_preset;
+// Bundle 13 (plan section 7), the MEMORY page.
+extern int g_mmu_bits_preset;
+extern int g_p4_mirror_preset;
+extern int g_ocr_banks_preset;
+extern int g_ch2_dma_fix_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -197,3 +202,5 @@ void ps3_padcfg_print(const char* when, bool always);
 void ps3_outcfg_print(const char* when, bool always);
 // [scrcfg] line: the SCREEN page's rows, the same way.
 void ps3_scrcfg_print(const char* when, bool always);
+// [memcfg] line: the MEMORY page's rows, the same way.
+void ps3_memcfg_print(const char* when, bool always);

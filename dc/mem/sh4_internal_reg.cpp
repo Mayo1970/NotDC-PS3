@@ -11,6 +11,8 @@
 #include "dc/sh4/scif.h"
 #include "dc/sh4/tmu.h"
 #include "dc/sh4/ubc.h"
+#include "dc/sh4/sh4_registers.h"
+#include "ps3/ps3_presets.h"
 #include "_vmem.h"
 #include "mmu.h"
 
@@ -166,6 +168,7 @@ INLINE void RegSWrite(Array<RegisterStruct>& reg, u32 offset, u32 data)
 }
 
 
+// mmu_check: begin p4
 // P4 (0xE0000000-0xFFFFFFFF): store queues, cache/TLB arrays and area7 on-chip registers.
 // TLB page-size masks by SZ field: 0=1KB, 1=4KB, 2=64KB, 3=1MB.
 static const u32 mmu_mask_2[4] =
@@ -175,6 +178,20 @@ static const u32 mmu_mask_2[4] =
 	((0xFFFFFFFF) >> 16) << 6,   // 64 KB page
 	((0xFFFFFFFF) >> 20) << 10,  // 1 MB page
 };
+
+// P30 probe: the first accesses to the P4 pages that Flycast mirrors (E4-E7 VRAM, EC-EF RAM). With P4 Mirrors ON
+// the memory map takes them, so they never come here.
+#define P4_STRAY_LOG_MAX 8
+static u32 s_p4_stray;
+
+static void p4_stray_note(u32 addr, u32 sz, bool write)
+{
+	const u32 page = addr >> 24;
+	const bool mirrored = (page >= 0xE4 && page <= 0xE7) || (page >= 0xEC && page <= 0xEF);
+	if (mirrored && s_p4_stray++ < P4_STRAY_LOG_MAX)
+		printf("[p4] %s%u at 0x%08X: P4 Mirrors is OFF, no memory there (pc=%08X)\n",
+		       write ? "write" : "read", sz * 8, addr, curr_pc);
+}
 
 template <u32 sz, class T>
 T FASTCALL ReadMem_P4(u32 addr)
@@ -237,8 +254,8 @@ T FASTCALL ReadMem_P4(u32 addr)
 		return 0;
 
 	default:
-		// Outside defined P4 sub-regions (e.g. 0xECxxxxxx).
-		// Not a real SH4 address — likely a guest bug. Return 0 safely.
+		// Outside the P4 arrays (E4-EF, F8-FE): reads 0.
+		p4_stray_note(addr, sz, false);
 		return 0;
 	}
 }
@@ -270,11 +287,15 @@ void FASTCALL WriteMem_P4(u32 addr, T data)
 			return;
 		}
 
-	// ITLB data arrays (F3)
+	// ITLB data arrays (F3). P78 (Flycast, Reicast): address bit 23 is data array 2, the assistance word; MMUCR
+	// Bits OLD writes it into data array 1.
 	case 0xF3:
 		{
 			u32 entry = (addr >> 8) & 3;
-			ITLB[entry].Data.reg_data = data;
+			if (g_mmu_bits_preset && (addr & 0x800000))
+				ITLB[entry].Assistance.reg_data = data & 0xF;
+			else
+				ITLB[entry].Data.reg_data = data;
 			ITLB_Sync(entry);
 			return;
 		}
@@ -335,11 +356,14 @@ void FASTCALL WriteMem_P4(u32 addr, T data)
 			return;
 		}
 
-	// UTLB data arrays (F7)
+	// UTLB data arrays (F7); bit 23 as in F3.
 	case 0xF7:
 		{
 			u32 entry = (addr >> 8) & 63;
-			UTLB[entry].Data.reg_data = data;
+			if (g_mmu_bits_preset && (addr & 0x800000))
+				UTLB[entry].Assistance.reg_data = data & 0xF;
+			else
+				UTLB[entry].Data.reg_data = data;
 			UTLB_Sync(entry);
 			return;
 		}
@@ -349,10 +373,12 @@ void FASTCALL WriteMem_P4(u32 addr, T data)
 		return;
 
 	default:
-		// Outside defined P4 sub-regions — discard silently
+		// Outside the P4 arrays: the write is dropped.
+		p4_stray_note(addr, sz, true);
 		return;
 	}
 }
+// mmu_check: end p4
 
 
 // Store Queue access (32-bit only per SH4 spec)
@@ -654,6 +680,22 @@ void FASTCALL WriteMem_area7(u32 addr, T data)
 
 
 
+// mmu_check: begin ocr
+// P30 (Flycast 156aafe95): the operand-cache RAM is two 4 KB banks; the bank is address bit 13, or bit 25 with
+// CCR.OIX. Cache RAM Banks OLD takes the low 13 address bits: 0x7C000000 and 0x7C002000 are then the same bytes.
+#define OCR_LOG_MAX 8
+static u32 s_ocr_diff;
+
+static u32 ocr_offset(u32 addr)
+{
+	const u32 old_ofs = addr & OnChipRAM_MASK;
+	const u32 new_ofs = ((addr >> (CCN_CCR.OIX ? 13 : 1)) & 0x1000) | (addr & 0xFFF);
+	if (old_ofs != new_ofs && s_ocr_diff++ < OCR_LOG_MAX)
+		printf("[ocr] 0x%08X OIX=%u: offset 0x%04X with OLD, 0x%04X with FLYCAST; Cache RAM Banks is %s (pc=%08X)\n",
+		       addr, (u32)CCN_CCR.OIX, old_ofs, new_ofs, g_ocr_banks_preset ? "FLYCAST" : "OLD", curr_pc);
+	return g_ocr_banks_preset ? new_ofs : old_ofs;
+}
+
 // On-Chip RAM (scratchpad, 8KB) Only active when CCN_CCR.ORA bit is set.
 template <u32 sz, class T>
 T FASTCALL ReadMem_area7_OCR_T(u32 addr)
@@ -661,7 +703,7 @@ T FASTCALL ReadMem_area7_OCR_T(u32 addr)
 	if (!CCN_CCR.ORA)
 		return (T)0xDE;
 
-	u32 ofs = addr & OnChipRAM_MASK;
+	u32 ofs = ocr_offset(addr);
 
 	if (sz == 1) return (T)OnChipRAM[ofs];
 	if (sz == 2) return (T)host_to_le<sz>(*(u16*)&OnChipRAM[ofs]);
@@ -676,12 +718,13 @@ void FASTCALL WriteMem_area7_OCR_T(u32 addr, T data)
 	if (!CCN_CCR.ORA)
 		return;
 
-	u32 ofs = addr & OnChipRAM_MASK;
+	u32 ofs = ocr_offset(addr);
 
 	if (sz == 1)      OnChipRAM[ofs]               = (u8)data;
 	else if (sz == 2) *(u16*)&OnChipRAM[ofs]        = (u16)host_to_le<sz>((u32)data);
 	else if (sz == 4) *(u32*)&OnChipRAM[ofs]        = host_to_le<sz>((u32)data);
 }
+// mmu_check: end ocr
 
 
 // Lifecycle: Init / Reset / Term

@@ -2,19 +2,13 @@
 
 #include "types.h"
 
-// ============================================================
-// CCN: SH4 Cache and TLB Controller
-// Emulates the on-chip MMU and cache control registers
-// of the Hitachi SH7091 (SH4) processor used in the Dreamcast.
-// ============================================================
+// CCN: the SH7091's cache and TLB controller (on-chip MMU and cache control registers).
 
 void ccn_Init();
 void ccn_Reset(bool Manual);
 void ccn_Term();
 
-// PTEH — Page Table Entry High (0xFF000000)
-//   VPN : Virtual Page Number (bits 31-10)
-//   ASID: Address Space Identifier (bits 7-0)
+// PTEH, Page Table Entry High (0xFF000000): VPN in bits 31-10, ASID in bits 7-0.
 union CCN_PTEH_type
 {
     struct {
@@ -31,10 +25,8 @@ union CCN_PTEH_type
     u32 reg_data;
 };
 
-// PTEL — Page Table Entry Low (0xFF000004)
-//   PPN: Physical Page Number (bits 28-10)
-//   PR : Protection bits, SZ: page size, C: cacheable,
-//   D  : dirty, SH: shared, WT: write-through, V: valid
+// PTEL, Page Table Entry Low (0xFF000004): PPN in bits 28-10; PR protection, SZ page size, C cacheable, D dirty,
+// SH shared, WT write-through, V valid.
 union CCN_PTEL_type
 {
 	struct
@@ -72,12 +64,8 @@ union CCN_PTEL_type
 	u32 reg_data;
 };
 
-// MMUCR — MMU Control Register (0xFF000010)
-//   AT  : Address Translation enable (0=off, 1=on)
-//   TI  : TLB Invalidate — self-clearing on write
-//   SV  : Single Virtual mode
-//   SQMD: Store Queue Mode
-//   URC/URB/LRUI: TLB replacement control
+// MMUCR, MMU Control Register (0xFF000010). The bitfield has 28 bits, so on big endian only LRUI is at its bit:
+// AT reads bit 4, TI bit 6, URC bits 19-14 (P58). MMUCR Bits OLD reads it; FIXED reads the masks below.
 union CCN_MMUCR_type
 {
 	struct
@@ -107,6 +95,18 @@ union CCN_MMUCR_type
 	u32 reg_data;
 };
 
+// The manual's MMUCR fields: AT bit 0, TI bit 2, SV bit 8, SQMD bit 9, URC bits 15-10, URB 23-18, LRUI 31-26.
+#define MMUCR_AT(v)    ((v) & 1u)
+#define MMUCR_TI(v)    (((v) >> 2) & 1u)
+#define MMUCR_SV(v)    (((v) >> 8) & 1u)
+#define MMUCR_SQMD(v)  (((v) >> 9) & 1u)
+#define MMUCR_URC(v)   (((v) >> 10) & 63u)
+#define MMUCR_URB(v)   (((v) >> 18) & 63u)
+#define MMUCR_LRUI(v)  (((v) >> 26) & 63u)
+#define MMUCR_TI_BIT   0x00000004u
+// The bits a write keeps (Flycast CCN_MMUCR_write, P78).
+#define MMUCR_WMASK    0xFCFCFF05u
+
 union CCN_PTEA_type
 {
 	struct
@@ -124,12 +124,8 @@ union CCN_PTEA_type
 	u32 reg_data;
 };
 
-// CCR — Cache Control Register (0xFF00001C)
-//   OCE/ICE : Operand/Instruction cache enable
-//   OCI/ICI : Cache Invalidate — self-clearing on write
-//   ORA     : OC used as RAM
-//   OIX/IIX : Index mode selectors
-//   WT/CB   : Write-through / Copy-back
+// CCR, Cache Control Register (0xFF00001C): OCE/ICE cache enables, OCI/ICI invalidate (self-clearing), ORA = the
+// operand cache as RAM, OIX/IIX index modes, WT/CB write-through and copy-back.
 union CCN_CCR_type
 {
 	struct
@@ -202,3 +198,9 @@ extern u32 CCN_INTEVT;
 extern CCN_PTEA_type CCN_PTEA;
 extern CCN_QACR_type CCN_QACR0;
 extern CCN_QACR_type CCN_QACR1;
+
+// MMUCR Bits (plan section 7, bundle 13): 0 = the bitfield as it compiles, 1 = the manual's bits.
+extern int g_mmu_bits_preset;
+static inline u32 mmucr_at()  { return g_mmu_bits_preset ? MMUCR_AT(CCN_MMUCR.reg_data)  : CCN_MMUCR.AT; }
+static inline u32 mmucr_urc() { return g_mmu_bits_preset ? MMUCR_URC(CCN_MMUCR.reg_data) : CCN_MMUCR.URC; }
+static inline u32 mmucr_urb() { return g_mmu_bits_preset ? MMUCR_URB(CCN_MMUCR.reg_data) : CCN_MMUCR.URB; }
