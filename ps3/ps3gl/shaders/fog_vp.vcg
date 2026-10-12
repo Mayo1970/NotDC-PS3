@@ -1,0 +1,22 @@
+// NotDC 3a: bump_vp plus the fog coordinate. The position is (x*W, y*W, W, 1), so position.z * fogp.x is
+// W / FOG_DENSITY = 1/z; texcoord0.z takes it and the RSX interpolates it with perspective, as the PVR's 1/W.
+void main(
+    float4 position : ATTR0,
+    float4 color    : ATTR3,
+    float2 tc0      : ATTR8,
+    float4 offs     : ATTR9,
+
+    uniform float4x4 mvp,
+    uniform float4   fogp,
+
+    out float4 oPosition : POSITION,
+    out float4 oColor    : COLOR0,
+    out float3 oTc0      : TEXCOORD0,
+    out float4 oOffs     : TEXCOORD1
+)
+{
+    oPosition = mul(mvp, position);
+    oColor    = color;
+    oTc0      = float3(tc0, position.z * fogp.x);
+    oOffs     = offs;
+}

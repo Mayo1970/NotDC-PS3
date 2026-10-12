@@ -59,7 +59,25 @@
 #define PS3GL_TENV_BUMP_REPLACE  7
 #define PS3GL_TENV_BUMP_MODULATE 8
 #define PS3GL_TENV_BUMP_DECAL    9
-#define PS3GL_TENV_COUNT        10
+/* DC fog (NotDC plan 3a), by ps3gl_dc_fog() mode: FOGT table fog (+ the texenv key 0-3), FOGV vertex fog,
+ * FOGB the fog texel as the base colour. The order is shaders/compile_fog.sh's. */
+#define PS3GL_TENV_FOGT_DISABLED      10
+#define PS3GL_TENV_FOGT_BUMP_REPLACE  14
+#define PS3GL_TENV_FOGT_BUMP_MODULATE 15
+#define PS3GL_TENV_FOGT_BUMP_DECAL    16
+#define PS3GL_TENV_FOGV_MODULATE      17
+#define PS3GL_TENV_FOGB_DISABLED      20
+#define PS3GL_TENV_FOGB_MODULATE      21
+#define PS3GL_TENV_FOGB_MODULATE_TA   22   /* alpha from the texture alone (DC ShadInstr 1) */
+#define PS3GL_TENV_FOGB_DECAL         23
+#define PS3GL_TENV_COUNT        24
+
+/* ps3gl_dc_fog() modes. */
+#define PS3GL_FOG_NONE      0
+#define PS3GL_FOG_TABLE     1
+#define PS3GL_FOG_VERTEX    2
+#define PS3GL_FOG_BASE      3
+#define PS3GL_FOG_BASE_TA   4
 
 /* 36-byte interleaved vertex: pos(16) + tc0(8) + tc1(8) + color(4) */
 #pragma pack(push, 1)
@@ -110,6 +128,7 @@ typedef struct {
     int              texenv;
     int              dirty;
     int              bump;     /* ps3gl_tex_bump(): the texenv's bump program */
+    int              aux;      /* ps3gl_tex_aux(): a program's own table; it does not pick MODULATE2 */
 } ps3gl_tmu_t;
 
 /* Matrix stack (column-major 4x4) */
@@ -188,6 +207,7 @@ typedef struct {
     uint32_t            vp_ucode_size;
     rsxProgramConst    *mvp_const;
     rsxProgramConst    *clip_plane_const; /* world-space clip plane uniform; NULL if not in binary */
+    rsxProgramConst    *fog_const;        /* NotDC 3a: fogp of the fog VP, else NULL */
 
     rsxFragmentProgram *fp;
     void               *fp_ucode;
@@ -307,6 +327,11 @@ typedef struct {
     rsxVertexProgram   *active_vp;      /* physical VP currently loaded on RSX; all shader slots share one VP, so this is tracked separately from active_shader (the FP key) */
     uint32_t            mvp_uploaded_gen; /* last ps3gl_get_mvp_generation() value uploaded to active_vp */
     float               clip_plane_uploaded[4]; /* last clip_plane patched into the VP; re-sent on any VP reload */
+
+    /* NotDC 3a: the fog mode of the next draws, and the fog VP's scale (1 / FOG_DENSITY) with the value last sent. */
+    int                 dc_fog;
+    float               dc_fog_scale;
+    float               dc_fog_scale_uploaded;
 
 } ps3gl_state_t;
 
@@ -442,6 +467,14 @@ void ps3gl_shader_select(int key);
 
 /* PS3-only (NotDC plan 3j): the active TMU's texenv draws with its bump program (REPLACE, MODULATE, DECAL). */
 void ps3gl_tex_bump(int on);
+
+/* PS3-only (NotDC plan 3a): the next draws take the fog program of their texenv (PS3GL_FOG_*); a texenv with no
+ * such program draws without fog. The fog texture is on TMU 1, marked with ps3gl_tex_aux(1). */
+void ps3gl_dc_fog(int mode);
+/* The fog VP's scale: texcoord0.z = position.z * scale. */
+void ps3gl_dc_fog_scale(float scale);
+/* The active TMU holds a program's own table: enabled, it binds its texture but does not pick MODULATE2. */
+void ps3gl_tex_aux(int on);
 
 /* PS3-only: texcoord1 of the next immediate vertices as raw bits; a bump program reads them as 4 bytes. */
 static inline void ps3gl_tex1_bits(uint32_t bits)

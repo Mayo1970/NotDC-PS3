@@ -138,6 +138,9 @@ void glScissor(int x, int y, int w, int h)
 	g_st.sc[0] = (uint32_t)x; g_st.sc[1] = (uint32_t)y; g_st.sc[2] = (uint32_t)w; g_st.sc[3] = (uint32_t)h;
 }
 void ps3gl_tex_bump(int on) { call(OP_TEXBUMP, (uint32_t)on); }
+// Plan 3a Fog is off in this check: the region must make none of these calls.
+enum { PS3GL_FOG_NONE, PS3GL_FOG_TABLE, PS3GL_FOG_VERTEX, PS3GL_FOG_BASE, PS3GL_FOG_BASE_TA };
+void ps3gl_dc_fog(int) { r4_die("ps3gl_dc_fog with Fog off"); }
 void ps3gl_tex1_bits(uint32_t b) { g_cur[1] ^= 0; (void)b; }
 void ps3_video_depth_float(int on) { call(OP_DEPTHFLOAT, (uint32_t)on); }
 bool ps3tex_bind(TSP tsp, TCW tcw, u32 slot, bool pt)
@@ -249,6 +252,9 @@ enum { DT_PARAM, DT_TEX, DT_GLEND, DT_SORT, DT_MODVOL, DT_COUNT };
 u64 s_dt[DT_COUNT];
 inline u64 PERF_TICKS() { return 0; }
 bool s_bump_on;
+u32 s_fog;
+void fog_scene_begin() {}
+void fog_scene_end() {}
 float s_stat_w_lo, s_stat_w_hi, s_stat_near_lo, s_stat_bg_inv_w;
 u32 s_stat_bg_zw;
 double s_stat_t0;

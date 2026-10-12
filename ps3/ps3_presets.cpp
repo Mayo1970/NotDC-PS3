@@ -88,6 +88,7 @@ int g_tile_clip_preset     = 1;   // user tile clip: 0 = off, 1 = inside, 2 = al
 int g_ta_list_regs_preset  = 1;   // 1 = TA_LIST_INIT puts TA_ITP_CURRENT and TA_NEXT_OPB back at their bases (P10, HW)
 int g_core_reset_preset    = 1;   // 1 = SOFTRESET bit 1 cancels the pending render-done interrupts (P10, HW)
 int g_tr_tri_sort_preset   = 3;   // autosorted translucent list per triangle: 1 = no depth write, 2 = the game's, 3 = opaque texels first (3k, HW at 3)
+int g_fog_preset           = 1;   // PVR fog: 1 = table fog per pixel, 2 = also vertex fog, whose scenes decode on the PPU (3a, HW at 1 and 2)
 int g_jit_fschg_preset     = 2;   // 1 = fschg skips the UpdateFPSCR() call, 2 also no sync and no block end (5.37, HW)
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -248,6 +249,7 @@ static const CfgItem s_items[] = {
 	{ "TaListRegs",    &g_ta_list_regs_preset },
 	{ "CoreReset",     &g_core_reset_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
+	{ "Fog",           &g_fog_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -428,6 +430,7 @@ static const CfgItem s_rend_items[] = {
 	{ "TaListRegs",    &g_ta_list_regs_preset },
 	{ "CoreReset",     &g_core_reset_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
+	{ "Fog",           &g_fog_preset },
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 

@@ -13,11 +13,175 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-12)
 
-**Next goal after bundle 9 (Matt 2026-10-12: "Can we add the fog as the
-next goal once I'm done with bundle 9?"): 3a, fog (section 3; reference
-`OPTIMIZATION_POTENTIAL.md` P14).** Nothing built. It is in no bundle
-(section 7, "Not bundled"). 3b (offset colour) shares the shader and the
-second colour attribute; Matt named only the fog.
+**Built 2026-10-12, HW SUCCESS on the picture (Ecco the Dolphin: run 2 at
++ VERTEX, Matt: "Everything looked right!"; run 3 at TABLE, Matt: "No
+graphical glitches."); runs 1-3 have no fault. Default TABLE in source
+since 2026-10-12 (Matt: "Let's set it to TABLE."), not packaged: the
+package of 12:33 and the other session's later ones have OFF.
+3a, fog (section 3; reference
+`OPTIMIZATION_POTENTIAL.md` P14). Matt 2026-10-12: "In the distance,
+objects often have a "pop-in". Ecco the Dolphin heavily uses fogs though.
+I suppose It's tied? Work on those, in case." Package of 12:33 on
+2026-10-12 (`build/notdc_ps3.pkg`, 1541872 bytes) = commit a7c19df + the
+fog. Row RENDERER -> "Fog": OFF (default in those packages) / TABLE /
++ VERTEX, live.**
+- **HW run 1, 2026-10-12 ~14:04-14:10: Sonic Adventure, Fog TABLE from the
+  boot, then + VERTEX from the in-game menu** (Matt: "I ran a fog test with
+  Sonic Adventure if you wanna check it."; `sa_anim1.txt`, scratchpad of
+  session d13d658e, from line 109356; the package is the other session's of
+  14:02, 1542320 bytes, which holds the fog and its ARM7 changes).
+  - It runs: `Shaders loaded: 24 modes`, 375 s, 54 windows (26 at TABLE, 28
+    at + VERTEX), `drop=0`, no fault line, clean JIT EXIT.
+  - The game: in the level 1394-2164 strips per render have FogCtrl 0
+    (97%), the HUD and the menus have FogCtrl 2. `fogv=0`, `ppu=0`: no
+    vertex fog, so + VERTEX changes nothing here.
+  - The registers in the level: FOG_COL_RAM 000000, FOG_DENSITY FA0C =
+    8000 exactly (the decode gives a round number), table `FF9F 9F4B ..
+    0000 0000`. Entries 0 and 1 fit a linear fog from W 6750 to W 8000
+    (my fit from two entries; the log holds no other). The farthest vertex
+    of each window is at W 2300-4950. So the fog value is 0 on all the
+    geometry: no change of the picture is expected, and this run cannot
+    show if the fog looks right. It also says that the pop-in in this
+    level is not the fog's: the objects appear at W under 5000.
+  - Cost, level windows (4000+ vertices): SPEED mean 100.0%, lowest 98.3%.
+    Render thread busy 16.5% with 897 draws per render; the 7 boots before
+    it in the same log (older packages, no fog, 874-920 draws) have
+    14.2-15.6%. State + draw cost per 1000 draws: 6.8 against 5.6-6.2. So
+    about +1 to +2 points; the settings of the boots differ, not a
+    same-load compare. 3 table uploads in the whole run.
+  - Open after run 1: a game whose fog reaches its geometry (run 2).
+- **HW run 2, 2026-10-12 ~14:22-14:25: Ecco the Dolphin, Fog + VERTEX from
+  the boot** (Matt: "I did an Ecco the Dolphin run, in the meantime.";
+  same log file, lines 125542-129569; the package of 14:02). 133 s, no
+  fault line, `drop=0`, clean JIT EXIT. No Fog OFF part and no word from
+  Matt on the picture, so the log shows what the fog must do, not how it
+  looks.
+  - The level (from t=106 s, about 27 s): the opaque strips (670-1973 per
+    render, all but 0-2) and 457-775 of the 478-1318 translucent strips
+    have FogCtrl 0.
+    FOG_COL_RAM 3CA09E, FOG_DENSITY FF07 = 255, table `FFFF FFFF .. 0000
+    0000`. The fog is full from z = 1.125 down, that is from W 227 on; the
+    opaque geometry goes to W 850-950, the translucent to W 1876. So
+    all that is farther than W 227 must be the plain fog colour: objects
+    must come out of the haze, not pop in. Here the fog reaches the
+    geometry; Matt's "heavily uses fogs" is right.
+  - The 3D scene before it (t=73-86 s): FOG_COL_RAM 066E64, the same
+    density and table ends; geometry at W 11-180, so partly fogged.
+  - Vertex fog: only the logo and menu screens have it (1-10 strips per
+    render with FogCtrl 1 and the Offset bit, W 4.4-5.1; FOG_COL_VERT
+    7F7F7F, then 000000). Those renders went to the PPU replay (`ppu=` 64,
+    251, 141, 1, 205 per window), so the vertex-fog programs ran too. The
+    level has none (`fogv=0`, `ppu=0`): TABLE is enough for it.
+  - Cost: SPEED 99.7-100.5% in every 3D window. Render thread busy 19-31%
+    at 15-20K vertices and 1080-2120 draws per render (no OFF number for
+    this game). 4 table uploads in the run.
+  - Seen beside the fog, not looked into: the level draws 18-27 frames
+    per second at SPEED 100% (RPS), with JIT IDLE RULE X30.
+  - Matt, asked what the far water, the logos and the menus looked
+    like: "Everything looked right!" So table fog (the level) and vertex
+    fog (the logo and menu screens) are right on hardware in this game.
+  - Open after run 2: the default level (Matt), and one Fog OFF minute
+    in the same scene for the cost (run 3 has 37 renders of it).
+- **HW run 3, 2026-10-12 ~15:19-15:23: Ecco the Dolphin, Fog TABLE from
+  the boot; in the level Fog OFF for about 2 s of play, then TABLE again**
+  (Matt: "Gonna test Ecco the Dolphin with TABLE now. So we can check it
+  out", then "Done. No graphical glitches."; same log file, lines
+  187856-193301; the package of 14:02). 237 s, no fault line, `drop=0`,
+  clean JIT EXIT, SPEED 99.0-101.1% in the 3D scenes.
+  - The same scenes and numbers as run 2: `fog=` 1127-2733 opaque and
+    translucent strips with table fog, FOG_COL_RAM 066E64 then 3CA09E.
+  - `ppu=0` in all 27 windows: at TABLE no scene goes to the PPU replay.
+    The logo and menu screens still have their 1-10 vertex-fog strips
+    (`fogv=`); they draw with no vertex fog, and Matt saw no glitch.
+  - + VERTEX against TABLE, the same scenes of runs 2 and 3: the state +
+    draw cost per 1000 draws is the same (2.22 / 2.22, 2.24 / 2.18, 2.13 /
+    2.14, 2.05 / 2.06 ms). The level has no vertex fog, so + VERTEX costs
+    nothing there.
+  - Fog OFF against TABLE: the OFF part is one window with 37 renders
+    (the menu was open for most of it): 2.02 ms per 1000 draws, with the
+    log's rounding +-0.16. The 17 fog windows with 800+ draws have
+    2.05-2.35 (mean 2.17). So the fog's cost is under what this sample
+    can show: at most about 0.15 ms per 1000 draws, under 1 point of the
+    render thread at 1300 draws and 25 renders per second.
+  - Smoothness (Matt: "Did the game run smoothly or"), the 49 s of the
+    level: SPEED 99.0-100.5%, sound with no silent, dropped or late
+    block, no dropped render, render jobs 4-18 ms. But the game draws
+    17.8-33.9 frames per second, mean 25.4: its frames are a mix of 2 and
+    3 vblanks (`[vid] held`, for example `2=75 3=45`, `2=37 3=73`), so
+    the motion cannot be even. Not the fog: 22.7 with Fog OFF, 22-24
+    beside it. Not the PS3: `[pace] slept` 36-61 of 60 calls, render
+    thread 5-26%. The game needs more emulated SH4 time than 2 vblanks
+    give. Not known: what a real Dreamcast does in this scene. A row to
+    try, not tried: JIT IDLE RULE X3 BACKWARD (this run has X30; `[jit8]
+    idle rule 0 billed=5500`), as for Sonic Adventure and PSO.
+  - Close: `g_fog_preset = 1` in `ps3/ps3_presets.cpp` (Matt: "Let's set
+    it to TABLE."). An install that has the `Fog` key keeps its value.
+    No build by this session after the change.
+- Not known yet: if the pop-in Matt sees is the missing fog. No saved log
+  holds a fog count (no code read `FogCtrl` before). From this package the
+  third `[rendz]` line of each list shows it, with the row OFF too:
+  `fog=a/b/c/d fogv=n` = strips per FogCtrl (0 table, 1 vertex, 2 none,
+  3 table as the base colour) and the strips the vertex fog acts on.
+- What the row draws (Flycast `core/rend/dx9/d3d_shaders.cpp` pp_FogCtrl;
+  Reicast `glesrend.cpp` is the same):
+  - TABLE. FogCtrl 0: colour = lerp(colour, FOG_COL_RAM, table(FOG_DENSITY
+    / W)), per pixel, after the texture. FogCtrl 3: (FOG_COL_RAM, table
+    value) is the base colour before the texture. Bump polygons take the
+    FogCtrl 0 fog too (Rayman 2's overlay).
+  - + VERTEX. FogCtrl 1 with a texture, the Offset bit and no bump map:
+    colour = lerp(colour, FOG_COL_VERT, offset alpha). Only the PPU replay
+    keeps offset colours (3j's design A), so a scene with such a polygon
+    decodes and builds on the PPU, as Rayman 2's bump scenes do
+    (`[fog] ppu=`). That is why it is a level of its own.
+  - Not built: the offset colour add (3b), the colour clamp
+    (FOG_CLAMP_MIN/MAX), FogCtrl 3 on a bump polygon (it draws as before).
+- How:
+  - `RenderRegs` takes FOG_COL_RAM, FOG_COL_VERT, FOG_DENSITY and the 128
+    table words at STARTRENDER, only with the row on. They are native u32.
+  - One 512 x 4 linear texture on TMU 1 (`fog_upload()` in
+    `ps3/ps3_rend.cpp`; written again only when a register changes). Rows
+    0-1: FOG_COL_RAM and the table's value at z = 2^(8 (k + 0.5) / 512).
+    Rows 2-3: FOG_COL_VERT. So the fragment program reads the table at
+    s = saturate(-log2(W / density) / 8): one LG2, no floor, no pow, and
+    no fragment constant to patch. The saturate is the PVR's z clamp.
+  - `fog_vp.vcg` is `bump_vp` + texcoord0.z = position.z x fogp.x.
+    position.z is W; fogp.x = 1 / FOG_DENSITY, a VP constant per scene.
+    The RSX interpolates it with perspective: that is the PVR's 1/W per
+    pixel. The SPU's vertices need no change.
+  - 14 fragment programs from one source (`fog_fp.fcg`, `compile_fog.sh`,
+    `ps3gl_shader_fog.h`; `ps3gl_shader_data.h` is not touched): table fog
+    x (no texture, modulate, replace, decal, 3 bump), vertex fog x 3, base
+    colour x 4. `ps3gl_dc_fog(mode)` picks the key (`ps3gl_shaders.c`
+    `fog_key()`); `apply_param_body()` sets the mode per polygon.
+  - New on hardware: LG2, a second texture unit, texcoord0 with 3
+    components. The rest is what the bump programs use. The binaries were
+    decoded (opcodes, units, masks, the `fogp` constant at c[4]).
+- PC checks (WSL): new `misc/fog_check/run.sh` PASS: the tree's texture
+  and scale code, read as the two programs read them, against Flycast's
+  `fog_mode2` (3000 tables, 1.2M lookups; worst difference 1.15 of 255 on
+  fog curves; a jump in the table blurs over one texel = 1/64 octave of
+  z). `misc/fog_check/mutate.py` 14 of 14. `bump_check`, `spevb_check`,
+  `rend4_check` (rows off = the old GL calls), `ta4_check` PASS with the
+  row off. `misc/bump_check/mutate.py` 31 of 31 again. The suites of
+  `rend4_check`, `ta4_check` and `ramsq_check` were not run again: each
+  of their 109 patterns on `ps3_rend.cpp` is still there once.
+- Build: no warning.
+- HW steps (package of 12:33; the install keeps the settings; UDP listener
+  on port 18194, only when Matt says so):
+  1. Ecco the Dolphin, Fog OFF: play to a scene with the pop-in, stay
+     10 s. The log gives `fog=` for the scene.
+  2. Same scene: SELECT -> RENDERER -> Fog TABLE. Look at the distance.
+  3. Same scene: Fog + VERTEX. Look again.
+  4. One game Matt knows well (Crazy Taxi or Sonic Adventure) with
+     Fog + VERTEX for 1-2 minutes, and Rayman 2's first level (bump maps
+     with fog): nothing must change for the worse.
+  From the log: `fog=` and `fogv=` (which level the game needs), `[fog]`
+  (registers, `uploads=`, `ppu=`), `[rend] busy=` and SPEED against the
+  Fog OFF minute.
+- Risks for the first run, none seen on a PC: the RSX with the table on
+  unit 1; one VP switch per change between a fog and a no-fog polygon
+  (cost not measured); a table write while queued draws still read it
+  (one frame of the new fog, early).
 
 **Bundle 9 CLOSED 2026-10-12, HW SUCCESS. F1 FIXED (Matt: "THE SOUND IS
 FIXED"): the ChuChu Rocket slow effects and echo end with AUDIO -> "ARM7 STR
@@ -50,8 +214,9 @@ no P49 form in the four games. The census and the op tests stay in.**
 - **HW run 4, 2026-10-12 ~11:24-11:31: Sonic Adventure, ARM7 STR Align ON,
   JIT IDLE RULE X3 BACKWARD** (same log, lines 22288-44177). Matt: "Yes,
   Sonic Adventure sounded correct. I noticed that some animations looked
-  off, though." (the animations: open issue, point 12 of the list under
-  Bundle 8 in section 7). Boot lines as before (0 failed). Census: A 0,
+  off, though." (the animations: point 12 of the list under Bundle 8 in
+  section 7, CLOSED the same day by Matt: no fault, the game looks
+  clunky as it is). Boot lines as before (0 failed). Census: A 0,
   B 0, **unaligned str 0** over 7237 instructions: this driver makes no
   unaligned word store, so the row cannot change this game. SPEED: 365
   windows, mean 99.18%; the windows under 97% are at boot (10 in the first
@@ -5020,12 +5185,12 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
-| 3a fog, 3b offset colour, 3j bump maps | 3a, 3b OPEN: need a PVR Cg shader in `ps3gl`; reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
+| 3a fog, 3b offset colour, 3j bump maps | 3a built 2026-10-12 as the "Fog" row, HW SUCCESS 2026-10-12 (Ecco the Dolphin), default TABLE in source since 2026-10-12 (Matt), not packaged (section 0); 3b OPEN: needs the offset colour in every vertex; reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
 | 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart: P47, P21, P23 (TOC fields), P61, P62 built 2026-10-10 in bundle 2 (section 0), HW SUCCESS 2026-10-10, default ON in source |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
-work is section 5, SH4-side speed. Update 2026-10-12: 3a (fog) is the next
-goal after bundle 9 (Matt, section 0).
+work is section 5, SH4-side speed. Update 2026-10-12: 3a (fog) is built
+(Matt asked for it after bundle 9; section 0), HW SUCCESS 2026-10-12.
 
 All changes are uncommitted in the working tree. Matt commits.
 
@@ -5370,6 +5535,14 @@ Status 2026-09-23 (all big-endian checked):
   `[x]` HW SUCCESS 2026-10-11 at + OPAQUE DEPTH (Sonic Adventure models,
   Rayman 2 water and elements), default + OPAQUE DEPTH in source (Matt),
   not packaged (section 0).
+
+- 3a, built 2026-10-12 (Matt: "Work on those, in case") as the "Fog" row
+  (OFF / TABLE / + VERTEX; built with default OFF): table fog per pixel on the PPU
+  and SPU paths, vertex fog on the PPU path. Not as the table above says:
+  the table is a 512 x 4 texture in log2(z), so the program needs no
+  floor and no pow. HW SUCCESS 2026-10-12 (Ecco the Dolphin, Matt:
+  "Everything looked right!"); default TABLE in source since 2026-10-12
+  (Matt: "Let's set it to TABLE."), not packaged (section 0).
 
 Already covered, drop from the list: "do not clip negative-depth vertices"
 (`4b0d377e6`). Our `vertex_inf()` never treats a negative 1/W as inf.
@@ -10247,7 +10420,25 @@ Main gains:
       Also open with it: the defaults of JIT IDLE HASH and JIT SQ COPY
       (5.46), and a Crazy Taxi and a Looney Tunes run with JIT SQ COPY
       ON for no change.
-  12. **Open issue, Matt 2026-10-12: in Sonic Adventure "some animations
+  12. **CLOSED 2026-10-12 by Matt, no fault: "Turns out, I was wrong all
+      along. The latest build was acting as intended on x3 reverse.
+      Everything was working fine. Basically Sonic Adventure felt so
+      clunky to the point where I thought I hit a regression".** So there
+      is no regression in the victory animation. Every "right" and "wrong"
+      below was a judgement by eye with no reference, so the conclusions
+      drawn from them are withdrawn: bundle 5, SPE ARM7, JIT BCACHE, the
+      idle rule and the `[ni]` probe have no fault shown by this search,
+      and "SPE ARM7 OFF" is not a work-around for anything. What stays
+      true: the measured numbers (SH4 reads and stores of ARAM, commands
+      in flight, RPS 30 and the even display cadence in every run). The
+      probe row AUDIO "SPE ARM7 Read Sync" is removed from the source
+      (Matt 2026-10-12: "Yes, remove it."): `ps3_arm_spe.cpp`/`.h` and
+      `nullAICA_plug.cpp` are equal to HEAD `a7c19df` again, and
+      `ps3_presets.cpp`/`.h` and `ps3_menu.cpp` hold only the fog
+      session's lines. No build was made: the package of 14:14 still has
+      the row (OFF); the next build drops it, and the key `SpeArm7RdSync`
+      in `NotDC.cfg` is then not read. The text below is the history.
+      **Issue as opened, Matt 2026-10-12: in Sonic Adventure "some animations
       looked off"** ("May worth placing that in the issues."). Seen in HW
       run 4 of bundle 9 (section 0; `b9_run1.txt` lines 22288-44177,
       scratchpad of session d13d658e). Not known: which animations, in
@@ -10290,6 +10481,385 @@ Main gains:
       9 (not committed) acts on the ARM7 only. Rows first, no build: the
       TIMING rows at their old values and JIT IDLE RULE X30; then
       packages of older commits.
+      **Matt 2026-10-12, his own test: "I can confirm that x3 or x30 is
+      not tied to the issue."** The JIT IDLE RULE level is ruled out (the
+      fault shows at both). Ruled out so far: JIT IDLE HASH, JIT SQ COPY,
+      JIT PR MOVES, the idle rule level, ARM7 STR Align. Next rows to
+      try, none tested: the TIMING rows of bundle 7 at their old values
+      (SPG Field Bit, HBlank IRQ, VBLANK INT Reset, TMU Fine TCNT), then
+      Dynarec OFF; then packages of older commits.
+      **Matt 2026-10-12 ~12:06, two screenshots of the victory screen and:
+      "With some of these on It's still the same."** So some TIMING rows
+      (which ones: not said) change nothing. The screenshots are
+      `sa_victory_1_wrong.png` and `sa_victory_2_score.png` in the
+      scratchpad of session d13d658e (Emerald Coast clear, TIME 02:24:94,
+      242 rings). Picture 1, before the score panels: Sonic's eyes are
+      almost blank white (one small green spot where an iris should be)
+      and the head looks deformed. Picture 2, with the score panels:
+      irises and head look normal. The body, the shoes, the background
+      and the HUD look right in both. Two stills do not say which part is
+      wrong: the head's pose, the face shape (the game morphs it), or the
+      draw order of the eye parts. So both sides stay open: what the SH4
+      computes (JIT rows) and how it is drawn (RENDERER rows of bundle 4).
+      **Logged test, 2026-10-12 ~12:10-12:14 (`sa_anim1.txt`, scratchpad
+      of session d13d658e): one boot with JIT BCACHE OFF (`bcache=0`) and
+      TMU Fine TCNT ON; Matt: "Nothing."** Picture 3
+      (`sa_victory_3_bcache_off.png`, TIME 02:12:24) shows the same pose
+      and the same blank eyes as picture 1: the wrong frame comes back the
+      same way each time. Ruled out more: JIT BCACHE, TMU Fine TCNT (OFF in
+      the runs before, ON here). TR Triangle Sort: Matt: "It's not the
+      Triangle sort, most likely" (in the log it was 3 at boot and set to
+      2, with Tile Clip 2, in the menu late in the run; OFF not logged).
+      Unchanged in every logged run: SPG Field Bit FRAME, HBlank IRQ
+      MODES, VBLANK INT Reset FLYCAST, JIT FSCHG 2, the bundle 3 texture
+      rows. No fault line. Rows guessed so far found nothing: a bisect
+      with packages of older commits is the sure way.
+      **Bisect packages built 2026-10-12 12:20 (Matt: "Yes, give me the 3
+      separate packages.")**, each from a clean `git archive` export in
+      the scratchpad of session d13d658e (`bisect/src_<commit>`; the
+      working tree was not touched): `build/bisect/A_10-08_93fca79.pkg`
+      (1486960 bytes), `B_10-10_ebc8897.pkg` (1495152), `C_10-11_4f6b920.pkg`
+      (1528432). All: 0 `r2off`, `.got` under 0x10000. A and B read the
+      old settings file `nullDC.cfg`, C reads `NotDC.cfg` (Matt's rows of
+      today). Order: C, then B, then A; the first good one bounds the
+      change. Known bad: the package of 09:34 (HEAD `1533cc4` + bundle 9).
+      **Matt 2026-10-12: "It's most likely a FPU issue. Maybe FSCA?"**
+      Code read, no test: FSCA itself did not change in the window. Its
+      JIT case (`ps3/ps3_driver.cpp`, `shop_fsca`) is from 09-21
+      (`0fc3549`), the table load (`GenerateSinCos`) from 09-21 with one
+      line of 10-06, the interpreter op and the canonical op are older.
+      The FPU change that is in the window and ON in every logged run is
+      **JIT FSCHG level 2, "+ NO BLOCK END" (5.37, 10-10; `fschg=2`)**:
+      `fschg` no longer ends the block and the decoder follows SZ itself
+      (`dec` `i1111_0011_1111_1101`). Read only: no fault seen in it
+      (`UpdateFPSCR` does not mind the stale SZ in `old_fpscr`). It is
+      the first row to test: JIT SPEED -> "JIT FSCHG" -> ON, set before
+      boot, no install. In the bisect, A has no level 2; B and C have it.
+      Other changes since 10-08 that are ON in his runs and not ruled
+      out: JIT SQ MISS level 3 (5.43), RAM SQ Direct (5.44), SYS GATE
+      BATCH (5.42), the GD-ROM rows of bundle 2 (wrong data would also
+      give the same wrong frame each time), bundles 3 and 4. The `[ni]`
+      boot probe restores the host FPSCR (read).
+      **Logged test, 2026-10-12 ~12:28-12:32 (`sa_anim1.txt` from line
+      31060): JIT FSCHG ON (`fschg=1`, no "+ NO BLOCK END"), JIT BCACHE
+      OFF, TMU Fine TCNT ON, package of 09:34; Matt: "Nope, still
+      broken."** Pictures `sa_victory_4_fschg1.png` (the same blank eyes
+      in the nose-rub pose, score panels up) and
+      `sa_victory_5_fschg1_before.png` (on the platform before the pose:
+      the face is right). JIT FSCHG level 2 is ruled out. Ruled out so
+      far: JIT IDLE RULE level, JIT IDLE HASH, JIT SQ COPY, JIT PR MOVES,
+      JIT BCACHE, TMU Fine TCNT, JIT FSCHG level 2, ARM7 STR Align. Next:
+      the bisect packages (not installed yet).
+      **Bisect run 1, 2026-10-12 ~12:34-12:38 (`sa_anim1.txt` from line
+      45555): package A (`93fca79`, 10-08 21:23); Matt: "A looked
+      right".** The log confirms the old build (no `Arm7StrAlign` key,
+      three `[jitcfg]` lines; `sqmiss=0 bcache=0 sysgate=2 idle=1`, old
+      `nullDC.cfg`). So the change is after `93fca79`: in `ebc8897`
+      (10-10), `b76f710`, `02444ac`, `ad7c1ab`, `4f6b920` (10-11),
+      `a306a38`, `880e269`, `1533cc4` (10-12) or bundle 9. Next: package B
+      (`ebc8897`); it reads the same settings file as A, so only the code
+      differs.
+      **Bisect run 2, ~12:40-12:44 (from line 52254): package B
+      (`ebc8897`, 10-10 21:04); Matt: "B is right".** The log confirms B
+      (`[gdcfg]` with all GD-ROM rows ON, `gbatch=1 ramsq=1 fschg=1
+      sqmiss=0`). So bundle 2 (GD-ROM), 5.42 SYS GATE BATCH and 5.44 RAM
+      SQ Direct are not the cause. The change is in `b76f710` (10-11
+      02:13, 69 files: bundles 3 and 4), `02444ac` (bundle 5), `ad7c1ab`
+      (bundle 6), `4f6b920` (bundle 7), `a306a38`, `880e269`, `1533cc4`
+      (JIT IDLE ...) or bundle 9. Next: package C (`4f6b920`). The two
+      middle points `02444ac` and `880e269` are being built for the step
+      after it.
+      **Bisect run 3, ~12:48-12:52 (from line 58805): package C
+      (`4f6b920`, 10-11 22:17), with today's settings file; Matt: "C is
+      right".** In the log: `TmuFineTcnt=1 SpgFieldBit=1 HblankIrq=1
+      VblankIntReset=1`, `sqmiss=3 fschg=2 gbatch=1 ramsq=1`, no
+      `idlerule` line (C is older than bundle 8's JIT rows). So bundles 3
+      to 7 are not the cause, with the TIMING rows, JIT SQ MISS level 3
+      and JIT FSCHG level 2 all ON. The change is in `a306a38` (10-11
+      23:54, "JIT IDLE": bundle 8's JIT items, 21 files), `880e269`
+      (10-12 01:16), `1533cc4` (10-12 02:56) or bundle 9. Packages D
+      (`02444ac`) and E (`880e269`) are in `build/bisect/`; next is E.
+      `a306a38` and `1533cc4` are built too: `F_10-11_2354_a306a38.pkg`
+      and `G_10-12_0256_1533cc4.pkg` (G is the same code as the package
+      of 02:30).
+      **Matt 2026-10-12: "We took some JIT codes 'as correctness' from
+      Reicast ... That may be the cause?"** Read of the whole source diff
+      from C to HEAD (15 files, 410 lines), no test. What it holds: JIT
+      IDLE RULE (Reicast's x3 rule; level 0 is the old code), JIT IDLE
+      HASH (Reicast's way, a list of wait loops), JIT PR MOVES (Flycast),
+      JIT RM 2/3, the JIT MAC fix, the JIT BCACHE rework, JIT SQ COPY,
+      and the `[ni]` boot probe of 5.40 (`ps3_ni_probe()`, called once in
+      `ngen_mainloop`). The Sonic Adventure logs of today: `[jit8]
+      prmoves=0 mac=0 rm23=0`, idle hash `listed=0` (it acted on no
+      block), idle rule 7343-8841 blocks billed at X3. So of the code
+      taken from Reicast only the idle rule acts in this game, and Matt
+      found its level not tied to the fault (not logged). The `[ni]` probe
+      is the one part that no row turns off: it sets the host FPSCR
+      (`mtfsfi 7,0`, `mtfsfi 7,4`) and puts the saved value back (`mtfsf
+      0xFF`); read: the restore is complete. Not proven either way.
+      **Bisect run 4, ~13:08-13:14 (from line 71009): Matt installed
+      package D (`02444ac`, 10-11 18:51), not E: "This is the run with the
+      fault!", "Bundle D broke something".** The log confirms D (texture
+      and renderer rows, no TIMING rows, no `finetcnt`; old `nullDC.cfg`:
+      `sqmiss=0 fschg=1`). So the results do NOT follow the commit order:
+      A right, B right, **D wrong**, **C right** (C is newer than D),
+      today's build wrong. What follows from it:
+      - The fault comes in with `b76f710` (bundles 3 and 4, 10-11 02:13)
+        or `02444ac` (bundle 5): B and D read the same settings file, so
+        only the code and the rows that B does not have differ.
+      - C has that code too, with the same texture and renderer row
+        values as D in the log, and is right. C adds bundles 6 and 7; in
+        its run the TIMING rows were ON (`SpgFieldBit=1 HblankIrq=1
+        VblankIntReset=1 TmuFineTcnt=1`) and `sqmiss=3 fschg=2`. Something
+        of that hides the fault in C, or the C result does not repeat.
+      - **Correction: the sentence above that bundles 3 to 7 "are not the
+        cause" is withdrawn.** The rows ruled out by Matt's tests on
+        today's build stay ruled out only for today's build.
+      - `sin_table` is at the same address in B, D, C, F, E and G
+        (0x109E25D4): its address is not the difference.
+      - `build/notdc_ps3.pkg` is no longer the package of 09:34: the fog
+        session rebuilt it at 12:33 (1541872 bytes).
+      Next: packages of `b76f710` (H) and `ad7c1ab` (I) are being built:
+      H splits bundles 3-4 from bundle 5, I shows if bundle 6 or bundle 7
+      hides the fault. And one repeat of C.
+      **Matt 2026-10-12 ~13:20: "It's the animation that is broken, not
+      the eyes."** Correction of this issue's text: the blank eyes in the
+      pictures are not the fault, and my guess about the texture path is
+      withdrawn. The fault is the motion: jerky between poses, and wrong.
+      From the logs (`[vid]` lines of `sa_anim1.txt`): in D's victory
+      screen the display cadence is even (`held` 0/150/0/0: each frame
+      stays 2 vblanks), SPEED 99.6-100.5%, 29.5-30.5 frames per second.
+      So the frames come out on time and the game itself computes the
+      motion wrongly: SH4 side (maths, or what the game reads of time and
+      interrupts), not frame pacing and not the draw.
+      Packages built 13:20, in `build/bisect/`:
+      `H_10-11_0213_b76f710.pkg` (bundles 3 and 4 only) and
+      `I_10-11_2027_ad7c1ab.pkg` (D + bundle 6). Both read `nullDC.cfg`,
+      as A, B and D: inside that group only the code differs.
+      **Bisect run 5, ~13:33-13:40 (from line 78271): package H
+      (`b76f710`, bundles 3 and 4); Matt: "H: Right".** H right and D
+      wrong, same settings file: **the fault comes in with commit
+      `02444ac` (10-11 18:51, "Crazy Taxi sound fix" = bundle 5, AICA RAM
+      coherency)**. Its source changes are all on the sound side (22
+      files: caique model, nullAICA, `ps3_aica_spe.cpp`, `ps3_arm_spe.cpp`,
+      the two sound SPU programs, `arm_mem.cpp`, 3 lines in
+      `dc/aica/aica_if.cpp`). Bundles 3 and 4 are clear. Two bundle 5 rows
+      are ON in D (and in C and today): SPE AICA Sync 3 (+ SAMPLE SYNC)
+      and DSP Ring RAM. In the logs both act in this game: it streams its
+      music by G2 DMA, about 20 writes per second hit a marked page, each
+      makes a sync, and the SH4 thread waits 0.3-1.6 ms per sync (1-5% of
+      wall). The sync counts and waits of C (right) and D (wrong) are of
+      the same size, so the logs do not show why C is right. How a sound
+      change reaches the motion is not known (a guess, not tested: the
+      game times this motion from the sound side). Next: on a wrong build
+      (D), SPE AICA Sync OFF, then DSP Ring RAM OFF, one per boot.
+      **Row test 1, ~13:41-13:47 (from line 84927): package D, SPE AICA
+      Sync OFF, DSP Ring RAM ON; Matt: "Wrong".** The log confirms the
+      row (`sync=0`, 0 syncs). SPE AICA Sync is not the trigger, so the
+      Crazy Taxi fix is not in question. Seen in the same lines: `ring=1
+      ... map pages 256 ... spu ring lines in 0-512 out ~62300` per
+      window: with DSP Ring RAM ON the sound SPU writes its DSP ring, a
+      64 KB area, back to wave RAM about 12000 lines per second in this
+      game. Also in this run: the SH4 reads the play position about 250
+      times per second (`ca reads`), 40 G2 DMA starts per second, no
+      AICA interrupt to the SH4. Next: DSP Ring RAM OFF (SPE AICA Sync
+      stays OFF, so both rows are off).
+      **Row test 2, ~13:48-13:54 (from line 92076): package D, SPE AICA
+      Sync OFF and DSP Ring RAM OFF; Matt: "Wrong".** No `[aram-hz]`
+      line in that run (nothing of bundle 5 acted on the PPU side), no
+      fault line. So neither row is the trigger: the fault comes with
+      bundle 5 code that no row turns off. Code read of `02444ac`, SH4
+      side (`aica_if.cpp`, `nullAICA_plug.cpp`, `aica_mem.cpp`,
+      `ps3_arm_spe.cpp`, `aica_ctl.h`, the caique model's new functions,
+      all `const`): with the rows off it changes nothing the game can
+      read. What is left is the two SPU programs (`spe_arm7`, `spe_aica`:
+      larger, other timing). **Lead, from the logs, not tested:** the SH4
+      makes no AICA register read in this game (`sh4 reads 0`); the play
+      position is read about 1000 times per second by the ARM7 driver
+      (`mon`, at the FIQ rate), so the game gets its sound time from the
+      driver's data in wave RAM. With SPE ARM7 the driver runs on an SPU
+      and its stores reach the SH4's view of wave RAM with a lag that
+      depends on wall time (up to `LAG_MAX` 256 commands, `max` 112-203
+      in the logs), not on emulated time. A build whose SPU timing differs
+      can then show uneven sound time to the game: this would fit a fault
+      that comes and goes with builds (D wrong, C right). Test: package
+      D with SPE ARM7 OFF (the ARM7 then runs on the PPU, in step with
+      the SH4).
+      **Row test 3, ~13:55-13:58 (from line 99059): package D, SPE ARM7
+      OFF (`SpeArm7=0`, the ARM7 on the PPU JIT), both bundle 5 rows OFF;
+      Matt: "This run it went right."** SPEED 99.80% over 198 windows,
+      none under 97% after the boot; `arm:5.3% aica:2.8%` of the SH4
+      thread; no fault line. **So the fault needs the ARM7 on its SPU:
+      SPE ARM7 ON is part of the cause, and the lead above holds so far
+      (the lag between the ARM7 SPU's stores and what the SH4 reads in
+      wave RAM). The lag itself is not measured yet.** State of the
+      search: A, B, H right; D wrong with SPE ARM7 ON (sync and ring rows
+      ON or OFF), right with SPE ARM7 OFF; C right, today's build wrong
+      (both with SPE ARM7 ON). Open: a measure of the lag at SH4 reads of
+      wave RAM, and a fix that keeps SPE ARM7 (candidate, not built: an
+      SH4 read of wave RAM waits for the ARM7 SPU's tail, as a register
+      read does; own row, default OFF). Work-around today: SPE ARM7 OFF.
+      **Built 2026-10-12 14:02 (Matt: "Yes, build the fix with the
+      current build."), no HW run yet: row AUDIO -> "SPE ARM7 Read Sync"
+      (`SpeArm7RdSync`), default OFF, live.** `libAICA_ReadMem_aica_ram`
+      calls `arm_spe_aram_read()` (`ps3/ps3_arm_spe.cpp`) when SPE ARM7
+      runs: it counts the read and the commands in flight (`s_head` minus
+      the echo's tail), and with the row ON it waits for the tail
+      (`wait_tail`, the same wait as a register read). The echo's tail
+      moves only after the SPU's ARAM puts, so the SH4 then reads the
+      driver's data as of the last MediumUpdate, as with the ARM7 on the
+      PPU. New log line every ~5 s while the SH4 reads ARAM: `[arm7spe]
+      sh4 ARAM reads <n>/s, <n>/s with commands in flight (1-4: .., 5-16:
+      .., 17-64: .., 65+: .., max ..) | read sync <row>: waits <n>/s,
+      <t> ms/s`; `[sndcfg]` has `SpeArm7RdSync=`. Package
+      `build/notdc_ps3.pkg`, 1542320 bytes, from HEAD `a7c19df` (bundle 9,
+      committed by Matt at 11:53) plus the fog session's work in the tree
+      (row "Fog", default OFF) plus this row; 0 `r2off`, `.got` 0xD880; a
+      copy is `notdc_rdsync_1402.pkg` in the scratchpad of session
+      d13d658e. No PC check runs this PPU path. HW test: Sonic Adventure,
+      SPE ARM7 ON, the victory screen once with the row ON (fix) and once
+      with it OFF (control: does this build show the fault, and how many
+      commands are in flight at the reads).
+      **HW run, ~14:05-14:10 (`sa_anim1.txt` from line 109742): the
+      package of 14:02, SPE ARM7 ON, the row set ON in the menu before
+      the stage (`[sndcfg] menu ... SpeArm7RdSync=1`), Fog TABLE then +
+      VERTEX (Matt tests the fog in the same run); Matt: "Still wrong."**
+      The waits ran (`read sync 1: waits 35-50/s, 17-37 ms/s`). So a
+      wait at the SH4's reads alone does not fix it. The measure, row OFF
+      and ON: the SH4 reads ARAM 65-125 times per second, and at about
+      half of the reads commands are in flight, most often 65 or more
+      (`65+: 150-300` per window, `max` 168-256): the ARM7 SPU runs 2-9 ms
+      of guest time behind the SH4 at those moments. The display cadence
+      of that victory screen is even again (`held 0/150/0/0`, 0 skipped).
+      **Next try, built 14:14 (package 1542512 bytes; copy
+      `notdc_rdsync2.pkg`): the same row has a third level, "+ WRITES"
+      (`SpeArm7RdSync=2`)**: an SH4 store to ARAM also waits for the tail
+      (`arm_spe_aram_write()`, first in `libAICA_WriteMem_aica_ram`).
+      Reason: the ARM7 SPU fetches wave RAM lines from live memory, so
+      while it runs behind it can meet an SH4 store before its own time
+      reaches it (a request seen early, or one request missed when two
+      follow each other); with the ARM7 on the PPU this cannot happen.
+      With both waits the ARAM traffic between the two CPUs has the order
+      it has with SPE ARM7 OFF. The log line now has a `stores` twin. 0
+      `r2off`, `.got` 0xD890. Not HW tested. If it fails too: stop the
+      guesses, and trace what the SH4 reads from ARAM in a right and in a
+      wrong run.
+      **HW run, ~14:20-14:26 (`sa_anim1.txt` from line 118829): the
+      package of 14:14, SPE ARM7 ON, the row at "+ WRITES" at boot
+      (`SpeArm7RdSync=2`), `Fog=2`; Matt: "Still wrong".** Both waits
+      ran: `read sync 2: waits 32-42/s, 18-29 ms/s` for 68-80 reads per
+      second (32-42 with commands in flight, `65+` 155-196 per window,
+      `max` 217-245). The stores: ~22,300 per second (all from the G2
+      DMA), only 1-3 per second with a command in flight (`max` 1, once
+      100). So an SH4 store almost never came before the ARM7 SPU's tail:
+      the "+ WRITES" level had nothing to wait for, and the "request seen
+      early" idea is dead. **Both ARAM order ideas are dead (the SH4 reads
+      late driver data; the ARM7 meets SH4 stores early).** No more
+      guessed patches for this fault. The row "SPE ARM7 Read Sync" stays
+      in the tree as a probe, default OFF, not committed; its fate is
+      Matt's.
+      **Matt 2026-10-12, after that run: "My strong lead in this is that
+      when we implemented the Reicast JIT we mixed with ours and it broke
+      some stuff."** What the runs say about it:
+      - H -> D: no SH4 or JIT file differs (`git diff b76f710 02444ac`: 22
+        files, all sound), and both read `nullDC.cfg` with the same
+        `[jitcfg]` lines (`sqmiss=0 fschg=1`). H right, D wrong, D with
+        SPE ARM7 OFF right. So the JIT code is not what makes D wrong.
+        The Reicast items of bundle 8 (`a306a38`, `880e269`, `1533cc4`)
+        are not in D at all.
+      - C -> today: the code added is bundle 8's JIT items and bundle 9.
+        C right, today wrong, same settings file. This step fits Matt's
+        lead.
+      - **Gap: today's build never ran with SPE ARM7 OFF.** Only D did.
+        If today's build is wrong with SPE ARM7 OFF, there is a second
+        cause after C, and that is bundle 8's JIT work (Matt's lead).
+      - All of A, B, C, H (right) and D, today (wrong) had the ARM7 SPU up
+        (`[arm7spe]` lines, `arm:0.0%`). RPS is 29.9-30.0 in the victory
+        screen of right and wrong runs alike.
+      - A class that fits both leads, from reading only, not tested: the
+        SH4 thread's C path at each MediumUpdate differs with SPE ARM7
+        (`arm_spe_update` in place of `arm_aica_run`), so host state that
+        the JIT wrongly keeps live across that call (a volatile register,
+        a CR field, the host FPSCR) would break with one path and not
+        with the other, and would move with each build.
+      Next, no build (the package of 14:14 is installed): (1) today's
+      build, SPE ARM7 OFF, the victory screen. Right: one fault that needs
+      SPE ARM7, as in D. Wrong: bundle 8's JIT work broke it by itself;
+      then packages F, E, G (`build/bisect/`) find the commit. (2) Only if
+      (1) is right: SPE ARM7 ON and Dynarec OFF. Wrong: the JIT is clear.
+      Right: the JIT is part of it, or the low speed hides it (the ARM7
+      SPU then has no lag).
+      **Test (1), HW run ~15:00 (`sa_anim1.txt` from line 134052; a short
+      boot before it at 129965): the package of 14:14, SPE ARM7 OFF
+      (`SpeArm7=0 SpeArm7RdSync=0`), `Fog=2`, `idlerule=1 bcache=1
+      fschg=2 sqmiss=3 finetcnt=0`; Matt: "Broken".** The log confirms
+      the ARM7 on the PPU (`arm: 4-5%`, no `[arm7spe]` line), SPEED
+      99.9-100.0%, RPS 29.97, `held 0/150/0/0`. **So today's build is
+      wrong without SPE ARM7 too, and D is right without it: a cause came
+      in after D that does not need the ARM7 SPU. Matt's lead (the JIT
+      work of bundle 8) fits; SPE ARM7 is not the whole story, and the
+      "work-around: SPE ARM7 OFF" holds for D only.** Candidates, in
+      commit order: `ad7c1ab` (bundle 6) and `4f6b920` (bundle 7; C, right
+      with SPE ARM7 ON, not run with it OFF), `a306a38` (F), `880e269`
+      (E), `1533cc4` (G), `a7c19df` (bundle 9), and the work not yet
+      committed (fog, the read sync row). Next: bisect with SPE ARM7 OFF
+      (the SPU timing is then out of the picture): package E first; E
+      wrong -> F; E right -> G. All three read `NotDC.cfg`, so the rows
+      stay as they are.
+      **Bisect run with SPE ARM7 OFF, ~15:10-15:16 (from line 145898):
+      package E (`880e269`); Matt: "Wrong".** The log confirms E
+      (`[jitcfg] idlerule=1 prmoves=0 rmany=0`, no `idlehash`, bundle 6
+      and 7 keys, no bundle 9 key), the ARM7 on the PPU (`arm: 4-5%`),
+      SPEED 100%, `bcache=1`. So bundle 9 and the work not yet committed
+      are clear. F (`a306a38`) differs from E only by the FPU DN row
+      (default OFF) and the TMU Fine TCNT default: a run of F as it is
+      tells little.
+      **Found in the logs after that run (`b9_run1.txt`, `sa_anim1.txt`):
+      every logged wrong run on a build with bundle 8's JIT rows has `JIT
+      IDLE RULE` at X3 BACKWARD (`idlerule=1`): 8 Sonic Adventure runs,
+      with `bcache` 0 and 1, `idlehash`/`sqcopy`/`prmoves` 0 and 1, SPE
+      ARM7 ON and OFF. No logged run reaches the victory screen with X30
+      on such a build (one 29 s boot at line 129965 had `idlerule=0`).
+      The right packages A, B, C, H hold only the old x30 code. X3
+      BACKWARD is Reicast's rule (P71), so this is Matt's lead in one
+      row. Matt's word of the morning ("x3 or x30 is not tied to the
+      issue") has no logged run behind it. D (x30 code, wrong with SPE
+      ARM7 ON only) is not explained by it and may be a second, timing
+      fault.** Also checked by reading, no fault found: every host FPSCR
+      write (`sh4_registers.cpp`, the `[ni]` probe, the JIT EXIT path,
+      the menu, `ps3_rend.cpp`) saves and restores or runs on its own
+      thread; each run of the day was a fresh process (`[ps3] NotDC`
+      banner before each launch). Next, no build: the bundle 8 package on
+      the PS3 (stamp 10:53:18 = F or G), SPE ARM7 OFF, JIT IDLE RULE X30,
+      the victory screen.
+      **HW run ~15:25-15:31 (from line ~157476): Matt: "Wrong". The log
+      shows package F (`fpudn=0` in `[jitcfg]`, the `[ni]` lines), SPE
+      ARM7 OFF, but `idlerule=1` at boot and `[jit8] ... idle rule 1
+      billed=6644`: the row was still at X3 BACKWARD.** So this run is "F
+      as it is": wrong, as E. It is not the X30 test; that test is still
+      open. (`[ni]`: NI 0 and 1 give the same values, as on 2026-10-11.)
+      **X30 test, HW run ~15:35-15:41 (from line 171674): package F, SPE
+      ARM7 OFF, `idlerule=0` (`[jit8] idle rule 0 billed=9869`),
+      `bcache=1`; Matt: "Wrong".** So JIT IDLE RULE is clear, now with a
+      logged run: Matt's word of the morning was right, and my reading of
+      the logs (all wrong runs at X3) was a coincidence of his settings.
+      State with SPE ARM7 OFF: D right (`bcache=0`, old settings file);
+      today's build, E and F wrong (all `bcache=1 finetcnt=0`). The three
+      wrong runs share JIT BCACHE ON; its code was reworked in `a306a38`
+      (8-byte entries, `ps3_jit_bcache.h`) and no run before bundle 8 had
+      it ON. By reading, the lookup is equal to the old path but for the
+      `lookups++` (cache replacement only): no fault seen. Plan, one
+      variable per run: (1) F, SPE ARM7 OFF, X30, JIT BCACHE OFF. Right:
+      BCACHE is a trigger. Wrong: (2) package C with SPE ARM7 OFF and JIT
+      BCACHE OFF (C's old BCACHE code stops at a `verify` when ON). C
+      right: an un-gated part of `a306a38` (the `[ni]` probe is the only
+      one found). C wrong: bundle 6 or 7 with the ARM7 on the PPU, then
+      package I.
+      **End, Matt 2026-10-12 ~15:50: no fault (his words at the top of
+      this point). Run (1) was not made.** The PS3 holds package F and a
+      settings file changed for the search (SPE ARM7 OFF, JIT IDLE RULE
+      X30): the current package and those two rows go back before any
+      other test.
 
 - Built (Matt 2026-10-11: "Ignore the Interpreter parts. I want JIT/Dynarec
   stuff."): `bcache`, the `JitMac` fix, 5.39 (fmov, flds, fsts; no fneg),
@@ -10518,8 +11088,8 @@ Main gains:
 - The P25 two-pass trilinear weights: left out of bundle 3 by Matt on
   2026-10-10. Open; they need a shader or an SPU vertex-builder change.
 - P14 (3a, 3b, and 3j bump maps since 2026-10-08): already one shared
-  piece of work in section 3 (a PVR Cg shader in ps3gl). 3a (fog) is the
-  next goal after bundle 9 (Matt 2026-10-12, section 0).
+  piece of work in section 3 (a PVR Cg shader in ps3gl). 3a (fog) is
+  built since 2026-10-12, HW SUCCESS the same day (section 0).
 - P42 (b)-(d): stay in 5.12 (active, section 0).
 - P35 (CUE/BIN, CHD) and P39 (reios): section 4 says "Do not take".
 - P15 (5.19): a pacing option, not a speedup.

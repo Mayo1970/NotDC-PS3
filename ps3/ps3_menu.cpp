@@ -317,6 +317,7 @@ static const char* k_flat[]      = { "OFF", "LAST VERTEX", "FIRST VERTEX", NULL 
 static const char* k_passes[]    = { "OFF", "ON", "+ TR DEPTH", NULL };
 static const char* k_tileclip[]  = { "OFF", "INSIDE", "+ OUTSIDE", NULL };
 static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEPTH", NULL };
+static const char* k_fog[]       = { "OFF", "TABLE", "+ VERTEX", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_aicasync[]  = { "OFF", "ON", "+ BLOCK SYNC", "+ SAMPLE SYNC", NULL };
 static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
@@ -649,6 +650,8 @@ static Option s_renderer[] = {
 	  "SOFTRESET bit 1 cancels the render-done interrupts still pending (P10)." },
 	{ "TR Triangle Sort", &g_tr_tri_sort_preset,  OPT_CHOICE, k_trisort,   0, 0,0,0, NULL,
 	  "Auto-sorted translucent polygons sort per triangle. 3 ways to write depth (3k)." },
+	{ "Fog",             &g_fog_preset,           OPT_CHOICE, k_fog,       0, 0,0,0, NULL,
+	  "Distance fog from the fog table. + VERTEX adds the fog games set per vertex (3a)." },
 };
 
 // Plan section 7, bundle 7: one row per item; the first value is the old path.
@@ -1142,7 +1145,7 @@ static int* const k_live_opts[] = {
 	&g_int_clamp_preset, &g_face_reset_preset, &g_tr_volumes_preset, &g_volume_cap_preset, &g_ta_bad_rec_preset,
 	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
-	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
+	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_fog_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
 	&g_g2_dma_small_preset, &g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,
 	&g_hblank_irq_preset,
 };

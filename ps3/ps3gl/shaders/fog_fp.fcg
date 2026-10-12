@@ -1,0 +1,50 @@
+// NotDC 3a, DC fog (Flycast pp_FogCtrl). FOG: 1 table fog, 2 vertex fog, 3 the fog texel is the base colour.
+// ENV: 0 no texture, 1 modulate, 2 replace, 3 decal, 4 modulate with the texture's alpha alone. BUMP: a bump texel.
+#include "bump.cgh"
+
+// The fog texture (ps3_rend.cpp fog_upload): rows 0-1 hold FOG_COL_RAM and the table's value at s = log2(z) / 8,
+// rows 2-3 hold FOG_COL_VERT. fogc is 1/z, so s = -log2(fogc) / 8; the clamp to [0, 1] is the PVR's z clamp.
+float4 fog_table(sampler2D fogtab, float fogc)
+{
+    return tex2D(fogtab, float2(saturate(log2(fogc) * -0.125), 0.25));
+}
+
+void main(
+    float4 color : COLOR0,
+    float3 tc0   : TEXCOORD0,
+    float4 offs  : TEXCOORD1,
+
+    uniform sampler2D tex0   : TEXUNIT0,
+    uniform sampler2D fogtab : TEXUNIT1,
+
+    out float4 oColor : COLOR
+)
+{
+    float4 c = color;
+#if FOG == 3
+    c = fog_table(fogtab, tc0.z);
+#endif
+#if ENV != 0
+    float4 t = tex2D(tex0, tc0.xy);
+#if BUMP
+    t = float4(1.0, 1.0, 1.0, bump_alpha(t, offs));
+#endif
+#if ENV == 1
+    c = c * t;
+#elif ENV == 2
+    c = t;
+#elif ENV == 3
+    c.rgb = lerp(c.rgb, t.rgb, t.a);
+#else
+    c = float4(c.rgb * t.rgb, t.a);
+#endif
+#endif
+#if FOG == 1
+    float4 f = fog_table(fogtab, tc0.z);
+    c.rgb = lerp(c.rgb, f.rgb, f.a);
+#elif FOG == 2
+    // Rows 2-3 are one colour, so any u will do; a varying keeps the TEX off a constant operand.
+    c.rgb = lerp(c.rgb, tex2D(fogtab, float2(saturate(tc0.z), 0.75)).rgb, offs.a);
+#endif
+    oColor = c;
+}

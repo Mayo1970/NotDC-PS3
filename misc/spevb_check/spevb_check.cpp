@@ -64,6 +64,8 @@ static void die(const char* fmt, ...)
 
 // Plan 3j: the bump passes set it; the SPU compare runs with it off, as the PPU never builds bump scenes there.
 static bool s_bump_on;
+// Plan 3a: off, so a run carries offset colours only as a bump run.
+static u32 s_fog;
 // The 3j glBegin pass (Strip Merge off) records each vertex and its offset colour; any other pass has a buffer.
 struct ImmVtx { const DcVertex* v; u32 offs; };
 static std::vector<ImmVtx>* g_imm;

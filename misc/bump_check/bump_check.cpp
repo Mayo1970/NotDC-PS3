@@ -34,6 +34,8 @@ static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
 static u32 s_sprite_offs;
 static bool s_bump_param;
 static bool s_bump_on;
+// Plan 3a: off here, so only the bump gate keeps offset colours.
+static u32 s_fog;
 
 static void reset_lists(TaContext* c)
 {

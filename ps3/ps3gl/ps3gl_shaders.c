@@ -4,6 +4,7 @@
 #include "ps3gl.h"
 #include "ps3gl_shader_data.h"
 #include "ps3gl_shader_bump.h"
+#include "ps3gl_shader_fog.h"
 #include <stdio.h>
 
 /* Forward declarations */
@@ -62,6 +63,22 @@ void ps3gl_shaders_init(void)
     load_fp(&ps3gl.shaders[PS3GL_TENV_BUMP_MODULATE], shader_fp_bump_modulate_data, shader_fp_bump_modulate_data_size);
     load_fp(&ps3gl.shaders[PS3GL_TENV_BUMP_DECAL],    shader_fp_bump_decal_data,    shader_fp_bump_decal_data_size);
 
+    /* NotDC 3a: the fog programs, in key order; their VP also gives texcoord0.z = position.z * fogp.x. */
+    static const struct { const unsigned char *data; unsigned int size; } fog_fp[] = {
+#define FOG_FP(n) { shader_fp_##n##_data, sizeof(shader_fp_##n##_data) }
+        FOG_FP(fogt_coloronly), FOG_FP(fogt_modulate), FOG_FP(fogt_replace), FOG_FP(fogt_decal),
+        FOG_FP(fogt_bump_replace), FOG_FP(fogt_bump_modulate), FOG_FP(fogt_bump_decal),
+        FOG_FP(fogv_modulate), FOG_FP(fogv_replace), FOG_FP(fogv_decal),
+        FOG_FP(fogb_coloronly), FOG_FP(fogb_modulate), FOG_FP(fogb_modulate_ta), FOG_FP(fogb_decal),
+#undef FOG_FP
+    };
+    for (int i = PS3GL_TENV_FOGT_DISABLED; i < PS3GL_TENV_COUNT; i++) {
+        load_vp(&ps3gl.shaders[i], shader_vp_fog_data, shader_vp_fog_data_size);
+        ps3gl.shaders[i].mvp_const = rsxVertexProgramGetConst(ps3gl.shaders[i].vp, "mvp");
+        ps3gl.shaders[i].fog_const = rsxVertexProgramGetConst(ps3gl.shaders[i].vp, "fogp");
+        load_fp(&ps3gl.shaders[i], fog_fp[i - PS3GL_TENV_FOGT_DISABLED].data, fog_fp[i - PS3GL_TENV_FOGT_DISABLED].size);
+    }
+
     ps3gl.active_shader = -1;
     ps3gl.active_vp = NULL;
     ps3gl.mvp_uploaded_gen = 0;
@@ -78,10 +95,41 @@ void ps3gl_shaders_shutdown(void)
     }
 }
 
+/* NotDC 3a: the fog program of a texenv key under a ps3gl_dc_fog() mode, -1 if there is none. */
+static int fog_key(int mode, int tenv, int bump)
+{
+    switch (mode) {
+    case PS3GL_FOG_TABLE:
+        if (!bump)
+            return tenv <= PS3GL_TENV_DECAL ? PS3GL_TENV_FOGT_DISABLED + tenv : -1;
+        return tenv == PS3GL_TENV_REPLACE ? PS3GL_TENV_FOGT_BUMP_REPLACE :
+               tenv == PS3GL_TENV_MODULATE ? PS3GL_TENV_FOGT_BUMP_MODULATE :
+               tenv == PS3GL_TENV_DECAL ? PS3GL_TENV_FOGT_BUMP_DECAL : -1;
+    case PS3GL_FOG_VERTEX:
+        return !bump && tenv >= PS3GL_TENV_MODULATE && tenv <= PS3GL_TENV_DECAL
+               ? PS3GL_TENV_FOGV_MODULATE + tenv - PS3GL_TENV_MODULATE : -1;
+    case PS3GL_FOG_BASE:
+        return bump ? -1 : tenv == PS3GL_TENV_DISABLED ? PS3GL_TENV_FOGB_DISABLED :
+               tenv == PS3GL_TENV_MODULATE ? PS3GL_TENV_FOGB_MODULATE :
+               tenv == PS3GL_TENV_DECAL ? PS3GL_TENV_FOGB_DECAL : -1;
+    case PS3GL_FOG_BASE_TA:
+        return !bump && tenv == PS3GL_TENV_MODULATE ? PS3GL_TENV_FOGB_MODULATE_TA : -1;
+    default:
+        return -1;
+    }
+}
+
 int ps3gl_shader_key(void)
 {
     int tmu0 = ps3gl.tmu[0].enabled && ps3gl.tmu[0].bound && ps3gl.tmu[0].bound->data;
-    int tmu1 = ps3gl.tmu[1].enabled && ps3gl.tmu[1].bound && ps3gl.tmu[1].bound->data;
+    int tmu1 = ps3gl.tmu[1].enabled && !ps3gl.tmu[1].aux && ps3gl.tmu[1].bound && ps3gl.tmu[1].bound->data;
+
+    if (ps3gl.dc_fog) {
+        int key = fog_key(ps3gl.dc_fog, tmu0 ? ps3gl.tmu[0].texenv : PS3GL_TENV_DISABLED,
+                          tmu0 && ps3gl.tmu[0].bump);
+        if (key >= 0)
+            return key;
+    }
 
     /* Both TMUs active: use dual-texture modulate (diffuse * lightmap). */
     if (tmu0 && tmu1)
@@ -105,6 +153,21 @@ int ps3gl_shader_key(void)
 void ps3gl_tex_bump(int on)
 {
     ps3gl.tmu[ps3gl.active_tmu].bump = on != 0;
+}
+
+void ps3gl_dc_fog(int mode)
+{
+    ps3gl.dc_fog = mode;
+}
+
+void ps3gl_dc_fog_scale(float scale)
+{
+    ps3gl.dc_fog_scale = scale;
+}
+
+void ps3gl_tex_aux(int on)
+{
+    ps3gl.tmu[ps3gl.active_tmu].aux = on != 0;
 }
 
 void ps3gl_apply_shader(void)
@@ -152,6 +215,13 @@ void ps3gl_apply_shader(void)
                                      ps3gl.clip_plane);
         memcpy(ps3gl.clip_plane_uploaded, ps3gl.clip_plane, sizeof(ps3gl.clip_plane));
     }
+
+    /* NotDC 3a: the fog VP's scale, when it changed or on a VP reload. */
+    if (s->fog_const && (vp_reloaded || ps3gl.dc_fog_scale != ps3gl.dc_fog_scale_uploaded)) {
+        const float fogp[4] = { ps3gl.dc_fog_scale, 0.0f, 0.0f, 0.0f };
+        rsxSetVertexProgramParameter(ctx, s->vp, s->fog_const, fogp);
+        ps3gl.dc_fog_scale_uploaded = ps3gl.dc_fog_scale;
+    }
 }
 
 #else /* PS3GL_SHADERS_AVAILABLE == 0 */
@@ -170,6 +240,12 @@ void ps3gl_shaders_shutdown(void) {}
 int ps3gl_shader_key(void) { return PS3GL_TENV_DISABLED; }
 
 void ps3gl_tex_bump(int on) { (void)on; }
+
+void ps3gl_dc_fog(int mode) { (void)mode; }
+
+void ps3gl_dc_fog_scale(float scale) { (void)scale; }
+
+void ps3gl_tex_aux(int on) { (void)on; }
 
 void ps3gl_apply_shader(void)
 {

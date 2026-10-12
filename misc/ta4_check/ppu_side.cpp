@@ -42,6 +42,7 @@ static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
 static u32 s_sprite_offs;
 static bool s_bump_param;
 static bool s_bump_on;
+static u32 s_fog;  // plan 3a: off
 #ifndef T4_REF
 static u32 s_face8 = 0xFFFFFFFF, s_foffs8 = 0xFFFFFFFF;
 static u32 s_dopt;

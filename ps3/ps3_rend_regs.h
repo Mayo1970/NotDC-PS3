@@ -41,6 +41,9 @@ struct RenderRegs
 	// Resolved on the SH4 thread: both read VRAM through PARAM_BASE.
 	BgVertex bg_vtx[3];
 	DcParam bg_param;
+	// 3a Fog, taken only with the Fog row on: FOG_COL_RAM, FOG_COL_VERT, FOG_DENSITY, and FOG_TABLE's low 16 bits.
+	u32 fog_col_ram, fog_col_vert, fog_density;
+	u16 fog_table[128];
 };
 
 extern RenderRegs g_rr;

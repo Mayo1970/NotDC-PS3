@@ -47,6 +47,7 @@ extern "C" int get_strip_merge_preset();
 extern "C" int get_vertex_array_preset();
 extern "C" int get_depth_float_preset();
 extern "C" uint8_t* ps3gl_tex_fixed(GLsizei max_w, GLsizei max_h, GLsizei w, GLsizei h, uint32_t* pitch);
+extern "C" int ps3gl_tex_chain_levels(void);
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -210,6 +211,9 @@ static bool s_bump_param;
 // Plan 3j Bump Maps, latched per job: the decoder keeps offset colours, the draw picks the bump programs.
 static bool s_bump_on;
 static u32 s_stat_bump_ppu;
+// Plan 3a Fog, latched per job: 0 = off, 1 = table fog, 2 = also vertex fog, which needs the offset colours.
+static u32 s_fog;
+static u32 s_stat_fog_ppu, s_stat_fog_up;
 
 static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 
@@ -546,6 +550,9 @@ struct Ps3VertexDecoder
 			p.pcw.full = (p.pcw.full & ~0x300u) | ((clip >> 20) << 8);
 		}
 		s_bump_param = s_bump_on && pp->pcw.Texture && pp->tcw.NO_PAL.PixelFmt == 4;
+		// 3a: a vertex-fog polygon keeps its offset colours too; their alpha is the fog.
+		if (s_fog >= 2 && pp->pcw.Texture && pp->pcw.Offset && pp->tsp.FogCtrl == 1)
+			s_bump_param = true;
 	}
 
 	static void AppendPolyParam0(TA_PolyParam0* pp) { add_param(pp); }
@@ -1474,6 +1481,138 @@ static void snapshot_render_regs()
 	s_snap.glob_clip_x = ((TA_GLOB_TILE_CLIP & 0x3F) + 1) * 32;
 	s_snap.glob_clip_y = (((TA_GLOB_TILE_CLIP >> 16) & 0xF) + 1) * 32;
 	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
+	// 3a: the fog registers are native u32, so the draw's shifts are the DC's bit numbers.
+	if (g_fog_preset)
+	{
+		s_snap.fog_col_ram = FOG_COL_RAM;
+		s_snap.fog_col_vert = FOG_COL_VERT;
+		s_snap.fog_density = FOG_DENSITY;
+		for (u32 i = 0; i < 128; i++)
+			s_snap.fog_table[i] = (u16)FOG_TABLE[i];
+	}
+}
+
+// -- 3a Fog (Flycast d3d_shaders.cpp fog_mode2) ---------------------------------
+
+// The fog texture, FOG_TEX_W x 4. Rows 0-1: texel k is FOG_COL_RAM with the table's value at z = 2^(8 (k + 0.5) / W),
+// so the fragment program reads it at log2(z) / 8 with no floor and no pow. Rows 2-3: FOG_COL_VERT.
+#define FOG_TEX_W 512
+static GLuint s_fog_tex;
+static bool s_fog_tex_ok;
+static u8 s_fog_idx[FOG_TEX_W], s_fog_frac[FOG_TEX_W];
+static u8 s_fog_pix[FOG_TEX_W * 4 * 4];
+// The registers the texture holds now.
+static u16 s_fog_tab_up[128];
+static u32 s_fog_ram_up, s_fog_vert_up;
+
+// Each texel's table entry and the weight (of 256) of its low byte: z = (1 + m / 16) 2^e is entry 16 e + floor(m).
+static void fog_tex_init()
+{
+	for (u32 k = 0; k < FOG_TEX_W; k++)
+	{
+		// The end texels hold the ends of the PVR's z clamp, where a clamped lookup lands.
+		const float z = k == 0 ? 1.0f : k == FOG_TEX_W - 1 ? 255.9999f : powf(2.0f, 8.0f * (k + 0.5f) / FOG_TEX_W);
+		int e;
+		const float m = frexpf(z, &e) * 32.0f - 16.0f;
+		const int mi = (int)m;
+		s_fog_idx[k] = (u8)((e - 1) * 16 + mi);
+		s_fog_frac[k] = (u8)((m - mi) * 256.0f);
+	}
+}
+
+// The texture's RGBA bytes for g_rr's fog registers.
+static void fog_tex_pixels()
+{
+	const u32 ram = g_rr.fog_col_ram, vert = g_rr.fog_col_vert;
+	const u32 row = FOG_TEX_W * 4;
+	for (u32 k = 0; k < FOG_TEX_W; k++)
+	{
+		// A table entry holds its own value in bits 15:8 and the value at its end in bits 7:0.
+		const u32 e = g_rr.fog_table[s_fog_idx[k]], f = s_fog_frac[k];
+		u8* p = &s_fog_pix[k * 4];
+		p[0] = (u8)(ram >> 16); p[1] = (u8)(ram >> 8); p[2] = (u8)ram;
+		p[3] = (u8)(((e >> 8) * (256 - f) + (e & 0xFF) * f + 128) >> 8);
+		p += 2 * row;
+		p[0] = (u8)(vert >> 16); p[1] = (u8)(vert >> 8); p[2] = (u8)vert; p[3] = 255;
+	}
+	memcpy(s_fog_pix + row, s_fog_pix, row);
+	memcpy(s_fog_pix + 3 * row, s_fog_pix + 2 * row, row);
+}
+
+// The fog VP's scale, 1 / FOG_DENSITY (mantissa / 128 x 2^exponent), so that W x scale is 1/z.
+static float fog_scale(u32 d)
+{
+	const float den = ldexpf((float)((d >> 8) & 0xFF) / 128.0f, (int)(s8)(d & 0xFF));
+	// Kept finite: at 1e20 every z is under the clamp's 1 (a density of 0), at 1e-20 over its 256.
+	float scale = den > 0.0f ? 1.0f / den : 1e20f;
+	if (!(scale < 1e20f))
+		scale = 1e20f;
+	if (scale < 1e-20f)
+		scale = 1e-20f;
+	return scale;
+}
+
+// Binds the fog texture on TMU 1 as the programs' table and writes it again when a register changed.
+static bool fog_upload()
+{
+	if (!s_fog_tex)
+	{
+		glGenTextures(1, &s_fog_tex);
+		fog_tex_init();
+	}
+	glActiveTextureARB(GL_TEXTURE1_ARB);
+	glBindTexture(GL_TEXTURE_2D, s_fog_tex);
+	if (!s_fog_tex_ok || s_fog_ram_up != g_rr.fog_col_ram || s_fog_vert_up != g_rr.fog_col_vert ||
+	    memcmp(s_fog_tab_up, g_rr.fog_table, sizeof(s_fog_tab_up)) != 0)
+	{
+		fog_tex_pixels();
+		if (!s_fog_tex_ok)
+		{
+			// Linear rows: no swizzle for a 512 x 4 table. The clamp is the z clamp's other half.
+			ps3gl_texture_hint_no_swizzle();
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		}
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, FOG_TEX_W, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fog_pix);
+		s_fog_tex_ok = ps3gl_tex_chain_levels() != 0;
+		s_fog_ram_up = g_rr.fog_col_ram;
+		s_fog_vert_up = g_rr.fog_col_vert;
+		memcpy(s_fog_tab_up, g_rr.fog_table, sizeof(s_fog_tab_up));
+		s_stat_fog_up++;
+	}
+	if (s_fog_tex_ok)
+	{
+		glEnable(GL_TEXTURE_2D);
+		ps3gl_tex_aux(1);
+	}
+	glActiveTextureARB(GL_TEXTURE0_ARB);
+	return s_fog_tex_ok;
+}
+
+// The scene's fog state: the table on TMU 1 and the VP's scale. Without the texture the scene draws with no fog.
+static void fog_scene_begin()
+{
+	if (!s_fog)
+		return;
+	if (!fog_upload())
+	{
+		s_fog = 0;
+		return;
+	}
+	ps3gl_dc_fog_scale(fog_scale(g_rr.fog_density));
+}
+
+static void fog_scene_end()
+{
+	if (!s_fog)
+		return;
+	ps3gl_dc_fog(PS3GL_FOG_NONE);
+	glActiveTextureARB(GL_TEXTURE1_ARB);
+	glDisable(GL_TEXTURE_2D);
+	ps3gl_tex_aux(0);
+	glActiveTextureARB(GL_TEXTURE0_ARB);
 }
 
 // Plane through the 3 background vertices, evaluated per color channel and for UV at (x, y).
@@ -1656,7 +1795,21 @@ static void clip_apply(const DcParam& p)
 // Applies one polygon's state. Returns the OR mask that forces vertex alpha to 255.
 static u32 apply_param_body(const DcParam& p, u32 list);
 static inline const u32* bump_offs(const DcParam& p);
+static inline const u32* fogv_offs(const DcParam& p);
 static inline u32 eff_cull(const DcParam& p);
+
+// 3a, Flycast pp_FogCtrl: 0 = table fog, 1 = vertex fog, 3 = the fog texel is the base colour (with ShadInstr 1
+// the texture alone gives the alpha). The background has no offset colours.
+static inline int fog_mode(const DcParam& p, bool textured)
+{
+	switch (p.tsp.FogCtrl)
+	{
+	case 0: return PS3GL_FOG_TABLE;
+	case 1: return textured && &p != &g_rr.bg_param && fogv_offs(p) ? PS3GL_FOG_VERTEX : PS3GL_FOG_NONE;
+	case 3: return textured && p.tsp.ShadInstr == 1 ? PS3GL_FOG_BASE_TA : PS3GL_FOG_BASE;
+	default: return PS3GL_FOG_NONE;
+	}
+}
 
 // 5.12 #3: p's slot in this scene's SPU texture hashes: its list index, or the background's slot.
 static inline u32 spetex_slot(const DcParam& p)
@@ -1688,6 +1841,8 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		glDisable(GL_ALPHA_TEST);
 		glDisable(GL_TEXTURE_2D);
 		ps3gl_tex_bump(0);
+		if (s_fog)
+			ps3gl_dc_fog(PS3GL_FOG_NONE);
 		glDepthFunc(dc_depth_func(DC_GEQUAL));
 		glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
 		set_cull(eff_cull(p));
@@ -1756,6 +1911,9 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		glDisable(GL_TEXTURE_2D);
 	// 3j: the texenv's bump program for a bump texture; the background has no offset colours.
 	ps3gl_tex_bump(textured && &p != &g_rr.bg_param && bump_offs(p) != 0);
+	// 3a: the texenv's fog program, by the polygon's FogCtrl.
+	if (s_fog)
+		ps3gl_dc_fog(fog_mode(p, textured));
 
 	// 3k + OPAQUE DEPTH, first pass: the polygon's own state, but depth alone and only where alpha passes the test.
 	if (s_tri_mode == TRI_OPAQUE)
@@ -1861,6 +2019,21 @@ static inline const u32* bump_offs(const DcParam& p)
 {
 	return s_bump_on && p.pcw.Texture && p.tcw.NO_PAL.PixelFmt == 4 ? s_rl.offs : 0;
 }
+// 3a: a vertex-fog polygon (Flycast: FogCtrl 1 with an offset colour and no bump map); its offset alpha is the fog.
+static inline bool fogv_param(const DcParam& p)
+{
+	return p.pcw.Texture && p.pcw.Offset && p.tsp.FogCtrl == 1 && p.tcw.NO_PAL.PixelFmt != 4;
+}
+static inline const u32* fogv_offs(const DcParam& p)
+{
+	return s_fog >= 2 && fogv_param(p) ? s_rl.offs : 0;
+}
+// The offset colours a run carries in texcoord1: a bump run's or a vertex-fog run's.
+static inline const u32* run_offs(const DcParam& p)
+{
+	const u32* offs = bump_offs(p);
+	return offs ? offs : fogv_offs(p);
+}
 static u32 s_stat_bump_strips;  // 3j: strips drawn with their offset colours
 
 // Flycast PolyParam::equivalentIgnoreCullingDirection: ISP 0xF4000000 keeps cull on/off, not its direction.
@@ -1952,13 +2125,13 @@ template <bool DRY = false> static void run_close()
 template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 {
 	const DcParam& p = s_rl.param[s.param];
-	const u32* offs = bump_offs(p);
+	const u32* offs = run_offs(p);
 	if (DRY)
 		s_dry_strips++;
 	else
 	{
 		s_stat_strips[list]++;
-		if (offs)
+		if (bump_offs(p))
 			s_stat_bump_strips++;
 	}
 
@@ -2199,7 +2372,7 @@ static void tri_runs(u32 n, u32 base, bool emit)
 			rp = p;
 			run_first = t;
 			run_cull = eff_cull(*p);
-			offs = bump_offs(*p);
+			offs = run_offs(*p);
 		}
 		if (!emit)
 			continue;
@@ -2535,6 +2708,9 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w,
 	s_flat_shift = 0;
 
 	glDisable(GL_TEXTURE_2D);
+	// 3a: the volumes and the shade quad draw with no fog.
+	if (s_fog)
+		ps3gl_dc_fog(PS3GL_FOG_NONE);
 	glDisable(GL_ALPHA_TEST);
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	glDepthMask(GL_FALSE);
@@ -2640,6 +2816,8 @@ struct ListDiag
 	// Bundle 4, strips a row acts on: no Gouraud; sprites with a cull direction; user clip inside and outside;
 	// blend factors that are not (ONE, ZERO).
 	u32 flat, sprcull, clip_in, clip_out, blend;
+	// 3a: strips per FogCtrl (table, vertex, none, table as the base colour), and those the vertex fog acts on.
+	u32 fog[4], fogv;
 };
 static ListDiag s_diag[3];
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
@@ -2684,6 +2862,8 @@ static void collect_diag()
 			if (((p.pcw.full >> 16) & 3) == 2) d.clip_in++;
 			if (((p.pcw.full >> 16) & 3) == 3) d.clip_out++;
 			if (p.tsp.SrcInstr != 1 || p.tsp.DstInstr != 0) d.blend++;
+			d.fog[p.tsp.FogCtrl & 3]++;
+			if (fogv_param(p)) d.fogv++;
 			float sx0 = 1e30f, sx1 = -1e30f, sy0 = 1e30f, sy1 = -1e30f;
 			float sw0 = 1e30f, sw1 = 0.0f;
 			for (u32 k = 0; k < st.count; k++)
@@ -2744,8 +2924,9 @@ static void print_diag()
 		       d.dst[0], d.dst[1], d.dst[2], d.dst[3], d.dst[4], d.dst[5], d.dst[6], d.dst[7],
 		       d.fmt[0], d.fmt[1], d.fmt[2], d.fmt[3], d.fmt[4], d.fmt[5], d.fmt[6], d.fmt[7],
 		       d.cmin, d.cmax, d.black, d.ct[0], d.ct[1], d.ct[2], d.ct[3]);
-		printf("[rendz] %s flat=%u sprcull=%u clip=%u/%u blend=%u\n",
-		       s_diag_name[L], d.flat, d.sprcull, d.clip_in, d.clip_out, d.blend);
+		printf("[rendz] %s flat=%u sprcull=%u clip=%u/%u blend=%u fog=%u/%u/%u/%u fogv=%u\n",
+		       s_diag_name[L], d.flat, d.sprcull, d.clip_in, d.clip_out, d.blend,
+		       d.fog[0], d.fog[1], d.fog[2], d.fog[3], d.fogv);
 	}
 }
 
@@ -2817,6 +2998,8 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glEnable(GL_STENCIL_TEST);
 	glStencilMask(0xFF);
 	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+
+	fog_scene_begin();
 
 	// Background quad over the whole canvas at the background depth; colors and UV from its plane.
 	reset_param_cache();
@@ -2931,6 +3114,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	s_flat_shift = 0;
 	if (s_do.flat)
 		glShadeModel(GL_SMOOTH);
+	fog_scene_end();
 	ps3gl_tex_bump(0);
 	ps3gl_tex1_bits(0);
 	glDisable(GL_ALPHA_TEST);
@@ -3418,6 +3602,12 @@ static void rth_print_stats()
 	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
 	       s_stat_tris / r);
 	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
+	// 3a: the Fog level, renders sent to the PPU replay for their vertex fog, table uploads, the last render's registers.
+	if (s_fog)
+		printf("[fog] level=%u ppu=%u uploads=%u col_ram=%06X col_vert=%06X density=%04X table=%04X %04X .. %04X %04X\n",
+		       s_fog, s_stat_fog_ppu, s_stat_fog_up, g_rr.fog_col_ram & 0xFFFFFF, g_rr.fog_col_vert & 0xFFFFFF,
+		       g_rr.fog_density & 0xFFFF, g_rr.fog_table[0], g_rr.fog_table[1], g_rr.fog_table[126], g_rr.fog_table[127]);
+	s_stat_fog_ppu = s_stat_fog_up = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -3617,6 +3807,15 @@ static bool has_bump(const DcParam* p, u32 n)
 	return false;
 }
 
+// 3a: so does a scene with a vertex-fog polygon.
+static bool has_fogv(const DcParam* p, u32 n)
+{
+	for (u32 i = 0; i < n; i++)
+		if (fogv_param(p[i]))
+			return true;
+	return false;
+}
+
 // Stage 1 of a job: the TA replay. It is split from the draw so the inline path
 // can still run it under the guest rounding mode, as TR2 did.
 static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
@@ -3624,6 +3823,7 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	REND_PHASE(PH_TADEC);
 	double t0 = os_GetSeconds();
 	s_bump_on = g_bump_map_preset != 0;
+	s_fog = (u32)g_fog_preset;
 	// Bundle 4: this job's draw rules (ps3_presets.cpp, all live).
 	s_do.pt_depth = g_pt_depth_preset != 0;
 	s_do.tr_nodepth = g_tr_sort_depth_preset != 0;
@@ -3638,6 +3838,11 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	{
 		spe = false;
 		s_stat_bump_ppu++;
+	}
+	if (spe && s_fog >= 2 && has_fogv(s_rl.param, s_rl.nparam))
+	{
+		spe = false;
+		s_stat_fog_ppu++;
 	}
 	// P10 List Passes: only the PPU replay marks where each TA_LIST_CONT fell in the lists.
 	if (spe && s_do.passes && cont_end != 0)
@@ -3952,6 +4157,8 @@ void TermRenderer()
 	memset(s_fb_rtex, 0, sizeof(s_fb_rtex));
 	memset(s_fb_rmem, 0, sizeof(s_fb_rmem));
 	s_fb_spu_ok = false;
+	s_fog_tex = 0;
+	s_fog_tex_ok = false;
 	ps3_video_term();
 }
 

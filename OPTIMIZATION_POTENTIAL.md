@@ -123,7 +123,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
 | P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
-| P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a, 3b, 3j (open) |
+| P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a (built 2026-10-12, "Fog" row, HW SUCCESS 2026-10-12, default TABLE in source), 3b (open), 3j (done) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
 | P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; HW SUCCESS 2026-10-06, default ON |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | fschg HW SUCCESS 2026-10-10; BCACHE HW SUCCESS 2026-10-11 (bundle 8, "JIT BCACHE" default ON; Looney Tunes race +2.3 points of SPEED); merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
