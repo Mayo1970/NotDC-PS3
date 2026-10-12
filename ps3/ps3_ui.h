@@ -18,6 +18,10 @@ void ps3ui_screen(float* w, float* h);
 // Draws the assets/0.png background, or clears to bg_argb if it did not load.
 int  ps3ui_begin(u32 bg_argb);
 void ps3ui_end(void);
+// P50: draws over a frame the renderer began (no frame start, no clear, no flip). begin returns 0 until
+// ps3ui_init() has run; after end the depth write is on and the blend is off, as the renderer leaves them.
+int  ps3ui_overlay_begin(void);
+void ps3ui_overlay_end(void);
 
 void ps3ui_rect(float x, float y, float w, float h, u32 argb);
 // Draws the icon in a size x size box, top-left at (x, y). Returns 0 if it did not load.

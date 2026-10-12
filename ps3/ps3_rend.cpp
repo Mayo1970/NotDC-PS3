@@ -6,6 +6,9 @@
 #include "ps3_tex.h"
 #include "ps3_rend_regs.h"
 #include "ps3_rtt.h"
+#include "ps3_screen.h"
+#include "ps3_shot.h"
+#include "ps3_ui.h"
 #include "ps3_depth.h"
 #include "ps3_spe.h"
 #include "ps3_spevb.h"
@@ -1320,7 +1323,17 @@ void ps3ta_store_dma(u32* data, u32 size)
 	while (p <= end);
 }
 
-void SetFpsText(char* text) {}
+// P50: SPG gives a new text once a second on the SH4 thread; the draw reads the slot that was finished last.
+static char s_fps_text[2][64];
+static volatile u32 s_fps_slot;
+
+void SetFpsText(char* text)
+{
+	const u32 n = s_fps_slot ^ 1;
+	snprintf(s_fps_text[n], sizeof(s_fps_text[n]), "%s", text);
+	__asm__ volatile("lwsync" ::: "memory");
+	s_fps_slot = n;
+}
 
 // Canvas scale from SPG: 240p modes and SCALER_CTL hscale change the TA screen size.
 void SetFbScale(float x, float y)
@@ -1522,6 +1535,9 @@ static void snapshot_render_regs()
 	s_snap.fpu_shad_scale = FPU_SHAD_SCALE;
 	s_snap.fb_scale_x = s_fb_scale_x;
 	s_snap.fb_scale_y = s_fb_scale_y;
+	// Bundle 12 Screen Scaler (P10): the canvas also follows the scaler's vertical factor and the pixel-double bit.
+	if (g_screen_scaler_preset)
+		screen_scaler(SCALER_CTL.full, VO_CONTROL, SPG_CONTROL.interlace != 0, &s_snap.fb_scale_x, &s_snap.fb_scale_y);
 	s_snap.autosort = using_autosort();
 	// P10 Tile Clip: the TA's global clip, in pixels (Flycast globClip).
 	s_snap.glob_clip_x = ((TA_GLOB_TILE_CLIP & 0x3F) + 1) * 32;
@@ -1533,6 +1549,9 @@ static void snapshot_render_regs()
 	s_snap.keep = false;
 	s_snap.reg_ok = false;
 	if (g_region_scissor_preset || (s_snap.fb_w_sof1 & 0x1000000))
+		snapshot_region_box();
+	// Bundle 12: WIDE needs the tiles too, to know a render that the game's own clip narrows.
+	else if (g_screen_format_preset == SCREEN_WIDE)
 		snapshot_region_box();
 	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
 	// 3a: the fog registers are native u32, so the draw's shifts are the DC's bit numbers.
@@ -3229,16 +3248,73 @@ static void depth_begin()
 	glClearDepth(depth_clear(s_zfloat));
 }
 
+// -- Bundle 12: the FPS text (P50) and the screenshot (P51) -------------------
+
+// The columns the picture of the frame in progress takes: the screenshot's area.
+static int s_pic_x, s_pic_w;
+static volatile bool s_shot_want;
+// Per stats window: renders drawn wide, WIDE renders their clip kept at 4:3, screenshots.
+static u32 s_stat_wide, s_stat_narrow, s_stat_shots;
+
+// The in-game menu asks for a PNG of the next frame that is drawn for the TV.
+void ps3rend_screenshot()
+{
+	s_shot_want = true;
+}
+
+// P51: the frame in progress, before the FPS text and the flip; the RSX ends its draws first.
+static void shot_take(u32 sh)
+{
+	s_shot_want = false;
+	const double t0 = os_GetSeconds();
+	const u32* px = ps3_video_grab((u32)s_pic_x, 0, (u32)s_pic_w, sh);
+	REND_PHASE(PH_ENDFRAME);
+	char path[96] = "";
+	const bool ok = px && ps3shot_save(px, (u32)s_pic_w, sh, path, sizeof(path));
+	printf("[shot] %s %s (%dx%u, %s, %.0f ms)\n", ok ? "saved" : "FAILED", path, s_pic_w, sh,
+	       px ? "read-back done" : "no read-back", (os_GetSeconds() - t0) * 1000.0);
+	s_stat_shots += ok;
+}
+
+// P50: the text at the screen's left edge, in the 4:3 picture's side bar. The box under it is opaque, because a
+// frame that kept its colour still holds the last text.
+static void osd_draw(u32 sw, u32 sh)
+{
+	if (!ps3ui_overlay_begin())
+		return;
+	char text[sizeof(s_fps_text[0])], line[OSD_LINES][OSD_LINE_LEN];
+	memcpy(text, s_fps_text[s_fps_slot], sizeof(text));
+	text[sizeof(text) - 1] = 0;
+	const u32 n = osd_split(text, line);
+	// The menu's row height and the screen margins, for 720 lines.
+	const float row = floorf(26.0f * sh / 720.0f + 0.5f), cap = ps3ui_cap_h(PS3UI_FONT_BODY);
+	const float x = floorf(sw * 0.025f), y = floorf(sh * 0.05f);
+	float w = 0.0f;
+	for (u32 k = 0; k < n; k++)
+		w = std::max(w, ps3ui_text_w(PS3UI_FONT_BODY, line[k]));
+	if (n)
+		ps3ui_rect(x - 8.0f, y - 4.0f, w + 16.0f, n * row + 8.0f, 0xFF000000u);
+	for (u32 k = 0; k < n; k++)
+		ps3ui_text(x, y + k * row + (row + cap) * 0.5f, PS3UI_FONT_BODY, 0xFFFFFFFFu, line[k]);
+	ps3ui_overlay_end();
+	reset_param_cache();
+}
+
+// Before the end of a frame that is drawn for the TV: the screenshot first, so the PNG has no FPS text.
+static void frame_extras()
+{
+	u32 sw, sh;
+	ps3_video_size(&sw, &sh);
+	if (s_shot_want)
+		shot_take(sh);
+	if (g_fps_overlay_preset)
+		osd_draw(sw, sh);
+}
+
 static void draw_frame()
 {
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
-
-	// 4:3 pillarbox inside the 16:9 display.
-	u32 vp_w = sh * 4 / 3;
-	if (vp_w > sw)
-		vp_w = sw;
-	u32 vp_x = (sw - vp_w) / 2;
 
 	// draw_scene binds no list param without strips.
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
@@ -3252,6 +3328,20 @@ static void draw_frame()
 	glClearStencil(0);
 
 	const float cw = 640.0f * g_rr.fb_scale_x, ch = 480.0f * g_rr.fb_scale_y;
+	// Bundle 12 Screen Format: 4:3 with side bars, STRETCH (P69) or WIDE (P53). A WIDE render whose own clip
+	// narrows x (Flycast isClipped) has no scene for the sides: it keeps the 4:3 picture.
+	const int format = g_screen_format_preset;
+	const bool narrow = format == SCREEN_WIDE && g_rr.reg_ok &&
+	                    screen_x_clipped(g_rr.fb_x_clip_min, g_rr.fb_x_clip_max, g_rr.reg_x0, g_rr.reg_x1,
+	                                     g_rr.glob_clip_x, g_rr.scaler_ctl);
+	ScreenView sv;
+	screen_view(sw, sh, narrow ? SCREEN_43 : format, cw, &sv);
+	const bool wide = sv.cw > cw;
+	s_pic_x = sv.x;
+	s_pic_w = sv.w;
+	s_stat_wide += wide;
+	s_stat_narrow += narrow;
+
 	// P60 (Flycast 93523df80, intersectTileAndFBScissor): the PVR draws only the region array's tiles, and the FB
 	// clip cuts what the scaler writes, so in TA pixels it is the clip times the scale.
 	bool reg = false, cut = false;
@@ -3269,6 +3359,12 @@ static void draw_frame()
 		cut = x0 > 0.0f || y0 > 0.0f || x1 < cw || y1 < ch;
 		if (cut)
 			s_stat_scis++;
+		// WIDE: the tiles and the clip take the TA's whole width here, so the scissor leaves the sides open.
+		if (wide)
+		{
+			x0 = sv.cx0;
+			x1 = sv.cx0 + sv.cw;
+		}
 	}
 
 	// P60 (Flycast 3a7a08f3f): over a frame that waits for its flip the colour stays, and the background plane is
@@ -3282,10 +3378,21 @@ static void draw_frame()
 	if (carry)
 		s_stat_carry++;
 	glClear(((keep || carry) ? 0 : GL_COLOR_BUFFER_BIT) | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	// A narrow render owns the 4:3 area only: in a frame that kept its colour, the sides may hold a wide frame.
+	if (narrow && (keep || carry) && sv.x > 0)
+	{
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(0, 0, sv.x, sh);
+		ps3gl_apply_states();
+		glClear(GL_COLOR_BUFFER_BIT);
+		glScissor(sv.x + sv.w, 0, sw - sv.x - sv.w, sh);
+		ps3gl_apply_states();
+		glClear(GL_COLOR_BUFFER_BIT);
+	}
 
-	clip_view((int)vp_x, 0, (int)vp_w, (int)sh, true);
+	clip_view(sv.x, 0, sv.w, (int)sh, true);
 	// No pixel left: no scene.
-	if (reg && !clip_view_cut(0.0f, 0.0f, cw, ch, x0, y0, x1, y1))
+	if (reg && !clip_view_cut(sv.cx0, 0.0f, sv.cw, ch, x0, y0, x1, y1))
 	{
 		// What draw_scene leaves for the UI and the 2D presents.
 		ps3_video_depth_float(0);
@@ -3294,10 +3401,10 @@ static void draw_frame()
 
 	glEnable(GL_SCISSOR_TEST);
 	glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
-	glViewport(vp_x, 0, vp_w, sh);
+	glViewport(sv.x, 0, sv.w, sh);
 	ps3gl_apply_states();
 
-	draw_scene(0.0f, 0.0f, cw, ch);
+	draw_scene(sv.cx0, 0.0f, sv.cw, ch);
 }
 
 // -- Render to texture (FB_W_SOF1 bit 24): draw the clip window at its own size, read it
@@ -3731,10 +3838,13 @@ static void present_fb_draw()
 
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
-	u32 vp_w = sh * 4 / 3;
-	if (vp_w > sw)
-		vp_w = sw;
-	u32 vp_x = (sw - vp_w) / 2;
+	// Bundle 12 Screen Format: STRETCH (P69) also puts a 2D screen on every column. WIDE has no more picture
+	// to show there, so it stays 4:3.
+	ScreenView sv;
+	screen_view(sw, sh, g_screen_format_preset == SCREEN_STRETCH ? SCREEN_STRETCH : SCREEN_43, 640.0f, &sv);
+	const u32 vp_x = (u32)sv.x, vp_w = (u32)sv.w;
+	s_pic_x = sv.x;
+	s_pic_w = sv.w;
 
 	reset_gl_state();
 	glDisable(GL_SCISSOR_TEST);
@@ -3757,6 +3867,7 @@ static void present_fb_draw()
 		glClearColor(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1);
 		glClear(GL_COLOR_BUFFER_BIT);
 		glDisable(GL_SCISSOR_TEST);
+		frame_extras();
 		ps3_video_end_frame();
 		reset_param_cache();
 		s_stat_fb_presents++;
@@ -3804,6 +3915,7 @@ static void present_fb_draw()
 
 	glDisable(GL_TEXTURE_2D);
 	glDepthMask(GL_TRUE);
+	frame_extras();
 	ps3_video_end_frame();
 	reset_param_cache();
 	s_stat_fb_presents++;
@@ -3898,6 +4010,12 @@ static void rth_print_stats()
 		       s_stat_carry);
 	s_stat_rtt_wait = s_stat_held = s_stat_shown = s_stat_keep = s_stat_scis = s_stat_retry = s_stat_blank = 0;
 	s_stat_carry = 0;
+	// Bundle 12: the rows; renders drawn wide and WIDE renders kept at 4:3 by their clip; the last render's canvas.
+	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots)
+		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u\n", g_screen_format_preset,
+		       g_screen_scaler_preset, g_fps_overlay_preset, s_stat_wide, s_stat_narrow,
+		       (double)(640.0f * g_rr.fb_scale_x), (double)(480.0f * g_rr.fb_scale_y), s_stat_shots);
+	s_stat_wide = s_stat_narrow = s_stat_shots = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -4194,6 +4312,7 @@ static void rth_job_draw(int type, u64 hold)
 		{
 			REND_PHASE(PH_DRAW);
 			draw_frame();
+			frame_extras();
 			REND_PHASE(PH_ENDFRAME);
 			double t_end = os_GetSeconds();
 			// P60 Present Rule: the frame stays in the back buffer until the game's FB_R_SOF write (FbShown).
@@ -4466,7 +4585,12 @@ bool InitRenderer()
 	if (!ps3_video_init())
 		printf("[ps3rend] RSX init failed, running headless\n");
 	else
+	{
 		fb_spu_alloc();
+		// P50: the menu freed its fonts at launch; the FPS text needs them before the render thread starts.
+		if (g_fps_overlay_preset)
+			ps3ui_init();
+	}
 	if (!TileAccel.Init() || !TaStore.Init())
 		return false;
 	s_ta_fast = get_ta_fast_preset() != 0;

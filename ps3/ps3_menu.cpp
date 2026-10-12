@@ -28,6 +28,7 @@ extern "C" int ps3_exit_pending(void);
 void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
 void ps3_rumble_stop(void);   // ps3_input.cpp
+void ps3rend_screenshot();    // ps3_rend.cpp
 
 // -- Pad ---------------------------------------------------------------------
 
@@ -340,6 +341,8 @@ static const char* k_rttrb[]     = { "OLD", "FIXED", NULL };
 static const char* k_rttsize[]   = { "FB CLIP", "TILE CLIP", NULL };
 static const char* k_oldfly[]    = { "OLD", "FLYCAST", NULL };
 static const char* k_present[]   = { "ALL", "SHOWN", "+ KEEP COLOUR", NULL };
+// SCREEN_* order (ps3_screen.h).
+static const char* k_scrformat[] = { "4:3", "16:9 STRETCH", "16:9 WIDE", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -704,6 +707,19 @@ static Option s_output[] = {
 	  "FLYCAST: 2D screens read both interlaced fields; 24-bit screens show (P26). Live." },
 };
 
+// Plan section 7, bundle 12: one row per item; the first value is the old path. The screenshot has no row: it is
+// SQUARE in the in-game menu.
+static Option s_screen[] = {
+	{ "FPS Overlay",     &g_fps_overlay_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "FPS and SPEED at the screen's left edge, new once a second (P50). Live." },
+	{ "Screen Format",   &g_screen_format_preset, OPT_CHOICE, k_scrformat, 0, 0,0,0, NULL,
+	  "STRETCH: the 4:3 picture on the whole TV. WIDE: more scene at the sides (P69, P53). Live." },
+	{ "Screen Scaler",   &g_screen_scaler_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The canvas follows the scaler's vertical factor and the pixel-double bit (P10). Live." },
+	{ "Cheats",          &g_cheats_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -750,6 +766,7 @@ static Page s_opt_pages[] = {
 	{ "RENDERER",      s_renderer, (int)(sizeof(s_renderer) / sizeof(s_renderer[0])) },
 	{ "TIMING",        s_timing, (int)(sizeof(s_timing) / sizeof(s_timing[0])) },
 	{ "OUTPUT",        s_output, (int)(sizeof(s_output) / sizeof(s_output[0])) },
+	{ "SCREEN",        s_screen, (int)(sizeof(s_screen) / sizeof(s_screen[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1215,6 +1232,7 @@ static int* const k_live_opts[] = {
 	&g_g2_dma_small_preset, &g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,
 	&g_hblank_irq_preset, &g_rtt_readback_preset, &g_rtt_scaler_preset, &g_rtt_size_preset, &g_rtt_pack_preset,
 	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,
+	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
@@ -1289,8 +1307,8 @@ static void ingame_draw()
 	}
 
 	draw_footer(p->rows[s_opt_row].help, g_disc_swap_preset
-	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   SELECT Back   * Next boot"
-	            : "LEFT/RIGHT Change   L1/R1 Page   SELECT Back to game   * Next boot");
+	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   [] Screenshot   SELECT Back   * Next boot"
+	            : "LEFT/RIGHT Change   L1/R1 Page   [] Screenshot   SELECT Back to game   * Next boot");
 }
 
 void ps3_menu_request(void)
@@ -1336,11 +1354,16 @@ void ps3_menu_ingame(void)
 		s_pad_prev = ~0u;
 		// P34: TRIANGLE opens the disc browser in the folder the menu last showed.
 		bool swap = false;
+		// P51: SQUARE closes the menu, and the next frame of the game goes to a PNG.
+		bool shot = false;
 		s_swap_path[0] = '\0';
 		while (!ps3_exit_pending())
 		{
 			u32 pressed = pad_poll(16);
 			if (pressed & MB_SELECT)
+				break;
+			shot = !swap && (pressed & MB_SQUARE);
+			if (shot)
 				break;
 			if (swap)
 			{
@@ -1396,9 +1419,12 @@ void ps3_menu_ingame(void)
 		ps3_rendcfg_print("menu", false);
 		ps3_timecfg_print("menu", false);
 		ps3_outcfg_print("menu", false);
+		ps3_scrcfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
+		if (shot)
+			ps3rend_screenshot();
 	}
 	else
 		printf("[menu] in-game menu: no UI\n");
@@ -1486,5 +1512,6 @@ int ps3_menu_run(void)
 	ps3_timecfg_print("boot", true);
 	ps3_padcfg_print("boot", true);
 	ps3_outcfg_print("boot", true);
+	ps3_scrcfg_print("boot", true);
 	return 1;
 }

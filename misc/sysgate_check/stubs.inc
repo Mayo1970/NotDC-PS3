@@ -33,6 +33,8 @@ u32 g_aram_hz_dma;
 void aica_fix_dump(double s) { (void)s; }
 // Named by SPG.cpp since bundle 9 (the ARM7 census line).
 void arm_p49_dump(double s) { (void)s; }
+// Named by SPG.cpp since bundle 12 (the cheat file's codes at each vblank).
+void ps3_cheats_vblank(void) {}
 bool g_fb_dirty;
 void fb_watch_set(u32 s, u32 n) { (void)s; (void)n; }
 u32 SB_E1STAR, SB_E1STAG, SB_E1LEN, SB_E1DIR, SB_E1EN, SB_E1ST;

@@ -172,6 +172,11 @@ extern int g_present_rule_preset;
 extern int g_region_scissor_preset;
 extern int g_fb_reads_preset;
 extern int g_keep_frame_preset;
+// Bundle 12 (plan section 7), the SCREEN page.
+extern int g_fps_overlay_preset;
+extern int g_screen_format_preset;
+extern int g_screen_scaler_preset;
+extern int g_cheats_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -190,3 +195,5 @@ void ps3_timecfg_print(const char* when, bool always);
 void ps3_padcfg_print(const char* when, bool always);
 // [outcfg] line: the OUTPUT page's rows, the same way.
 void ps3_outcfg_print(const char* when, bool always);
+// [scrcfg] line: the SCREEN page's rows, the same way.
+void ps3_scrcfg_print(const char* when, bool always);

@@ -19,6 +19,8 @@ extern "C" int get_x_scaler_preset();
 #define X_SCALER() (get_x_scaler_preset() != 0)
 // Plan section 7, bundle 11 (P76): FB Line Double.
 extern int g_fb_line_double_preset;
+// Plan section 7, bundle 12 (P36): the cheat file's codes (ps3/ps3_cheats.cpp); nothing with no file loaded.
+void ps3_cheats_vblank(void);
 
 // Hardware-like HOLLY IRQ delays (ps3/ps3_presets.cpp).
 extern "C" int get_render_delay_preset();
@@ -314,6 +316,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                 params.RaiseInterrupt(holly_HBLank);
 
             rend_vblank();
+            ps3_cheats_vblank();   // P36: once per frame, as Flycast's VBlank event
 
             // Update FPS display every 1 second
             double now = os_GetSeconds();

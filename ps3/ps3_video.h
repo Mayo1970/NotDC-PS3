@@ -21,6 +21,8 @@ void ps3_video_depth_float(int on);
 // (GL window x/y, y from the bottom). fixed (P75): 1 = the read-back that returns; 0 = PSL1GHT's, which does not.
 void ps3_video_end_frame_noflip(void);
 const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h, int fixed);
+// P51: the same rows of the frame in progress, before its end; the frame goes on after the call.
+const u32* ps3_video_grab(u32 x, u32 y, u32 w, u32 h);
 // P76 Draw Retry: waits up to ms for a free back buffer; 1 = ps3_video_begin_frame() will take one.
 int  ps3_video_wait_free(u32 ms);
 // P60: starts a frame on the RTT surface, which is never shown; 0 = there is none.

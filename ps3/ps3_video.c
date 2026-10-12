@@ -451,7 +451,8 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h, int fixed)
 {
 	if (!s_ready || !s_rb_addr || w == 0 || h == 0)
 		return NULL;
-	if (w > PS3_RB_MAX_W || h > PS3_RB_MAX_H || x + w > s_width || y + h > s_height)
+	// The staging buffer's size is the limit (P51 reads a whole 720p frame); an RTT is 1024 x 1024 at most.
+	if (w > s_width || h > s_height || x + w > s_width || y + h > s_height || w * h * 4 > PS3_RB_SIZE)
 		return NULL;
 
 	u32 src_y = s_height - (y + h);
@@ -475,6 +476,17 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h, int fixed)
 	rsxFinish(s_ctx, 1);
 	REND_PHASE(PH_RTT);
 	return (const u32*)s_rb_addr;
+}
+
+// P51: w*h pixels of the frame in progress, before its end (rows as ps3_video_readback gives them, top row first).
+// Always the read-back that returns. NULL = the area is over the staging buffer, or the RSX gave no answer.
+const u32* ps3_video_grab(u32 x, u32 y, u32 w, u32 h)
+{
+	if (!s_ready)
+		return NULL;
+	// FIFO writes, so a deferred ps3gl GL_POLYGON batch goes out first.
+	ps3gl_flush_polygon_batch();
+	return ps3_video_readback(x, y, w, h, 1);
 }
 
 // P60 Keep Last Frame: the RSX copies the last flipped frame into the back buffer of the frame in progress, so a

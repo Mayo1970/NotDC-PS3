@@ -21,6 +21,179 @@ old 11 (Output stage) is 11 and 12, 13 and 15 grew, 16-21 are new.
 Nothing is built by the re-cut. Recommended order: 11, 13, 14, 10, 15,
 19, 17, 12, 16, 18, 20, then 21, then G11, then G10 with G13.**
 
+**Bundle 12 (Screen format and test tools) built 2026-10-12 (Matt: "Work
+on Bundle 12"), HW SUCCESS 2026-10-12 after HW run 1 (Matt: "Success!").
+Package of 21:37 on 2026-10-12 (`build/notdc_ps3.pkg`, 1599472 bytes) =
+commit 701647a + this bundle. Matt named no default: every row is at its
+old path by default, so with the defaults the build acts as before. The
+one thing that is always there: SQUARE in the in-game menu takes a
+screenshot. No HW run yet: the screenshot, 16:9 STRETCH, Cheats, a render
+that WIDE keeps at 4:3, a game that Screen Scaler changes.**
+- **HW run 1, 2026-10-12 ~22:22-22:28: SUCCESS** (Matt: "Success!").
+  Log: `sa_anim1.txt` of session d13d658e (its listener held the port),
+  lines 333514-344369; the cut is `b12_run1.txt` in the scratchpad of
+  session 65dd1ebb. One boot, Sonic Adventure, 311 s, a clean exit, no
+  fault line.
+  - `[scrcfg] boot: FpsOverlay=1 ScreenFormat=2 ScreenScaler=1 Cheats=0`.
+    `[outcfg]`: Region Scissor ON, Keep Last Frame ON, RTT Read-back
+    FIXED, the other rows as in bundle 11's runs.
+  - FPS Overlay ON at boot: the fonts were loaded a second time at the
+    renderer's start (`[ui] ready` twice), and the text was on the screen
+    from the first frame.
+  - 16:9 WIDE: `[scr] format=2 scaler=1 fps=1 | wide=150 narrow=0
+    canvas=640x480 shots=0` in play (61 windows): every render was drawn
+    wide, none was kept at 4:3. 9443 renders, 0 dropped. Region Scissor
+    cut none (`scissor=0`).
+  - Screen Scaler ON: the canvas stayed 640 x 480. The game does not use
+    the scaler's vertical factor or pixel double, so this is the no-harm
+    run.
+  - SPEED median 99.99%; 267 of 311 seconds at 99% or more. Render busy
+    median 14%, largest 37%. Seconds 27-32 are at 66-90%: the boot of the
+    old build in the same log file (line 251699, the package of 19:52)
+    has the same dip (68-88% for 4 s), and the render thread is at 2%
+    busy there. So it is not from this bundle.
+  - Two in-game menu visits, no row changed, no SQUARE: `shots=0`.
+- A new SCREEN page (page 10 of 10; a `[scrcfg]` line at boot and at a
+  menu change):
+  - FPS Overlay: OFF / ON (P50, live). The text that SPG builds once a
+    second ("FPS" and "SPEED") is drawn at the top of the left side bar,
+    as four short lines over a black box. It is on every frame that goes
+    to the TV: a render and a 2D screen. With the row ON at boot the menu
+    fonts are loaded again at the renderer's start (the front end frees
+    them at launch); a change in the in-game menu acts at once.
+  - Screen Format: 4:3 / 16:9 STRETCH / 16:9 WIDE (live).
+    - STRETCH (P69, and P36's stretch): the same picture on every column
+      of the TV, renders and 2D screens. This is the format for a game
+      that a widescreen cheat makes anamorphic.
+    - WIDE (P53, Flycast `rend.WideScreen`): the 4:3 picture stays where
+      it is, and the canvas gets more columns at both sides (at 720p:
+      -106.7 to 746.7). The scissor is the whole TV. A render whose own
+      clip narrows x (Flycast `isClipped()`: the region tiles and the FB
+      clip times the scaler's X factor do not span the TA's width) keeps
+      the 4:3 picture; if it also keeps the last frame's colour, its side
+      bars are cleared. 2D screens and renders to texture stay 4:3.
+    - Region Scissor (bundle 11) acts as before in every format; in WIDE
+      it leaves the sides open and cuts only the lines.
+  - Screen Scaler: OFF / ON (P10, live). At each render the canvas also
+    follows SCALER_CTL's vertical factor when the mode has no interlace
+    (Flycast `getPvrFramebufferSize`: a 480-line render into a 240-line
+    screen draws 480 lines) and VO_CONTROL bit 8 (Reicast: pixel double,
+    the canvas is half as wide). X Scaler and FB Line Double act as
+    before.
+  - Cheats: OFF / ON (P36, set before boot). ON reads
+    `/dev_hdd0/data/NotDC/cheats/<image name with no extension>.cht` (or
+    `.txt`) at launch and applies it at each vblank. The file is
+    RetroArch's form, as Flycast reads it: `cheats`, and per cheat
+    `cheatN_address`, `_value`, `_cheat_type` (1 set, 2 increase, 3
+    decrease, 4-7 run the next cheat if equal, not equal, greater, less,
+    8 copy), `_memory_search_size` (5 = 32 bits), `_enable`,
+    `_repeat_count`, `_repeat_add_to_value`, `_repeat_add_to_address`,
+    `_dest_address`, `_address_bit_position`. Addresses are RAM offsets
+    (0x8C000000 + address). Values can be decimal or 0x hex. The folder is
+    made at the first launch with the row ON.
+- Screenshot (P51, no row): SQUARE in the in-game menu (not in the disc
+  browser) closes the menu; the next frame that is drawn for the TV is
+  read back before the FPS text and the flip, and written as
+  `/dev_hdd0/data/NotDC/screenshots/shot_NNNN.png` (the first free number;
+  RGB, fast deflate). The area is the picture: 960 x 720 at 4:3, 1280 x
+  720 where the picture takes the whole TV. The read-back is always the
+  one that returns (bundle 11's FIXED path), whatever RTT Read-back says.
+- Log: `[scr] format= scaler= fps= | wide= narrow= canvas= shots=` per
+  stats window when a row is on; `[shot] saved <file> (WxH, read-back
+  done, N ms)`; `[cheat] <file>: N cheat(s), M enabled`, one line per
+  cheat (16 at most), and `[cheat] N write(s) in 300 frames`.
+- Code: `ps3/ps3_screen.h` (the view, the clip rule, the scaler, the text
+  lines, the PNG rows), `ps3/ps3_cheats.h` (the file and the apply loop),
+  `ps3/ps3_cheats.cpp`, `ps3/ps3_shot.cpp` (libpng write, with the 512-byte
+  jmp_buf), `ps3/ps3_rend.cpp` (`draw_frame()`, `present_fb_draw()`,
+  `frame_extras()`, `SetFpsText()`), `ps3/ps3_ui.cpp`
+  (`ps3ui_overlay_begin()`), `ps3/ps3_video.c` (`ps3_video_grab()`),
+  `ps3/ps3_menu.cpp`, `ps3/ps3_presets.cpp`, `plugs/drkPvr/SPG.cpp` (the
+  cheats' vblank call), `ps3/ps3_main.cpp` (the load).
+- Not built, and why:
+  - P10's FB clip as a scissor: it is Region Scissor of bundle 11 (the
+    same Flycast rule, `intersectTileAndFBScissor`). Nothing was left.
+  - Flycast's built-in widescreen table and its other per-game cheats: a
+    list per game (Matt's rule). A code from that table works as a file
+    (HW step 5).
+  - A cheat list in the menu, GameShark code entry: the file's `enable`
+    key is the switch.
+  - Our two limits that Flycast does not have: 256 cheats per file, and a
+    repeat count of 65536 at most.
+- Traps:
+  - WIDE: games cull at 4:3, so the sides can show missing geometry and
+    2D parts that end at 640.
+  - Cheats that patch code: the JIT does not see a change in a block it
+    has compiled. A code that patches data (the widescreen codes write
+    floats) acts at once; the JIT reads no memory at compile time.
+  - A screenshot holds the render thread for the read-back and the file
+    write; frames drop for that time.
+  - On a 1080-line display (the fallback mode) the picture is over the
+    4 MB staging buffer: `[shot] FAILED`, no file.
+- PC checks, WSL:
+  - `misc/screen_check/run.sh`: PASS. The view on six displays (WIDE keeps
+    every column of the 4:3 picture at its place, and is Flycast's matrix
+    on a 16:9 display); the clip rule against Flycast's `isClipped()`,
+    200 K cases; the scaler against `getPvrFramebufferSize`; the text
+    lines; the PNG rows; the cheat file against Flycast's `IniFile` and
+    `loadCheatFile` (written there in Flycast's form), 60 K random files
+    and Flycast's own test file; the apply loop against Flycast's
+    `apply()`, 60 K random cheat lists over two vblanks; 113 source line
+    checks. `mutate.py`: 178 of 178 mutants fail.
+  - `misc/rtt_check/run.sh`: PASS (one of its lines names the new
+    `clip_view_cut` call), `mutate.py`: 107 of 107. `pad_check`, `rend4_check`, `ta4_check`,
+    `tr4_check`, `bump_check`, `fog_check`, `spepix_check`,
+    `sysgate_check`, `timebase_check`, `clock_check`: PASS (one stub line
+    for the cheats' vblank call).
+  - Two older checks do not build, and not from this bundle:
+    `misc/ramsq_check` (`s_flat_ok`, the TA Data Gate of bundle 4) and
+    `misc/spevb_check` (its `ClipView` has no base scissor, bundle 11).
+    Not repaired here.
+- Link: `r2off` 0, `.got` 0xE180 (0xDB10 before: libpng's writer and
+  deflate; the limit is 0x10000).
+- Not checked on the PC: every RSX and GL call (the overlay inside a game
+  frame, the read-back in the middle of a frame, the wide viewport), the
+  PNG file, the cheat file's read, the memory writes.
+- HW steps (UDP listener on port 18194, only when Matt says so). An
+  install keeps the settings; every new row starts at its first value.
+  1. FPS Overlay. Front menu, OPTIONS, page SCREEN: FPS Overlay ON. Boot
+     Crazy Taxi. Expected: "FPS", a number, "SPEED", a number in the left
+     black bar, new once a second, and the game as before. Then SELECT:
+     the menu opens and closes as before. Log: `[scr] ... fps=1`.
+  2. Screenshot. In the game: SELECT, then SQUARE. Expected: the menu
+     closes, the picture stops for a moment, the game goes on. Log:
+     `[shot] saved /dev_hdd0/data/NotDC/screenshots/shot_0001.png (960x720,
+     read-back done, N ms)`. Then get the file (FTP) and look at it: the
+     game's picture, right colours, no FPS text.
+  3. Screen Format, same boot: SELECT, SCREEN, 16:9 STRETCH, back.
+     Expected: the same picture over the whole TV. Then 16:9 WIDE:
+     expected: the middle as at 4:3, more scene at the sides. Crazy Taxi
+     and Sonic Adventure. Log: `[scr] format=2 ... wide=N narrow=0`. A
+     pause in Crazy Taxi (RTT Read-back FIXED first) and a 2D screen
+     (the boot logo) must look as before.
+  4. Screen Scaler ON, same games. No game that needs it is known (Flycast
+     names Cho - Hatsumei Boy Kanipan), so this is a no-harm run: the
+     picture as before, and `[scr] ... canvas=640x480`.
+  5. Cheats, with Looney Tunes - Space Race (US). The file
+     `/dev_hdd0/data/NotDC/cheats/Looney Tunes - Space Race (US)[DCRES].cht`
+     (the code is Flycast's widescreen code for T15116N):
+     ```
+     cheats = 1
+     cheat0_desc = "Widescreen"
+     cheat0_enable = true
+     cheat0_cheat_type = 1
+     cheat0_memory_search_size = 5
+     cheat0_address = 0x2198EC
+     cheat0_value = 0x3F400000
+     ```
+     Cheats ON and Screen Format 16:9 STRETCH, then boot the game. Log:
+     `[cheat] ...: 1 cheat(s), 1 enabled` and `[cheat] N write(s)`.
+     Expected: the 3D scene has the right shape on the 16:9 TV (at 4:3 it
+     looks thin). If the picture does not change, the rip's code is at
+     another address: the row then works (the log) but the code does not.
+  6. On a fault: the row back to its first value; note the game and
+     when.
+
 **Bundles 10 (Controllers) and 11 (render to texture and present) built
 2026-10-12 (Matt: "Let's go with Bundle 10 and 11 together."), HW SUCCESS
 2026-10-12 after HW runs 1 and 2 (Matt: "It's okay on that. We can
@@ -10392,7 +10565,7 @@ Nothing of the open bundles is built by this re-cut.
 | 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[x]` HW SUCCESS 2026-10-12; built 2026-10-12 (section 0): the P49 census (log only, three decoders), P40's tests and the STR cases (`arm7_optest.h`), row "ARM7 STR Align" on the AUDIO page, default OFF; PC checks PASS; package of 09:34; **HW runs 1-3 2026-10-12: the tests pass on all three engines (the JIT at boot); census A 0, B 0 in ChuChu Rocket and Crazy Taxi (the P49 fix has no target there, not built); "ARM7 STR Align" ON fixes F1, the ChuChu Rocket slow sound (Matt: "THE SOUND IS FIXED")**; HW runs 4-5 (Sonic Adventure, Looney Tunes, row ON): no unaligned store, no P49 form, no fault; **CLOSED 2026-10-12 (Matt), the row default ON in source, not packaged**; re-cut 2026-10-12: nothing left |
 | 10 | Controllers (re-cut 2026-10-12; was Maple) | P84's stick dead zone, GOALS.md G12 (the second stick), P13, the DS3 remap of G10 | a smooth analog stick; the right stick; DS3 rumble; button maps | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): Controller FULL works in Quake III Arena (Matt: "Quake 3 double sticks works"; G12 done); built 2026-10-12 with bundle 11 (Matt: "Let's go with Bundle 10 and 11 together."): the CONTROLS page has Controller (STANDARD PAD / FULL (2 STICKS)), Stick Dead Zone (AXIS / RADIAL), Rumble Pack (OFF / ON) and 15 button-map rows; every default is the old path (Matt named none); PC checks PASS (`misc/pad_check`, 37 of 37 mutants); package of 17:40; no HW run: Stick Dead Zone RADIAL, Rumble Pack, a button-map change |
 | 11 | Render to texture and present (re-cut 2026-10-12; was Output stage) | P75 (first), P66's RTT scaler, P76, P54, P60, P26 reads | the Crazy Taxi pause freeze; RTT games; no flashing screens or mirrors; interlaced and 24-bit 2D screens | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): RTT Read-back FIXED ends the Crazy Taxi pause freeze (Matt: "works as intended"); built 2026-10-12 with bundle 10: 10 rows on a new OUTPUT page (RTT Read-back, RTT Scaler, RTT Size, RTT Pack, Draw Retry, FB Line Double, Blank Video, Present Rule, Region Scissor, FB Reads), every default is the old path (Matt named none), so the Crazy Taxi pause still freezes until RTT Read-back is FIXED; PC checks PASS (`misc/rtt_check`, 88 of 88 mutants); package of 17:40; no HW run: Present Rule, RTT Size TILE CLIP; left: the Looney Tunes boot videos (not on the TV, cause not known); **the fix for the Looney Tunes race loading screen (black but the bar with Region Scissor ON), asked for by Matt after the verdict ("Fix it."): row "Keep Last Frame" (OFF / ON) built 2026-10-12, package of 19:52, PC checks PASS, HW SUCCESS 2026-10-12 (Looney Tunes, Matt: "Success! The image stays."; Crazy Taxi), default ON in source since 2026-10-12 (Matt: "Keep it up as default."), not packaged; it acts only with Region Scissor, which is still default OFF**; not built: the fb_concat bits of P26, P54's writers for pack modes 4 and 5 |
-| 12 | Screen format and test tools (re-cut 2026-10-12; was HW test tools) | P50, P51, P53, P69's stretch, P10 (clip, scaler), P36 | SPEED on the TV without the UDP listener; PNG evidence; 16:9 output | `[ ]` |
+| 12 | Screen format and test tools (re-cut 2026-10-12; was HW test tools) | P50, P51, P53, P69's stretch, P10 (clip, scaler), P36 | SPEED on the TV without the UDP listener; PNG evidence; 16:9 output | `[x]` HW SUCCESS 2026-10-12 (Matt: "Success!"; section 0): Sonic Adventure with FPS Overlay ON, Screen Format 16:9 WIDE and Screen Scaler ON, SPEED median 99.99%, no fault; Matt named no default, every row stays at its old path; no HW run: the screenshot, 16:9 STRETCH, Cheats; built 2026-10-12 (Matt: "Work on Bundle 12"): a new SCREEN page with FPS Overlay (OFF / ON), Screen Format (4:3 / 16:9 STRETCH / 16:9 WIDE), Screen Scaler (OFF / ON) and Cheats (OFF / ON), every default is the old path; the screenshot is SQUARE in the in-game menu (no row); PC checks PASS (`misc/screen_check`, 178 of 178 mutants); package of 21:37; P10's FB clip was already Region Scissor (bundle 11); not built: Flycast's per-game widescreen table |
 | 13 | MMU and memory (re-cut 2026-10-12; was MMU store queues) | P58, P78 (MMUCR mask, TLB data array 2), P74, P30, P65, bundle 1's P7, P26 write watch and P55 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; bundle 1's rows get their first run; NHL 2K2 | `[ ]` |
 | 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[ ]` added 2026-10-11 |
 | 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[ ]` |
@@ -11379,8 +11552,14 @@ Main gains:
   screen or a game of P60's list; a 2D screen. The old line "none of our
   test games, `rtt=0/0`" is out of date: Crazy Taxi is an RTT game.
 
-### Bundle 12: Screen format and test tools  `[ ]` re-cut 2026-10-12 (was "HW test tools"; it takes the 16:9 items of old bundle 11)
+### Bundle 12: Screen format and test tools  `[x]` HW SUCCESS 2026-10-12 (Matt): FPS Overlay, 16:9 WIDE and Screen Scaler ON in Sonic Adventure; built 2026-10-12, every row at its old path by default; no HW run: the screenshot, 16:9 STRETCH, Cheats (section 0); re-cut 2026-10-12 (was "HW test tools"; it takes the 16:9 items of old bundle 11)
 
+- Built 2026-10-12 (section 0 has the rows, the code, the checks and the
+  HW steps): a new SCREEN page with FPS Overlay, Screen Format (4:3 /
+  16:9 STRETCH / 16:9 WIDE), Screen Scaler and Cheats; the screenshot is
+  SQUARE in the in-game menu. P10's FB clip as a scissor was already
+  built as Region Scissor (bundle 11). The text below is the plan of
+  before the build.
 - Items: P50 (on-screen FPS and SPEED), P51 (screenshot to PNG), P53
   (widescreen geometry), P69's stretch to fill, P10 (the FB clip as a
   scissor, the scaler), P36 (cheat files, 16:9 by cheat).

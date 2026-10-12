@@ -471,11 +471,9 @@ static inline void set_color(u32 argb)
 	glColor4ub((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24);
 }
 
-int ps3ui_begin(u32 bg_argb)
+// The GL state every UI draw needs: pixel coordinates over the whole display, alpha blend, no depth.
+static void ui_state()
 {
-	if (!s_ready || !ps3_video_begin_frame())
-		return 0;
-
 	glViewport(0, 0, (GLsizei)s_w, (GLsizei)s_h);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
@@ -493,6 +491,13 @@ int ps3ui_begin(u32 bg_argb)
 	glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+}
+
+int ps3ui_begin(u32 bg_argb)
+{
+	if (!s_ready || !ps3_video_begin_frame())
+		return 0;
+	ui_state();
 
 	glClearColor(((bg_argb >> 16) & 0xFF) / 255.0f, ((bg_argb >> 8) & 0xFF) / 255.0f,
 	             (bg_argb & 0xFF) / 255.0f, 1.0f);
@@ -519,6 +524,21 @@ void ps3ui_end(void)
 	glDepthMask(GL_TRUE);
 	ps3_video_end_frame();
 	ps3_video_forget_frame();
+}
+
+// P50: the UI state inside a frame the renderer began and will end: no frame start, no clear, no background.
+int ps3ui_overlay_begin(void)
+{
+	if (!s_ready)
+		return 0;
+	ui_state();
+	return 1;
+}
+
+void ps3ui_overlay_end(void)
+{
+	glDisable(GL_BLEND);
+	glDepthMask(GL_TRUE);
 }
 
 void ps3ui_rect(float x, float y, float w, float h, u32 argb)

@@ -55,7 +55,7 @@ order $U 'void ps3ui_end(void)' 'ps3_video_end_frame();' 'ps3_video_forget_frame
 R=ps3/ps3_rend.cpp
 has $R 1 'const bool carry = g_keep_frame_preset && cut && !keep && ps3_video_carry();'
 has $R 1 'cut = x0 > 0.0f || y0 > 0.0f || x1 < cw || y1 < ch;'
-has $R 1 'if (reg && !clip_view_cut(0.0f, 0.0f, cw, ch, x0, y0, x1, y1))'
+has $R 1 'if (reg && !clip_view_cut(sv.cx0, 0.0f, sv.cw, ch, x0, y0, x1, y1))'
 has $R 1 'const u32* px = ps3_video_readback(0, 0, w, h, g_rtt_readback_preset);'
 has $R 1 'const bool fly = g_rtt_pack_preset != 0;'
 has $R 1 'in.by_tiles = g_rtt_size_preset != 0 && g_rr.reg_ok && (fly || packmode <= 3);'

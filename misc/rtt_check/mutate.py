@@ -104,7 +104,7 @@ MUTANTS = [
     ('a carry over a frame that waits', R, '&& cut && !keep && ps3_video_carry();', '&& cut && ps3_video_carry();'),
     ('the cut test forgets the bottom edge', R, 'cut = x0 > 0.0f || y0 > 0.0f || x1 < cw || y1 < ch;',
      'cut = x0 > 0.0f || y0 > 0.0f || x1 < cw;'),
-    ('the region box does not cut the scissor', R, 'if (reg && !clip_view_cut(0.0f', 'if (false && !clip_view_cut(0.0f'),
+    ('the region box does not cut the scissor', R, 'if (reg && !clip_view_cut(sv.cx0', 'if (false && !clip_view_cut(sv.cx0'),
     ('the carry copies the back buffer into the last frame', V,
      'rsxSetTransferDataOffset(s_ctx, s_color_off[s_cur_fb], s_color_off[s_last_fb]);',
      'rsxSetTransferDataOffset(s_ctx, s_color_off[s_last_fb], s_color_off[s_cur_fb]);'),

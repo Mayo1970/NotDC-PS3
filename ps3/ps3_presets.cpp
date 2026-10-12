@@ -192,6 +192,12 @@ int g_present_rule_preset  = 0;   // 1 = a render flips when FB_R_SOF1/2 holds i
 int g_region_scissor_preset = 0;  // 1 = a render draws only inside its region array's tiles and the FB clip (P60)
 int g_fb_reads_preset      = 0;   // 1 = 2D presents read an interlaced buffer whole, the shown field, 24-bit pixels (P26)
 int g_keep_frame_preset    = 1;   // 1 = a render that Region Scissor cuts starts from a copy of the last flipped frame, not black (P60)
+// OPTIMIZATION_PLAN section 7, bundle 12 (screen format and test tools): 0 is the old path in every one; a row is off
+// until it is cleared on hardware.
+int g_fps_overlay_preset   = 0;   // 1 = FPS and SPEED on the screen's left edge, new once a second (P50)
+int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture on every column (P69), 2 = more canvas at the sides (P53)
+int g_screen_scaler_preset = 0;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
+int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -363,6 +369,10 @@ static const CfgItem s_items[] = {
 	{ "MapR2",         &g_pad_map[PADBTN_R2] },
 	{ "MapL3",         &g_pad_map[PADBTN_L3] },
 	{ "MapR3",         &g_pad_map[PADBTN_R3] },
+	{ "FpsOverlay",    &g_fps_overlay_preset },
+	{ "ScreenFormat",  &g_screen_format_preset },
+	{ "ScreenScaler",  &g_screen_scaler_preset },
+	{ "Cheats",        &g_cheats_preset },
 	{ "RttReadback",   &g_rtt_readback_preset },
 	{ "RttScaler",     &g_rtt_scaler_preset },
 	{ "RttSize",       &g_rtt_size_preset },
@@ -539,6 +549,15 @@ static const CfgItem s_out_items[] = {
 };
 #define OUT_ITEMS (sizeof(s_out_items) / sizeof(s_out_items[0]))
 
+// The bundle 12 rows (plan section 7), in the SCREEN page's order. [outcfg] has the rows they act with.
+static const CfgItem s_scr_items[] = {
+	{ "FpsOverlay",    &g_fps_overlay_preset },
+	{ "ScreenFormat",  &g_screen_format_preset },
+	{ "ScreenScaler",  &g_screen_scaler_preset },
+	{ "Cheats",        &g_cheats_preset },
+};
+#define SCR_ITEMS (sizeof(s_scr_items) / sizeof(s_scr_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -607,6 +626,13 @@ void ps3_outcfg_print(const char* when, bool always)
 	static int last[OUT_ITEMS];
 	static bool printed;
 	cfg_print("outcfg", s_out_items, OUT_ITEMS, last, &printed, when, always);
+}
+
+void ps3_scrcfg_print(const char* when, bool always)
+{
+	static int last[SCR_ITEMS];
+	static bool printed;
+	cfg_print("scrcfg", s_scr_items, SCR_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {

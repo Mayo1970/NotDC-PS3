@@ -1157,7 +1157,7 @@ text files checked). Each fix is 1-4 lines.
   from 2352 (`&in[12]`).
 - More GD-ROM hangs, found in the Flycast review: P22.
 
-### P10 PVR register and list rules  `[~]` "Region Array", "List Passes", "Tile Clip", "TA List Regs", "Core Reset" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); Empty Frame left out (Matt); the screen clip and scaler are bundle 11
+### P10 PVR register and list rules  `[~]` "Region Array", "List Passes", "Tile Clip", "TA List Regs", "Core Reset" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); Empty Frame left out (Matt); the screen clip is "Region Scissor" (bundle 11, default OFF); the scaler: "Screen Scaler" built 2026-10-12, bundle 12 (plan section 0), default OFF; HW run 2026-10-12 at ON (Sonic Adventure): no fault, and no change, the game does not use the scaler
 
 Games affected: unknown for each.
 - TA_LIST_INIT sets TA_ISP_CURRENT = TA_ISP_BASE (Reicast
@@ -2695,7 +2695,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   - 6-8K lines, mostly third-party. Medium risk. libchdr byte-order safety
     on the PPU is unverified.
 
-### P36 Cheat files and 16:9 output  `[ ]`
+### P36 Cheat files and 16:9 output  `[~]` "Cheats" built 2026-10-12, bundle 12 (plan section 0), default OFF, no HW run; the 16:9 output is "Screen Format" 16:9 STRETCH; the built-in widescreen table is not taken (a list per game)
 
 - Flycast's built-in widescreen table (`core/cheats.cpp:34-318`) is per game,
   so it breaks Matt's no-per-game-list rule.
@@ -2810,7 +2810,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   `mac()` is asserted, so compare `(mach << 32) | macl`.
 - Risk: none (test only).
 
-### P50 On-screen FPS and SPEED  `[ ]`
+### P50 On-screen FPS and SPEED  `[x]` "FPS Overlay" built 2026-10-12, bundle 12 (plan section 0), HW SUCCESS 2026-10-12 (Sonic Adventure, Matt: "Success!"), default OFF (Matt named no default)
 
 - Ours: SPG already builds "FPS: x / SPEED: y%" every second and calls
   `rend_set_fps_text()` (`plugs/drkPvr/SPG.cpp:334-343`), and the cfg key
@@ -2828,7 +2828,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - Value: Matt reads SPEED on the TV without the UDP listener. Cost: a few
   quads per frame, nothing when OFF. Risk: low-medium (GL state).
 
-### P51 Screenshot to PNG  `[ ]` merged: plan section 0 (Soul Calibur faults, evidence)
+### P51 Screenshot to PNG  `[~]` built 2026-10-12, bundle 12 (plan section 0): SQUARE in the in-game menu, no row, no HW run; merged: plan section 0 (Soul Calibur faults, evidence)
 
 - Minicast: `3b5c9b7` (a mappable button), `e7bb698`, `450eb49`, `22c3a7c`
   (PNG with stb; `libswirl/rend/mister_rend/mister_support.cpp:277`
@@ -2862,7 +2862,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - About 10 lines, a VIDEO option. No CPU cost. Best together with P45;
   whether it helps without mip levels is unverified. Risk: low.
 
-### P53 Widescreen: draw geometry outside 4:3  `[ ]`
+### P53 Widescreen: draw geometry outside 4:3  `[x]` "Screen Format" 16:9 WIDE built 2026-10-12, bundle 12 (plan section 0), HW SUCCESS 2026-10-12 (Sonic Adventure, Matt: "Success!"), default 4:3 (Matt named no default); a render kept at 4:3 by its clip: not seen yet
 
 - Flycast `rend.WideScreen` (`core/cfg/option.cpp:70`):
   - It widens the canvas by 4/3 and centres it
@@ -2884,7 +2884,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - Value: a feature, no speed cost. Games cull at 4:3, so the new areas can
   show missing geometry (Flycast warns of it). Risk: low.
 
-### P69 Stretch to fill and the VMU beep  `[ ]`
+### P69 Stretch to fill and the VMU beep  `[~]` the stretch: "Screen Format" 16:9 STRETCH built 2026-10-12, bundle 12 (plan section 0), default 4:3, no HW run; the VMU beep: open, bundle 18
 
 - Stretch to fill: Flycast `5ff3f974d` (dev, 2026-10-04) adds a
   `rend.StretchToFill` option. It stretches the 4:3 picture to the whole

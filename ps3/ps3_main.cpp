@@ -63,6 +63,7 @@ extern void ps3_input_term();
 extern "C" void ps3_audio_init();
 extern "C" void ps3_audio_term();
 extern void ps3_audio_stats();
+void ps3_cheats_load(const char* disc);   // ps3_cheats.cpp
 
 // No block manager without a JIT. nullDC.cpp calls this with C linkage, which
 // clashes with blockmanager.h, so it lives here and not in ps3_nojit.cpp.
@@ -301,6 +302,8 @@ int main(int argc, char* argv[])
 		goto shutdown;
 	}
 
+	// P36: the picked image's cheat file, when the Cheats row is on.
+	ps3_cheats_load(selectedFilePath);
 	{
 		char* av[] = { (char*)"nulldc", NULL };
 		rv = EmuMain(1, av);
