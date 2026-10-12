@@ -17,6 +17,8 @@ extern "C" int get_speed_limiter_preset();
 // PVR X-scaler preset (ps3/ps3_presets.cpp).
 extern "C" int get_x_scaler_preset();
 #define X_SCALER() (get_x_scaler_preset() != 0)
+// Plan section 7, bundle 11 (P76): FB Line Double.
+extern int g_fb_line_double_preset;
 
 // Hardware-like HOLLY IRQ delays (ps3/ps3_presets.cpp).
 extern "C" int get_render_delay_preset();
@@ -97,17 +99,19 @@ void CalculateSync()
     // SCALER_CTL.hscale: the TA renders 1280 wide and the scaler halves it; with x_scaler on, widen
     // the canvas 2x so the geometry fills the screen (preset off keeps the legacy 640 canvas).
     float scale_x = (X_SCALER() && SCALER_CTL.hscale) ? 2.0f : 1.0f;
+    // P76 (Flycast getPvrFramebufferSize): with fb_line_double each line shows twice, so the canvas is half as high.
+    const float line_double = (g_fb_line_double_preset && FB_R_CTRL.fb_line_double) ? 0.5f : 1.0f;
 
     if (SPG_CONTROL.interlace)
     {
         spg_LineSh4Cycles /= 2;
-        rend_set_fb_scale(scale_x, 1.0f);
+        rend_set_fb_scale(scale_x, line_double);
     }
     else
     {
         rend_set_fb_scale(scale_x,
-            ((SPG_CONTROL.NTSC == 0 && SPG_CONTROL.PAL == 0) ||
-             (SPG_CONTROL.NTSC == 1 && SPG_CONTROL.PAL == 1)) ? 1.0f : 0.5f);
+            (((SPG_CONTROL.NTSC == 0 && SPG_CONTROL.PAL == 0) ||
+              (SPG_CONTROL.NTSC == 1 && SPG_CONTROL.PAL == 1)) ? 1.0f : 0.5f) * line_double);
     }
 
     spg_FrameSh4Cycles = spg_ScanlineCount * spg_LineSh4Cycles;

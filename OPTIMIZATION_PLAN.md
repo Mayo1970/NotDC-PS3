@@ -13,6 +13,337 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-12)
 
+**Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
+work is in bundles 10 to 21 now. Bundles 1-9 are closed, and the table of
+section 7 says where each tail went. A bundle number in the blocks below
+has its meaning of before the re-cut: old 10 (Maple) is now 10 and 16,
+old 11 (Output stage) is 11 and 12, 13 and 15 grew, 16-21 are new.
+Nothing is built by the re-cut. Recommended order: 11, 13, 14, 10, 15,
+19, 17, 12, 16, 18, 20, then 21, then G11, then G10 with G13.**
+
+**Bundles 10 (Controllers) and 11 (render to texture and present) built
+2026-10-12 (Matt: "Let's go with Bundle 10 and 11 together."), HW SUCCESS
+2026-10-12 after HW runs 1 and 2 (Matt: "It's okay on that. We can
+consider this a success."). Package of 17:40 on 2026-10-12
+(`build/notdc_ps3.pkg`, 1553328 bytes) = commit 68def3c + both bundles.
+Matt named no default for these rows: each one keeps its old path as the
+default (the one exception is Keep Last Frame, in the next paragraph),
+so with the defaults the build acts as before, and the Crazy Taxi pause
+still freezes until OUTPUT -> "RTT Read-back" is FIXED. Left, not
+planned: the Looney Tunes boot videos (cause not known), the rows with no
+HW run (Present Rule, RTT Size TILE CLIP, Stick Dead Zone RADIAL, Rumble
+Pack, a button-map change). Next in the recommended order: 13.**
+
+**The fix for the Looney Tunes race loading screen, built 2026-10-12
+after the verdict (Matt: "Wait, about the Looney Tunes loading screen...
+Fix it. It's in this bundle, right?"): HW SUCCESS 2026-10-12 (Matt:
+"Success! The image stays."). Row OUTPUT -> "Keep Last Frame" (OFF / ON,
+live), it acts with Region Scissor ON. Package of 19:52 on 2026-10-12
+(1553584 bytes) = the package of 17:40 + this row. Default ON in source
+since 2026-10-12 (Matt: "Success! Keep it up as default."), not
+packaged: the package of 19:52 has OFF. Region Scissor is still default
+OFF, so with the defaults alone the row does nothing; Matt has not named
+a default for Region Scissor. The entry "Keep Last Frame" at the end of
+this block has the code, the checks and the HW runs.**
+- Bundle 10, the CONTROLS page (it scrolls now; a `[padcfg]` line at
+  boot):
+  - Controller: STANDARD PAD / FULL (2 STICKS) (GOALS.md G12). FULL is
+    Flycast's full controller: capability word 0xffff3f00, the name
+    "Dreamcast PantherDC Controller", X2/Y2 from the DS3 right stick, the
+    two VMU slots. `[ps3] Controller` is 0 or 1; `get_controller_type()`
+    gives 5 for FULL. The 0xF901 button mask stays (G12 step 3). Set
+    before boot.
+  - Stick Dead Zone: AXIS (each axis cut below 20, as before) / RADIAL
+    (P84: a 10% radial zone with a rescale, then the magnitude limit of
+    128; on both sticks). Read at each poll.
+  - Rumble Pack: OFF / ON (P13). ON plugs Flycast's Puru Puru device in
+    slot 2 of each port, so the second VMU is not plugged. The DS3's
+    large motor takes the power; the stop time and the falling slope run
+    at the controller polls; the in-game menu and the exit stop the
+    motors. `[pad] dcN rumble power= slope= ms= motor=` shows the first
+    16 commands. Set before boot.
+  - 15 button-map rows, Cross to R3 (GOALS.md G10 step 3): `[ps3]` keys
+    MapCross ... MapR3 with the values NONE, A, B, X, Y, START, the four
+    D-pad directions, L TRIGGER, R TRIGGER. The defaults are the old
+    fixed map. L2/R2 keep their pressure on a trigger. C, Z and D are not
+    offered (P84: "If Matt wants them"; the mask would have to go).
+  - Code: `ps3/ps3_padmap.h` (the map and the stick),
+    `dc/maple/maple_puru.h` (the SetCondition decode),
+    `ps3/ps3_input.cpp`, `dc/maple/maple_devs.cpp`, `maple_cfg.cpp`.
+- Bundle 11, a new OUTPUT page (an `[outcfg]` line at boot and at a menu
+  change):
+  - RTT Read-back: OLD / FIXED (P75). FIXED: the three straight-line
+    transfer calls, then a wait on a new reference value with a 2 s limit
+    (`[vid] the RSX did not reach reference` on a miss). OLD is PSL1GHT's
+    `rsxSetTransferData`, which never returns.
+  - RTT Scaler: OFF / ON (P66, Flycast `8d4188159`): SCALER_CTL scales a
+    render to texture (hscale halves the width, vscalefactor / 1024
+    divides the height).
+  - RTT Size: FB CLIP / TILE CLIP (P76). TILE CLIP is Flycast's rule: the
+    scene is the region array's tiles inside TA_GLOB_TILE_CLIP, and the
+    FB clip cuts the copy.
+  - RTT Pack: OLD / FLYCAST (P54, P66, P76): the 1555 alpha bit from
+    fb_alpha_threshold, channels rounded, each pixel at its clip
+    position, the row cut at FB_W_LINESTRIDE, no copy in pack modes 4-7,
+    the target cleared to alpha 0.
+  - Draw Retry: OFF / ON (P76): a render to texture waits up to 250 ms
+    for a free buffer; a 2D present that found none is tried again at the
+    next vblank.
+  - FB Line Double: OFF / ON (P76): the bit halves the canvas height. It
+    acts at the next video mode write: set before boot.
+  - Blank Video: OFF / ON (P76): a 2D present with VO_CONTROL bit 3 shows
+    VO_BORDER_COL.
+  - Present Rule: ALL / SHOWN / + KEEP COLOUR (P60). SHOWN: a render is
+    flipped at its end only if FB_R_SOF1 holds its FB_W_SOF1; else it
+    stays in the back buffer, and the game's FB_R_SOF1/2 write flips it
+    (`FbShown()`, called from `plugs/drkPvr/regs.cpp`). + KEEP COLOUR: a
+    render over a frame that waits does not clear the colour, unless its
+    buffer is not one of the last two (Flycast's rule). With the rule on,
+    a render to texture draws on its own RSX surface (3.7 MB of RSX
+    memory, always allocated), not in the back buffer. Frame Hold places
+    no flip for a frame that waits.
+  - Region Scissor: OFF / ON (P60): a render draws only inside the region
+    array's tiles and the FB clip (the clip times the scaler's factors).
+  - Keep Last Frame: OFF / ON (P60, added in the package of 19:52): a
+    render that Region Scissor cuts starts from a copy of the last flipped
+    frame, not from black (the entry at the end of this block).
+  - FB Reads: OLD / FLYCAST (P26): two interlaced fields one line apart
+    are read as one image, else the shown field; 240 lines at the 13.5
+    MHz clock; 24-bit frames are converted (on the PPU).
+  - Log: `[rtt]` lines give the registers and the geometry of the first
+    render to texture and of each new set (24 lines at most), and each
+    read-back's start and end (8 times). `[out] rtt_wait= held= shown=
+    keep= scissor= retry= blank=` comes per stats window when a row is on.
+  - Code: `ps3/ps3_rtt.h` (geometry, packing, the 2D read),
+    `ps3/ps3_video.c`, `ps3/ps3_rend.cpp`, `plugs/drkPvr/regs.cpp`,
+    `SPG.cpp`.
+- Not built, and why:
+  - P26's fb_concat bits: the SPU FB convert has no such step, and a rule
+    on the PPU only would break SPE FB Convert CHECK.
+  - P54's writers for pack modes 4 and 5: P76 found that no reference
+    renders to texture in modes 4-7.
+  - P60's colour that stays from one shown frame to the next: Flycast has
+    one target, the PS3 flips three buffers. The colour stays only over a
+    frame that waits, as the P60 outline says. Built later the same day
+    for the renders that Region Scissor cuts: row "Keep Last Frame" (the
+    entry at the end of this block).
+- Found in the old logs (every `[rend]` window of every scratchpad log,
+  split per boot):
+  - `rtt=` is 0 in all games. The Crazy Taxi pause is the only render to
+    texture seen.
+  - Looney Tunes (62 of 66 boots, at about t=72 s) and Quake3.cdi print
+    `24-bit framebuffer read not handled`: both have a 24-bit 2D screen
+    that is not shown today. That is the HW test for FB Reads.
+  - Most 2D presents: Rayman 2 (368), Looney Tunes (206), Crazy Taxi
+    (154, one per boot).
+- PC checks, WSL:
+  - `misc/pad_check/run.sh`: PASS. The default map against the old code
+    for every set of buttons; the stick against Flycast's code (1 step
+    apart at most, 2 at the rim: Flycast cuts the 16-bit value, ours
+    rounds); the pack decode against Flycast's code, 250 M words; 45
+    source lines. `mutate.py`: 37 of 37 mutants fail.
+  - `misc/rtt_check/run.sh`: PASS. The packing against Flycast's line
+    writers; the geometry against the old code, Flycast's size, matrix
+    and copy rules, and a model of the scaler and the FB clip, 3 M cases;
+    the 2D read against Flycast's ReadFramebuffer, 2 M cases; 24-bit
+    pixels; 80 source line checks. `mutate.py`: 88 of 88 mutants fail.
+  - `misc/rend4_check`, `timebase_check`, `clock_check`, `sysgate_check`:
+    PASS with the new code. The last three did not link since bundle 9
+    (no stub for `arm_p49_dump`); one stub line added.
+- Link: `r2off` 0, `.got` 0xDB10.
+- Not checked on the PC: every RSX call (the transfer, the RTT surface),
+  the render thread's flip protocol, the pad and motor calls.
+- HW steps (UDP listener on port 18194, only when Matt says so). An
+  install keeps the settings; every new row starts at its first value.
+  1. Run 1, the freeze. OUTPUT -> RTT Read-back FIXED. Crazy Taxi: START
+     in a drive, resume, START again. Expected: no freeze, both times;
+     the pause background can be wrong. Log: the `[rtt]` lines (the
+     registers), `read-back done in N ms`, `rtt=N/N` in `[rend]`.
+  2. Same boot, SELECT menu (the rows are live): RTT Scaler ON, pause
+     again. If the background is still wrong: RTT Size TILE CLIP, then
+     RTT Pack FLYCAST; one change per pause.
+  3. Run 2, present. Present Rule SHOWN, then + KEEP COLOUR, Region
+     Scissor ON. Crazy Taxi: the play looks as before, and `[out] held=`
+     equals `shown=`. Quake3.cdi, split screen with 2 pads: both halves
+     stay on the screen.
+  4. Run 3, 2D screens. FB Reads FLYCAST, Draw Retry ON, Blank Video ON.
+     Looney Tunes and Quake3.cdi from boot: a screen that was not shown
+     appears, and the line `24-bit framebuffer read not handled` is gone.
+  5. Run 4, controllers. CONTROLS -> Stick Dead Zone RADIAL: Crazy Taxi,
+     the steering. Controller FULL (2 STICKS): Quake3.cdi, the right
+     stick. Rumble Pack ON: Crazy Taxi (not known if it sends commands:
+     the `[pad] dc0 rumble` lines tell). One map change, for example L3
+     to START.
+  6. On a fault: the row back to its first value; note the game and
+     when. RTT Read-back OLD at a render to texture is the old freeze.
+- **HW run 1, 2026-10-12 ~17:57-18:13: the Crazy Taxi pause is a
+  SUCCESS** (Matt: "Tested Crazy Taxi and it works as intended. Looney
+  Tunes still doesn't display the videos. Various games crashed. I still
+  have to try Quake 3 Arena with the dual stick setup."). Package of
+  17:40. Log: `sa_anim1.txt` of session d13d658e (its listener held the
+  port) from line 196291; the cut is `b1011_run.txt` in the scratchpad of
+  session 27a662ce. Five boots, each with a clean exit and no fault line.
+  - `[outcfg]`, the same in all five: RTT Read-back FIXED, RTT Scaler ON,
+    RTT Pack FLYCAST, Draw Retry ON, FB Line Double ON, Region Scissor
+    ON, FB Reads FLYCAST; RTT Size FB CLIP, Blank Video OFF, Present Rule
+    ALL. `[padcfg]`: every CONTROLS row at its default.
+  - Crazy Taxi: two pauses, no freeze. `[rtt] sof1=01530080
+    ctrl=00000009 stride=1024 fbclip=0..511,0..480 glob=640x480
+    tiles=0..640,0..480 scaler=00401`: a 512 x 481 target in 565, no
+    scaling (the factor is 1025). `read-back done in 0.5 ms` and `0.7
+    ms`. SPEED median 100.0% over the 71 s. Region Scissor cut 40
+    renders in two windows; Matt named no picture fault.
+  - Looney Tunes (PAL 50 at boot), what the log shows:
+    - The 24-bit screen is presented now: 2 presents by the PPU convert
+      at second 13, and no `24-bit framebuffer read not handled` line.
+      It is one still screen just before the intro video.
+    - The intro video (seconds 14-25): 640 x 480 in a 1024 x 512 YUV
+      texture, 16800 macroblocks/s = 14 frames/s, 64 decodes and 249
+      renders per window. The boot of 02:45 (the old build,
+      `b8_hash2_lt_x30.txt`) has 60-67 decodes and 250-253 renders
+      there: the same.
+    - Seconds 96-135: 2-3 renders per second, each one cut by Region
+      Scissor (31 of 31 in a window), 32 translucent strips with a tile
+      clip, the disc worker at 25 fills/s, no texture decode, no YUV
+      DMA, no store queue or DMA to VRAM, `fb=0`. My reading (not
+      proven): the game writes a video straight into the framebuffer
+      and the PVR draws only an overlay; our renderer never shows that
+      framebuffer. FB Write Watch (bundle 1, never exercised) was OFF
+      (`FbWatch=0`). Open: which videos Matt means; a run with FB Write
+      Watch ON.
+  - Capcom vs. SNK 2: 10 renders/s after the boot, 25 s, then the exit.
+    Ikaruga and Border Down: 0 renders after the BIOS logo, the SH4
+    runs on. These are the open faults of bundle 21 (the menus) and
+    bundle 13 (MMU). Not known: if Matt means these three by "crashed",
+    and if there were more games (the log holds five boots).
+  - Not run yet: Present Rule, RTT Size TILE CLIP, Blank Video, every
+    CONTROLS row (Quake III Arena with FULL: Matt, later).
+- **HW run 2, 2026-10-12 ~19:15-19:29: the second stick is a SUCCESS**
+  (Matt: "Quake 3 double sticks works"). Same log file, lines
+  224133-237900; cuts `b1011_run2.txt` and `b1011_lt2.txt`. Package of
+  17:40.
+  - Quake3.cdi, Controller FULL (`[padcfg] Controller=1`): 18 `joy2=`
+    lines, the right stick from -60 to 112 and from -90 to 46. No
+    `24-bit framebuffer read not handled` line. SPEED median 99.9%. This
+    is GOALS.md G12 step 5; Crazy Taxi and Looney Tunes ran with STANDARD
+    PAD as before.
+  - Looney Tunes, FB Write Watch ON, Blank Video ON, FB Reads FLYCAST
+    (the test for the videos; Matt: "It's at boot."):
+    - 7 2D presents in the boot; 6 of them were blanked (`blank=3`, `1`,
+      `2`): VO_CONTROL has the video blanked while the game shows those
+      frames, the 24-bit ones too. So the 24-bit screen of run 1 is not
+      a picture. The watch caused 2 presents (`fbw=2`) in 130 s.
+    - So the game writes no video into the framebuffer at boot: my
+      reading of run 1 was wrong for the boot. The boot videos are the
+      YUV frames of seconds 16-27 (`dma KB/s yuv=` 3500-7500, 50 renders
+      per second, 53 SPU decodes per window, one opaque strip over
+      0..640, 0..480 with the YUV texture, 230-251 flips per window).
+      The same lines as in `ps3log_p42_run1.txt` of 2026-10-07, when
+      Matt saw the video ("Perfect."). The log does not show why the TV
+      has no video. Not known: what the TV shows there, and since which
+      build. On this path since 2026-10-07: SPE Tex Decode (the SPU
+      decodes this texture), Anisotropic 16x, Fog TABLE, and today's
+      rows.
+  - Looney Tunes, a second fault (Matt: "when loading a race it would
+    display a picture and then a black frame (except the loading bar)
+    until getting in-game"). The log fits: while the race loads, the
+    game sends 2-3 renders per second and Region Scissor cuts each one
+    (run 1: 31 of 31 in a window; run 2: 18, 8, 26). The game redraws
+    only the tiles of the bar and counts on the rest of the framebuffer.
+    We clear each new back buffer. This is the part of P60 that is not
+    built (the colour that stays from one shown frame to the next); with
+    Region Scissor OFF the background plane paints the whole screen, so
+    the old builds must show the same (inferred). A fix needs the last
+    shown frame under such a render, for example one RSX copy into the
+    back buffer before a render that Region Scissor cuts. Not built:
+    Matt 2026-10-12, on the question to build it now: "It's okay on
+    that."
+  - "The three games that crashed: frozen at boot. Couldn't exit to
+    XMB." (Matt). The log has a quit request and a clean exit for each of
+    Capcom vs. SNK 2, Ikaruga and Border Down. Likely (not checked): a
+    frozen game sends no new frame, and the PS3 draws its PS-button menu
+    over new frames only. The freezes are bundle 13's and bundle 21's.
+- **Verdict, Matt 2026-10-12: "It's okay on that. We can consider this a
+  success."** ("It's okay on that" answered the question to build the
+  loading-screen fix now; Matt asked for that fix in his next message,
+  see the entry below.) Both bundles are done. No default changes: Matt
+  named none, so every row stays at its old path in source. Validated on
+  HW: RTT Read-back FIXED (the Crazy Taxi pause) and Controller FULL
+  (Quake III Arena). Ran with no fault that Matt named, in the same runs:
+  RTT Scaler, RTT Pack FLYCAST, Draw Retry, FB Line Double, Region
+  Scissor (but see the race loading screen above), FB Reads FLYCAST,
+  Blank Video. No HW run: Present Rule, RTT Size TILE CLIP, Stick Dead
+  Zone RADIAL, Rumble Pack, a button-map change. The Looney Tunes boot
+  videos stay open with no cause.
+- **Keep Last Frame, built 2026-10-12 after the verdict (Matt: "Wait,
+  about the Looney Tunes loading screen... Fix it. It's in this bundle,
+  right?"). It is: the part of P60 that was not built. Package of 19:52
+  (`build/notdc_ps3.pkg`, 1553584 bytes). HW SUCCESS 2026-10-12 (HW run
+  3, the last item of this entry).**
+  - The fault (HW runs 1 and 2): while the race loads, the game sends 2-3
+    renders per second that draw only the tiles of the loading bar. On a
+    Dreamcast the rest of the framebuffer keeps its picture. Region
+    Scissor cuts each of these renders, and each new back buffer is
+    cleared, so the screen is black but the bar.
+  - The fix: row OUTPUT -> "Keep Last Frame" (OFF / ON, live, `[ps3]
+    KeepFrame`; default OFF in the package of 19:52, ON in source since
+    the HW runs). ON: when Region Scissor cuts a render, the
+    RSX copies the last flipped display buffer into the new back buffer
+    (`ps3_video_carry()`: one transfer inside RSX memory with the three
+    straight-line calls of the read-back, mode LOCAL_TO_LOCAL, the whole
+    buffer), and the colour clear is left out. The depth and the stencil
+    are cleared as before. A render with no pixel left in its scissor
+    then shows the old frame again.
+  - Not a source: a menu frame (`ps3ui_end()` forgets the last frame, so
+    the first cut render after the menu starts from black, as today) and
+    a render to texture (it never flips). A 2D present is a source.
+  - It does nothing with Region Scissor OFF (no render is cut), for a
+    render of the whole screen, and over a frame that waits (Present Rule
+    + KEEP COLOUR draws in place there).
+  - Cost: one copy of 3.7 MB (1280 x 720) inside RSX memory per cut
+    render. Not measured. Crazy Taxi had 40 cut renders in two stats
+    windows of HW run 1.
+  - Log: `[outcfg]` has `KeepFrame=`; the `[out]` line has `carry=` (cut
+    renders that started from the last frame) after `blank=`.
+  - Code: `ps3/ps3_video.c` (`s_last_fb`, `ps3_video_carry()`,
+    `ps3_video_forget_frame()`), `ps3/ps3_rend.cpp` (`draw_frame()`: the
+    region box is found before the clear), `ps3/ps3_ui.cpp`, the row and
+    the key.
+  - PC checks, WSL: `misc/rtt_check/run.sh` PASS (95 source line checks
+    now); `mutate.py`: 107 of 107 mutants fail (19 new). `misc/rend4_check`
+    PASS. Link: `r2off` 0, `.got` 0xDB28. Not checked on the PC: the RSX
+    copy itself.
+  - HW steps. An install keeps the settings, so RTT Read-back FIXED and
+    Region Scissor ON are still set from HW run 2.
+    1. OUTPUT -> Keep Last Frame ON. Region Scissor stays ON.
+    2. Looney Tunes: start a race. Expected: the loading picture stays
+       under the loading bar until the race starts.
+    3. Crazy Taxi, a short drive and one pause: the picture as before.
+    4. Log: in the `[out]` lines while the race loads, `carry=` equals
+       `scissor=` (one less for the first cut render after the menu).
+    5. On a fault: Keep Last Frame OFF; note the game and when.
+  - **HW run 3, 2026-10-12 ~20:00: Looney Tunes, Keep Last Frame ON,
+    Region Scissor ON: SUCCESS (Matt: "Success! The image stays.").**
+    Package of 19:52 (`[outcfg] ... RegionScissor=1 FbReads=1
+    KeepFrame=1`). Log: `sa_anim1.txt` of session d13d658e from line
+    237901; the cut is `b1011_run3.txt` in the scratchpad of session
+    27a662ce. Three stats windows have cut renders: `scissor=9 carry=9`,
+    `12` and `12`, `31` and `31`, so each cut render started from the last
+    frame. `job_max` is 2-3 ms in these windows. No fault line, no `[vid]
+    the RSX did not reach reference` line. Five more windows of the same
+    boot, read later: `scissor=` and `carry=` are 15, 12, 11, 11, 15.
+  - **HW run 4, 2026-10-12 ~20:10: Crazy Taxi, Keep Last Frame ON, Region
+    Scissor ON: SUCCESS (Matt: "Success! Keep it up as default.").** Same
+    log file, lines 244773-251489; the cut is `b1011_run4.txt`. A boot of
+    149 s with a clean exit: cut renders in two windows (`scissor=1
+    carry=1`, `scissor=58 carry=58`), two pauses (`read-back done in 0.3
+    ms`, twice), no fault line.
+  - **Default ON in source since 2026-10-12 (Matt), not packaged.**
+    `misc/rtt_check/run.sh` checks the new default. An install keeps the
+    old settings, so the default acts only on a new install. Region
+    Scissor stays default OFF (Matt named no default for it), and Keep
+    Last Frame does nothing without it.
+
 **Built 2026-10-12, HW SUCCESS on the picture (Ecco the Dolphin: run 2 at
 + VERTEX, Matt: "Everything looked right!"; run 3 at TABLE, Matt: "No
 graphical glitches."); runs 1-3 have no fault. Default TABLE in source
@@ -111,9 +442,20 @@ fog. Row RENDERER -> "Fog": OFF (default in those packages) / TABLE /
     the motion cannot be even. Not the fog: 22.7 with Fog OFF, 22-24
     beside it. Not the PS3: `[pace] slept` 36-61 of 60 calls, render
     thread 5-26%. The game needs more emulated SH4 time than 2 vblanks
-    give. Not known: what a real Dreamcast does in this scene. A row to
-    try, not tried: JIT IDLE RULE X3 BACKWARD (this run has X30; `[jit8]
+    give. Not known: what a real Dreamcast does in this scene. I named
+    JIT IDLE RULE X3 BACKWARD as a row to try (this run has X30; `[jit8]
     idle rule 0 billed=5500`), as for Sonic Adventure and PSO.
+  - **HW run 4, 2026-10-12 ~15:29-15:31: Ecco the Dolphin, JIT IDLE RULE
+    X3 BACKWARD, Fog TABLE** (Matt: "x3 backward runs worse."; same log
+    file, lines 193304-196288, 87 s, the first 3D scene only). The log
+    agrees: SPEED 47-51% (VPS 28-30.5) for the 22 s of the scene, 15.6-17
+    frames per second, `[pace] slept=0`, the sound silent in 94-96 of 95
+    blocks per second. The same scene at X30 (run 3): SPEED 100%, 29-34
+    frames per second, `slept` 59-61. So Ecco is a game that X3 breaks,
+    as Looney Tunes and Quake 3: it has no host time for it. X30 stays
+    its level. My hint was wrong for this game: the count of sleeps at
+    X30 did not show how little host time was left. The uneven frame
+    rate at X30 stays open, with no row to name for it.
   - Close: `g_fog_preset = 1` in `ps3/ps3_presets.cpp` (Matt: "Let's set
     it to TABLE."). An install that has the `Fog` key keeps its value.
     No build by this session after the change.
@@ -10013,23 +10355,53 @@ table and in each bundle). Bundles 13, 14 and 15 are new: they hold the
 items that had no bundle, with P58 and P59 of the fifth review. P83 stays
 with GOALS.md G11. Nothing of this is built.
 
+Re-cut 2026-10-12 (Matt: "take the bundles, the goals, the unbundled
+parts, and make them more fitting and more balanced. Keeping in mind which
+parts I've done already.", then "Yes, do it."): the open work is cut again
+into bundles 10 to 21.
+- Closed: bundles 1, 2, 3, 4, 8 and 9 are done. Bundles 5, 6 and 7 are
+  closed as bundles: their main parts are done. The table says where each
+  tail went.
+- Bundles 10 to 15 keep their numbers and their core. Old bundle 10
+  (Maple) is now 10 (controllers) and 16 (the bus and the VMU). Old bundle
+  11 (Output stage) is now 11 (render to texture and present) and 12,
+  which also keeps the test tools. Bundle 13 takes the memory fixes and
+  the three rows of bundle 1 that never ran. Bundle 15 takes the clock.
+- Bundles 17 to 20 hold the tails of the closed bundles, one per code
+  area. Bundle 21 holds what Matt parked for the end.
+- Goals (GOALS.md): G12 is inside bundle 10. G10's remap and dead zone are
+  in bundle 10, its flash save in bundle 15. G11 comes after bundle 15.
+  G13 is last, with the rest of G10. G9 is closed.
+- Order recommended: 11, 13, 14, 10, 15, 19, 17, 12, 16, 18, 20, then 21,
+  then G11, then G10 with G13. Matt picks.
+- A bundle number in a text of before 2026-10-12 (section 0, the item
+  table of `OPTIMIZATION_POTENTIAL.md` where it says so) has its old
+  meaning.
+Nothing of the open bundles is built by this re-cut.
+
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
-| 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF |
-| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt); P77 and P82's lead-out stop added 2026-10-11, open | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls; P77: no endless loop at a disc swap | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet |
-| 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[x]` HW SUCCESS 2026-10-10 (Crazy Taxi, Sonic Adventure; section 0): P45, P52 and the P25 VQ formats, 4 rows on the TEXTURES page; default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (Matt); not packaged (the package of 22:06 has them OFF); VQ Formats not tested by a game that needs it; the P25 trilinear weights left out and P1 steps 2-3 dropped (Matt) |
-| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt); P79 and P80 added 2026-10-11, open | image fixes in 8 named games and KOS homebrew; no render-thread hang; P79: punch-through edges, P80: trapezoid sprites | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet |
-| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE; P81 and P82's EXTS read-back added 2026-10-11, open | the Crazy Taxi crackle (F2); the DSP ring in wave RAM; P81: a probe for the Looney Tunes balance and the SPU clipping | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW |
-| 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later |
-| 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[~]` HW runs 1-2 2026-10-11 (Crazy Taxi, ChuChu Rocket; section 0): 5 rows on a new TIMING page; TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset ran with no fault and are default ON (Matt: "Keep them as default, they seem harmless."), in the packages since 22:16 (the package of 21:15 has them OFF); TMU Clock stays SH4, no HW run: EFF needs SH4 Clock 150 to act and Matt keeps 200; **TMU Fine TCNT default OFF again since 2026-10-12 (Matt)**: about 95 ns per TCNT read, Quake3.cdi -10 to -17 SPEED points with it (bundle 8 runs 15 and 17), not packaged; PC checks PASS (`misc/timebase_check`) |
-| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[x]` HW SUCCESS 2026-10-12 (Matt: "still mark this as a success"): JIT BCACHE default ON, JIT IDLE RULE default X30 with X3 BACKWARD as a level, FPU DN row removed (5.40 no effect), not packaged; open list "more friendly for other users" under Bundle 8; history: the JIT items built 2026-10-11 (Matt: "Ignore the Interpreter parts. I want JIT/Dynarec stuff."; section 0): rows JIT BCACHE, JIT PR MOVES (no fneg), JIT RM 2/3, JIT IDLE RULE and FPU DN on the JIT SPEED page, default OFF, and the JIT MAC fix; a `[ni]` probe for 5.40; PC checks PASS (`misc/jit8_check`, 78 of 78 mutants); package of 22:43; HW run 1 2026-10-11 (Crazy Taxi, rows OFF): clean, and 5.40 CLOSED by Matt (NI does nothing on the PPE); HW run 2 (Looney Tunes, JIT IDLE RULE X3 BACKWARD): the race draws 29.95 frames per emulated second (26.4) but SPEED is 60.9%, 18.2 frames per wall second (Matt: "It runs much worse"); HW run 3 (OFF): the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X30 stays the default; HW run 9 (Sonic Adventure, X3 BACKWARD, JIT BCACHE ON): "VERY smooth" (Matt), 29.69 frames/s (28.65 at X30), 14K+ scenes 29.6 (26.3), SPEED 100%; HW run 10 (Phantasy Star Online, X3 BACKWARD): the 20 fps scene at 30.0 frames/s, SPEED 100%: the level is a per-game matter, open; HW runs 7-8 (Sonic Adventure, Phantasy Star Online, JIT BCACHE ON, X30): clean, frame rates as before; HW run 4 (Crazy Taxi, JIT BCACHE ON): correct (Matt: "Look and sounded fine"), 9255 sites, no gain to see there; HW run 6 (Looney Tunes, JIT BCACHE ON): HW SUCCESS, the race at SPEED 99.95% (97.62% OFF), sleep 58.6 ms/s (24.1), Matt: "It's much better", default ON in source since 2026-10-11 (not packaged); HW run 5 (Looney Tunes, JIT PR MOVES ON) did not hit the row (`prmoves=0`: the wrong game, it has no PR=1 FPU op); JIT PR MOVES, JIT MAC and JIT RM 2/3 have no HW run yet; P46, P32 and P78's RFCR not built; 5.37 done 2026-10-10, HW SUCCESS |
-| 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[x]` HW SUCCESS 2026-10-12; built 2026-10-12 (section 0): the P49 census (log only, three decoders), P40's tests and the STR cases (`arm7_optest.h`), row "ARM7 STR Align" on the AUDIO page, default OFF; PC checks PASS; package of 09:34; **HW runs 1-3 2026-10-12: the tests pass on all three engines (the JIT at boot); census A 0, B 0 in ChuChu Rocket and Crazy Taxi (the P49 fix has no target there, not built); "ARM7 STR Align" ON fixes F1, the ChuChu Rocket slow sound (Matt: "THE SOUND IS FIXED")**; HW runs 4-5 (Sonic Adventure, Looney Tunes, row ON): no unaligned store, no P49 form, no fault; **CLOSED 2026-10-12 (Matt), the row default ON in source, not packaged** |
-| 10 | Maple | P29, P9 SB_MDST, P13, P37; P84's stick dead zone added 2026-10-11 | Geist Force and Silent Scope; DS3 rumble; one VMU file per game; a smooth analog stick | `[ ]` |
-| 11 | Output stage | P10 (clip, scaler), P53, P36, P26 reads, P54 (RTT note); P75 and P76 added 2026-10-11 | the Crazy Taxi pause freeze (P75, first); 16:9 output; RTT games; 24-bit and interlaced 2D screens | `[ ]` |
-| 12 | HW test tools | P50, P51 (section 0, Soul Calibur faults) | SPEED on the TV without the UDP listener; PNG evidence | `[ ]` |
-| 13 | MMU store queues | P58, P78 (MMUCR mask, TLB data array 2), P74 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; opens bundle 1's P7 and P26 rows | `[ ]` added 2026-10-11 |
+| 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF; re-cut 2026-10-12: P7, the P26 write watch and P55 wait in bundle 13 |
+| 2 | GD-ROM and disc images | 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp, the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23 GDI parser, P57 GDI paths, P34; P61 and P62 added 2026-10-10 (Matt); P77 and P82's lead-out stop added 2026-10-11, open | hangs and freezes in 10 named games; GDI sets; multi-disc games; one fix point for the CD-DA miss stalls; P77: no endless loop at a disc swap | `[x]` HW SUCCESS 2026-10-10 (ChuChu Rocket, Crazy Taxi; section 0): 14 rows on the GD-ROM page, all default ON in source (Matt), GD-ROM Speed REAL; packaged since the package of 22:06 (bundle 3); Disc Swap and the GDI rows not tested on HW yet; re-cut 2026-10-12: tail in bundle 19 (P77, the Disc Swap and GDI HW tests, the lead-out stop) |
+| 3 | Texture path | P45, P52, P25 (trilinear, VQ formats), P1 steps 2-3 (section 0) | mipmaps on about half of the texture fills; palette VQ and planar VQ textures right | `[x]` HW SUCCESS 2026-10-10 (Crazy Taxi, Sonic Adventure; section 0): P45, P52 and the P25 VQ formats, 4 rows on the TEXTURES page; default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (Matt); not packaged (the package of 22:06 has them OFF); VQ Formats not tested by a game that needs it; the P25 trilinear weights left out and P1 steps 2-3 dropped (Matt); re-cut 2026-10-12: tail in bundle 17 (the trilinear weights, a game for VQ Formats) |
+| 4 | TA decode and draw rules | P8, P27 (3c), P25 (depth write, sprite cull, flat shading), P10 (lists, registers, tile clip, empty frame), P9 TA replay; P63 and three P66 items added 2026-10-10 (Matt); P79 and P80 added 2026-10-11, open | image fixes in 8 named games and KOS homebrew; no render-thread hang; P79: punch-through edges, P80: trapezoid sprites | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi, Sonic Adventure, Jet Grind Radio, Rayman 2; section 0): 16 rows on the RENDERER page; default ON in source (Matt) but TR Depth Write (GAME) and Flat Shading (OFF); Empty Frame left out (Matt); Sprite Cull, Tile Clip, List Passes, the TR volume draw and the TA Data Gate not used by a game yet; re-cut 2026-10-12: tail in bundle 17 (P79, P80, the rows no game used); the cost of 3k is bundle 14 |
+| 5 | AICA RAM coherency | 6.6, P20 G2-G4 (5.13), P31 Mono and LFORE; P81 and P82's EXTS read-back added 2026-10-11, open | the Crazy Taxi crackle (F2); the DSP ring in wave RAM; P81: a probe for the Looney Tunes balance and the SPU clipping | `[~]` HW runs 1-4 2026-10-11 (section 0): SPE AICA Sync HW SUCCESS (F2 fixed: menu at ON, drive at + SAMPLE SYNC, the default since the package of 18:46, Matt), DSP Ring RAM no fault in PSO, default ON since the package of 15:02 (Matt); SPE AICA Gain added, stays at 100% (clipping was not the cause); the other 4 rows OFF: Mono Mix Fix ran with no word, DSP Ring 64K, DSP Reg Reads and LFORE Keep not on HW; re-cut 2026-10-12: closed as a bundle, tail in bundle 18 (the four OFF rows, P81, P82) |
+| 6 | G2 DMA | P24 (6.5), P9 SB_ADDIR | Bangai-O and Nomad Soul freezes | `[~]` built 2026-10-11 (section 0): the rows G2 DMA Small and G2 DMA Read on the AUDIO page, default OFF, live; PC checks PASS; package of 19:22; HW run 1 2026-10-11 (ChuChu Rocket): the rows work, no fault, no fix for F1 (Matt: "Neither fixes the issue."); PARKED by Matt 2026-10-11, he tests Bangai-O and Nomad Soul later; re-cut 2026-10-12: closed as a bundle, its HW tests are in bundle 18 |
+| 7 | Time base | 6.4 (with P11 and P57's TMU test), P28 | accuracy only | `[~]` HW runs 1-2 2026-10-11 (Crazy Taxi, ChuChu Rocket; section 0): 5 rows on a new TIMING page; TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset ran with no fault and are default ON (Matt: "Keep them as default, they seem harmless."), in the packages since 22:16 (the package of 21:15 has them OFF); TMU Clock stays SH4, no HW run: EFF needs SH4 Clock 150 to act and Matt keeps 200; **TMU Fine TCNT default OFF again since 2026-10-12 (Matt)**: about 95 ns per TCNT read, Quake3.cdi -10 to -17 SPEED points with it (bundle 8 runs 15 and 17), not packaged; PC checks PASS (`misc/timebase_check`); re-cut 2026-10-12: closed as a bundle, the TMU rows are in bundle 21 |
+| 8 | SH4 interpreter, FPU and small JIT items | P46, P32, `JitMac` and `bcache` (5.3), 5.37, 5.39, 5.40, P57 RM verify (3d); P71 and P78's RFCR added 2026-10-11 | correctness; speed at noise level; P71: the frame rate of the Looney Tunes race in emulated time (it can cost SPEED) | `[x]` HW SUCCESS 2026-10-12 (Matt: "still mark this as a success"): JIT BCACHE default ON, JIT IDLE RULE default X30 with X3 BACKWARD as a level, FPU DN row removed (5.40 no effect), not packaged; open list "more friendly for other users" under Bundle 8; history: the JIT items built 2026-10-11 (Matt: "Ignore the Interpreter parts. I want JIT/Dynarec stuff."; section 0): rows JIT BCACHE, JIT PR MOVES (no fneg), JIT RM 2/3, JIT IDLE RULE and FPU DN on the JIT SPEED page, default OFF, and the JIT MAC fix; a `[ni]` probe for 5.40; PC checks PASS (`misc/jit8_check`, 78 of 78 mutants); package of 22:43; HW run 1 2026-10-11 (Crazy Taxi, rows OFF): clean, and 5.40 CLOSED by Matt (NI does nothing on the PPE); HW run 2 (Looney Tunes, JIT IDLE RULE X3 BACKWARD): the race draws 29.95 frames per emulated second (26.4) but SPEED is 60.9%, 18.2 frames per wall second (Matt: "It runs much worse"); HW run 3 (OFF): the race at SPEED 56.4%, the boot after the BIOS logo at 12.8% (Matt: "OFF is much worse."); X30 stays the default; HW run 9 (Sonic Adventure, X3 BACKWARD, JIT BCACHE ON): "VERY smooth" (Matt), 29.69 frames/s (28.65 at X30), 14K+ scenes 29.6 (26.3), SPEED 100%; HW run 10 (Phantasy Star Online, X3 BACKWARD): the 20 fps scene at 30.0 frames/s, SPEED 100%: the level is a per-game matter, open; HW runs 7-8 (Sonic Adventure, Phantasy Star Online, JIT BCACHE ON, X30): clean, frame rates as before; HW run 4 (Crazy Taxi, JIT BCACHE ON): correct (Matt: "Look and sounded fine"), 9255 sites, no gain to see there; HW run 6 (Looney Tunes, JIT BCACHE ON): HW SUCCESS, the race at SPEED 99.95% (97.62% OFF), sleep 58.6 ms/s (24.1), Matt: "It's much better", default ON in source since 2026-10-11 (not packaged); HW run 5 (Looney Tunes, JIT PR MOVES ON) did not hit the row (`prmoves=0`: the wrong game, it has no PR=1 FPU op); JIT PR MOVES, JIT MAC and JIT RM 2/3 have no HW run yet; P46, P32 and P78's RFCR not built; 5.37 done 2026-10-10, HW SUCCESS; re-cut 2026-10-12: the interpreter parts are in bundle 20, the open list and the heavy scenes in bundle 21 |
+| 9 | ARM7 engines | P49 and P40 (6.8), 6.8's STR cases and unaligned store | rare encodings right; an engine check for F1 | `[x]` HW SUCCESS 2026-10-12; built 2026-10-12 (section 0): the P49 census (log only, three decoders), P40's tests and the STR cases (`arm7_optest.h`), row "ARM7 STR Align" on the AUDIO page, default OFF; PC checks PASS; package of 09:34; **HW runs 1-3 2026-10-12: the tests pass on all three engines (the JIT at boot); census A 0, B 0 in ChuChu Rocket and Crazy Taxi (the P49 fix has no target there, not built); "ARM7 STR Align" ON fixes F1, the ChuChu Rocket slow sound (Matt: "THE SOUND IS FIXED")**; HW runs 4-5 (Sonic Adventure, Looney Tunes, row ON): no unaligned store, no P49 form, no fault; **CLOSED 2026-10-12 (Matt), the row default ON in source, not packaged**; re-cut 2026-10-12: nothing left |
+| 10 | Controllers (re-cut 2026-10-12; was Maple) | P84's stick dead zone, GOALS.md G12 (the second stick), P13, the DS3 remap of G10 | a smooth analog stick; the right stick; DS3 rumble; button maps | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): Controller FULL works in Quake III Arena (Matt: "Quake 3 double sticks works"; G12 done); built 2026-10-12 with bundle 11 (Matt: "Let's go with Bundle 10 and 11 together."): the CONTROLS page has Controller (STANDARD PAD / FULL (2 STICKS)), Stick Dead Zone (AXIS / RADIAL), Rumble Pack (OFF / ON) and 15 button-map rows; every default is the old path (Matt named none); PC checks PASS (`misc/pad_check`, 37 of 37 mutants); package of 17:40; no HW run: Stick Dead Zone RADIAL, Rumble Pack, a button-map change |
+| 11 | Render to texture and present (re-cut 2026-10-12; was Output stage) | P75 (first), P66's RTT scaler, P76, P54, P60, P26 reads | the Crazy Taxi pause freeze; RTT games; no flashing screens or mirrors; interlaced and 24-bit 2D screens | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): RTT Read-back FIXED ends the Crazy Taxi pause freeze (Matt: "works as intended"); built 2026-10-12 with bundle 10: 10 rows on a new OUTPUT page (RTT Read-back, RTT Scaler, RTT Size, RTT Pack, Draw Retry, FB Line Double, Blank Video, Present Rule, Region Scissor, FB Reads), every default is the old path (Matt named none), so the Crazy Taxi pause still freezes until RTT Read-back is FIXED; PC checks PASS (`misc/rtt_check`, 88 of 88 mutants); package of 17:40; no HW run: Present Rule, RTT Size TILE CLIP; left: the Looney Tunes boot videos (not on the TV, cause not known); **the fix for the Looney Tunes race loading screen (black but the bar with Region Scissor ON), asked for by Matt after the verdict ("Fix it."): row "Keep Last Frame" (OFF / ON) built 2026-10-12, package of 19:52, PC checks PASS, HW SUCCESS 2026-10-12 (Looney Tunes, Matt: "Success! The image stays."; Crazy Taxi), default ON in source since 2026-10-12 (Matt: "Keep it up as default."), not packaged; it acts only with Region Scissor, which is still default OFF**; not built: the fb_concat bits of P26, P54's writers for pack modes 4 and 5 |
+| 12 | Screen format and test tools (re-cut 2026-10-12; was HW test tools) | P50, P51, P53, P69's stretch, P10 (clip, scaler), P36 | SPEED on the TV without the UDP listener; PNG evidence; 16:9 output | `[ ]` |
+| 13 | MMU and memory (re-cut 2026-10-12; was MMU store queues) | P58, P78 (MMUCR mask, TLB data array 2), P74, P30, P65, bundle 1's P7, P26 write watch and P55 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; bundle 1's rows get their first run; NHL 2K2 | `[ ]` |
 | 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[ ]` added 2026-10-11 |
-| 15 | Flash defaults | P59 (corrects 3i), P85 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit | `[ ]` added 2026-10-11 |
+| 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[ ]` |
+| 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[ ]` |
+| 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[ ]` |
+| 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[ ]` |
+| 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[ ]` |
+| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3 | correctness (Resident Evil Code Veronica X); homebrew .elf | `[ ]` |
+| 21 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, the Capcom vs. SNK 2 menus, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
 
 Main gains:
 - Speed: little is left. Only bundle 1 gives SH4-thread time, and it is
@@ -10043,9 +10415,16 @@ Main gains:
   can cost SPEED. Bundle 14 gives render-thread time (measured: the bind
   is 11 points of busy in Crazy Taxi at + OPAQUE DEPTH). Bundle 13 lets
   four games boot. P75 (bundle 11) ends the Crazy Taxi pause freeze.
+- Update 2026-10-12 (re-cut): the largest gains left, in the recommended
+  order: bundle 11 ends the Crazy Taxi pause freeze, bundle 13 lets four
+  games boot, bundle 14 gives render-thread time, bundle 10 fixes the
+  stick, bundle 15 gives three games 60 Hz.
 
 ### Bundle 1: VRAM and TA-area writes  `[x]` HW 2026-10-08, P43 default ON, the rest OFF (section 0)
 
+- Re-cut 2026-10-12: the rows that no game ran (P7, the P26 FB Write
+  Watch, P55) are in bundle 13. They need Rez and Ikaruga, which boot
+  after P58.
 - Items: P43 (5.12: the YUV converter, PPU form), P55 and P7 (5.17), P26
   (the framebuffer write watch only; its reads are in bundle 11).
 - Shared code: `dc/pvr/pvr_if.cpp` (`TAWrite()`, `TAWriteSQ()`,
@@ -10076,6 +10455,8 @@ Main gains:
 
 ### Bundle 2: GD-ROM and disc images  `[x]` HW SUCCESS 2026-10-10, every row default ON in source (section 0)
 
+- Re-cut 2026-10-12: the tail is bundle 19 (P77, the Disc Swap and GDI
+  HW tests, P82's lead-out stop, the CD-DA miss stall).
 - Items: 3h (P21, P47, P23 TOC fields), 5.34 (P22 DMA rules, P9 DMA clamp,
   the parked CD-DA misses), P22 commands, P48, P9 2340-byte sectors, P23
   GDI parser, P57 GDI paths, P34 disc swap.
@@ -10118,6 +10499,8 @@ Main gains:
 
 ### Bundle 3: Texture path  `[x]` HW SUCCESS 2026-10-10, default in source: Mipmaps ON, Anisotropic 16x, VQ Formats ON (section 0)
 
+- Re-cut 2026-10-12: the tail is in bundle 17 (the trilinear weights, a
+  game for VQ Formats).
 - Built (Matt's picks, 2026-10-10): P45, P52 and the P25 VQ formats, as
   the rows Mipmaps, Anisotropic, Texture Filter and VQ Formats on a new
   TEXTURES page. Left out: the P25 trilinear weights. Dropped: P1 steps
@@ -10156,6 +10539,8 @@ Main gains:
 
 ### Bundle 4: TA decode and draw rules  `[x]` HW SUCCESS 2026-10-11, default ON in source but TR Depth Write and Flat Shading (section 0)
 
+- Re-cut 2026-10-12: the tail is in bundle 17 (P79, P80, Flat Shading,
+  the rows that no game used). The cost of 3k is bundle 14.
 - Built (Matt's picks, 2026-10-10): every item below but P10's Empty
   Frame; added P63 and, from P66, the invalid TA types, the volume cap and
   "no data before list init". 16 rows on a new RENDERER page. The tile
@@ -10193,6 +10578,8 @@ Main gains:
 
 ### Bundle 5: AICA RAM coherency  `[~]` HW runs 1-4 2026-10-11: SPE AICA Sync SUCCESS (default + SAMPLE SYNC), DSP Ring RAM no fault (default ON); 4 rows OFF (section 0)
 
+- Re-cut 2026-10-12: closed as a bundle. The tail is bundle 18 (the four
+  OFF rows, P81, P82's EXTS read-back).
 - Built (Matt's picks, 2026-10-11): every item below, as the rows SPE AICA Sync, DSP Ring RAM, DSP Ring 64K, DSP
   Reg Reads, Mono Mix Fix and LFORE Keep at the end of the AUDIO page. The hazard test of 6.6 moved to a page
   map that the twin makes (the ARM7 SPU, or the PPU twin with SPE ARM7 OFF): with SPE ARM7 ON the PPU knows no
@@ -10230,6 +10617,8 @@ Main gains:
 
 ### Bundle 6: G2 DMA  `[~]` PARKED 2026-10-11 (Matt); built, default OFF; HW run 1 (ChuChu Rocket): works, no fix for F1; Matt tests Bangai-O and Nomad Soul later (section 0)
 
+- Re-cut 2026-10-12: closed as a bundle. Its HW tests (Bangai-O, Nomad
+  Soul) are in bundle 18.
 - Built (2026-10-11): both items below, as the rows G2 DMA Small and G2
   DMA Read at the end of the AUDIO page, live. A small start over a
   running transfer (AICA Race Fix OFF only) stays scheduled. The text
@@ -10253,6 +10642,8 @@ Main gains:
 
 ### Bundle 7: Time base  `[~]` HW runs 1-2 2026-10-11, the 3 SPG rows default ON since the package of 22:16 (Matt); TMU Fine TCNT default OFF again since 2026-10-12 (Matt; it slowed Quake3.cdi); TMU Clock SH4, no HW run (section 0)
 
+- Re-cut 2026-10-12: closed as a bundle. TMU Clock and TMU Fine TCNT are
+  in bundle 21.
 - Built (Matt's picks, 2026-10-11): every item below, as the rows TMU
   Clock, TMU Fine TCNT, SPG Field Bit, HBlank IRQ and VBLANK INT Reset on a
   new TIMING page. The TimerTest is in `misc/timebase_check`. Not as the
@@ -10282,6 +10673,9 @@ Main gains:
 
 ### Bundle 8: SH4 interpreter, FPU and small JIT items  `[x]` HW SUCCESS 2026-10-12 (Matt), the JIT items: JIT BCACHE default ON; JIT IDLE RULE default X30 with X3 BACKWARD as a level; FPU DN row removed (5.40 no effect); JIT PR MOVES, JIT MAC, JIT RM 2/3 OFF; the interpreter parts not built; open list "more friendly for other users" below (section 0)
 
+- Re-cut 2026-10-12: the interpreter parts, P78's RFCR and the verdicts
+  for the OFF rows are in bundle 20. The list below and the SH4-bound
+  heavy scenes are in bundle 21.
 - **What to do to make bundle 8 more friendly for other users** (Matt
   2026-10-12; nothing of it is built or scheduled). Today a user must know
   which games gain from JIT IDLE RULE X3 BACKWARD:
@@ -10924,103 +11318,126 @@ Main gains:
 - Trap: do not paste Reicast's `arm-new.h` diff (P49).
 - HW: ChuChu Rocket, Crazy Taxi, Sonic Adventure, Looney Tunes.
 
-### Bundle 10: Maple  `[ ]`
+### Bundle 10: Controllers  `[x]` HW SUCCESS 2026-10-12 (Matt): Controller FULL works in Quake III Arena; built 2026-10-12, every row at its old path by default; no HW run: Stick Dead Zone RADIAL, Rumble Pack, a button-map change (section 0); re-cut 2026-10-12 (was "Maple"; its bus and VMU items are bundle 16)
 
-- Items: P29 (reply timing and commands), P9 (SB_MDST before the vblank
-  maple DMA), P13 (Puru Puru pack), P37 (one VMU file per game, VMU LCD,
-  BIOS language, keyboard and mouse).
-- Shared code: `dc/maple/maple_if.cpp`, `maple_devs.cpp`, `maple_cfg.cpp`,
-  `ps3/ps3_input.cpp`.
-- Byte order: keep a u32-aligned scratch buffer, so the XOR-3 byte writes
-  stay valid (P29). The rumble AST byte also needs XOR-3 access (P13).
-- Gain: the Geist Force freeze and the Silent Scope VMU load at boot
-  (P29). No hang in `maple_DoDma()` (P9). DS3 rumble (P13). One VMU file
-  per game, keyboard and mouse (P37). No speed.
-- Trap: today the saves are one file per port (`vmu_save_A1.bin` in
-  `/dev_hdd0/savedata/vmu`). P37 changes the file names.
-- HW: Sonic Adventure VMU save and load, Crazy Taxi controls.
-- Added 2026-10-11 (sixth review; open, nothing built): P84's stick dead
-  zone. Today each axis is cut alone below 20, with no rescale; Flycast
-  uses a radial dead zone with a rescale and a limit of 128. About 15
-  lines in `ps3/ps3_input.cpp`. G12 (the second stick, GOALS.md) edits the
-  same files, so it can share the session; P84 has its exact edits.
+- Items: P84's radial stick dead zone; the second analog stick (GOALS.md
+  G12; P84 has the exact edits); P13 (Puru Puru rumble pack); the DS3
+  button remap of GOALS.md G10 step 3 (a table of `[ps3]` keys, no port).
+- Shared code: `ps3/ps3_input.cpp`, `ps3/dc_pad_bits.h`,
+  `dc/maple/maple_devs.cpp` (the controller device, a new vibration
+  device), `dc/maple/maple_cfg.cpp`, the CONTROLS page of
+  `ps3/ps3_menu.cpp`.
+- Order: the dead zone first, so both sticks get it. Then the second
+  stick, the rumble pack, the remap.
+- Dead zone: today each axis is cut alone below 20, with no rescale;
+  Flycast uses a radial dead zone with a rescale and a limit of 128. About
+  15 lines.
+- Second stick: FULL (2 STICKS) is its own controller type (value 1 is the
+  light gun); STANDARD PAD stays the default and keeps its capability
+  word. The device name is "Dreamcast PantherDC Controller" (P84).
+- Byte order: the six axis bytes go through `w8` (XOR-3), never as one
+  u32. The rumble AST byte needs XOR-3 access; VIBSET is a word read
+  (P13).
+- Gain: a smooth analog stick in every game; the right stick in the games
+  that read it; DS3 rumble; user button maps. No speed.
+- Trap: the rumble pack takes VMU slot 2, which holds a second VMU today.
+- HW: Quake III Arena (the right stick, G12 step 5), Crazy Taxi (the stick
+  feel; a standard-pad game plays as before), one rumble game.
 
-### Bundle 11: Output stage  `[ ]`
+### Bundle 11: Render to texture and present  `[x]` HW SUCCESS 2026-10-12 (Matt): RTT Read-back FIXED ends the Crazy Taxi pause freeze; built 2026-10-12, every row at its old path by default; no HW run: Present Rule, RTT Size TILE CLIP; left: the Looney Tunes boot videos; the race loading screen fix, row "Keep Last Frame" (package of 19:52): HW SUCCESS 2026-10-12 (Matt), default ON in source, not packaged (section 0); re-cut 2026-10-12 (was "Output stage"; its 16:9 items are bundle 12)
 
-- Items: P10 (the FB clip as a scissor, the scaler), P53 (widescreen
-  geometry), P36 (cheat files, 16:9 stretch), P26 (interlaced and 24-bit
-  framebuffer reads), P54 (RTT pixel packing, the RTT note in section 3).
-- Shared code: the output stage of `ps3/ps3_rend.cpp`: the viewport and
-  scissor (`draw_frame()`, the canvas rect of `draw_scene()`), the
-  framebuffer present, and the RTT pack (`pack16()`, `rtt_render()`).
+- Items: P75 (the RTT read-back that never returns, and `rsxFinish`;
+  first, it is a freeze fix), P66's RTT scaler, P76 (RTT and 2D presents
+  dropped silently, the RTT size from the tile clip, no RTT in pack modes
+  4-7, the RTT clear alpha, `fb_line_double`, blank video), P54 (RTT pixel
+  packing, the RTT note in section 3), P60 (present only the renders the
+  game shows, no colour clear, the region-array scissor), P26 (interlaced
+  and 24-bit framebuffer reads).
+- Shared code: `rtt_render()` and `pack16()` in `ps3/ps3_rend.cpp`,
+  `ps3_video_readback()` in `ps3/ps3_video.c`, the present path
+  (`rth_job_draw()`, `present_fb_draw()`, `ps3_video_end_frame()` and its
+  forms), the FB_R_SOF writes in `plugs/drkPvr/regs.cpp`.
+- P75: the Crazy Taxi pause (START in a drive, section 0) is a render to
+  texture, and `ps3_video_readback()` calls PSL1GHT's
+  `rsxSetTransferData`, which never returns. 3 lines, and 2 for
+  `rsxFinish` (it waits only on its first call).
+- Merge points:
+  - P60's held frame and an RTT share the back buffer: flip before an
+    RTT, or give the RTT its own buffer. The vblank JOB_PRESENT and Frame
+    Hold must respect a held frame.
+  - P26's reads and P54's writes share the framebuffer pixel formats
+    (565, 555, 888, 8888, the fb_concat bits).
+- Gain: no freeze at the Crazy Taxi pause, and its background in place
+  (the scaler). RTT games. No flashing screens and mirrors (South Park:
+  Chef's Luv Shack, Metropolis Street Racer), Quake III split screen
+  (P60). Interlaced 2D screens as one 480-line image, and 24-bit
+  framebuffers shown. No speed.
+- Byte order: VRAM words are native u32 with the left pixel in the low
+  half. Read region entries with `vri()` and shifts (P60).
+- Risk: medium for P60 (the present path, Frame Hold, SPE Draw).
+- HW: Crazy Taxi, START in a drive, twice in one boot; Quake III split
+  screen or a game of P60's list; a 2D screen. The old line "none of our
+  test games, `rtt=0/0`" is out of date: Crazy Taxi is an RTT game.
+
+### Bundle 12: Screen format and test tools  `[ ]` re-cut 2026-10-12 (was "HW test tools"; it takes the 16:9 items of old bundle 11)
+
+- Items: P50 (on-screen FPS and SPEED), P51 (screenshot to PNG), P53
+  (widescreen geometry), P69's stretch to fill, P10 (the FB clip as a
+  scissor, the scaler), P36 (cheat files, 16:9 by cheat).
+- Order: P50 and P51 first. They help every later HW run.
+- Shared code: the viewport and scissor (`draw_frame()`, the canvas rect
+  of `draw_scene()`), the framebuffer present, the end of `draw_frame()`
+  for the overlay, the `ps3/ps3_ui.cpp` text and libpng (with the jmp_buf
+  fix), SELECT menu entries.
 - Merge points: P53's full-width scissor needs P10's clip rule (Flycast
-  `isClipped()`), and the clip must scale with our X Scaler option (P10).
-  P36's stretch and P53 share one 16:9 viewport option (two different
-  images). P26's reads and P54's writes share the framebuffer pixel
-  formats (565, 555, 888, 8888, the fb_concat bits).
-- Gain: 16:9 output (P53 draws outside 4:3; P36 stretches 4:3 with a user
-  cheat file). The FB clip as a scissor. RTT games (Flycast's list in the
-  RTT note; none of our test games, `rtt=0/0`). Interlaced 2D screens as
-  one 480-line image, and 24-bit framebuffers shown. No speed.
-- Traps: games cull at 4:3, so P53 can show missing geometry. The JIT does
-  not see cheats that patch code (P36).
-- HW: Crazy Taxi and Sonic Adventure at 16:9, a 2D screen; an RTT game
-  only if Matt has one.
-- Added 2026-10-11 (sixth review; open, nothing built):
-  - P75 first: it is a freeze fix. The Crazy Taxi pause (START in a
-    drive, section 0) is a render to texture, and `ps3_video_readback()`
-    calls PSL1GHT's `rsxSetTransferData`, which never returns. 3 lines,
-    and 2 for `rsxFinish` (it waits only on its first call). HW: START in
-    a drive, twice in one boot.
-  - Then P66's RTT scaler (the Crazy Taxi pause background) and P76: RTT
-    and 2D presents dropped silently while a flip is queued, the RTT size
-    from the tile clip, no RTT in pack modes 4-7, `fb_line_double`, blank
-    video. 1-8 lines each.
-  - So the line above ("none of our test games, `rtt=0/0`") is out of
-    date: Crazy Taxi is an RTT game.
-
-### Bundle 12: HW test tools  `[ ]`
-
-- Items: P50 (on-screen FPS and SPEED), P51 (screenshot to PNG; its home
-  was the parked Soul Calibur faults, now closed).
-- Shared code: the end of `draw_frame()` on the render thread, the
-  `ps3/ps3_ui.cpp` text and libpng (with the jmp_buf fix), a SELECT menu
-  entry. Call `reset_param_cache()` after the overlay, so no GL state
-  leaks into the next frame.
+  `isClipped()`), and the clip must scale with our X Scaler option. P36's
+  stretch, P69's stretch and P53 share one 16:9 viewport option (different
+  images). Call `reset_param_cache()` after the overlay, so no GL state
+  leaks into the next frame (also the state cache of bundle 14, if built).
 - Today: SPG already builds "FPS: x / SPEED: y%" (`rend_set_fps_text()`),
   and `SetFpsText()` in `ps3/ps3_rend.cpp` is empty.
-- Gain: SPEED on the TV without the UDP listener (Matt starts it only when
-  he says so). A PNG of the 4:3 viewport for image faults (the
-  untextured Rayman 2 surfaces are closed, 3j). No cost when OFF; one RSX
-  wait per shot.
+- Gain: SPEED on the TV without the UDP listener. A PNG of the 4:3
+  viewport for image faults. 16:9 output (drawn, or stretched). The FB
+  clip as a scissor; the scaler (half-height screens, P10's game list). No
+  speed; no cost when the tools are OFF.
+- Traps: games cull at 4:3, so P53 can show missing geometry. The JIT does
+  not see cheats that patch code (P36).
 - Byte order: a big-endian A8R8G8B8 word is the bytes A, R, G, B: write
   bytes 1-3 (P51).
-- HW: any game: the text in the left pillarbox bar, a PNG under
-  `/dev_hdd0/data/NotDC/`.
+- HW: any game for the text in the left pillarbox bar and a PNG under
+  `/dev_hdd0/data/NotDC/`; Crazy Taxi and Sonic Adventure at 16:9.
 
-### Bundle 13: MMU store queues  `[ ]` added 2026-10-11
+### Bundle 13: MMU and memory  `[ ]` re-cut 2026-10-12 (was "MMU store queues"; it takes P30, P65 and the three rows of bundle 1 that never ran)
 
 - Items: P58 (the MMUCR fields on big endian, with the JIT cache clear and
   the V = 0 skip), P78 (the MMUCR write mask, the TLB data array 2
-  writes), P74 (a flat store-queue flush for AT = 1).
+  writes), P74 (a flat store-queue flush for AT = 1), P30 (P4 mirrors and
+  the operand-cache RAM banks), P65 (ch2 DMA: length, the 0x12 mirror,
+  DMAOR), and bundle 1's rows that no game ran: P7 (LMMODE), P26 (FB Write
+  Watch), P55 (VRAM direct writes).
 - Shared code: `dc/sh4/ccn.h` (the bitfield) and `dc/sh4/ccn.cpp`
   (`CCN_MMUCR_write()`), `dc/mem/mmu.cpp` (`UTLB_Sync()`, `sq_remap`),
-  `dc/mem/sh4_internal_reg.cpp` (the F3 and F7 arrays),
-  `dc/sh4/sh4_sqw.h`, and the JIT PREF in `ps3/ps3_driver.cpp`.
+  `dc/mem/sh4_internal_reg.cpp` (the F3 and F7 arrays, the on-chip RAM),
+  `dc/sh4/sh4_sqw.h`, the JIT PREF in `ps3/ps3_driver.cpp`,
+  `dc/sh4/dmac.cpp` and `dc/pvr/pvr_if.cpp` (bundle 1's code).
 - Order:
   1. P58 with the write mask. The cache clear must run on both AT edges:
      the PREF target, JIT PREFETCH and JIT GUARD REUSE read AT at compile
      time. Add a log line per MMUCR write (the values and their order in
      the four games are not known).
   2. The data array 2 writes (2 lines each).
-  3. P74 last, and only if a game is SH4-bound after the fix.
+  3. Bundle 1's rows, now that their games boot: LMMODE with Rez, FB Write
+     Watch with Ikaruga.
+  4. P30 and P65 (about 15 and 6 lines).
+  5. P74 last, and only if a game is SH4-bound after the fix.
 - Check before HW: the devkitPPC `-S` test, or a boot self-test line that
   writes 0x00000105 and prints AT, TI and URC (P58).
 - Gain: Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS
-  logo (they stop there today: section 0, "Open, separate"). It opens the
-  two rows of bundle 1 that never ran: P7 (LMMODE, with Rez) and P26 (FB
-  Write Watch, with Ikaruga). P74: these games get TA SQ Direct and RAM SQ
-  Direct (gain not measured).
+  logo (they stop there today: section 0, "Open, separate"). Bundle 1's
+  rows get their first run. NHL 2K2 (P30). No endless wait for a ch2 end
+  IRQ (P65). P74: these games get TA SQ Direct and RAM SQ Direct (gain not
+  measured). P30's bank bit is also a lead for the Capcom vs. SNK 2 menus
+  (bundle 21).
 - Risk: a game that turns AT on then sends its store-queue flushes
   through the TLB. WinCE games still need P38.
 - HW: the four games; Crazy Taxi, Sonic Adventure and Looney Tunes
@@ -11032,6 +11449,9 @@ Main gains:
   (the + OPAQUE DEPTH first-pass skips, the merge key bits that the draw
   never reads, the texture lifetime, an index list for the sorted
   triangles).
+- Re-cut 2026-10-12: no change of items. It is the home of the parked
+  "cost of TR Triangle Sort" (section 0); the settings per game of that
+  block are in bundle 21.
 - Shared code: `ps3/ps3gl/ps3gl_textures.c`, `ps3gl_states.c` and
   `ps3gl_vertices.c`; `apply_param()` and the 3k passes in
   `ps3/ps3_rend.cpp`; `ps3/ps3_tex.cpp` (the lifetime).
@@ -11044,64 +11464,198 @@ Main gains:
   before the texture lifetime. The index list last (its ceiling is 4.6
   points of busy).
 - Trap: each place that changes RSX state behind ps3gl (the UI, the
-  framebuffer present, the RTT) must reset the new state cache.
+  framebuffer present, the RTT, the fog texture) must reset the new state
+  cache.
 - Gain: the parked cost of 3k (Crazy Taxi SPEED 97.9% in 11-13K vertex
-  scenes, Sonic Adventure busy 20%). Every opaque draw binds too. The
-  picture does not change.
+  scenes). Every opaque draw binds too. The picture does not change.
 - Checks: `misc/rend4_check` (the draw trace stays equal) and
-  `misc/spevb_check` (the merge key). HW: Crazy Taxi and Sonic Adventure
-  at + OPAQUE DEPTH.
+  `misc/spevb_check` (the merge key). HW: Crazy Taxi at + OPAQUE DEPTH.
 
-### Bundle 15: Flash defaults  `[ ]` added 2026-10-11
+### Bundle 15: Flash and clock  `[ ]` re-cut 2026-10-12 (was "Flash defaults"; it takes P12 and the BIOS language row of P37)
 
 - Items: P59 (the broadcast byte: NTSC, as Flycast writes it; corrects
   3i), P85 (the language of a new syscfg block, a flash built when
   `dc_flash.bin` is missing, the console ID, the flash save on the forced
-  exit).
+  exit, which is what is left of GOALS.md G10 step 4), P37's BIOS language
+  row, P12 (the RTC under daylight saving time, 1 line).
 - Shared code: `dc/flash_fix.cpp` (`dc_flash_set_time()`,
   `dc_flash_set_region()`, `dc_flash_restore_region()`, `lookup_block`,
-  `alloc_block`), and the exit path in `ps3/ps3_main.cpp` for the save.
+  `alloc_block`), the exit path in `ps3/ps3_main.cpp` for the save, the
+  RTC seed.
 - Byte order: none. The flash is read and written as bytes (`wr16`).
 - Gain: Capcom vs. SNK 2 (JP), Border Down (JP) and Rayman 2 (US) play at
-  60 Hz, not 50 (P59). A new flash boots in English, not Japanese. The
-  settings that the BIOS saved survive a forced exit. The console ID is
-  also a fact for G11.
+  60 Hz, not 50 (P59). A new flash boots in English, not Japanese, and a
+  row sets the language. The settings that the BIOS saved survive a forced
+  exit. The clock is right under daylight saving time.
 - Cost: a 60 Hz game has 20% more frames per second to run and draw
   (P59).
-- Not here: the dial-up account blocks of P83 use the same code, but only
-  G11 needs them. P37's BIOS language option stays in bundle 10; P85 only
-  sets the default.
+- For GOALS.md G11: the dial-up account blocks of P83 use this block code,
+  and the console ID is used by network games. Build this bundle before
+  G11.
 - HW: the three games (VPS about 60, SPEED, the menus); one boot with a
   new flash; Crazy Taxi unchanged.
 
+### Bundle 16: Maple bus and VMU  `[ ]` new at the re-cut of 2026-10-12 (from old bundle 10, with P68's maple parts)
+
+- Items: P29 (reply timing and commands), P9 (SB_MDST before the vblank
+  maple DMA), P68's maple parts (a reply outside RAM raises the overrun
+  interrupt; SB_MMSEL and the recipient address; SB_MDSTAR outside RAM,
+  which is a PPU crash today; the VMU LCD media-info byte), P37 (one VMU
+  file per game, the VMU LCD, keyboard and mouse; its BIOS language row is
+  in bundle 15).
+- Shared code: `dc/maple/maple_if.cpp`, `maple_helper.cpp`,
+  `maple_devs.cpp` (the VMU), `maple_cfg.cpp`.
+- Byte order: keep a u32-aligned scratch buffer, so the XOR-3 byte writes
+  stay valid (P29). For SB_MMSEL swap the native u32 values, never the
+  XOR-3 byte view (P68).
+- Gain: the Geist Force freeze and the Silent Scope VMU load at boot
+  (P29). No hang in `maple_DoDma()` (P9) and no crash on a bad SB_MDSTAR
+  (P68). One VMU file per game (in Flycast only slot A1 is per game),
+  keyboard and mouse (P37). No speed.
+- Trap: today the saves are one file per port (`vmu_save_A1.bin` in
+  `/dev_hdd0/savedata/vmu`). P37 changes the file names.
+- HW: Sonic Adventure VMU save and load; Geist Force and Silent Scope only
+  if Matt has them.
+
+### Bundle 17: Draw rules tail  `[ ]` new at the re-cut of 2026-10-12 (the tails of bundles 3 and 4, and 3b)
+
+- Items: P79 (punch-through alpha is 1 after the alpha test, a third
+  level of the PT Blend row), P80 (the sprite's fourth corner from the
+  plane of the other three), 3b (offset colour, with the colour clamp;
+  P14; 3a fog is done), P25's two-pass trilinear weights, and the
+  verdicts that bundles 3 and 4 left open: Flat Shading (the RSX provoking
+  vertex is not known), and the rows that no game used yet (Sprite Cull,
+  Tile Clip, List Passes, the TR volume draw, the TA Data Gate, VQ
+  Formats).
+- Shared code: `apply_param()` and the draw in `ps3/ps3_rend.cpp`, both
+  decoders (`ps3/spu/spe_dec.c`), the SPU vertex builder, the ps3gl
+  shaders (`ps3/ps3gl/ps3gl_shaders.c`).
+- Merge point: 3b and the trilinear weights both need a change of the SPU
+  vertex builder: do it once. 3j and the fog left plumbing for 3b (vertex
+  word 6 as 4 bytes, a 4-component TEXCOORD1, the fog programs; a scene
+  with vertex fog already goes to the PPU replay because it needs offset
+  colours). Bundle 14's merge key must get the Offset and ColorClamp bits
+  back when 3b is in.
+- Gain: hard punch-through edges, and Jet Grind Radio draws its PT list
+  with no blend (P79). The right texture on trapezoid sprites (P80).
+  Specular highlights (3b). Trilinear: the NFL 2K2 field, Shenmue
+  snowflakes (P25).
+- Checks: `misc/ta4_check` (both decoders), `misc/rend4_check`, the S2
+  compare. HW: Jet Grind Radio; Crazy Taxi and Sonic Adventure unchanged;
+  Shenmue only if Matt has it.
+
+### Bundle 18: Sound wrap-up  `[ ]` new at the re-cut of 2026-10-12 (the tails of bundles 5 and 6)
+
+- Items: a verdict for the four rows of bundle 5 that are OFF (Mono Mix
+  Fix, DSP Ring 64K, DSP Reg Reads, LFORE Keep); P81 (the output level
+  budget: two tests with no code, then a probe on the `[aica-spe] sound`
+  line); P82 (the EXTS read-back inside the DSP Reg Reads row; the
+  nullAICA ALFO depth; the ARMRST read-back); bundle 6's HW tests (G2 DMA
+  Small and G2 DMA Read are built, default OFF); P69's VMU beep; P31's
+  nullAICA-only fixes.
+- Shared code: `ps3/ps3_aica_spe.cpp` and the SPU model
+  (`ps3/spu/spe_aica_model.cpp`, `plugs/caiqueAICA`), `plugs/nullAICA`,
+  `dc/aica/aica_if.cpp`, the AUDIO page.
+- Done before the re-cut: the Crazy Taxi crackle (F2, SPE AICA Sync), the
+  ChuChu Rocket slow sound (F1, ARM7 STR Align, bundle 9), DSP Ring RAM.
+  SPE AICA Gain stays at 100%.
+- P81: the Looney Tunes boot of the complaint played no CD audio, and the
+  level laws differ from Flycast by 1.5 dB at most. No fix is known; the
+  probe comes first.
+- Gain: the cause of the Looney Tunes balance; the Bangai-O startup freeze
+  and the Nomad Soul freeze (bundle 6's rows); every sound row has a
+  verdict before GOALS.md G13 settles the defaults.
+- HW: Looney Tunes (the probe; it also uses G2 DMA); Bangai-O and Nomad
+  Soul only if Matt has them.
+
+### Bundle 19: Disc tail  `[ ]` new at the re-cut of 2026-10-12 (the tail of bundle 2)
+
+- Items: P77 (Disc Swap: drop the clears of the command in flight, then
+  the open-lid phase), with the first HW test of the Disc Swap row (P34);
+  the first HW test of GDI Parser and GDI Backslash (P23, P57); P82's
+  stop of CD-DA at the lead-out; the parked CD-DA miss stall of 5.34.
+- Shared code: `dc/gdrom/gdromv3.cpp`, `plugs/ImgReader/`,
+  `ps3/ps3_gdasync.cpp`; `misc/gdasync_check` builds the real files.
+- Order: P77 before the first Disc Swap run. A swap during a command ends
+  in an endless `verify` today.
+- Gain: multi-disc games get past disc 1 (Shenmue, Skies of Arcadia). GDI
+  sets with quoted names or `\` paths boot. No SH4 stall of 24-85 ms at a
+  CD-DA miss.
+- Not here: CUE/BIN and CHD (P35; section 4 says "Do not take").
+- HW: a two-disc game at its swap prompt; a GDI set with spaces in its
+  file names; ChuChu Rocket CD-DA.
+
+### Bundle 20: SH4 correctness tail  `[ ]` new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes)
+
+- Items: P46 (Flycast's SH4 op tests as `misc/interp_check` and a boot
+  self-test), P32 (fneg with PR=1, mac.w with S=1), P64 (the FPSCR cause
+  bits), P67 (small SH4 and memory fixes), P78's RFCR (read-only 17), P68's
+  system parts (no BIOS and flash mirror at 0x02000000, the ATA soft reset
+  values, the SB_ADSTAR mask), P33 (the ELF loader, with P68's AICA
+  registers at an ELF boot), and a verdict for the JIT rows of bundle 8
+  that are OFF (JIT PR MOVES, JIT MAC, JIT RM 2/3).
+- Shared code: the interpreter's FPU ops and `SetFloatStatusReg()`,
+  `dc/sh4/rec_v2/decoder.cpp` (the PR=1 fallback gate), `dc/mem/sb.cpp`,
+  `dc/mem/sh4_area0.cpp`, `dc/sh4/bsc.cpp`, `plugs/ImgReader/elf_loader.cpp`.
+- Shared check: P46 first. From reading, only P32's fneg fails it. JIT PR
+  MOVES can take fneg only after the P32 fix.
+- Gain: correctness. Resident Evil Code Veronica X (P67). Homebrew .elf
+  files (P33). No speed.
+- HW: pick games that reach the path. PR=1 FPU ops: Space Channel 5 and
+  Quake3.cdi. No game is known for mac.l or mac.w.
+- Not here: P38 (WinCE SH4 MMU) stays in 3d (large).
+
+### Bundle 21: Frame rate in heavy scenes  `[ ]` new at the re-cut of 2026-10-12; parked for the end (Matt 2026-10-12)
+
+- Items:
+  1. Bundle 8's list "more friendly for other users": the idle rule
+     without a choice by the user. Way (A), a wider JIT IDLE SKIP. Way
+     (B), JIT IDLE HASH (built, default OFF, no verdict). A rule that
+     uses X3 only while the host has spare time. A table per game.
+  2. The three candidates of the SH4-bound heavy scenes (section 0): a
+     number row for the idle rule factor (3 to 30), the per-vertex
+     store-queue call into the TA, 5.23 (pair fusion). A verdict for 5.46
+     JIT SQ COPY (built, default OFF).
+  3. Bundle 7's tail: TMU Clock EFF (no HW run; it needs SH4 Clock 150)
+     and TMU Fine TCNT (default OFF: about 95 ns per TCNT read).
+  4. The Capcom vs. SNK 2 menus (5-6 fps; one menu frame is exactly 9 PAL
+     vblanks). A test with no code: one boot at Accuracy ACCURATE.
+  5. Ecco the Dolphin: 18-34 fps at SPEED 100% with X30; X3 BACKWARD runs
+     it at SPEED 50%.
+  6. Settings per game (Matt's idea of a product-ID table: the idle rule
+     level, the TR Triangle Sort level). It changes the rule "no per-game
+     lists": ask Matt for the scope before a design.
+- Shared code: the idle rule in `dc/sh4/rec_v2/decoder.cpp`,
+  `ps3/ps3_jit_idle.h`, the SYS GATE and `dc/sh4/tmu.cpp`, the JIT
+  store-queue paths.
+- Shared measure: frames per emulated second and SPEED by vertices per
+  render, in the same scene, at X30 and at X3 BACKWARD.
+- Known cases: the Looney Tunes race (27 of 30 frames at X30; SPEED 88%
+  at X3 with JIT IDLE HASH), Sonic Adventure 2 above 18K vertices (89-91%
+  at X3), Phantasy Star Online, Sonic Adventure and Jet Grind Radio (30
+  frames at X3, SPEED 100%).
+- Rule: do not start it unasked. Matt: "We'll get back to it at the end."
+
 ### Not bundled
 
-- Added 2026-10-11: P83 (the G11 modem facts) belongs to GOALS.md G11.
-  P82's nullAICA ALFO depth acts only with SPE AICA Sound OFF, as P31's
-  nullAICA-only fixes below; P82's ARMRST read-back has no user. P84's
-  G12 edits belong to GOALS.md G12 (they can share bundle 10's session).
-
-- P1 steps 0-1 and P2: no target left. Soul Calibur runs at full speed
-  since P16 (decode 0.2-1.0% of the render thread, no dropped renders),
-  and its black textures are closed (2026-10-07). P1 steps 2-3 were in
-  bundle 3; Matt dropped them on 2026-10-10 (section 0).
-- The P25 two-pass trilinear weights: left out of bundle 3 by Matt on
-  2026-10-10. Open; they need a shader or an SPU vertex-builder change.
-- P14 (3a, 3b, and 3j bump maps since 2026-10-08): already one shared
-  piece of work in section 3 (a PVR Cg shader in ps3gl). 3a (fog) is
-  built since 2026-10-12, HW SUCCESS the same day (section 0).
-- P42 (b)-(d): stay in 5.12 (active, section 0).
-- P35 (CUE/BIN, CHD) and P39 (reios): section 4 says "Do not take".
+Re-cut 2026-10-12: most of the old list has a bundle now (P12 in 15, P30
+in 13, P33 in 20, the P25 trilinear weights and 3b in 17, the nullAICA
+fixes in 18). What stays out:
+- No target left: P1 steps 0-1 and P2. Soul Calibur runs at full speed
+  since P16, and its black textures are closed (2026-10-07). P1 steps 2-3
+  were in bundle 3; Matt dropped them on 2026-10-10 (section 0).
+- Section 4 says "Do not take": P35 (CUE/BIN, CHD) and P39 (reios).
 - P15 (5.19): a pacing option, not a speedup.
 - P38 (WinCE SH4 MMU): stays in 3d (large; the JIT form is very high
   risk).
-- P12 (RTC DST, 1 line), P30 (P4 mirrors and operand-cache RAM banks, NHL
-  2K2, ~15 lines), P33 (ELF loader, homebrew, ~30 lines): small, alone.
-- P31's nullAICA-only fixes (a pitch write recomputes the AEG rates, VOFF):
-  they act only with SPE AICA Sound OFF.
+- P42 (b)-(d): stay in 5.12.
+- P70 and P83 (the modem facts) belong to GOALS.md G11.
+- The distance pop-in: 3a (fog) is done; its three other candidates are
+  parked (section 0).
 - Done or built, but still open in `OPTIMIZATION_POTENTIAL.md`: P44 (ARM7
-  Reset Fix), the P31 CA clamp (CA Clamp) and P20 G1 (A3 default ON) are
-  done; P42 (a) is built and HW tested, default OFF (section 0).
+  Reset Fix), P40 and P49 (closed with bundle 9), P43 (bundle 1), P14's
+  3j and 3a, the P31 CA clamp and P20 G1 are done; P42 (a) is built and HW
+  tested, default OFF (section 0).
 
 ---
 

@@ -3,6 +3,7 @@
 #include "types.h"
 #include "config/config.h"
 #include "ps3_presets.h"
+#include "ps3_padmap.h"
 
 #define CFG_SECT "ps3"
 
@@ -27,7 +28,7 @@ int g_aica_ca_clamp_preset = 1;   // 1 = CA reads stop at LEA-3 in the SPE AICA 
 int g_audio_buffers_preset = -1;  // -1 leaves the nullDC.cfg value alone
 int g_exit_fix_preset      = 1;
 int g_aica_fast_preset     = 1;
-int g_controller_type      = 0;   // only the standard pad exists on PS3
+int g_controller_type      = 0;   // the menu's value: 0 = standard pad, 1 = full controller with 2 sticks (G12)
 int g_player_count         = 4;
 int g_debug_loop           = 0;
 int g_debug_gdrom          = 0;
@@ -173,6 +174,24 @@ int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to ne
 int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles (P71)
 int g_jit_idle_hash_preset = 0;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
 int g_jit_sq_copy_preset   = 0;   // 1 = SQ shape for stores whose block PREFs through a copy of their base register
+// OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
+int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
+int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
+// The DC control each DS3 button drives (PADMAP_* by PADBTN_*); the defaults are the fixed map of before (G10).
+int g_pad_map[PADBTN_COUNT] = PADMAP_DEFAULTS;
+// OPTIMIZATION_PLAN section 7, bundle 11 (render to texture and present): 0 is the old path in every one.
+// Keep Last Frame is ON since 2026-10-12 (Matt); it acts only with Region Scissor.
+int g_rtt_readback_preset  = 0;   // 1 = the RTT read-back is 3 straight-line transfer calls and waits on a new reference; 0 never returns (P75)
+int g_rtt_scaler_preset    = 0;   // 1 = SCALER_CTL scales a render to texture (P66, Flycast 8d4188159)
+int g_rtt_size_preset      = 0;   // RTT area: 0 = the FB clip, 1 = the region array's tiles inside TA_GLOB_TILE_CLIP (P76)
+int g_rtt_pack_preset      = 0;   // 1 = Flycast's RTT write: alpha threshold, rounding, clip origin, stride limit, no mode 4-7, alpha-0 clear (P54)
+int g_draw_retry_preset    = 0;   // 1 = an RTT waits for a free buffer; a 2D present that did not draw is tried again (P76)
+int g_fb_line_double_preset = 0;  // 1 = FB_R_CTRL.fb_line_double halves the canvas height (P76)
+int g_blank_video_preset   = 0;   // 1 = a 2D present with VO_CONTROL.blank_video shows VO_BORDER_COL (P76)
+int g_present_rule_preset  = 0;   // 1 = a render flips when FB_R_SOF1/2 holds its FB_W_SOF1, 2 = also no colour clear over a held frame (P60)
+int g_region_scissor_preset = 0;  // 1 = a render draws only inside its region array's tiles and the FB clip (P60)
+int g_fb_reads_preset      = 0;   // 1 = 2D presents read an interlaced buffer whole, the shown field, 24-bit pixels (P26)
+int g_keep_frame_preset    = 1;   // 1 = a render that Region Scissor cuts starts from a copy of the last flipped frame, not black (P60)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -326,6 +345,35 @@ static const CfgItem s_items[] = {
 	{ "JitIdleRule",   &g_jit_idle_rule_preset },
 	{ "JitIdleHash",   &g_jit_idle_hash_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
+	{ "Controller",    &g_controller_type },
+	{ "StickDeadZone", &g_stick_deadzone_preset },
+	{ "RumblePack",    &g_rumble_pack_preset },
+	{ "MapCross",      &g_pad_map[PADBTN_CROSS] },
+	{ "MapCircle",     &g_pad_map[PADBTN_CIRCLE] },
+	{ "MapSquare",     &g_pad_map[PADBTN_SQUARE] },
+	{ "MapTriangle",   &g_pad_map[PADBTN_TRIANGLE] },
+	{ "MapStart",      &g_pad_map[PADBTN_START] },
+	{ "MapUp",         &g_pad_map[PADBTN_UP] },
+	{ "MapDown",       &g_pad_map[PADBTN_DOWN] },
+	{ "MapLeft",       &g_pad_map[PADBTN_LEFT] },
+	{ "MapRight",      &g_pad_map[PADBTN_RIGHT] },
+	{ "MapL1",         &g_pad_map[PADBTN_L1] },
+	{ "MapR1",         &g_pad_map[PADBTN_R1] },
+	{ "MapL2",         &g_pad_map[PADBTN_L2] },
+	{ "MapR2",         &g_pad_map[PADBTN_R2] },
+	{ "MapL3",         &g_pad_map[PADBTN_L3] },
+	{ "MapR3",         &g_pad_map[PADBTN_R3] },
+	{ "RttReadback",   &g_rtt_readback_preset },
+	{ "RttScaler",     &g_rtt_scaler_preset },
+	{ "RttSize",       &g_rtt_size_preset },
+	{ "RttPack",       &g_rtt_pack_preset },
+	{ "DrawRetry",     &g_draw_retry_preset },
+	{ "FbLineDouble",  &g_fb_line_double_preset },
+	{ "BlankVideo",    &g_blank_video_preset },
+	{ "PresentRule",   &g_present_rule_preset },
+	{ "RegionScissor", &g_region_scissor_preset },
+	{ "FbReads",       &g_fb_reads_preset },
+	{ "KeepFrame",     &g_keep_frame_preset },
 };
 
 void ps3_presets_load(void)
@@ -446,6 +494,51 @@ static const CfgItem s_time_items[] = {
 };
 #define TIME_ITEMS (sizeof(s_time_items) / sizeof(s_time_items[0]))
 
+// The bundle 10 rows (plan section 7), in the CONTROLS page's order.
+static const CfgItem s_pad_items[] = {
+	{ "Players",       &g_player_count },
+	{ "Controller",    &g_controller_type },
+	{ "StickDeadZone", &g_stick_deadzone_preset },
+	{ "RumblePack",    &g_rumble_pack_preset },
+	{ "MapCross",      &g_pad_map[PADBTN_CROSS] },
+	{ "MapCircle",     &g_pad_map[PADBTN_CIRCLE] },
+	{ "MapSquare",     &g_pad_map[PADBTN_SQUARE] },
+	{ "MapTriangle",   &g_pad_map[PADBTN_TRIANGLE] },
+	{ "MapStart",      &g_pad_map[PADBTN_START] },
+	{ "MapUp",         &g_pad_map[PADBTN_UP] },
+	{ "MapDown",       &g_pad_map[PADBTN_DOWN] },
+	{ "MapLeft",       &g_pad_map[PADBTN_LEFT] },
+	{ "MapRight",      &g_pad_map[PADBTN_RIGHT] },
+	{ "MapL1",         &g_pad_map[PADBTN_L1] },
+	{ "MapR1",         &g_pad_map[PADBTN_R1] },
+	{ "MapL2",         &g_pad_map[PADBTN_L2] },
+	{ "MapR2",         &g_pad_map[PADBTN_R2] },
+	{ "MapL3",         &g_pad_map[PADBTN_L3] },
+	{ "MapR3",         &g_pad_map[PADBTN_R3] },
+};
+#define PAD_ITEMS (sizeof(s_pad_items) / sizeof(s_pad_items[0]))
+
+// The bundle 11 rows (plan section 7), in the OUTPUT page's order, with the rows of other pages they act with.
+static const CfgItem s_out_items[] = {
+	{ "RttReadback",   &g_rtt_readback_preset },
+	{ "RttScaler",     &g_rtt_scaler_preset },
+	{ "RttSize",       &g_rtt_size_preset },
+	{ "RttPack",       &g_rtt_pack_preset },
+	{ "DrawRetry",     &g_draw_retry_preset },
+	{ "FbLineDouble",  &g_fb_line_double_preset },
+	{ "BlankVideo",    &g_blank_video_preset },
+	{ "PresentRule",   &g_present_rule_preset },
+	{ "RegionScissor", &g_region_scissor_preset },
+	{ "FbReads",       &g_fb_reads_preset },
+	{ "KeepFrame",     &g_keep_frame_preset },
+	{ "FrameHold",     &g_frame_hold_preset },
+	{ "DropPolicy",    &g_drop_policy_preset },
+	{ "FbWatch",       &g_fb_watch_preset },
+	{ "SpeFbConvert",  &g_spe_fbconv_preset },
+	{ "XScaler",       &g_x_scaler_preset },
+};
+#define OUT_ITEMS (sizeof(s_out_items) / sizeof(s_out_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -502,6 +595,20 @@ void ps3_timecfg_print(const char* when, bool always)
 	cfg_print("timecfg", s_time_items, TIME_ITEMS, last, &printed, when, always);
 }
 
+void ps3_padcfg_print(const char* when, bool always)
+{
+	static int last[PAD_ITEMS];
+	static bool printed;
+	cfg_print("padcfg", s_pad_items, PAD_ITEMS, last, &printed, when, always);
+}
+
+void ps3_outcfg_print(const char* when, bool always)
+{
+	static int last[OUT_ITEMS];
+	static bool printed;
+	cfg_print("outcfg", s_out_items, OUT_ITEMS, last, &printed, when, always);
+}
+
 extern "C" {
 int get_accuracy_preset()      { return g_accuracy_preset; }
 int get_sh4_clock_preset()     { return g_sh4_clock_preset; }
@@ -519,7 +626,8 @@ int get_arm7_idle_skip_preset() { return g_arm7_idle_skip_preset; }
 int get_arm7_jit_preset()      { return g_arm7_jit_preset; }
 int get_audio_buffers_preset() { return g_audio_buffers_preset; }
 int get_exit_fix_preset()      { return g_exit_fix_preset; }
-int get_controller_type()      { return g_controller_type; }
+// maple_cfg's device number: 1-4 are devices the PS3 port does not drive, so the full controller is 5 (G12).
+int get_controller_type()      { return g_controller_type == 1 ? 5 : 0; }
 int get_player_count()         { return g_player_count; }
 int get_debug_loop()           { return g_debug_loop; }
 int get_debug_gdrom()          { return g_debug_gdrom; }

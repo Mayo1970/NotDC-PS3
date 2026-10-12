@@ -44,6 +44,14 @@ struct RenderRegs
 	// 3a Fog, taken only with the Fog row on: FOG_COL_RAM, FOG_COL_VERT, FOG_DENSITY, and FOG_TABLE's low 16 bits.
 	u32 fog_col_ram, fog_col_vert, fog_density;
 	u16 fog_table[128];
+	// Bundle 11. reg_*: the region array's tiles in pixels inside TA_GLOB_TILE_CLIP, ends not included (Flycast
+	// tileClip); reg_ok = they were read. flip: 0 = the render waits for its FB_R_SOF write (P60); keep: no colour clear.
+	u32 scaler_ctl;
+	u32 reg_x0, reg_y0, reg_x1, reg_y1;
+	bool reg_ok, flip, keep;
+	// A 2D present: FB_R_SOF2, the interlace, field and pixel clock bits (P26); a blanked screen and its colour (P76).
+	u32 fb_r_sof2, vo_border_col;
+	bool fb_interlace, fb_field2, fb_vclk, blank;
 };
 
 extern RenderRegs g_rr;

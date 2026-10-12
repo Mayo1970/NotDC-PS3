@@ -13,7 +13,7 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
-as bundles 1-15) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
+as bundles 10-21 since the re-cut of 2026-10-12, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
 
 ## G1 - `_PS3` build links and packages  `[x]` (HW 2026-09-18: boots, UDP log OK, clean XMB exit, ~194 MB free heap)
 1. Add a PSL1GHT `Makefile` in the project root. Build in Docker with `./build.sh [pkg|self|clean]`.
@@ -224,7 +224,7 @@ section 5. The steps below are the cached interpreter (OFF by default), kept as 
    c. Only then decide the fix. Do NOT patch before (a) and (b) answer.
    The phase markers are diagnostic scaffolding; remove them once the freeze is closed.
 
-## G9 - SPE offload (optional)  `[~]`
+## G9 - SPE offload (optional)  `[x]` (closed 2026-10-12 at the bundle re-cut, Matt: "Yes, do it."; every unit is default ON in the source)
 1. Candidates: AICA/DSP mixing, texture decode.
 2. HW test per offloaded unit.
 
@@ -233,6 +233,7 @@ plan 5.13 A2) and SPE ARM7 (the ARM7 and the AICA registers on an SPU, plan 5.15
 2026-10-05. Update 2026-10-11, from `ps3/ps3_presets.cpp`: also default ON in the source are SPE AICA DSP with the
 DSP recompiler (plan 5.13 A3), SPE Build (5.12 #2), SPE Tex Hash (#3), SPE Tex Decode (#4), SPE FB Convert (#5) and
 SPE AICA Sync at + SAMPLE SYNC (plan 6.6). Plan section 0 has the HW state of each.
+What is left of the plan 5.12 list (the YUV decode options) stays in the plan, not in this goal.
 
 ## G10 - Release hardening  `[ ]`
 1. Memory ceiling probe, allocation checks, pad hot-plug. VMU saves on HDD `[x]` (HW 2026-10-04,
@@ -245,9 +246,21 @@ SPE AICA Sync at + SAMPLE SYNC (plan 6.6). Plan section 0 has the HW state of ea
 5. Stick dead zone: each axis is cut alone below 20, with no rescale. Flycast uses a radial dead zone with a rescale
    (P84, plan bundle 10).
 
+Re-cut 2026-10-12 (plan section 7): steps 3 and 5 are built in bundle 10 (Controllers), and the left part of step 4
+in bundle 15 (Flash and clock). Steps 1 and 2 stay in this goal. They run last, together with G13.
+
+Built 2026-10-12 in plan bundle 10 (plan section 0). Bundle 10 is a success by Matt 2026-10-12 ("We can consider this
+a success."); these two rows had no HW run:
+- Step 3: 15 `[ps3]` keys `MapCross` ... `MapR3` (`ps3/ps3_padmap.h`) and 15 rows on the CONTROLS page. Each DS3 button
+  drives one of NONE, A, B, X, Y, START, the D-pad directions, L TRIGGER, R TRIGGER. The defaults are the old fixed map.
+  C, Z and D are not offered: the pad still masks them (`0xF901`, G12 step 3).
+- Step 5: row CONTROLS > "Stick Dead Zone" (AXIS = the old cut, RADIAL = P84's), default AXIS.
+
 ## G11 - Online play (modem)  `[ ]` (added 2026-10-07 at Matt's request)
 No DreamPi box needed: the emulator replaces the phone line, the modem and the DreamPi in software, as Flycast does.
 Reference: Flycast `core/hw/modem/` and `core/network/`.
+Order (re-cut 2026-10-12): after plan bundle 15 (Flash and clock), which builds the flash block code for the dial-up
+account and the console ID.
 1. Modem chip, into `plugs/nullExtDev/nullExtDev.cpp` (a stub today), in two stages (2026-10-11,
    `OPTIMIZATION_POTENTIAL.md` P83):
    a. Stage 1, no V.42: the modem of Flycast `df2bdfc9b` (`modem.cpp` 764 lines + `modem_regs.h`; the Reicast
@@ -276,13 +289,14 @@ Reference: Flycast `core/hw/modem/` and `core/network/`.
 4. Optional, later: broadband adapter (`core/hw/bba/bba.cpp`, `rtl8139c.cpp`); fewer games support it.
 5. HW test: a modem game dials, connects and reaches its revived server.
 
-## G12 - Second analog stick (Full Controller)  `[ ]` (added 2026-10-07 at Matt's request)
+## G12 - Second analog stick (Full Controller)  `[x]` (added 2026-10-07 at Matt's request; built 2026-10-12; HW 2026-10-12: the right stick works in Quake III Arena, Matt: "Quake 3 double sticks works")
 Some games read a 2nd analog stick ("Panther mode", made for the Mad Catz Panther DC flight stick + trackball):
 Quake III Arena, Unreal Tournament, Star Wars Episode I Racer, Vigilante 8, KISS Psycho Circus, Railroad Tycoon II.
 Today the pad reports one stick (`0xfe060f00` in `dc/maple/maple_devs.cpp`), always sends X2/Y2 as 0x80, and the
 DS3 right stick is not read.
 Reference: Flycast `FullController` in `core/hw/maple/maple_devs.cpp` (commit 4d5ced1ce, "Panther DC/Full Controller").
 The exact edits are in `OPTIMIZATION_POTENTIAL.md` P84 (2026-10-11).
+Re-cut 2026-10-12: this goal is built inside plan bundle 10 (Controllers), after the stick dead zone.
 1. `ps3/ps3_input.cpp`: read `ANA_R_H`/`ANA_R_V` into per-port X2/Y2 values, with the left stick's dead zone. Build
    P84's radial dead zone first (plan bundle 10), so both sticks get it.
 2. `dc/maple/maple_cfg.cpp`: copy them into `pjs.joy[PJAI_X2]`/`pjs.joy[PJAI_Y2]`.
@@ -295,11 +309,18 @@ The exact edits are in `OPTIMIZATION_POTENTIAL.md` P84 (2026-10-11).
    it the two VMU slots (Flycast does).
 5. HW test: the right stick works in Quake III Arena; a standard-pad game plays as before.
 
+Built 2026-10-12 in plan bundle 10 (plan section 0), steps 1-4; step 5 done on HW the same day (Quake3.cdi with
+FULL: `joy2=` lines in the log; Crazy Taxi and Looney Tunes with STANDARD PAD as before). CONTROLS > Controller has
+"FULL (2 STICKS)" (`[ps3] Controller` = 1, `get_controller_type()` = 5, `MDT_FullController`); STANDARD PAD is the
+default. The right stick is read only for the full controller.
+
 ## G13 - Release candidate settings  `[ ]` (added 2026-10-08 at Matt's request; release material, stays the last goal)
 An RC build shows only a few option rows. Every other setting runs its source default.
 Risk: each launch writes every `[ps3]` key to `nullDC.cfg` (`ps3_presets_save`; `cfgLoadInt` writes an absent key
 back), and an install keeps the file. A source default change never reaches an install that ran once, so hidden rows
 would lock in an old build's values where nobody can see them.
+Re-cut 2026-10-12: it runs last, together with G10 steps 1 and 2. Plan bundles 17, 18 and 20 give the rows that are
+OFF their verdicts first (step 5).
 1. Build flag: `./build.sh RC=1 pkg` (Makefile `RC=1` -> `-DNOTDC_RC`). Normal builds keep every row.
 2. RC: leave the hidden rows out of `s_opt_pages` in `ps3/ps3_menu.cpp`. The SELECT in-game menu uses the same pages.
 3. First RC boot: reset `[ps3]` to the source defaults one time (a version key in `nullDC.cfg`).

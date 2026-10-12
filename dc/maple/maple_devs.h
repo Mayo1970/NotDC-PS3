@@ -9,6 +9,8 @@ enum MapleDeviceType
 	MDT_Maracas,        // Samba de Amigo maracas
 	MDT_Keyboard,       // DC keyboard / Typing of Dead
 	MDT_FishingRod,     // Sega Bass Fishing rod
+	MDT_FullController, // G12: 6 axes, the "Panther DC" controller
+	MDT_PuruPuru,       // P13: vibration pack
 
 	MDT_Count
 };

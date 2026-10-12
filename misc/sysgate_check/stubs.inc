@@ -26,8 +26,13 @@ extern "C" int get_g2_dma_read_preset() { return 0; }
 int g_core_reset_preset = 1, g_ta_list_regs_preset = 1;
 // Bundle 7: regs.cpp's reset value row. OLD here, so the timelines keep their lines; timebase_check moves it.
 int g_vblank_int_reset_preset;
+// Bundle 11: SPG.cpp's FB Line Double row (off) and regs.cpp's FB_R_SOF hook.
+int g_fb_line_double_preset;
+void FbShown(u32 a) { (void)a; }
 u32 g_aram_hz_dma;
 void aica_fix_dump(double s) { (void)s; }
+// Named by SPG.cpp since bundle 9 (the ARM7 census line).
+void arm_p49_dump(double s) { (void)s; }
 bool g_fb_dirty;
 void fb_watch_set(u32 s, u32 n) { (void)s; (void)n; }
 u32 SB_E1STAR, SB_E1STAG, SB_E1LEN, SB_E1DIR, SB_E1EN, SB_E1ST;

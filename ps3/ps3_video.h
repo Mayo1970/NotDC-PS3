@@ -17,10 +17,22 @@ void ps3_video_end_frame(void);
 double ps3_video_end_frame_at(u64 target_tb);
 // P18: 1 = the depth buffer holds floats (RSX float depth), 0 = fixed-point Z24.
 void ps3_video_depth_float(int on);
-// Render-to-texture: flush the frame without flipping, then read the drawn rect
-// back as native A8R8G8B8 rows (x/y are GL window coordinates, y from the bottom).
+// Render-to-texture: flush the frame without flipping, then read the drawn rect back as native A8R8G8B8 rows
+// (GL window x/y, y from the bottom). fixed (P75): 1 = the read-back that returns; 0 = PSL1GHT's, which does not.
 void ps3_video_end_frame_noflip(void);
-const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h);
+const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h, int fixed);
+// P76 Draw Retry: waits up to ms for a free back buffer; 1 = ps3_video_begin_frame() will take one.
+int  ps3_video_wait_free(u32 ms);
+// P60: starts a frame on the RTT surface, which is never shown; 0 = there is none.
+int  ps3_video_begin_rtt(void);
+// P60 Present Rule: ends a frame that stays in the back buffer; flips it later (0 = none waits); 1 = one waits.
+void ps3_video_end_frame_hold(void);
+int  ps3_video_flip_held(void);
+int  ps3_video_held(void);
+// P60 Keep Last Frame: copies the last flipped frame into the frame in progress (0 = none); the menu's frames
+// are forgotten, so no carry takes one.
+int  ps3_video_carry(void);
+void ps3_video_forget_frame(void);
 
 #ifdef __cplusplus
 }

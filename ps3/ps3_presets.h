@@ -156,6 +156,22 @@ extern int g_jit_idle_rule_preset;
 extern int g_jit_idle_hash_preset;
 extern int g_jit_sq_copy_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
+// Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
+extern int g_stick_deadzone_preset;
+extern int g_rumble_pack_preset;
+extern int g_pad_map[];
+// Bundle 11 (plan section 7), the OUTPUT page.
+extern int g_rtt_readback_preset;
+extern int g_rtt_scaler_preset;
+extern int g_rtt_size_preset;
+extern int g_rtt_pack_preset;
+extern int g_draw_retry_preset;
+extern int g_fb_line_double_preset;
+extern int g_blank_video_preset;
+extern int g_present_rule_preset;
+extern int g_region_scissor_preset;
+extern int g_fb_reads_preset;
+extern int g_keep_frame_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -170,3 +186,7 @@ void ps3_texcfg_print(const char* when, bool always);
 void ps3_rendcfg_print(const char* when, bool always);
 // [timecfg] line: the TIMING page's rows, the same way.
 void ps3_timecfg_print(const char* when, bool always);
+// [padcfg] line: the CONTROLS page's rows, the same way.
+void ps3_padcfg_print(const char* when, bool always);
+// [outcfg] line: the OUTPUT page's rows, the same way.
+void ps3_outcfg_print(const char* when, bool always);

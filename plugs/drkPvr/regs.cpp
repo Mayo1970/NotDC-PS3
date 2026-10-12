@@ -157,6 +157,13 @@ static void pvr_write_reg(u32 addr, u32 data)
 			}
 			return;
 
+		// ---- FB_R_SOF1/2: P60, the game shows a buffer; a render that waits for it is flipped (Flycast rend_swap_frame) ----
+		// The value is stored whole, as before; the renderer compares the address bits.
+		case FB_R_SOF1_addr:
+		case FB_R_SOF2_addr:
+			rend_fb_shown(data & 0x00FFFFFC);
+			break;
+
 		// ---- SCALER_CTL: hscale feeds the canvas width (Omicron / Wacky Races: 1280-wide 2:1 SSAA, SPG.cpp) ----
 		// Only with the x_scaler preset on: legacy never resynced on this write; preset-off must stay bit-identical.
 		case SCALER_CTL_addr:

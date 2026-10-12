@@ -65,6 +65,18 @@ static double s_stats_t0;
 static void* s_rb_addr;
 static u32 s_rb_off;
 
+// P60: a render to texture draws here while a frame waits in the back buffer for its flip.
+static void* s_rtt_color;
+static u32 s_rtt_off;
+// The surface the frame in progress draws to (a display buffer or the RTT one); the read-back copies from it.
+static u32 s_target_off;
+// P60: the back buffer holds a drawn frame that waits for the game to show it.
+static int s_frame_waits;
+// P60 Keep Last Frame: the display buffer of the last flip, the source of a carry; -1 = none, or a menu frame.
+static int s_last_fb = -1;
+// P75: rsxFinish waits only while the RSX's reference differs from its value, so each wait takes a new one.
+static u32 s_ref = 1;
+
 // ps3gl_main.c and ps3gl_vertices.c link against these engine hooks.
 void Con_Printf(const char* fmt, ...)
 {
@@ -161,20 +173,21 @@ static int vsync_ref(u64* tb, u64* n)
 	return 1;
 }
 
-static void set_render_target(int index)
+static void set_render_target(u32 color_off)
 {
 	gcmSurface sf;
 	memset(&sf, 0, sizeof(sf));
+	s_target_off = color_off;
 	sf.colorFormat = GCM_SURFACE_A8R8G8B8;
 	sf.colorTarget = GCM_SURFACE_TARGET_0;
 	sf.colorLocation[0] = GCM_LOCATION_RSX;
-	sf.colorOffset[0] = s_color_off[index];
+	sf.colorOffset[0] = color_off;
 	sf.colorPitch[0] = s_pitch;
 	// MRT slots 1-3 must be filled even when unused, else black screen on HW.
 	for (int i = 1; i < 4; i++)
 	{
 		sf.colorLocation[i] = GCM_LOCATION_RSX;
-		sf.colorOffset[i] = s_color_off[index];
+		sf.colorOffset[i] = color_off;
 		sf.colorPitch[i] = 64;
 	}
 	sf.depthFormat = GCM_SURFACE_ZETA_Z24S8;
@@ -261,6 +274,14 @@ int ps3_video_init(void)
 	}
 	rsxAddressToOffset(s_depth, &s_depth_off);
 
+	// P60: same size and pitch as a display buffer, so the depth buffer and the read-back fit it as they are.
+	s_rtt_color = rsxMemalign(64, s_pitch * s_height);
+	if (s_rtt_color)
+		rsxAddressToOffset(s_rtt_color, &s_rtt_off);
+	else
+		printf("[vid] no RTT surface: a render to texture draws in the back buffer\n");
+	s_frame_waits = 0;
+
 	// The RSX IO map works in 1 MB pages, so the staging buffer matches that.
 	s_rb_addr = memalign(1024 * 1024, PS3_RB_SIZE);
 	if (s_rb_addr)
@@ -321,6 +342,9 @@ void ps3_video_term(void)
 		if (s_depth)
 			rsxFree(s_depth);
 		s_depth = NULL;
+		if (s_rtt_color)
+			rsxFree(s_rtt_color);
+		s_rtt_color = NULL;
 		if (s_rb_addr)
 			free(s_rb_addr);
 		s_rb_addr = NULL;
@@ -350,7 +374,27 @@ int ps3_video_begin_frame(void)
 		s_skipped++;
 		return 0;
 	}
-	set_render_target(s_cur_fb);
+	set_render_target(s_color_off[s_cur_fb]);
+	ps3gl_begin_frame();
+	return 1;
+}
+
+// P76 Draw Retry: waits up to ms for a free back buffer. 1 = ps3_video_begin_frame() will take one.
+int ps3_video_wait_free(u32 ms)
+{
+	if (!s_ready)
+		return 0;
+	for (u32 i = 0; i < ms * 4 && (int)(s_flip_queued - s_flip_done) > PS3_FB_COUNT - 2; i++)
+		usleep(250);
+	return (int)(s_flip_queued - s_flip_done) <= PS3_FB_COUNT - 2;
+}
+
+// P60: a frame on the RTT surface, which is never shown: no flip can be in its way and the back buffer stays.
+int ps3_video_begin_rtt(void)
+{
+	if (!s_ready || !s_rtt_color)
+		return 0;
+	set_render_target(s_rtt_off);
 	ps3gl_begin_frame();
 	return 1;
 }
@@ -373,9 +417,37 @@ void ps3_video_end_frame_noflip(void)
 	rsxFlushBuffer(s_ctx);
 }
 
-// Copies w*h pixels of the back buffer into the staging buffer and waits for the RSX. x/y are GL window
-// coordinates (y from the bottom). Returns native A8R8G8B8 rows, or NULL when the copy cannot run.
-const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
+// P60: ends a frame that waits for the game to show its buffer: flushed, not flipped, and the buffer stays.
+void ps3_video_end_frame_hold(void)
+{
+	ps3gl_end_frame();
+	rsxFlushBuffer(s_ctx);
+	s_frame_waits = 1;
+}
+
+int ps3_video_held(void)
+{
+	return s_frame_waits;
+}
+
+// P75: waits until the RSX has run every command sent so far. 0 = it did not in 2 s.
+static int rsx_wait_idle(void)
+{
+	const u32 ref = ++s_ref;
+	rsxSetReferenceCommand(s_ctx, ref);
+	rsxFlushBuffer(s_ctx);
+	gcmControlRegister volatile* ctrl = gcmGetControlRegister();
+	for (int i = 0; i < 20000 && ctrl->ref != ref; i++)
+		usleep(100);
+	if (ctrl->ref == ref)
+		return 1;
+	printf("[vid] the RSX did not reach reference %u in 2 s (it is at %u)\n", (unsigned)ref, (unsigned)ctrl->ref);
+	return 0;
+}
+
+// Copies w*h pixels of the frame's surface (GL window x/y, y from the bottom) into the staging buffer and waits
+// for the RSX: native A8R8G8B8 rows, or NULL. fixed 0 (P75) = PSL1GHT's rsxSetTransferData, which never returns.
+const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h, int fixed)
 {
 	if (!s_ready || !s_rb_addr || w == 0 || h == 0)
 		return NULL;
@@ -383,8 +455,20 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
 		return NULL;
 
 	u32 src_y = s_height - (y + h);
+	const u32 src = s_target_off + src_y * s_pitch + x * 4;
+	if (fixed)
+	{
+		// Straight-line calls; the transfer starts at the last one (it ends in the notify method).
+		rsxSetTransferDataMode(s_ctx, GCM_TRANSFER_LOCAL_TO_MAIN);
+		rsxSetTransferDataFormat(s_ctx, s_pitch, w * 4, w * 4, h, 1, 1);
+		rsxSetTransferDataOffset(s_ctx, s_rb_off, src);
+		REND_PHASE(PH_READBACK);
+		const int ok = rsx_wait_idle();
+		REND_PHASE(PH_RTT);
+		return ok ? (const u32*)s_rb_addr : NULL;
+	}
 	rsxSetTransferData(s_ctx, GCM_TRANSFER_LOCAL_TO_MAIN, s_rb_off, w * 4,
-	                   s_color_off[s_cur_fb] + src_y * s_pitch + x * 4, s_pitch,
+	                   src, s_pitch,
 	                   w * 4, h);
 	REND_PHASE(PH_READBACK);
 	rsxFlushBuffer(s_ctx);
@@ -393,9 +477,30 @@ const u32* ps3_video_readback(u32 x, u32 y, u32 w, u32 h)
 	return (const u32*)s_rb_addr;
 }
 
+// P60 Keep Last Frame: the RSX copies the last flipped frame into the back buffer of the frame in progress, so a
+// render that draws only some tiles has the old picture around them. 0 = there is no frame to copy.
+int ps3_video_carry(void)
+{
+	if (!s_ready || s_last_fb < 0 || s_last_fb == s_cur_fb || s_target_off != s_color_off[s_cur_fb])
+		return 0;
+	// FIFO writes, so a deferred ps3gl GL_POLYGON batch goes out first. The copy starts at the last call.
+	ps3gl_flush_polygon_batch();
+	rsxSetTransferDataMode(s_ctx, GCM_TRANSFER_LOCAL_TO_LOCAL);
+	rsxSetTransferDataFormat(s_ctx, s_pitch, s_pitch, s_width * 4, s_height, 1, 1);
+	rsxSetTransferDataOffset(s_ctx, s_color_off[s_cur_fb], s_color_off[s_last_fb]);
+	return 1;
+}
+
+// The menu drew the last frame: it is no picture of the game, so a carry must not take it.
+void ps3_video_forget_frame(void)
+{
+	s_last_fb = -1;
+}
+
 // Queues the flip of the drawn buffer; k = the vsync it was held for, 0 = not held.
 static void queue_flip(u64 k)
 {
+	s_frame_waits = 0;
 	s_flip_target[s_flip_queued & 3] = k;
 	// WaitFlip before SetFlip: the rsx.h doc order gave a black screen on HW.
 	gcmSetWaitFlip(s_ctx);
@@ -403,6 +508,7 @@ static void queue_flip(u64 k)
 	rsxFlushBuffer(s_ctx);
 
 	s_flip_queued++;
+	s_last_fb = s_cur_fb;
 	s_cur_fb = (s_cur_fb + 1) % PS3_FB_COUNT;
 	s_presented++;
 }
@@ -440,6 +546,16 @@ void ps3_video_end_frame(void)
 	ps3gl_end_frame();
 	queue_flip(0);
 	vid_stats();
+}
+
+// P60: the game shows the held frame's buffer. 0 = no frame waits.
+int ps3_video_flip_held(void)
+{
+	if (!s_ready || !s_frame_waits)
+		return 0;
+	queue_flip(0);
+	vid_stats();
+	return 1;
 }
 
 double ps3_video_end_frame_at(u64 target_tb)

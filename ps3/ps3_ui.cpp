@@ -518,6 +518,7 @@ void ps3ui_end(void)
 {
 	glDepthMask(GL_TRUE);
 	ps3_video_end_frame();
+	ps3_video_forget_frame();
 }
 
 void ps3ui_rect(float x, float y, float w, float h, u32 argb)

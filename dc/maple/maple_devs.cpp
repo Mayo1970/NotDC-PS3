@@ -3,10 +3,14 @@
 #include "maple_helper.h"
 #include "maple_devs.h"
 #include "maple_cfg.h"
+#include "maple_puru.h"
 #include <time.h>
 #include <sys/stat.h>
 
 const char* maple_sega_controller_name = "Dreamcast Controller";
+// G12: Flycast's full controller; KISS: Psycho Circus checks this name.
+const char* maple_full_controller_name = "Dreamcast PantherDC Controller";
+const char* maple_sega_purupuru_name = "Puru Puru Pack";
 const char* maple_sega_vmu_name = "Visual Memory";
 const char* maple_sega_kbd_name = "Emulated Dreamcast Keyboard";
 const char* maple_sega_mouse_name = "Emulated Dreamcast Mouse";
@@ -146,6 +150,11 @@ struct maple_base: maple_device
 // Sega Dreamcast Controller. No error checking of any kind, but works just fine.
 struct maple_sega_controller: maple_base
 {
+	// Capability word: byte 1 = axes a5-a0, byte 2 = R2 L2 D2 U2 D X Y Z, byte 3 = R L D U St A B C.
+	virtual u32 caps() { return 0xfe060f00; }
+	virtual const char* name() { return maple_sega_controller_name; }
+	virtual bool second_stick() { return false; }
+
 	virtual u32 dma(u32 cmd)
 	{
 		//printf("maple_sega_controller::dma Called 0x%X;Command %d\n",device_instance->port,Command);
@@ -158,7 +167,7 @@ struct maple_sega_controller: maple_base
 
 			//struct data
 			//3*4
-			w32( 0xfe060f00);
+			w32(caps());
 			w32( 0);
 			w32( 0);
 
@@ -167,9 +176,9 @@ struct maple_sega_controller: maple_base
 
 			//1	direction
 			w8(0);
-			
+
 			//30
-			wstr(maple_sega_controller_name,30);
+			wstr(name(),30);
 
 			//60
 			wstr(maple_sega_brand,60);
@@ -208,11 +217,11 @@ struct maple_sega_controller: maple_base
 				//1
 				w8(pjs.joy[PJAI_Y1]);
 
-				//not used
+				//the second stick, not used by the standard pad
 				//1
-				w8(0x80);
+				w8(second_stick() ? pjs.joy[PJAI_X2] : 0x80);
 				//1
-				w8(0x80);
+				w8(second_stick() ? pjs.joy[PJAI_Y2] : 0x80);
 			}
 
 		return MDRS_DataTransfer;
@@ -221,7 +230,99 @@ struct maple_sega_controller: maple_base
 			printf("UNKOWN MAPLE COMMAND %d\n",cmd);
 			return MDRE_UnknownFunction;
 		}
-	}	
+	}
+};
+
+// G12, Flycast FullController: 6 axes and every button in the capability word, X2/Y2 in the last two bytes.
+struct maple_full_controller: maple_sega_controller
+{
+	virtual u32 caps() { return 0xffff3f00; }
+	virtual const char* name() { return maple_full_controller_name; }
+	virtual bool second_stick() { return true; }
+};
+
+// P13, Flycast maple_sega_purupuru: the vibration pack. SetCondition goes to the pad's motor through the config map.
+struct maple_sega_purupuru: maple_base
+{
+	u16 AST, AST_ms;
+	u32 VIBSET;
+
+	maple_sega_purupuru() : AST(19), AST_ms(5000), VIBSET(0) {}
+
+	virtual u32 dma(u32 cmd)
+	{
+		switch (cmd)
+		{
+		case MDC_DeviceRequest:
+		case MDC_AllStatusReq:
+			w32(MFID_8_Vibration);
+
+			w32(0x00000101);
+			w32(0);
+			w32(0);
+
+			w8(0xFF);
+			w8(0);
+
+			wstr(maple_sega_purupuru_name,30);
+			wstr(maple_sega_brand,60);
+
+			w16(0x00C8);	// 20 mA
+			w16(0x0640);	// 160 mA
+
+			if (cmd==MDC_AllStatusReq)
+			{
+				// 80 bytes: the reply must stay a whole number of words.
+				const char* extra="Version 1.000,1998/11/10,315-6211-AH   ,Vibration Motor:1,Fm:4 - 30Hz,Pow:7     ";
+				wptr(extra,80);
+				return MDRS_DeviceStatusAll;
+			}
+			return MDRS_DeviceStatus;
+
+			//the last vibration
+		case MDCF_GetCondition:
+			w32(MFID_8_Vibration);
+			w32(VIBSET);
+			return MDRS_DataTransfer;
+
+		case MDCF_GetMediaInfo:
+			w32(MFID_8_Vibration);
+			w32(0x3B07E010);	// vibration specs
+			return MDRS_DataTransfer;
+
+		case MDCF_BlockRead:
+			w32(MFID_8_Vibration);
+			w32(0);
+			w16(2);
+			w16(AST);
+			return MDRS_DataTransfer;
+
+		case MDCF_BlockWrite:
+			// The auto-stop time is byte 10 of the frame: bits 16-23 of its third word (words are native).
+			r32();
+			r32();
+			AST=(r32()>>16)&0xFF;
+			AST_ms=AST*250+250;
+			return MDRS_DeviceReply;
+
+		case MDCF_SetCondition:
+			{
+				r32();
+				VIBSET=r32();
+				PuruVib v=puru_decode(VIBSET,AST_ms);
+				config->SetVibration(v.power,v.inclination,v.duration_ms);
+			}
+			return MDRS_DeviceReply;
+
+		case MDC_DeviceReset:
+		case MDC_DeviceKill:
+			return MDRS_DeviceReply;
+
+		default:
+			printf("maple_sega_purupuru: unknown command %d\n",cmd);
+			return MDRE_UnknownCmd;
+		}
+	}
 };
 
 // Sega Dreamcast Visual Memory Unit: one raw 128 KB flash image per slot, Flycast's file format.
@@ -956,6 +1057,14 @@ maple_device* maple_Create(MapleDeviceType type)
 
 	case MDT_FishingRod:
 		rv = new maple_fishing_rod();
+		break;
+
+	case MDT_FullController:
+		rv = new maple_full_controller();
+		break;
+
+	case MDT_PuruPuru:
+		rv = new maple_sega_purupuru();
 		break;
 
 	default:

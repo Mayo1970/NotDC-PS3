@@ -4,6 +4,7 @@
 #include "ps3_ui.h"
 #include "ps3_video.h"
 #include "ps3_presets.h"
+#include "ps3_padmap.h"
 #include "ps3_sndthr.h"
 #include "plugs/vbaARM/arm7_jit.h"
 
@@ -26,6 +27,7 @@ extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
 void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
+void ps3_rumble_stop(void);   // ps3_input.cpp
 
 // -- Pad ---------------------------------------------------------------------
 
@@ -329,7 +331,15 @@ static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
-static const char* k_pad_type[]  = { "STANDARD PAD", NULL };
+static const char* k_pad_type[]  = { "STANDARD PAD", "FULL (2 STICKS)", NULL };
+static const char* k_deadzone[]  = { "AXIS", "RADIAL", NULL };
+// PADMAP_* order (ps3_padmap.h).
+static const char* k_padmap[]    = { "NONE", "A", "B", "X", "Y", "START", "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT",
+                                     "D-PAD RIGHT", "L TRIGGER", "R TRIGGER", NULL };
+static const char* k_rttrb[]     = { "OLD", "FIXED", NULL };
+static const char* k_rttsize[]   = { "FB CLIP", "TILE CLIP", NULL };
+static const char* k_oldfly[]    = { "OLD", "FLYCAST", NULL };
+static const char* k_present[]   = { "ALL", "SHOWN", "+ KEEP COLOUR", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -668,11 +678,59 @@ static Option s_timing[] = {
 	  "FLYCAST: SPG_VBLANK_INT starts at 0x00150104, not 0x01500104 (P28). Set before boot." },
 };
 
+// Plan section 7, bundle 11: one row per item; the first value is the old path.
+static Option s_output[] = {
+	{ "RTT Read-back",   &g_rtt_readback_preset,  OPT_CHOICE, k_rttrb,     0, 0,0,0, NULL,
+	  "FIXED: a render to texture comes back from the RSX; OLD freezes there (P75). Live." },
+	{ "RTT Scaler",      &g_rtt_scaler_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A render to texture is scaled as SCALER_CTL says (P66, Crazy Taxi pause). Live." },
+	{ "RTT Size",        &g_rtt_size_preset,      OPT_CHOICE, k_rttsize,   0, 0,0,0, NULL,
+	  "TILE CLIP: a render to texture covers its tiles; the FB clip cuts the copy (P76). Live." },
+	{ "RTT Pack",        &g_rtt_pack_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: alpha threshold, rounding, clip origin and stride of the VRAM copy (P54). Live." },
+	{ "Draw Retry",      &g_draw_retry_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A render to texture waits for a free buffer; a lost 2D screen is drawn again (P76). Live." },
+	{ "FB Line Double",  &g_fb_line_double_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "The line-double bit of FB_R_CTRL halves the canvas height (P76). Set before boot." },
+	{ "Blank Video",     &g_blank_video_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A 2D screen with the video blanked shows the border colour (P76). Live." },
+	{ "Present Rule",    &g_present_rule_preset,  OPT_CHOICE, k_present,   0, 0,0,0, NULL,
+	  "SHOWN: a render reaches the TV when the game shows its buffer (P60). Live." },
+	{ "Region Scissor",  &g_region_scissor_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "A render draws only in its region tiles and FB clip (P60, Quake III split screen). Live." },
+	{ "Keep Last Frame", &g_keep_frame_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "With Region Scissor: a render of some tiles keeps the last frame around them (P60). Live." },
+	{ "FB Reads",        &g_fb_reads_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: 2D screens read both interlaced fields; 24-bit screens show (P26). Live." },
+};
+
+// Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
+static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
+
 static Option s_controls[] = {
 	{ "Players",         &g_player_count,         OPT_RANGE,  NULL,        0, 1,4,1, "%d",
 	  "Maple ports the emulator creates. Pad N drives Dreamcast port N." },
 	{ "Controller",      &g_controller_type,      OPT_CHOICE, k_pad_type,  0, 0,0,0, NULL,
-	  "Light gun, maracas and keyboard are not supported." },
+	  "FULL adds the right stick, for the games that read it (Quake III Arena, G12)." },
+	{ "Stick Dead Zone", &g_stick_deadzone_preset, OPT_CHOICE, k_deadzone, 0, 0,0,0, NULL,
+	  "RADIAL: a round 10% dead zone, smooth from 0, corners capped at full travel (P84)." },
+	{ "Rumble Pack",     &g_rumble_pack_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A vibration pack on the DS3 motor. It takes slot 2: the second VMU is not plugged (P13)." },
+	{ "Cross",           &g_pad_map[PADBTN_CROSS],    OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "Circle",          &g_pad_map[PADBTN_CIRCLE],   OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "Square",          &g_pad_map[PADBTN_SQUARE],   OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "Triangle",        &g_pad_map[PADBTN_TRIANGLE], OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "Start",           &g_pad_map[PADBTN_START],    OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "D-pad Up",        &g_pad_map[PADBTN_UP],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "D-pad Down",      &g_pad_map[PADBTN_DOWN],     OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "D-pad Left",      &g_pad_map[PADBTN_LEFT],     OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "D-pad Right",     &g_pad_map[PADBTN_RIGHT],    OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "L1",              &g_pad_map[PADBTN_L1],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "R1",              &g_pad_map[PADBTN_R1],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "L2",              &g_pad_map[PADBTN_L2],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "R2",              &g_pad_map[PADBTN_R2],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "L3",              &g_pad_map[PADBTN_L3],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
+	{ "R3",              &g_pad_map[PADBTN_R3],       OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
 };
 
 struct Page
@@ -691,6 +749,7 @@ static Page s_opt_pages[] = {
 	{ "TEXTURES",      s_textures, (int)(sizeof(s_textures) / sizeof(s_textures[0])) },
 	{ "RENDERER",      s_renderer, (int)(sizeof(s_renderer) / sizeof(s_renderer[0])) },
 	{ "TIMING",        s_timing, (int)(sizeof(s_timing) / sizeof(s_timing[0])) },
+	{ "OUTPUT",        s_output, (int)(sizeof(s_output) / sizeof(s_output[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -906,6 +965,7 @@ static int s_sel;      // browser selection
 static int s_opt_page;
 static int s_opt_row;
 static int s_ctl_row;
+static int s_ctl_top;  // first CONTROLS row drawn
 
 static void browser_enter_device(int index)
 {
@@ -1103,14 +1163,20 @@ static void controls_draw()
 
 	draw_header("CONTROLS", NULL);
 
-	for (int i = 0; i < CONTROLS_ROWS; i++)
+	// The rows scroll above the two status lines.
+	const int vis = visible_rows() - 3;
+	if (s_ctl_row < s_ctl_top)
+		s_ctl_top = s_ctl_row;
+	else if (s_ctl_row >= s_ctl_top + vis)
+		s_ctl_top = s_ctl_row - vis + 1;
+	for (int i = s_ctl_top; i < CONTROLS_ROWS && i - s_ctl_top < vis; i++)
 	{
 		option_text(&s_controls[i], val, sizeof(val));
-		draw_row(i, i == s_ctl_row, COL_TEXT, s_controls[i].label, val);
+		draw_row(i - s_ctl_top, i == s_ctl_row, COL_TEXT, s_controls[i].label, val);
 	}
 
 	snprintf(buf, sizeof(buf), "Pads connected: %d", pad_count());
-	draw_row(CONTROLS_ROWS + 1, false, COL_DIM, buf, NULL);
+	draw_row(vis + 1, false, COL_DIM, buf, NULL);
 
 	if (selectedFilePath[0])
 	{
@@ -1121,7 +1187,7 @@ static void controls_draw()
 	{
 		snprintf(buf, sizeof(buf), "Disc: none, booting to the BIOS");
 	}
-	draw_row(CONTROLS_ROWS + 2, false, COL_DIM,
+	draw_row(vis + 2, false, COL_DIM,
 	         fit(buf, list_max_w(), cut, sizeof(cut)), NULL);
 
 	draw_footer(s_controls[s_ctl_row].help,
@@ -1147,7 +1213,9 @@ static int* const k_live_opts[] = {
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
 	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_fog_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
 	&g_g2_dma_small_preset, &g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,
-	&g_hblank_irq_preset,
+	&g_hblank_irq_preset, &g_rtt_readback_preset, &g_rtt_scaler_preset, &g_rtt_size_preset, &g_rtt_pack_preset,
+	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,
+	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
 #define MAX_INGAME_OPTS 192
@@ -1240,6 +1308,8 @@ void ps3_menu_ingame(void)
 	s_ingame_req = false;
 	// 5.14: live sound options below touch ARM7 and AICA state, so the sound thread waits until the menu closes.
 	snd_lock(SND_LOCK_MENU);
+	// P13: the guest does not poll its pads while the menu is open, so a running motor would not stop.
+	ps3_rumble_stop();
 	// The SH4 thread runs the guest's rounding mode; the UI math wants round-to-nearest.
 	double fpscr;
 	__asm__ volatile("mffs %0" : "=f"(fpscr));
@@ -1325,6 +1395,7 @@ void ps3_menu_ingame(void)
 		ps3_texcfg_print("menu", false);
 		ps3_rendcfg_print("menu", false);
 		ps3_timecfg_print("menu", false);
+		ps3_outcfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1413,5 +1484,7 @@ int ps3_menu_run(void)
 	ps3_texcfg_print("boot", true);
 	ps3_rendcfg_print("boot", true);
 	ps3_timecfg_print("boot", true);
+	ps3_padcfg_print("boot", true);
+	ps3_outcfg_print("boot", true);
 	return 1;
 }

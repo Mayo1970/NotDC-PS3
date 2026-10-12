@@ -23,6 +23,8 @@ void SoftReset();
 
 void SetFpsText(char* text);
 void SetFbScale(float x, float y);
+// P60: the game wrote addr (masked with 0x00FFFFFC) to FB_R_SOF1 or FB_R_SOF2.
+void FbShown(u32 addr);
 
 
 #define rend_init         InitRenderer
@@ -42,3 +44,4 @@ void SetFbScale(float x, float y);
 #define rend_set_fps_text SetFpsText
 #define rend_set_render_rect(rect,sht)
 #define rend_set_fb_scale SetFbScale
+#define rend_fb_shown     FbShown

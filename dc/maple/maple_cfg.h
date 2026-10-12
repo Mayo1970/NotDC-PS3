@@ -66,6 +66,8 @@ struct IMapleConfigMap
 {
 	virtual void GetInput(PlainJoystickState* pjs) = 0;
 	virtual void SetImage(void* img) = 0;
+	// P13: the Puru Puru pack's motor; inclination is the power's slope per ms (maple_puru.h).
+	virtual void SetVibration(float power, float inclination, u32 duration_ms) = 0;
 	virtual ~IMapleConfigMap() {}
 };
 

@@ -5,6 +5,7 @@
 #include "ps3_video.h"
 #include "ps3_tex.h"
 #include "ps3_rend_regs.h"
+#include "ps3_rtt.h"
 #include "ps3_depth.h"
 #include "ps3_spe.h"
 #include "ps3_spevb.h"
@@ -235,7 +236,7 @@ static double s_stat_t0;
 
 // -- TR3: render thread. One job at a time (libswirl single-slot queue): the SH4 snapshots and posts,
 // this thread replays the TA stream and owns every RSX call. A second frame drops; only RTT waits.
-enum { JOB_NONE = 0, JOB_RENDER, JOB_RTT, JOB_PRESENT };
+enum { JOB_NONE = 0, JOB_RENDER, JOB_RTT, JOB_PRESENT, JOB_FLIP };
 
 static sys_ppu_thread_t s_rend_tid;
 static sys_mutex_t s_rmx;
@@ -261,6 +262,17 @@ static u32 s_stat_fb_defer;
 // P26 FB Write Watch: a StartRender since the last vblank (Flycast render_called); presents only the watch caused.
 static bool s_render_since_vbl;
 static u32 s_stat_fb_watch;
+// P60 Present Rule, SH4 thread: a posted render waits for its flip; its FB_W_SOF1 (Flycast fb_w_cur); the last two
+// render addresses (Flycast fbAddrHistory). s_flip_want (under s_rmx): flip the held frame after the job in flight.
+static bool s_fb_held;
+static u32 s_fbw_cur = 1, s_fbw_hist[2] = { 1, 1 };
+static bool s_flip_want;
+// P76 Draw Retry: a 2D present found no free buffer; the next vblank presents again.
+static volatile bool s_fb_retry;
+// Bundle 11, per stats window: renders held and renders flipped by an FB_R_SOF write, renders with no colour clear
+// and with a region scissor, RTT waits for a buffer, 2D presents tried again and blanked, carried frames.
+static u32 s_stat_held, s_stat_shown, s_stat_keep, s_stat_scis, s_stat_rtt_wait, s_stat_retry, s_stat_blank;
+static u32 s_stat_carry;
 // TR5: total time the SH4 spent waiting for the job slot, so the drop policy costs a number.
 static double s_stat_wait;
 static double s_stat_job_max;
@@ -1369,6 +1381,33 @@ static void region_entry(u32* addr, u32* size)
 	*size = sz;
 }
 
+// Flycast getRegionTileClipping and setTileClipping: the box of the region array's tiles (X in bits 2-7, Y in bits
+// 8-13, bit 31 ends the array), in pixels, inside TA_GLOB_TILE_CLIP. Needs glob_clip_x/y.
+static void snapshot_region_box()
+{
+	const bool type1 = ((FPU_PARAM_CFG >> 21) & 1) == 0;
+	u32 addr = REGION_BASE, size = (type1 ? 5 : 6) * 4;
+	if (g_region_array_preset)
+		region_entry(&addr, &size);
+	u32 x0 = 63, x1 = 0, y0 = 63, y1 = 0, left = 3000, tile;
+	do
+	{
+		tile = vri(addr);
+		const u32 x = (tile >> 2) & 63, y = (tile >> 8) & 63;
+		x0 = x < x0 ? x : x0;
+		x1 = x > x1 ? x : x1;
+		y0 = y < y0 ? y : y0;
+		y1 = y > y1 ? y : y1;
+		addr += size;
+	}
+	while (!(tile >> 31) && --left);
+	s_snap.reg_ok = left != 0;
+	s_snap.reg_x0 = x0 * 32;
+	s_snap.reg_y0 = y0 * 32;
+	s_snap.reg_x1 = std::min((x1 + 1) * 32, s_snap.glob_clip_x);
+	s_snap.reg_y1 = std::min((y1 + 1) * 32, s_snap.glob_clip_y);
+}
+
 // Each pass's region-array entry (Flycast getRegionSettings), for passes 0..last: its sort mode, and whether its
 // opaque and translucent volume pointers are one list (P27; the plan also asks for a pointer that is not empty).
 static void snapshot_region(u32 last)
@@ -1454,6 +1493,13 @@ static void snapshot_present_regs()
 	s_snap.fb_r_sof1 = FB_R_SOF1;
 	s_snap.fb_r_size = FB_R_SIZE;
 	s_snap.fb_r_depth = FB_R_CTRL.fb_depth;
+	// P26: what Flycast's ReadFramebuffer reads besides those. P76: VO_CONTROL bit 3 blanks the video.
+	s_snap.fb_r_sof2 = FB_R_SOF2;
+	s_snap.fb_interlace = SPG_CONTROL.interlace != 0;
+	s_snap.fb_field2 = SPG_STATUS.fieldnum != 0;
+	s_snap.fb_vclk = FB_R_CTRL.vclk_div != 0;
+	s_snap.blank = g_blank_video_preset && ((VO_CONTROL >> 3) & 1);
+	s_snap.vo_border_col = VO_BORDER_COL;
 }
 
 // TR2/TR3: everything the draw path reads, latched on the SH4 thread at STARTRENDER into s_snap.
@@ -1480,6 +1526,14 @@ static void snapshot_render_regs()
 	// P10 Tile Clip: the TA's global clip, in pixels (Flycast globClip).
 	s_snap.glob_clip_x = ((TA_GLOB_TILE_CLIP & 0x3F) + 1) * 32;
 	s_snap.glob_clip_y = (((TA_GLOB_TILE_CLIP >> 16) & 0xF) + 1) * 32;
+	// Bundle 11: SCALER_CTL for a render to texture; StartRender sets flip and keep (P60); the tile box (a walk of
+	// up to 300 region words) only for Region Scissor and for a render to texture, whose [rtt] line prints it.
+	s_snap.scaler_ctl = SCALER_CTL.full;
+	s_snap.flip = true;
+	s_snap.keep = false;
+	s_snap.reg_ok = false;
+	if (g_region_scissor_preset || (s_snap.fb_w_sof1 & 0x1000000))
+		snapshot_region_box();
 	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
 	// 3a: the fog registers are native u32, so the draw's shifts are the DC's bit numbers.
 	if (g_fog_preset)
@@ -1728,14 +1782,48 @@ static u32 s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_cont;
 // TA Bad Records: the records ta.h's splitter skipped (P9, P66), per stats window.
 u32 g_ta_bad_records;
 
-// P10 Tile Clip: the scene's viewport in GL pixels, whether it is the base scissor, and the canvas it shows.
+// P10 Tile Clip: the scene's viewport in GL pixels, the canvas it shows, and the base scissor: with scissor set
+// the scene draws only inside bx..bh, which is the viewport or (P60) a part of it; else bx..bh is the viewport.
 struct ClipView
 {
 	int x, y, w, h;
 	bool scissor;
 	float cx0, cy0, cw, ch;
+	int bx, by, bw, bh;
 };
 static ClipView s_cv;
+
+// The viewport and the base scissor of a scene: all of the viewport.
+static void clip_view(int x, int y, int w, int h, bool scissor)
+{
+	s_cv.x = s_cv.bx = x;
+	s_cv.y = s_cv.by = y;
+	s_cv.w = s_cv.bw = w;
+	s_cv.h = s_cv.bh = h;
+	s_cv.scissor = scissor;
+}
+
+// P60: cuts the base scissor to the canvas area cx0..cy1 (DC pixels, y down). False = no pixel is left.
+static bool clip_view_cut(float cx, float cy, float cw, float ch, float cx0, float cy0, float cx1, float cy1)
+{
+	const float sx = (float)s_cv.w / cw, sy = (float)s_cv.h / ch;
+	int r[4] = { s_cv.x + (int)lroundf((cx0 - cx) * sx), s_cv.y + s_cv.h - (int)lroundf((cy1 - cy) * sy),
+	             s_cv.x + (int)lroundf((cx1 - cx) * sx), s_cv.y + s_cv.h - (int)lroundf((cy0 - cy) * sy) };
+	const int lim[4] = { s_cv.x, s_cv.y, s_cv.x + s_cv.w, s_cv.y + s_cv.h };
+	for (int k = 0; k < 4; k++)
+	{
+		const int lo = lim[k & 1], hi = lim[2 + (k & 1)];
+		r[k] = r[k] < lo ? lo : r[k] > hi ? hi : r[k];
+	}
+	if (r[2] <= r[0] || r[3] <= r[1])
+		return false;
+	s_cv.bx = r[0];
+	s_cv.by = r[1];
+	s_cv.bw = r[2] - r[0];
+	s_cv.bh = r[3] - r[1];
+	s_cv.scissor = true;
+	return true;
+}
 // The applied param's clip: none, inside (the scissor is set), outside (one draw per side of the rect), or all cut.
 enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
 static u32 s_clip_mode;
@@ -1748,7 +1836,7 @@ static void clip_base()
 		return;
 	s_clip_base = true;
 	if (s_cv.scissor)
-		glScissor(s_cv.x, s_cv.y, s_cv.w, s_cv.h);
+		glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
 	else
 		glDisable(GL_SCISSOR_TEST);
 }
@@ -1769,7 +1857,7 @@ static void clip_apply(const DcParam& p)
 	const float sx = (float)s_cv.w / s_cv.cw, sy = (float)s_cv.h / s_cv.ch;
 	int r[4] = { s_cv.x + (int)lroundf((csx - s_cv.cx0) * sx), s_cv.y + s_cv.h - (int)lroundf((cey - s_cv.cy0) * sy),
 	             s_cv.x + (int)lroundf((cex - s_cv.cx0) * sx), s_cv.y + s_cv.h - (int)lroundf((csy - s_cv.cy0) * sy) };
-	const int lim[4] = { s_cv.x, s_cv.y, s_cv.x + s_cv.w, s_cv.y + s_cv.h };
+	const int lim[4] = { s_cv.bx, s_cv.by, s_cv.bx + s_cv.bw, s_cv.by + s_cv.bh };
 	for (int k = 0; k < 4; k++)
 	{
 		const int lo = lim[k & 1], hi = lim[2 + (k & 1)];
@@ -1987,9 +2075,9 @@ static void draw_vb(GLenum prim, u32 stride, u32 first, u32 count)
 		ps3gl_draw_vb_shift(prim, s_vb_off, stride, (int)first, (int)count, s_flat_shift);
 		return;
 	}
-	const int x1 = s_cv.x + s_cv.w, y1 = s_cv.y + s_cv.h;
-	const int side[4][4] = { { s_cv.x, s_cv.y, s_clip_r[0], y1 }, { s_clip_r[2], s_cv.y, x1, y1 },
-	                         { s_clip_r[0], s_cv.y, s_clip_r[2], s_clip_r[1] }, { s_clip_r[0], s_clip_r[3], s_clip_r[2], y1 } };
+	const int x1 = s_cv.bx + s_cv.bw, y1 = s_cv.by + s_cv.bh;
+	const int side[4][4] = { { s_cv.bx, s_cv.by, s_clip_r[0], y1 }, { s_clip_r[2], s_cv.by, x1, y1 },
+	                         { s_clip_r[0], s_cv.by, s_clip_r[2], s_clip_r[1] }, { s_clip_r[0], s_clip_r[3], s_clip_r[2], y1 } };
 	for (int k = 0; k < 4; k++)
 	{
 		if (side[k][2] <= side[k][0] || side[k][3] <= side[k][1])
@@ -3162,19 +3250,54 @@ static void draw_frame()
 	glClearColor(0, 0, 0, 1);
 	depth_begin();
 	glClearStencil(0);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+	const float cw = 640.0f * g_rr.fb_scale_x, ch = 480.0f * g_rr.fb_scale_y;
+	// P60 (Flycast 93523df80, intersectTileAndFBScissor): the PVR draws only the region array's tiles, and the FB
+	// clip cuts what the scaler writes, so in TA pixels it is the clip times the scale.
+	bool reg = false, cut = false;
+	float x0 = 0.0f, y0 = 0.0f, x1 = cw, y1 = ch;
+	if (g_region_scissor_preset && g_rr.reg_ok)
+	{
+		const u32 vs = g_rr.scaler_ctl & 0xFFFF;
+		const float xs = ((g_rr.scaler_ctl >> 16) & 1) ? 2.0f : 1.0f;
+		const float ys = (vs != 0 && (vs < 1024 || vs > 1025)) ? (float)vs / 1024.0f : 1.0f;
+		x0 = std::max(roundf((float)g_rr.fb_x_clip_min * xs), (float)g_rr.reg_x0);
+		y0 = std::max(roundf((float)g_rr.fb_y_clip_min * ys), (float)g_rr.reg_y0);
+		x1 = std::min(roundf((float)(g_rr.fb_x_clip_max + 1) * xs), (float)g_rr.reg_x1);
+		y1 = std::min(roundf((float)(g_rr.fb_y_clip_max + 1) * ys), (float)g_rr.reg_y1);
+		reg = true;
+		cut = x0 > 0.0f || y0 > 0.0f || x1 < cw || y1 < ch;
+		if (cut)
+			s_stat_scis++;
+	}
+
+	// P60 (Flycast 3a7a08f3f): over a frame that waits for its flip the colour stays, and the background plane is
+	// the clear. A buffer that was flipped holds an old frame, so it is always cleared.
+	const bool keep = g_rr.keep && ps3_video_held();
+	if (keep)
+		s_stat_keep++;
+	// Keep Last Frame: the PVR leaves the pixels outside a render's tiles as they are, so a render that the
+	// scissor cuts starts from a copy of the last flipped frame, not from black.
+	const bool carry = g_keep_frame_preset && cut && !keep && ps3_video_carry();
+	if (carry)
+		s_stat_carry++;
+	glClear(((keep || carry) ? 0 : GL_COLOR_BUFFER_BIT) | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+	clip_view((int)vp_x, 0, (int)vp_w, (int)sh, true);
+	// No pixel left: no scene.
+	if (reg && !clip_view_cut(0.0f, 0.0f, cw, ch, x0, y0, x1, y1))
+	{
+		// What draw_scene leaves for the UI and the 2D presents.
+		ps3_video_depth_float(0);
+		return;
+	}
 
 	glEnable(GL_SCISSOR_TEST);
-	glScissor(vp_x, 0, vp_w, sh);
+	glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
 	glViewport(vp_x, 0, vp_w, sh);
 	ps3gl_apply_states();
 
-	s_cv.x = (int)vp_x;
-	s_cv.y = 0;
-	s_cv.w = (int)vp_w;
-	s_cv.h = (int)sh;
-	s_cv.scissor = true;
-	draw_scene(0.0f, 0.0f, 640.0f * g_rr.fb_scale_x, 480.0f * g_rr.fb_scale_y);
+	draw_scene(0.0f, 0.0f, cw, ch);
 }
 
 // -- Render to texture (FB_W_SOF1 bit 24): draw the clip window at its own size, read it
@@ -3193,20 +3316,75 @@ static inline u16 pack16(u32 argb, u32 mode, u16 kbit)
 	}
 }
 
+// The registers and the geometry of a render to texture: the first ones and each new set, 24 lines at most (P75).
+static void rtt_log(const RttIn& in, const RttGeom* g)
+{
+	static u32 s_sig, s_lines;
+	u32 sig = 0x9E3779B9u;
+	const u32 w[] = { g_rr.fb_w_sof1, g_rr.fb_w_ctrl, g_rr.fb_w_linestride, in.fx0, in.fx1, in.fy0, in.fy1,
+	                  in.tx0, in.ty0, in.tx1, in.ty1, in.scaler_ctl, (u32)in.by_tiles, (u32)in.scaler, (u32)in.fly };
+	for (u32 k = 0; k < sizeof(w) / sizeof(w[0]); k++)
+		sig = (sig ^ w[k]) * 0x01000193u;
+	if (sig == s_sig || s_lines >= 24)
+		return;
+	s_sig = sig;
+	s_lines++;
+	printf("[rtt] sof1=%08X ctrl=%08X stride=%u fbclip=%u..%u,%u..%u glob=%ux%u tiles=%u..%u,%u..%u%s scaler=%05X"
+	       " | rows size=%d scaler=%d pack=%d readback=%d retry=%d\n",
+	       g_rr.fb_w_sof1, g_rr.fb_w_ctrl, (g_rr.fb_w_linestride & 0x1FF) * 8, in.fx0, in.fx1, in.fy0, in.fy1,
+	       g_rr.glob_clip_x, g_rr.glob_clip_y, in.tx0, in.tx1, in.ty0, in.ty1, g_rr.reg_ok ? "" : " (not read)",
+	       in.scaler_ctl & 0xFFFFF, (int)in.by_tiles, (int)in.scaler, (int)in.fly, g_rtt_readback_preset,
+	       g_draw_retry_preset);
+	if (g)
+		printf("[rtt] area=%g,%g %gx%g target=%ux%u copy=%u..%u,%u..%u at texel %u,%u stride=%u scissor=%d\n",
+		       (double)g->sx0, (double)g->sy0, (double)g->sw, (double)g->sh, g->tw, g->th, g->wx0, g->wx1, g->wy0, g->wy1,
+		       g->ox, g->oy, g->stride, (int)g->scissor);
+	else
+		printf("[rtt] not drawn: an empty clip, or a target over %ux%u\n", in.max_w, in.max_h);
+}
+
+// One 16-bit texel into the 64-bit texture area: a native word holds two, the left one in its low half.
+static inline void rtt_w16(u32 addr, u16 v)
+{
+	u32* const w = (u32*)&PVRPARAMS.vram[addr & VRAM_MASK & ~3u];
+	*w = (addr & 2) ? (*w & 0x0000FFFFu) | ((u32)v << 16) : (*w & 0xFFFF0000u) | v;
+}
+
 static void rtt_render()
 {
-	u32 x0 = g_rr.fb_x_clip_min, x1 = g_rr.fb_x_clip_max;
-	u32 y0 = g_rr.fb_y_clip_min, y1 = g_rr.fb_y_clip_max;
-	if (x1 < x0 || y1 < y0)
-		return;
-	u32 w = x1 - x0 + 1, h = y1 - y0 + 1;
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
-	if (w > sw || h > sh || w > 1024 || h > 1024)
+	// The rows of the OUTPUT page (all live): RTT Size, RTT Scaler, RTT Pack.
+	const bool fly = g_rtt_pack_preset != 0;
+	const u32 packmode = g_rr.fb_w_ctrl & 7;
+	RttIn in;
+	in.fx0 = g_rr.fb_x_clip_min;
+	in.fx1 = g_rr.fb_x_clip_max;
+	in.fy0 = g_rr.fb_y_clip_min;
+	in.fy1 = g_rr.fb_y_clip_max;
+	in.tx0 = g_rr.reg_x0;
+	in.ty0 = g_rr.reg_y0;
+	in.tx1 = g_rr.reg_x1;
+	in.ty1 = g_rr.reg_y1;
+	in.scaler_ctl = g_rr.scaler_ctl;
+	in.stride = (g_rr.fb_w_linestride & 0x1FF) * 8;
+	in.max_w = sw < 1024 ? sw : 1024;
+	in.max_h = sh < 1024 ? sh : 1024;
+	// The old copy's 32-bit modes 6 and 7 keep the old area: the new copy writes 16-bit texels only.
+	in.by_tiles = g_rtt_size_preset != 0 && g_rr.reg_ok && (fly || packmode <= 3);
+	in.scaler = g_rtt_scaler_preset != 0;
+	in.fly = fly;
+	RttGeom g;
+	if (!rtt_geom(&in, &g))
+	{
+		rtt_log(in, 0);
 		return;
+	}
+	rtt_log(in, &g);
+	const u32 w = g.tw, h = g.th;
 
-	u32 packmode = g_rr.fb_w_ctrl & 7;
-	if (packmode == 4 || packmode == 5)
+	// P76: no reference renders to texture in modes 4-7 (Flycast gltex.cpp BindRTT returns).
+	if (fly ? packmode >= 4 : (packmode == 4 || packmode == 5))
 	{
 		static u32 s_warned;
 		if (s_warned++ < 3)
@@ -3214,57 +3392,96 @@ static void rtt_render()
 		return;
 	}
 
-	if (!ps3_video_begin_frame())
-		return;
+	// P60: with the Present Rule a frame can wait in the back buffer, so the RTT draws on its own surface.
+	// P76 Draw Retry: else it waits for a free buffer; a return here leaves the game's texture with old data.
+	if (!(g_present_rule_preset && ps3_video_begin_rtt()) && !ps3_video_begin_frame())
+	{
+		if (!g_draw_retry_preset)
+			return;
+		s_stat_rtt_wait++;
+		if (!ps3_video_wait_free(250) || !ps3_video_begin_frame())
+			return;
+	}
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
 	glDisable(GL_SCISSOR_TEST);
 	glViewport(0, 0, w, h);
 	ps3gl_apply_states();
-	glClearColor(0, 0, 0, 1);
+	// P76 (Flycast gles.cpp): an RTT target clears to alpha 0; it shows in the 4444 and 1555 packs.
+	glClearColor(0, 0, 0, fly ? 0 : 1);
 	depth_begin();
 	glClearStencil(0);
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-	s_cv.x = s_cv.y = 0;
-	s_cv.w = (int)w;
-	s_cv.h = (int)h;
-	s_cv.scissor = false;
-	draw_scene((float)x0, (float)y0, (float)w, (float)h);
+	clip_view(0, 0, (int)w, (int)h, false);
+	// Flycast getBaseScissor: with the size from the tiles, the scene draws only inside them.
+	if (g.scissor && clip_view_cut(g.sx0, g.sy0, g.sw, g.sh, g.cx0, g.cy0, g.cx1, g.cy1))
+	{
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
+		ps3gl_apply_states();
+	}
+	draw_scene(g.sx0, g.sy0, g.sw, g.sh);
 	ps3_video_end_frame_noflip();
 
-	const u32* px = ps3_video_readback(0, 0, w, h);
+	// P75: the row's value is in the log before the call, because OLD never comes back from it.
+	static u32 s_rb_logged;
+	const bool say = s_rb_logged < 8;
+	if (say)
+		printf("[rtt] read-back %ux%u, RTT Read-back %s\n", w, h, g_rtt_readback_preset ? "FIXED" : "OLD");
+	const double t_rb = os_GetSeconds();
+	const u32* px = ps3_video_readback(0, 0, w, h, g_rtt_readback_preset);
+	if (say)
+	{
+		s_rb_logged++;
+		printf("[rtt] read-back %s in %.1f ms\n", px ? "done" : "FAILED", (os_GetSeconds() - t_rb) * 1000.0);
+	}
 	if (!px)
 		return;
 
 	// Bit 24 addresses the linear texture area, so no bank conversion here.
 	u32 base = g_rr.fb_w_sof1 & VRAM_MASK & ~3u;
-	u32 stride = (g_rr.fb_w_linestride & 0x1FF) * 8;
-	if (stride == 0)
-		stride = (packmode >= 6) ? w * 4 : w * 2;
 	u16 kbit = (u16)(g_rr.fb_w_ctrl & 0x8000);
 
-	for (u32 y = 0; y < h; y++)
+	if (!fly && !in.by_tiles)
 	{
-		const u32* srow = px + (size_t)y * w;
-		u32 line = base + y * stride;
-		if (packmode <= 3)
+		// The copy of before bundle 11: every row from the texture's start, pixels in pairs, channels cut.
+		u32 stride = in.stride;
+		if (stride == 0)
+			stride = (packmode >= 6) ? w * 4 : w * 2;
+		for (u32 y = 0; y < h; y++)
 		{
-			for (u32 x = 0; x < w; x += 2)
+			const u32* srow = px + (size_t)y * w;
+			u32 line = base + y * stride;
+			if (packmode <= 3)
 			{
-				u16 p0 = pack16(srow[x], packmode, kbit);
-				u16 p1 = (x + 1 < w) ? pack16(srow[x + 1], packmode, kbit) : 0;
-				*(u32*)&PVRPARAMS.vram[(line + x * 2) & VRAM_MASK & ~3u] = ((u32)p1 << 16) | p0;
+				for (u32 x = 0; x < w; x += 2)
+				{
+					u16 p0 = pack16(srow[x], packmode, kbit);
+					u16 p1 = (x + 1 < w) ? pack16(srow[x + 1], packmode, kbit) : 0;
+					*(u32*)&PVRPARAMS.vram[(line + x * 2) & VRAM_MASK & ~3u] = ((u32)p1 << 16) | p0;
+				}
+			}
+			else
+			{
+				for (u32 x = 0; x < w; x++)
+				{
+					u32 c = srow[x];
+					if (packmode == 6)
+						c &= 0x00FFFFFF; // KRGB0888: the K bit stays clear
+					*(u32*)&PVRPARAMS.vram[(line + x * 4) & VRAM_MASK & ~3u] = c;
+				}
 			}
 		}
-		else
+	}
+	else
+	{
+		// Flycast writeTexture: each pixel of the copy window goes to its own texel, one 16-bit write each.
+		for (u32 y = g.wy0; y < g.wy1; y++)
 		{
-			for (u32 x = 0; x < w; x++)
-			{
-				u32 c = srow[x];
-				if (packmode == 6)
-					c &= 0x00FFFFFF; // KRGB0888: the K bit stays clear
-				*(u32*)&PVRPARAMS.vram[(line + x * 4) & VRAM_MASK & ~3u] = c;
-			}
+			const u32* srow = px + (size_t)y * w;
+			const u32 line = base + (y + g.oy) * g.stride + g.ox * 2;
+			for (u32 x = g.wx0; x < g.wx1; x++)
+				rtt_w16(line + x * 2, fly ? rtt_pack16_fly(srow[x], g_rr.fb_w_ctrl) : pack16(srow[x], packmode, kbit));
 		}
 	}
 	s_stat_rtt_copies++;
@@ -3412,14 +3629,56 @@ static void fb_check(const FbGeom& fg)
 	ps3spepix_fb_check(true, 0);
 }
 
+// P26 FB Reads: the framebuffer as Flycast's ReadFramebuffer takes it (ps3_rtt.h), 24-bit included.
+static bool fb_geom_reads(FbGeom* fg)
+{
+	FbReadIn in;
+	in.size = s_snap.fb_r_size;
+	in.depth = s_snap.fb_r_depth;
+	in.sof1 = s_snap.fb_r_sof1;
+	in.sof2 = s_snap.fb_r_sof2;
+	in.interlace = s_snap.fb_interlace;
+	in.field2 = s_snap.fb_field2;
+	in.vclk = s_snap.fb_vclk;
+	in.max_w = FB2D_W;
+	in.max_h = FB2D_H;
+	FbReadGeom g;
+	if (!fb_read_geom(&in, &g))
+		return false;
+	fg->sof1 = g.sof;
+	fg->depth = in.depth;
+	fg->cpy_w = g.w;
+	fg->cpy_h = g.h;
+	fg->line_bytes = g.line_bytes;
+	return true;
+}
+
+// A 24-bit frame into s_fb_pix as RGBA: 3 bytes per pixel, so a pixel can lie over two VRAM words.
+static void fb_convert_888(const FbGeom& fg)
+{
+	for (u32 y = 0; y < fg.cpy_h; y++)
+	{
+		u32 a = fg.sof1 + y * fg.line_bytes;
+		u32* out = &s_fb_pix[(size_t)y * fg.cpy_w];
+		for (u32 x = 0; x < fg.cpy_w; x++, a += 3)
+			out[x] = (fb_px888(vri(a & ~3u), vri((a & ~3u) + 4), a) << 8) | 0xFF;
+	}
+}
+
 static bool present_fb_convert()
 {
 	FbGeom fg;
-	if (!fb_geom(&fg))
+	if (!(g_fb_reads_preset ? fb_geom_reads(&fg) : fb_geom(&fg)))
 		return false;
 	s_fb_cpy_w = fg.cpy_w;
 	s_fb_cpy_h = fg.cpy_h;
 	s_fb_buf = -1;
+	// The SPU convert has no 24-bit pixels.
+	if (fg.depth == 2)
+	{
+		fb_convert_888(fg);
+		return true;
+	}
 	const int mode = ps3spepix_fb_mode();
 	if (mode == SPEPIX_ON && s_fb_spu_ok)
 	{
@@ -3463,7 +3722,12 @@ static void present_fb_draw()
 {
 	u32 cpy_w = s_fb_cpy_w, cpy_h = s_fb_cpy_h;
 	if (!ps3_video_begin_frame())
+	{
+		// P76 Draw Retry: the vblank has marked this screen as shown; it must try again.
+		if (g_draw_retry_preset)
+			s_fb_retry = true;
 		return;
+	}
 
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
@@ -3482,6 +3746,23 @@ static void present_fb_draw()
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	glViewport(vp_x, 0, vp_w, sh);
 	ps3gl_apply_states();
+
+	// P76 (Flycast RenderFramebuffer): with the video blanked the screen is the border colour, not the VRAM image.
+	if (g_rr.blank)
+	{
+		const u32 c = g_rr.vo_border_col;
+		glEnable(GL_SCISSOR_TEST);
+		glScissor(vp_x, 0, vp_w, sh);
+		ps3gl_apply_states();
+		glClearColor(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1);
+		glClear(GL_COLOR_BUFFER_BIT);
+		glDisable(GL_SCISSOR_TEST);
+		ps3_video_end_frame();
+		reset_param_cache();
+		s_stat_fb_presents++;
+		s_stat_blank++;
+		return;
+	}
 
 	glEnable(GL_TEXTURE_2D);
 	if (s_fb_buf >= 0)
@@ -3608,6 +3889,15 @@ static void rth_print_stats()
 		       s_fog, s_stat_fog_ppu, s_stat_fog_up, g_rr.fog_col_ram & 0xFFFFFF, g_rr.fog_col_vert & 0xFFFFFF,
 		       g_rr.fog_density & 0xFFFF, g_rr.fog_table[0], g_rr.fog_table[1], g_rr.fog_table[126], g_rr.fog_table[127]);
 	s_stat_fog_ppu = s_stat_fog_up = 0;
+	// Bundle 11: RTT waits for a buffer; renders that waited for the game, those it showed, those drawn with no
+	// colour clear and with a cut scissor; 2D presents tried again and blanked; cut renders over the last frame.
+	if (g_present_rule_preset || g_region_scissor_preset || g_draw_retry_preset || g_blank_video_preset ||
+	    s_stat_held || s_stat_shown)
+		printf("[out] rtt_wait=%u held=%u shown=%u keep=%u scissor=%u retry=%u blank=%u carry=%u\n",
+		       s_stat_rtt_wait, s_stat_held, s_stat_shown, s_stat_keep, s_stat_scis, s_stat_retry, s_stat_blank,
+		       s_stat_carry);
+	s_stat_rtt_wait = s_stat_held = s_stat_shown = s_stat_keep = s_stat_scis = s_stat_retry = s_stat_blank = 0;
+	s_stat_carry = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -3885,6 +4175,12 @@ static void rth_job_draw(int type, u64 hold)
 		REND_PHASE(PH_RTT);
 		rtt_render();
 	}
+	else if (type == JOB_FLIP)
+	{
+		// P60: the game shows the buffer of the frame that waits.
+		REND_PHASE(PH_ENDFRAME);
+		ps3_video_flip_held();
+	}
 	else
 	{
 		s_stat_renders++;
@@ -3900,7 +4196,13 @@ static void rth_job_draw(int type, u64 hold)
 			draw_frame();
 			REND_PHASE(PH_ENDFRAME);
 			double t_end = os_GetSeconds();
-			if (hold)
+			// P60 Present Rule: the frame stays in the back buffer until the game's FB_R_SOF write (FbShown).
+			if (!g_rr.flip)
+			{
+				ps3_video_end_frame_hold();
+				s_stat_held++;
+			}
+			else if (hold)
 				held = ps3_video_end_frame_at(hold);
 			else
 				ps3_video_end_frame();
@@ -3943,13 +4245,21 @@ static void rth_thread(void* arg)
 		s_job_pending = false;
 		sysMutexUnlock(s_rmx);
 
-		if (type != JOB_PRESENT)
+		if (type == JOB_RENDER || type == JOB_RTT)
 			rth_job_decode(c, raw_end, cont_end, fence);
 		rth_job_draw(type, hold);
 		// Before the job slot frees: the next fence's RESET may wait on this one (5.12 S3).
 		ps3spe_release(fence);
 
 		sysMutexLock(s_rmx, 0);
+		// P60: the game showed the held frame's buffer while this job ran.
+		while (s_flip_want)
+		{
+			s_flip_want = false;
+			sysMutexUnlock(s_rmx);
+			ps3_video_flip_held();
+			sysMutexLock(s_rmx, 0);
+		}
 		s_job_type = JOB_NONE;
 		s_job_busy = false;
 		s_busy_ctx = 0;
@@ -4103,6 +4413,43 @@ static bool rth_run(int type, TaContext* c)
 	return true;
 }
 
+// P60: flips the frame that waits. The render thread owns the RSX: it flips now, or after the job in flight.
+static void rth_flip_held()
+{
+	if (!s_rend_running)
+	{
+		ps3_video_flip_held();
+		return;
+	}
+	sysMutexLock(s_rmx, 0);
+	if (s_job_busy)
+		s_flip_want = true;
+	else
+	{
+		s_job_type = JOB_FLIP;
+		s_job_ctx = 0;
+		s_busy_ctx = 0;
+		s_job_raw_end = s_job_cont_end = s_job_fence = 0;
+		s_job_hold = 0;
+		s_job_decoded = true;
+		s_job_pending = true;
+		s_job_busy = true;
+		sysCondSignal(s_job_cv);
+	}
+	sysMutexUnlock(s_rmx);
+}
+
+// P60, Flycast rend_swap_frame: the game wrote addr (masked) to FB_R_SOF1 or FB_R_SOF2. If the last render waits
+// for that buffer, it reaches the TV now.
+void FbShown(u32 addr)
+{
+	if (!s_fb_held || addr != s_fbw_cur)
+		return;
+	s_fb_held = false;
+	s_stat_shown++;
+	rth_flip_held();
+}
+
 bool InitRenderer()
 {
 	reset_all_contexts();
@@ -4173,6 +4520,10 @@ void ResetRenderer(bool Manual)
 	ps3tex_reset();
 	VertexCount = 0;
 	FrameCount = 0;
+	// Bundle 11: no render waits for a flip, no buffer address is known (Flycast rend_reset).
+	s_fb_held = false;
+	s_fbw_cur = s_fbw_hist[0] = s_fbw_hist[1] = 1;
+	s_fb_retry = false;
 }
 
 bool ThreadStart() { return true; }
@@ -4187,6 +4538,8 @@ void VBlank()
 	{
 		rth_wait_idle();
 		ps3_menu_ingame();
+		// P60: the menu drew over the back buffer; a frame that waited there is gone.
+		s_fb_held = false;
 	}
 	// P26: a 32-bit write into the shown frame and no render since the last vblank also present it (Flycast).
 	const bool watched = g_fb_watch_preset && g_fb_dirty && !s_render_since_vbl;
@@ -4194,8 +4547,10 @@ void VBlank()
 	fb_watch_update();
 	if (!FB_R_CTRL.fb_enable)
 		return;
+	// P76 Draw Retry: the last 2D present found no free buffer, so the mark it left is not true.
+	const bool retry = g_draw_retry_preset && s_fb_retry;
 	const bool marked = !fb_needs_present();
-	if (marked && !watched)
+	if (marked && !watched && !retry)
 		return; // the PVR render is still what the screen shows
 	if (rth_busy())
 	{
@@ -4206,15 +4561,23 @@ void VBlank()
 
 	SH4_PHASE(PH_VBLANK);
 	snapshot_present_regs();
-	if (present_fb_convert() && rth_run(JOB_PRESENT, 0))
+	// Cleared before the job is posted: the render thread sets it again if this present finds no buffer either.
+	s_fb_retry = false;
+	if ((s_snap.blank || present_fb_convert()) && rth_run(JOB_PRESENT, 0))
 	{
 		// Mark what is now on screen; the next write by the game clears the mark.
 		vwi(s_snap.fb_r_sof1, FB_PRESENT_MAGIC);
 		g_fb_dirty = false;
-		if (marked)
+		if (marked && watched)
 			s_stat_fb_watch++;
+		if (retry)
+			s_stat_retry++;
+		// P60: the present draws over the back buffer; a render that waited there is gone.
+		s_fb_held = false;
 		FrameCount++;
 	}
+	else if (retry)
+		s_fb_retry = true;
 	SH4_PHASE(PH_GUEST);
 }
 
@@ -4289,8 +4652,34 @@ void StartRender()
 	}
 
 	s_snap_hold = frame_hold_target();
+	// P60 Present Rule (Flycast DelayFrameSwapping): a render is flipped at its end only if FB_R_SOF1 holds its
+	// buffer already; else it waits for the game's FB_R_SOF write (FbShown), and Frame Hold has no flip to place.
+	const u32 fbw = s_snap.fb_w_sof1 & 0x00FFFFFC;
+	if (g_present_rule_preset)
+	{
+		s_snap.flip = fbw == (FB_R_SOF1 & 0x00FFFFFC);
+		if (!s_snap.flip)
+			s_snap_hold = 0;
+		// Flycast clearFramebuffer: the colour is cleared for a buffer that is not one of the last two.
+		const bool fresh = fbw != s_fbw_hist[0] && fbw != s_fbw_hist[1];
+		if (fresh)
+		{
+			s_fbw_hist[0] = s_fbw_hist[1];
+			s_fbw_hist[1] = fbw;
+		}
+		s_snap.keep = g_present_rule_preset >= 2 && s_fb_held && !fresh;
+	}
+	else
+		s_fb_held = false;
 	if (rth_run(JOB_RENDER, rc))
+	{
 		FrameCount++;
+		if (g_present_rule_preset)
+		{
+			s_fb_held = !s_snap.flip;
+			s_fbw_cur = fbw;
+		}
+	}
 	// Mark the framebuffer the PVR just produced, so VBlank knows it is on
 	// screen. A dropped frame is marked too: the guest believes it rendered.
 	fb_stamp_magic();

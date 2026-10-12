@@ -81,6 +81,12 @@ also in the PSL1GHT source. Several findings are faults in our own code or
 in PSL1GHT that the comparison exposed, not takes from a reference. Review
 only: nothing is built.
 
+Note 2026-10-12 (Matt: "Any way to improve the SH4 Thread on this?", then
+"Can you write this down in @OPTIMIZATION_POTENTIAL.md ?"): item P86. It
+is not a review of a reference. It collects, from the HW logs of
+2026-10-11 and 2026-10-12, where each game falls under full speed, and
+the ways to give the SH4 thread more room. Nothing is built by it.
+
 Merge 2026-10-06 (Matt: "Can you do the merge, then?"): the items with a
 plan goal now sit in `OPTIMIZATION_PLAN.md` at that goal, with a short
 entry; its section 0 lists where. Their headings here say "merged: plan
@@ -173,12 +179,12 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
 | P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
 | P63 | Face colours reset once per frame | bug | NHL 2K, NHL 2K2 (black players, black ice) | 1-2 lines per decoder | built 2026-10-11 in bundle 4 ("Face Reset", HW run, default ON) |
-| P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | fits bundle 8 |
-| P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | fits bundle 1 (with P7) |
+| P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | bundle 20 (re-cut 2026-10-12) |
+| P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | bundle 13 (re-cut 2026-10-12; with P7) |
 | P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | 3 built 2026-10-11 in bundle 4 (volume cap, data gate, invalid types; HW run, default ON); RTT parts: bundle 11 (P54) |
-| P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | fits bundle 8 |
-| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple: bundle 10; GD-ROM: bundle 2; G2: bundle 6 |
-| P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 11 |
+| P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | bundle 20 (re-cut 2026-10-12) |
+| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple parts: bundle 16; system parts: bundle 20 (re-cut 2026-10-12) |
+| P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 12; VMU beep: bundle 18 (re-cut 2026-10-12) |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
 | P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
 | P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | bundle 14; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
@@ -186,15 +192,16 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there |
 | P75 | RTT read-back never returns (PSL1GHT `rsxSetTransferData`) | bug (hang) | the Crazy Taxi pause freeze; every render to texture | 3 + 2 lines | bundle 11, first; the open item of plan section 0; then P66's RTT scaler |
 | P76 | Small RTT and present fixes (5) | bug | RTT games; static 2D screens | 1-8 lines each | bundle 11; new facts for P54 and P10; corrects section 4 (`9dbca9632`) |
-| P77 | Disc Swap: the command in flight, the lid-open phase | bug (hang) | every disc swap (Disc Swap is not HW tested yet) | 8 lines less, then ~12 | bundle 2; corrects P34 (the Reicast `c050ee8f` clears) |
-| P78 | Small MMU and BSC register fixes (3) | bug | WinCE (P38); robustness | 1-2 lines each | bundle 13 (with P58); RFCR: bundle 8 |
-| P79 | Punch-through alpha is 1 after the alpha test | bug (image), speed | Langrisser Millennium (Flycast); Jet Grind Radio draws with no blend | ~6 lines | bundle 4; corrects P25 ("PT Blend") |
-| P80 | Sprite fourth corner from the plane | bug (image) | trapezoid sprites (no game named) | ~15 lines PPU, ~30 SPU | bundle 4 |
-| P81 | Sound output levels: the budget, and a probe | investigation | the Looney Tunes balance; the SPU clipping | 2 tests with no code; probe ~45 lines | bundle 5; extends P20 ("Output stage"); corrects plan section 0 and 6.6 |
-| P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back: bundle 5 (P20 G4); lead-out: bundle 2 (P61); the rest not bundled |
+| P77 | Disc Swap: the command in flight, the lid-open phase | bug (hang) | every disc swap (Disc Swap is not HW tested yet) | 8 lines less, then ~12 | bundle 19 (re-cut 2026-10-12); corrects P34 (the Reicast `c050ee8f` clears) |
+| P78 | Small MMU and BSC register fixes (3) | bug | WinCE (P38); robustness | 1-2 lines each | bundle 13 (with P58); RFCR: bundle 20 |
+| P79 | Punch-through alpha is 1 after the alpha test | bug (image), speed | Langrisser Millennium (Flycast); Jet Grind Radio draws with no blend | ~6 lines | bundle 17 (re-cut 2026-10-12); corrects P25 ("PT Blend") |
+| P80 | Sprite fourth corner from the plane | bug (image) | trapezoid sprites (no game named) | ~15 lines PPU, ~30 SPU | bundle 17 (re-cut 2026-10-12) |
+| P81 | Sound output levels: the budget, and a probe | investigation | the Looney Tunes balance; the SPU clipping | 2 tests with no code; probe ~45 lines | bundle 18 (re-cut 2026-10-12); extends P20 ("Output stage"); corrects plan section 0 and 6.6 |
+| P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: bundle 19 (P61) |
 | P83 | G11 facts: a first stage with no V.42, the flash account, the traps | reference | G11 (modem) | stage 1 ~1,600 lines, not 4,176 | GOALS.md G11 (not bundled); extends P70 |
-| P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | dead zone: bundle 10; the rest GOALS.md G12 |
+| P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
 | P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6 |
+| P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 21 (parked for the end, Matt 2026-10-12); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -932,6 +939,118 @@ Adventure intro FMV, `[stall] dma`.
   queues), Rez, Ikaruga, Sonic Shuffle. Gain not measured. Build it only
   if one of them is SH4-bound after P58.
 
+### P86 The SH4 thread in heavy scenes: where the time goes, and the ways  `[ ]` bundle 21, parked for the end (Matt 2026-10-12)
+
+- Matt 2026-10-12: "Why do the games I tried not run in full speed?", then
+  "Any way to improve the SH4 Thread on this?". This item is the answer.
+  It is our own work, not a take from a reference. Nothing is built by
+  it. The issue behind it is parked (plan section 0, "OPEN ISSUE"; plan
+  section 7, bundle 8 point 11 and bundle 21): do not start a way before
+  Matt picks one.
+- Evidence: a survey of the HW logs of 2026-10-11 and 2026-10-12, per
+  boot (`ps3log_b5_run2.txt`, scratchpad of session 01bbad3e;
+  `b8_hash_run1.txt`, session 1c8776dd; `b9_run1.txt` and `sa_anim1.txt`,
+  session d13d658e; script `survey2.py`, session dd8365e5). A window
+  counts when it has 2K+ vertices and 5+ renders per second (`vt:` and
+  `RPS:` of the stats line; loads and menus fall out). "Slow" is SPEED
+  under 97%; the SPEED column is the mean of the slow windows per boot.
+  Left out: the JIT HOTBLOCKS profile boots (the profile costs time) and
+  two Crazy Taxi boots with sound rows changed in play (stalls down to
+  SPEED 12%). SH4 Clock 200 in every boot.
+
+| Game | Settings | Boots | Slow windows | SPEED in them (lowest) | Vertices in them | Render busy in them |
+|---|---|---|---|---|---|---|
+| Crazy Taxi | X30 | 5 | 3-9% | 92.6-94.8% (85.0) | 15.5-18.4K | 18-24% |
+| Crazy Taxi | X3 BACKWARD | 1 | 8% | 92.6% (89.5) | 16.4K | 20% |
+| Looney Tunes | X30 | 5 | 2-42% | 93.4-94.8% (86.2) | 25-30K | under 25% |
+| Looney Tunes | X3 BACKWARD | 2 | 98-100% | 63.4-72.1% (55.5) | 23-27K | 5% |
+| Looney Tunes | X3 BACKWARD, JIT IDLE HASH ON | 2 | 67-77% | 83.9-85.0% (66.5) | 28-29K | 14-16% |
+| Sonic Adventure 2 | X3 BACKWARD | 2 | 23-39% | 90.2-91.8% (72.8) | 17.2-17.7K | 29-33% |
+| Sonic Adventure 2 | X3 BACKWARD, JIT SQ COPY ON | 1 | 22% | 92.2% (85.2) | 17.7K | 29% |
+| Quake3.cdi | X30, TMU Fine TCNT OFF | 1 | 32% | 73.9% (48.5) | 4.2K | 7% |
+| Quake3.cdi | X30, TMU Fine TCNT ON | 1 | 60% | 71.0% (45.5) | 5.1K | 9% |
+| Quake3.cdi | X3 BACKWARD, TMU Fine TCNT ON | 1 | 100% | 42.5% (37.0) | 8.7K | 7% |
+| Ecco the Dolphin | X3 BACKWARD | 1 | 96% | 50.3% (47.0) | 9.1K | 10% |
+
+- At full speed in the same logs (0-1% slow windows): Sonic Adventure at
+  X30 and X3 BACKWARD (18 of 19 boots; the other, at X3 BACKWARD, has 13
+  slow windows at 21K vertices, mean 91.3%), ChuChu Rocket, Shenmue,
+  Phantasy Star Online and Jet Grind Radio at both levels, Ecco the
+  Dolphin at X30. The four logs have no Sonic Adventure 2 boot at X30.
+- Reading: the limit is the SH4 thread, not the renderer.
+  - In the slow windows of Crazy Taxi, Sonic Adventure 2 and Looney Tunes
+    `[pace] slept` is 0-8 of 56 calls (21 in one Looney Tunes boot with 3
+    slow windows), and `wait=` of the `[rend]` line is 0 ms. Sonic
+    Adventure 2 at 16-18K has a `[stall]` sleep of 0-3 ms/s (plan
+    section 0, HW run 25, the OFF runs).
+  - Quake3.cdi is another class: it sleeps 9-11 of 45 calls in its slow
+    windows. It polls TCNT in a wait loop (plan section 7, bundle 8,
+    point 4).
+  - The split of the SH4 thread when it is host-bound (Sonic Adventure 2
+    at 18K+, SPEED 89.9%, 17 windows of HW run 25): JIT code about 77%,
+    the store-queue call into the TA 11.4% (1.24M calls/s, 170 ns each;
+    7.8-8.1% in the Looney Tunes race), `[sys]` 10.6% (of it the sound
+    control step 6.1%).
+  - Sonic Adventure 2 above 18K vertices lacks about 10 SPEED points at
+    X3 BACKWARD. The Looney Tunes race lacks about 12.
+- Two kinds of shortfall. Keep them apart:
+  - Host-bound: SPEED under 100%. The table above. The ways below act
+    here.
+  - Bound in emulated time: SPEED 100% with fewer frames (Phantasy Star
+    Online 20, Jet Grind Radio 24, Sonic Adventure 2 50-52 of 60, Ecco
+    the Dolphin 18-34, at X30). That is P71's idle rule bill. X3 BACKWARD
+    costs about x1.5 SH4 time, so it does not help a host-bound game.
+- Ways, in the order recommended to Matt:
+  1. JIT SQ COPY ON (plan 5.46). Built, default OFF, in the package of
+     02:30 on 2026-10-12. No build. Sonic Adventure 2 at 14K+: SPEED
+     94.8% against 90.6% and 92.5% OFF, about 1.5 to 3 points at the same
+     load. Open: Matt's verdict, and one Crazy Taxi and one Looney Tunes
+     run with it ON for no change.
+  2. JIT IDLE HASH ON (bundle 8, way B). Built, default OFF. No build.
+     Looney Tunes at X3 BACKWARD: the race 60% -> 88.4% (HW run 19), the
+     demo 67.7% -> 96.9% and 99.8% (2 windows, HW run 24). At X30 the
+     race stays as it is (99.8%, 26.9 frames per second). Open: Matt's
+     verdict.
+  3. The store-queue call into the TA, one per vertex. It is the largest
+     measured piece outside the JIT code, and every 3D game pays it. Its
+     history: plan 5.17 Step 1 measured about 252 ns per flush in Crazy
+     Taxi, before TA SQ Direct and JIT SQ STORES; it is 170 ns per call
+     now in Sonic Adventure 2 (another game, so not a same-load compare).
+     Not read for this item: read the path first. No gain estimate.
+  4. A number row for the idle rule's factor (3 to 30). It is on P71's
+     line. In the Looney Tunes race at X30 the SH4 thread sleeps 55-108
+     ms/s while the game drops frames (27.3 of 30). Estimate, not
+     measured: 28-30 frames per second near full speed at about 15.
+  5. Plan 5.23, `fmov.s @Rm+` pair fusion. Both vertex loops read with
+     it. Two estimates that do not agree: section 4 of this file has
+     0.1-0.2% (about 3 instructions per pair, 0.56M pairs/s in the 5.18
+     Crazy Taxi dumps); the open-issue list has 1-2 points for the two
+     vertex loops. Neither is measured. A count first: the pairs per
+     second of the Sonic Adventure 2 loop 8C141BBA in a JIT HOTBLOCKS
+     run. Trap: the second word can cross the 16 MB RAM end.
+  6. The render thread (indirect). It shares the one PPE core with the
+     SH4 thread, so its load slows the SH4 through SMT. Facts: the sound
+     work on the second hardware thread made the SH4 about 10% slower
+     (plan 5.14); render busy 56 -> 32% gave +0.5% at the same load and
+     +2.4 to +5.0% in the 10K+ bins (plan 5.16); TR Triangle Sort +
+     OPAQUE DEPTH raised Crazy Taxi's busy from 20 to 45% (SPEED 97.9% at
+     11-13K vertices, plan 3k). The way is P72, then P73 (bundle 14).
+- Limits:
+  - No single way closes the 10-12 points. The sum is not known.
+  - Six of the last small JIT items gave -0.6% to +1.2% at the same load
+    (plan 5.21, 5.26, 5.24, 5.3, 5.29 with 5.30, 5.31).
+  - Closed on HW, do not repeat: SH4 Clock above 200 (plan 5.45; Matt
+    2026-10-10: "Keep at 200 MHz. Clearly not the right approach on this
+    issue.") and the Sound Thread (plan 5.14, SMT).
+  - SH4 Clock 150 (plan 5.5) gives the game fewer SH4 cycles per frame.
+    Matt keeps 200.
+- Order: way 1 as a HW test with no build. Then way 3 (the read first),
+  way 4, and way 5 after its count. Way 6 goes with bundle 14.
+- HW measure, the same scene before and after: SPEED by vertices per
+  render and the `[stall]` sleep in ms/s. Scenes: Sonic Adventure 2
+  above 18K vertices at X3 BACKWARD, the Looney Tunes race at X30 and at
+  X3 BACKWARD, a dense Crazy Taxi drive. Byte order: none.
+
 ---
 
 ## 2. Bugs
@@ -1427,7 +1546,7 @@ Each one is small and needs no shader.
     vertex colour does not reach a decal texture, and SPE Build makes the
     vertices on the SPU.
 
-### P26 Framebuffer output: write watch, interlaced and 24-bit reads  `[ ]`
+### P26 Framebuffer output: write watch, interlaced and 24-bit reads  `[~]` the reads: "FB Reads" built 2026-10-12, bundle 11 (plan section 0), default OLD; HW runs 2026-10-12 at FLYCAST (Looney Tunes, Quake III Arena): no fault, the "24-bit framebuffer read not handled" line is gone, no picture verdict (the Looney Tunes 24-bit frames are blanked ones); the fb_concat bits not built (the SPU convert has none); the write watch: bundle 13
 
 - Write watch:
   - Flycast master `core/hw/pvr/pvr_mem.cpp:220-234`: any 32-bit-area VRAM
@@ -1753,7 +1872,7 @@ With SPE Tex Decode ON the SPU decodes the levels of 8x8 and up.
   skips an instruction.
 - No byte-order issue. Risk: low (rare encodings).
 
-### P54 Render-to-texture pixel packing  `[ ]` merged: plan section 3 (RTT note)
+### P54 Render-to-texture pixel packing  `[~]` merged: plan section 3 (RTT note); "RTT Pack" built 2026-10-12, bundle 11 (plan section 0), default OLD; HW run 2026-10-12 at FLYCAST (the Crazy Taxi pause, a 565 target; Matt: "works as intended"); no writers for modes 4 and 5 (P76: no reference renders to texture in them)
 
 RTT has never fired in Crazy Taxi, Sonic Adventure or Soul Calibur
 (`rtt=0/0`). These fixes matter only for RTT games (plan section 3 lists
@@ -1887,7 +2006,7 @@ Flycast's RTT games).
   Capcom vs. SNK 2, Border Down and Rayman 2 (VPS ~60, SPEED, the menus);
   Crazy Taxi unchanged.
 
-### P60 Present only the renders the game shows  `[ ]`
+### P60 Present only the renders the game shows  `[~]` "Present Rule" and "Region Scissor" built 2026-10-12, bundle 11 (plan section 0), default OFF; HW runs 2026-10-12 with Region Scissor ON: Crazy Taxi no fault named, the Looney Tunes race loading screen is black but the bar (the game counts on the old frame); the fix, row "Keep Last Frame" (a cut render starts from a copy of the last flipped frame), built 2026-10-12 at Matt's request, package of 19:52, HW SUCCESS 2026-10-12 (Looney Tunes, Matt: "Success! The image stays."; Crazy Taxi), default ON in source since 2026-10-12 (Matt), not packaged; Present Rule: no HW run; the colour stays only over a frame that waits for its flip
 
 - Flycast `ac43a8c54` ("don't swap gl buffer until FB_R_SOF is set to the
   rendered framebuffer"), today the DelayFrameSwapping option, ON by
@@ -2049,7 +2168,7 @@ Flycast's RTT games).
 - About 6 lines. Byte order: none. P7 (LMMODE) is the other ch2 item.
   Bundle 1. Not Capcom vs. SNK 2: `cvs2.txt` has no `Ch2 abort` line.
 
-### P66 Small TA and renderer fixes  `[~]` "Volume Cap", "TA Data Gate" and the invalid TA types (in "TA Bad Records") built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the TA store size, the object list overflow, the RTT items and TA_YUV_TEX_BASE open
+### P66 Small TA and renderer fixes  `[~]` "Volume Cap", "TA Data Gate" and the invalid TA types (in "TA Bad Records") built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the TA store size, the object list overflow and TA_YUV_TEX_BASE open; the RTT stride (in "RTT Pack") and the RTT scaler ("RTT Scaler") built 2026-10-12, bundle 11 (plan section 0), default OFF; HW run 2026-10-12 with both ON (the Crazy Taxi pause): no fault, but that pause does not scale (SCALER_CTL 0x401), so the scaler has no game yet
 
 None of the named games is in Matt's set.
 - Modifier-volume triangle cap: Flycast `c42799726` and `9f13ded50` (Jet
@@ -2186,7 +2305,7 @@ None of the named games is in Matt's set.
   the 4th byte of the LCD GetMediaInfo reply; ours sends 0
   (`dc/maple/maple_devs.cpp:400`). 1 line, WinCE only (P38).
 
-### P75 RTT read-back never returns: the Crazy Taxi pause freeze  `[ ]`
+### P75 RTT read-back never returns: the Crazy Taxi pause freeze  `[x]` "RTT Read-back" built 2026-10-12, bundle 11 (plan section 0); HW SUCCESS 2026-10-12 at FIXED (two Crazy Taxi pauses, Matt: "works as intended"); default OLD (Matt named no default)
 
 - The fault (plan section 0, open since 2026-10-10): Crazy Taxi, START in
   a drive: `[hb] ... phase=rtt ... rend=rtt`, the vblanks stop, no fault
@@ -2242,7 +2361,7 @@ None of the named games is in Matt's set.
   the `rsxFinish` fix). A printf before and after the transfer.
 - Byte order: none here. The pack keeps its form (:3072).
 
-### P76 Small RTT and present fixes  `[ ]`
+### P76 Small RTT and present fixes  `[~]` built 2026-10-12, bundle 11 (plan section 0): rows "Draw Retry", "RTT Size", "RTT Pack" (no mode 4-7, the alpha-0 clear), "FB Line Double", "Blank Video", default OFF; HW runs 2026-10-12: Draw Retry, RTT Pack and FB Line Double ON with no fault named (Crazy Taxi, Looney Tunes, Quake III Arena), Blank Video ON in Looney Tunes (6 of 7 2D presents at boot blanked); RTT Size TILE CLIP: no HW run
 
 - Dropped with no trace. `ps3_video_begin_frame()` returns 0 while a flip
   is queued (`ps3/ps3_video.c:343-352`; 15 of 10882 in the log). Then
@@ -2471,7 +2590,7 @@ None of the named games is in Matt's set.
 
 ## 3. Features and references
 
-### P13 Puru Puru (rumble) pack  `[ ]`
+### P13 Puru Puru (rumble) pack  `[~]` "Rumble Pack" built 2026-10-12, bundle 10 (plan section 0), default OFF, no HW run
 
 - Reicast `hw/maple/maple_devs.cpp:1023-1155` decodes SetCondition into power
   and duration. Minicast `a656d98` adds only the host side.
@@ -2889,7 +3008,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
 - Not checked: TCP_NODELAY on the PS3; picoTCP PPP on a big-endian host
   (never compiled).
 
-### P84 G12 facts: the device name and the edits; a radial stick dead zone  `[ ]` reference for GOALS.md G12
+### P84 G12 facts: the device name and the edits; a radial stick dead zone  `[~]` reference for GOALS.md G12; "Stick Dead Zone" and the full controller built 2026-10-12, bundle 10 (plan section 0), default AXIS and STANDARD PAD; HW SUCCESS 2026-10-12 for the full controller (Quake III Arena, Matt: "Quake 3 double sticks works"); Stick Dead Zone RADIAL: no HW run
 
 - The device name. Flycast's full controller reports "Dreamcast PantherDC
   Controller" (`core/hw/maple/maple_devs.cpp:1680-1724`, the name at
@@ -3606,3 +3725,28 @@ P82's EXTS read-back. Bundle 8: P71, P78's RFCR. Bundle 10: P84's dead
 zone. Bundle 11: P75, P76. New bundle 13 (MMU store queues): P58, P78,
 P74. New bundle 14 (render-thread draw cost): P72, P73. New bundle 15
 (flash defaults): P59, P85. P83 stays with GOALS.md G11.
+
+Re-cut 2026-10-12 (Matt: "Yes, do it."): the open items sit in bundles 10
+to 21 of `OPTIMIZATION_PLAN.md` section 7. Bundles 1-9 are closed. This
+map replaces the placement above; the item table of section 0 has the new
+number only where it says "re-cut".
+- 10 Controllers: P84 (the dead zone, the G12 edits), P13.
+- 11 Render to texture and present: P75, P76, P54, P60, P26 (reads), P66
+  (the RTT scaler).
+- 12 Screen format and test tools: P50, P51, P53, P69 (stretch), P10
+  (clip, scaler), P36.
+- 13 MMU and memory: P58, P78 (the MMU parts), P74, P30, P65, P7, P26
+  (write watch), P55.
+- 14 Render-thread draw cost: P72, P73.
+- 15 Flash and clock: P59, P85, P37 (the BIOS language row), P12.
+- 16 Maple bus and VMU: P29, P9 (SB_MDST), P68 (the maple parts), P37.
+- 17 Draw rules tail: P79, P80, P14 (3b), P25 (the trilinear weights).
+- 18 Sound wrap-up: P81, P82, P20 (G3, G4), P31, P24 (HW tests), P69 (the
+  VMU beep).
+- 19 Disc tail: P77, P34, P23 and P57 (HW tests), P82 (the lead-out
+  stop).
+- 20 SH4 correctness tail: P46, P32, P64, P67, P78 (RFCR), P68 (the system
+  parts), P33, P56 (its verdict).
+- 21 Frame rate in heavy scenes: the open list of P71, P11 (the TMU
+  rows), P86 (added 2026-10-12).
+- No bundle: P1, P2, P15, P35, P38, P39, P42, P70, P83.

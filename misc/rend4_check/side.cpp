@@ -375,11 +375,7 @@ uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, 
 	s_do.tr_vol = (s_rl.opt & TAOPT_TR_VOL) != 0;
 	s_key_pcw = rects ? 0x303CE : 0x300CE;
 	s_key_isp = rects ? 0xF40FFFFF : 0xF4000000;
-	s_cv.x = s->vx;
-	s_cv.y = s->vy;
-	s_cv.w = s->vw;
-	s_cv.h = s->vh;
-	s_cv.scissor = s->scissor != 0;
+	clip_view(s->vx, s->vy, s->vw, s->vh, s->scissor != 0);
 #endif
 
 	// The state draw_frame and rtt_render leave: reset_gl_state, the clear, the viewport and its scissor.

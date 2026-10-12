@@ -18,12 +18,16 @@ void InitMaracas(void);
 void InitKeyboard(void);
 void InitFishingRod(void);
 
-// From ps3_presets.cpp; always 0 (standard pad) on PS3.
-extern "C" int get_controller_type();  // 0=standard 1=lightgun 2=maracas 3=keyboard 4=fishing
+// From ps3_presets.cpp; 0 (standard pad) or 5 (full controller) on PS3.
+extern "C" int get_controller_type();  // 0=standard 1=lightgun 2=maracas 3=keyboard 4=fishing 5=full (2 sticks)
+// P13: 1 = VMU slot 2 holds the Puru Puru pack; its motor is in ps3/ps3_input.cpp.
+extern int g_rumble_pack_preset;
+void UpdateVibration(u32 port, float power, float inclination, u32 duration_ms);
 
 extern u16 kcode[4];
 extern u32 vks[4];
 extern s8  joyx[4], joyy[4];
+extern s8  joyrx[4], joyry[4];
 extern u8  rt[4], lt[4];
 
 // Signed axis [-128..127] to the Maple byte [0..255]; centre 0 maps to 0x80.
@@ -71,7 +75,9 @@ struct MapleConfigMap : IMapleConfigMap
 
 		pjs->joy[PJAI_X1] = SignedToByte(joyx[dev->bus_id]);
 		pjs->joy[PJAI_Y1] = SignedToByte(joyy[dev->bus_id]);
-		// X2/Y2 not driven by this source; leave them centered (set in ctor).
+		// G12: the right stick; 0 (centred) unless the full controller is selected.
+		pjs->joy[PJAI_X2] = SignedToByte(joyrx[dev->bus_id]);
+		pjs->joy[PJAI_Y2] = SignedToByte(joyry[dev->bus_id]);
 
 		pjs->trigger[PJTI_R] = rt[dev->bus_id];
 		pjs->trigger[PJTI_L] = lt[dev->bus_id];
@@ -80,6 +86,12 @@ struct MapleConfigMap : IMapleConfigMap
 	void SetImage(void* /*img*/) override
 	{
 		// No VMU LCD output on PS3.
+	}
+
+	void SetVibration(float power, float inclination, u32 duration_ms) override
+	{
+		if (dev)
+			UpdateVibration(dev->bus_id, power, inclination, duration_ms);
 	}
 };
 
@@ -106,6 +118,7 @@ static MapleDeviceType mcfg_GetControllerDeviceType()
 	case 2:  return MDT_Maracas;
 	case 3:  return MDT_Keyboard;
 	case 4:  return MDT_FishingRod;
+	case 5:  return MDT_FullController;
 	default: return MDT_SegaController;
 	}
 }
@@ -126,14 +139,16 @@ static void mcfg_InitSpecialDevice()
 // g_player_count comes from nullDC.cfg [ps3] Players (ps3_presets.cpp), loaded before EmuMain().
 extern "C" int get_player_count();
 
-// Per player: port 5 = controller, ports 0 and 1 = VMU slots 1 and 2 (standard pad only).
+// Per player: port 5 = controller, ports 0 and 1 = VMU slots 1 and 2 (standard pad and full controller only).
 void mcfg_CreateDevices()
 {
 	// plugins_Load() runs twice per boot; free the first set so each VMU file has one open handle.
 	mcfg_DestroyDevices();
 
 	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
-	bool isStandard = (ctrlType == MDT_SegaController);
+	bool isStandard = (ctrlType == MDT_SegaController || ctrlType == MDT_FullController);
+	// P13: the Puru Puru pack takes slot 2, so the second VMU is not plugged while it is on.
+	MapleDeviceType slot2 = g_rumble_pack_preset ? MDT_PuruPuru : MDT_SegaVMU;
 
 	// One-time hardware / data-format initialisation
 	mcfg_InitSpecialDevice();
@@ -146,7 +161,7 @@ void mcfg_CreateDevices()
 	if (isStandard)
 	{
 		mcfg_Create(MDT_SegaVMU, 0, 0);  // VMU slot A1
-		mcfg_Create(MDT_SegaVMU, 0, 1);  // VMU slot A2
+		mcfg_Create(slot2,       0, 1);  // VMU slot A2, or the vibration pack
 	}
 
 	// --- Buses 1-3 : Players 2-4 (when 2/3/4-player mode is active) ---
@@ -157,7 +172,7 @@ void mcfg_CreateDevices()
 		if (isStandard)
 		{
 			mcfg_Create(MDT_SegaVMU, bus, 0);
-			mcfg_Create(MDT_SegaVMU, bus, 1);
+			mcfg_Create(slot2,       bus, 1);
 		}
 	}
 }
