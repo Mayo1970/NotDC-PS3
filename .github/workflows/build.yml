@@ -13,7 +13,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        apk add zip curl
+        echo "Skip"
 
     - name: Get short SHA
       id: slug
