@@ -62,6 +62,16 @@ static u32 s_live;
 static int s_slot_hash = -1;
 static u32 s_evict, s_evict_hot;
 
+// Bundle 14 (P73's counter): the key and content hash of the last texture freed for its age, per tex_slot() hash.
+// [texlife]: textures freed so, cache misses whose key one of them had, and those with the same content.
+struct TexGhost
+{
+	u32 key0, key1, hash;
+	bool used;
+};
+static TexGhost s_ghost[1u << TEX_SLOT_BITS];
+static u32 s_aged, s_back, s_back_same;
+
 // 5.12 #3 SPE Tex Hash mode of this frame's request (OFF with the SPU down).
 static int s_spetex;
 
@@ -798,7 +808,15 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 	{
 		TexEntry& e = s_cache[s_sweep];
 		if (e.name && s_frame - e.last_frame > CACHE_MAX_AGE)
+		{
+			TexGhost& g = s_ghost[tex_slot(e.key0, e.key1, true)];
+			g.key0 = e.key0;
+			g.key1 = e.key1;
+			g.hash = e.hash;
+			g.used = true;
+			s_aged++;
 			free_entry(e);
+		}
 		s_sweep = (s_sweep + 1) % CACHE_SLOTS;
 	}
 }
@@ -901,6 +919,12 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 		s_t_hash += PERF_TICKS() - t_h;
 		s_hashes++;
 		hit->checked_frame = s_frame;
+		const TexGhost& g = s_ghost[tex_slot(key0, key1, true)];
+		if (g.used && g.key0 == key0 && g.key1 == key1)
+		{
+			s_back++;
+			s_back_same += g.hash == hit->hash;
+		}
 		// Temporary G7 diagnostic, counted not printed, so the sample follows what
 		// is on screen instead of the first textures of the boot.
 		s_fmt_count[d.fmt & 7]++;
@@ -983,6 +1007,8 @@ void ps3tex_stats(u32* decodes, u32* live)
 	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
 	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec,
 	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq);
+	printf("[texlife] aged=%u back=%u same=%u\n", s_aged, s_back, s_back_same);
+	s_aged = s_back = s_back_same = 0;
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;
 	s_flag_nonsq = s_flag_mirror = s_flag_clamp = 0;

@@ -1,0 +1,11 @@
+# chdr (deps/chdr/chd.c, the unchanged file) frees no codec buffer and no map work buffer at chd_close:
+# about 135 KB for each image that opens, plus the packed map. A leak from any other place fails the check.
+leak:lzma_fast_alloc
+leak:zlib_fast_alloc
+leak:cdlz_codec_init
+leak:cdzl_codec_init
+leak:cdfl_codec_init
+leak:decompress_v5_map
+leak:create_huffman_decoder
+leak:create_bitstream
+leak:FLAC__stream_decoder_new

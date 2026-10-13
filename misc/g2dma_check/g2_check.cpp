@@ -1,6 +1,5 @@
-// OPTIMIZATION_PLAN 6.5 PC check: the real dc/aica/aica_if.cpp (AICA G2 DMA) against a model of the rules, with AICA
-// Race Fix off (the old rules) and on (Flycast a920ae590 + a44619931), DMA Fix and SCHED off and on, on random traffic.
-// Section 7, bundle 6: also G2 DMA Small (P24) and G2 DMA Read (P9) off and on, so 32 configurations.
+// OPTIMIZATION_PLAN 6.5 and bundle 6, PC check: the real dc/aica/aica_if.cpp (AICA G2 DMA) against a model, on random
+// traffic. 32 configurations: AICA Race Fix (Flycast a920ae590 + a44619931), DMA Fix, SCHED, G2 DMA Small (P24), Read (P9).
 #include "types.h"
 #include "dc/mem/sb.h"
 #include "dc/asic/asic.h"
@@ -24,6 +23,9 @@ extern "C" int get_sched_preset() { return g_sched; }
 extern "C" int get_aica_race_fix_preset() { return g_race; }
 extern "C" int get_g2_dma_small_preset() { return g_small; }
 extern "C" int get_g2_dma_read_preset() { return g_read; }
+// Bundle 15: GetRTC_now()'s row and zone; misc/flash_check tests them.
+extern "C" int get_rtc_local_preset() { return 0; }
+extern "C" int ps3_local_offset_seconds() { return 0; }
 u32 g_aram_hz_dma;   // plan 6.6: set around the copy; must be 0 again after every start
 static u32 g_msgbox;
 int msgboxf(const char*, unsigned int, ...) { g_msgbox++; return 0; }

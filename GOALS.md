@@ -12,6 +12,8 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
+Active goal: G14 (CHD disc images). Built 2026-10-13 (package of 09:35), the PC check passes; its HW test is open.
+
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
 as bundles 10-21 since the re-cut of 2026-10-12, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
 
@@ -242,7 +244,8 @@ What is left of the plan 5.12 list (the YUV decode options) stays in the plan, n
 3. Open from G7: the DS3 `user_controls.cfg` remap (deferred by Matt). It needs a table of `[ps3]` keys, not a port:
    Reicast's INI form is 212 lines (`OPTIMIZATION_POTENTIAL.md` section 4, sixth review).
 4. XMB exit `[x]`: JIT EXIT (`OPTIMIZATION_POTENTIAL.md` P6 = plan 5.35, HW SUCCESS 2026-10-06, default ON) gives a
-   clean exit. Left: the 3 s forced path skips the flash save (P85, plan bundle 15).
+   clean exit. Left: the 3 s forced path skips the flash save (P85, plan bundle 15). Built 2026-10-13 as the row
+   "Exit Flash Save" (FLASH / CLOCK page), default OFF, no HW run yet (plan section 0).
 5. Stick dead zone: each axis is cut alone below 20, with no rescale. Flycast uses a radial dead zone with a rescale
    (P84, plan bundle 10).
 
@@ -261,6 +264,9 @@ No DreamPi box needed: the emulator replaces the phone line, the modem and the D
 Reference: Flycast `core/hw/modem/` and `core/network/`.
 Order (re-cut 2026-10-12): after plan bundle 15 (Flash and clock), which builds the flash block code for the dial-up
 account and the console ID.
+Bundle 15 built 2026-10-13, no HW run yet (plan section 0): the row "Console ID" (default OLD) writes the ID. Not built
+there: Flycast's rule in `alloc_block` that takes a physical block again when a newer copy of its data exists. The
+dial-up blocks need it: Matt's flash has its settings block in physical block 224 to 241 of 254.
 1. Modem chip, into `plugs/nullExtDev/nullExtDev.cpp` (a stub today), in two stages (2026-10-11,
    `OPTIMIZATION_POTENTIAL.md` P83):
    a. Stage 1, no V.42: the modem of Flycast `df2bdfc9b` (`modem.cpp` 764 lines + `modem_regs.h`; the Reicast
@@ -314,6 +320,71 @@ FULL: `joy2=` lines in the log; Crazy Taxi and Looney Tunes with STANDARD PAD as
 "FULL (2 STICKS)" (`[ps3] Controller` = 1, `get_controller_type()` = 5, `MDT_FullController`); STANDARD PAD is the
 default. The right stick is read only for the full controller.
 
+## G14 - CHD disc images  `[~]` (added 2026-10-13 at Matt's request; built 2026-10-13, package of 09:35; HW test open)
+A `.chd` file holds a GD-ROM or CD image compressed in hunks (8 sectors of 2,448 bytes each). No reader takes it today:
+`plugs/ImgReader` has CDI, NRG/MDS and GDI. This goal lifts the "Do not take" row of `OPTIMIZATION_PLAN.md` section 4
+for CHD; CUE/BIN stays there. Notes: `OPTIMIZATION_POTENTIAL.md` P35. Memory: about 1-1.5 MB.
+Sources, all on the PC:
+- Library: `reicast-emulator/libswirl/deps/chdr/` (4,643 lines of C; CHD v1-v5; codecs zlib, cdzl, cdlz, cdfl).
+  Flycast's `core/deps/libchdr` submodule is not checked out. nullDC-v1's reader (`plugins/ImgReader/chd.cpp` +
+  `deps/chdr.cpp`) stops at CHD v4 with zlib only, so it cannot read a file from today's chdman.
+- Decoders: `deps/lzma/LzmaDec.c` (1,185 lines), `deps/flac/src/libFLAC` (decoder files only), zlib (`-lz`, linked).
+- Track rules: Flycast `core/imgread/chd.cpp` (304 lines).
+1. Add the library, `LzmaDec.c` and the FLAC decoder to the Makefile. File access goes through `fopen`/`fread` (the
+   Reicast copy uses its `coreio`). `chd.c` calls the LZMA encoder (`LzmaEnc.c` 2,788 lines + `LzFind.c` 1,069) only to
+   compute the decoder properties (`chd.c:525-549`): build both, or compute the 5 property bytes by hand.
+2. `plugs/ImgReader/chd.cpp`: a 4th `DriveIF` in `drives[]` (`common.cpp`; `InitDrive_` loops `i<3`). TOC and sessions
+   come from the track metadata by Flycast's rules: pregap PGTYPE 'V', tracks padded to 4 frames, a GD-ROM has 549,300
+   frames, MIL-CD session gap 6750+4500+150. Flycast throws; the build has `-fno-exceptions`, so use return codes.
+3. CD-DA: a CHD stores audio samples big-endian and our CD-DA path takes little-endian. Swap each byte pair (Flycast
+   `chd.cpp:62-70`; a byte-stream swap, so the same on the PPU).
+4. Byte order: the library reads each header and map field byte by byte and picks the FLAC swap at run time
+   (`chd.c:753-755`); libFLAC needs `WORDS_BIGENDIAN`. Safe on paper, never run on the PPU.
+5. PC check before the HW run (as for CDI): `misc/chd_check` reads every sector of a `.chd` and compares it with the
+   GDI or CDI of the same disc. Matt gives the file: no `.chd` is on the PC (2026-10-13).
+6. Speed: the decode runs inside `ReadSector`, so on the GD-ROM Async worker when that row is ON. Not measured: the
+   LZMA time per hunk on the PPE. Measure it on HW; add a read-ahead buffer only if loads stall (P35: one `fread` per
+   hunk = 4 HDD requests per 32-sector fill).
+7. Browser: add `.chd` to the extension list (`ps3/ps3_menu.cpp:227`). Disc Swap uses the same reader path.
+8. Out: the zstd codec 'cdzs' (not in the Reicast copy; it needs a newer libchdr + zstd) and parent CHDs. A file that
+   needs one of them must fail with a log line, not hang.
+9. HW test: a GD-ROM `.chd` and a CD (MIL-CD) `.chd` boot and play, CD-DA sounds right, and loads are not slower than
+   with the GDI/CDI of the same disc.
+
+Built 2026-10-13, steps 1-4, 7 and 8; package of 09:35 (`build/notdc_ps3.pkg`, 1673008 bytes). Step 9 is open.
+- Library (step 1): `deps/chdr`, `deps/lzma` (`LzmaDec.c`) and `deps/flac` (10 decoder files) are Reicast's files,
+  unchanged but for one loop of `deps/chdr/flac.c`: a decode of bad FLAC data never returned. Ours: `deps/coreio/coreio.h`
+  (stdio), `deps/crypto/*.h` and `deps/zlib/zlib.h` (what `chd.c` includes), `deps/lzma/LzmaEncProps.c` (the 5 property
+  bytes by the encoder's own rules, no encoder), `deps/flac/compat/memory.h`. Makefile: `CHD_SRCS`, `CHD_DEFS`,
+  `-DWORDS_BIGENDIAN=1` for `deps/`. Link: +125 KB of code, `.got` 0xE9C0 (0xE378 before; the limit is 0x10000), 0 `r2off`.
+- Reader (steps 2-3, 7): `plugs/ImgReader/chd.cpp`, the 4th reader of `common.cpp`; `.chd` is in the browser list.
+  Tracks, sessions and disc type by Flycast's rules. A GD-ROM gets the TOC fields and the region patch of the GDI reader;
+  a CD gets the TOC fields of the CDI reader. A sector of a pregap, of the padding or of a hunk that does not decode
+  reads as zeros.
+- Step 8: a file with another codec (zstd), with a parent, cut before its map, or with a track type that Flycast does not
+  take fails at the open with a `[chd]` line.
+- Log: `[chd]` lines at the open (version, codecs, each track, disc kind). While the disc is read, at most once a second:
+  `[chd] hunks N: file X ms (K KB), decode Y ms, Z ms per hunk (max), errors E`. This is step 6's measure.
+- Step 5, `misc/chd_check` (WSL), PASS. Step 5 said that no `.chd` was on the PC: wrong. Flycast's tests have four chdman
+  images, and the Fightcade folder has three Naomi GD-ROM images (v5, cdlz + cdzl + cdfl).
+  - Flycast's four images with the values of its `ChdTest.cpp`: disc type, each track, sessions, lead-out, and every
+    sector from FAD 140 to past the lead-out.
+  - Images written by the check (no codec): a GD-ROM of full size, the old GD-ROM tag (little-endian CD-DA), each track
+    type, a v4 file, one data track. TOC of both areas with TOC Fields ON and OFF, the pad, the region patch, 2048, 2340
+    and 2352-byte reads.
+  - Files that must not open (zstd, parent, bad tag, cut, other extension), a hunk with a changed byte, a disc swap,
+    FLAC data that is not FLAC.
+  - The three Naomi images (`run.sh file.chd ...`, 3 min): the SHA1 of the decoded data is the header's (1.34 GB each);
+    each of the 504450 data sectors says its own FAD in its header; the CD-DA track is little-endian after the swap.
+  - The 5 LZMA property bytes are those of the real `LzmaEnc.c` for 70614 sizes (8 frames: `5D 00 60 00 00`).
+  - `mutate.py`: 49 of 49 planted bugs fail the check.
+- Not done:
+  - No disc of Matt's is a `.chd`, so no compare with the GDI or CDI of the same disc. The PC has no chdman.
+  - No read-ahead buffer (step 6: only if loads stall on HW).
+  - The byte order did not run on a big-endian host (step 4).
+- Found: chdr frees no codec buffer at a close, about 135 KB and the packed map for each image that opens. It counts
+  only for many disc swaps. `chd.c` is the unchanged file.
+
 ## G13 - Release candidate settings  `[ ]` (added 2026-10-08 at Matt's request; release material, stays the last goal)
 An RC build shows only a few option rows. Every other setting runs its source default.
 Risk: each launch writes every `[ps3]` key to `nullDC.cfg` (`ps3_presets_save`; `cfgLoadInt` writes an absent key
@@ -328,7 +399,8 @@ OFF their verdicts first (step 5).
    one game.
 5. Settle the defaults first. Open on 2026-10-08: YUV Block Decode is OFF in the source; SPE Tex Decode and SPE FB
    Convert have one HW run. Also open on 2026-10-11 (P85, plan bundle 15): a new flash boots in Japanese (Flycast:
-   English), and Players is 4 where Flycast plugs 1 controller.
+   English), and Players is 4 where Flycast plugs 1 controller. Since 2026-10-13 the six rows of the FLASH / CLOCK page
+   (bundle 15, all at their old path, no HW run yet) wait for a default too: Flash Defaults FLYCAST is the English one.
 6. Visible rows (recommended 2026-10-08, Matt confirms at goal start): SH4 Clock, Speed Limiter, Frame Drop, CD Audio,
    and CONTROLS > Players and Controller. G12 adds FULL (2 STICKS) to Controller; keep the G11 online row visible if
    G11 adds one. On 2026-10-08 the menu has 83 option rows on 4 pages and 2 on CONTROLS.

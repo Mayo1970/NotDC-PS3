@@ -58,6 +58,7 @@ void mem_Term();
 void mem_Reset(bool Manual);   // Manual=true → soft reset (RAM kept); false → hard reset
 void mem_map_defualt();        // Build the full SH4 address-space map
 void mem_SaveFlash();          // dc_flash_wb.bin, as mem_Term writes it (also P6 JIT EXIT)
+void mem_SaveFlashForced();    // the same from the monitor thread, before a forced process exit (P85)
 
 // ---- Debugger / generic access ----
 

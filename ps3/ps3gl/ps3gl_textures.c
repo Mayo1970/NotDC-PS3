@@ -50,6 +50,13 @@ static uint32_t g_swz_y[PS3GL_MAX_TEX_DIM];
 static uint32_t g_swz_tbl_w = 0;
 static uint32_t g_swz_tbl_h = 0;
 
+/* PS3GL_FAST_BIND: slot + 1 of the last texture whose name had these low bits, 0 = none. A hit must still hold the
+ * name; a miss takes the scan, which writes the entry. A power of two (misc/glpath_check builds a small one). */
+#ifndef PS3GL_NAME_SLOTS
+#define PS3GL_NAME_SLOTS 4096
+#endif
+static uint16_t g_name_slot[PS3GL_NAME_SLOTS];
+
 /* Init / Shutdown */
 
 void ps3gl_textures_init(void)
@@ -59,6 +66,7 @@ void ps3gl_textures_init(void)
         ps3gl.textures[i].data   = NULL;
     }
     ps3gl.tex_next_name = 1;
+    memset(g_name_slot, 0, sizeof(g_name_slot));
 }
 
 void ps3gl_textures_shutdown(void)
@@ -110,10 +118,17 @@ void ps3gl_flush_deferred_texture_frees(void)
 
 ps3gl_texture_t *ps3gl_texture_find(GLuint name)
 {
+    uint16_t *e = &g_name_slot[name & (PS3GL_NAME_SLOTS - 1)];
+
+    if ((ps3gl.fast & PS3GL_FAST_BIND) && *e && ps3gl.textures[*e - 1].glname == (int)name)
+        return &ps3gl.textures[*e - 1];
+
     /* Simple linear scan -- 4096 slots is small enough */
     for (int i = 0; i < PS3GL_MAX_TEXTURES; i++) {
-        if (ps3gl.textures[i].glname == (int)name)
+        if (ps3gl.textures[i].glname == (int)name) {
+            *e = (uint16_t)(i + 1);
             return &ps3gl.textures[i];
+        }
     }
     return NULL;
 }
@@ -124,6 +139,7 @@ ps3gl_texture_t *ps3gl_texture_alloc(GLuint name)
         if (ps3gl.textures[i].glname == -1) {
             ps3gl_texture_t *t = &ps3gl.textures[i];
             memset(t, 0, sizeof(*t));
+            g_name_slot[name & (PS3GL_NAME_SLOTS - 1)] = (uint16_t)(i + 1);
             t->glname     = (int)name;
             t->wrap_s     = GCM_TEXTURE_CLAMP_TO_EDGE;
             t->wrap_t     = GCM_TEXTURE_CLAMP_TO_EDGE;
@@ -902,18 +918,24 @@ static uint8_t gl_to_gcm_aniso(GLint param)
 static void tex_param(GLenum pname, GLint param)
 {
     ps3gl_texture_t *t = ps3gl.tmu[ps3gl.active_tmu].bound;
+    uint8_t *field = NULL, value = 0;
     if (!t) return;
 
     switch (pname) {
-    case GL_TEXTURE_WRAP_S:     t->wrap_s     = gl_to_gcm_wrap(param); break;
-    case GL_TEXTURE_WRAP_T:     t->wrap_t     = gl_to_gcm_wrap(param); break;
-    case GL_TEXTURE_MIN_FILTER: t->min_filter = gl_to_gcm_filter(param); break;
-    case GL_TEXTURE_MAG_FILTER: t->mag_filter = gl_to_gcm_filter(param); break;
-    case GL_TEXTURE_MAX_ANISOTROPY_EXT: t->max_aniso = gl_to_gcm_aniso(param); break;
+    case GL_TEXTURE_WRAP_S:     field = &t->wrap_s;     value = gl_to_gcm_wrap(param); break;
+    case GL_TEXTURE_WRAP_T:     field = &t->wrap_t;     value = gl_to_gcm_wrap(param); break;
+    case GL_TEXTURE_MIN_FILTER: field = &t->min_filter; value = gl_to_gcm_filter(param); break;
+    case GL_TEXTURE_MAG_FILTER: field = &t->mag_filter; value = gl_to_gcm_filter(param); break;
+    case GL_TEXTURE_MAX_ANISOTROPY_EXT: field = &t->max_aniso; value = gl_to_gcm_aniso(param); break;
     case GL_GENERATE_MIPMAP:
         break;
     default: break;
     }
+    /* PS3GL_FAST_COMPARE: a parameter that keeps its value does not send the sampler state again. */
+    if ((ps3gl.fast & PS3GL_FAST_COMPARE) && (!field || *field == value))
+        return;
+    if (field)
+        *field = value;
     t->dirty = 1;
 }
 
@@ -1027,12 +1049,21 @@ void ps3gl_apply_textures(void)
             if (tmu->dirty) {
                 rsxTextureControl(ctx, i, GCM_FALSE, 0, 0, 0);
                 tmu->dirty = 0;
+                /* PS3GL_FAST_COMPARE: no texture has this control word; the filter and wrap words stay. */
+                tmu->sent_ctrl = ~0u;
             }
             continue;
         }
 
         /* Skip re-bind if nothing changed on this TMU */
         if (!tmu->dirty && !t->dirty) continue;
+
+        /* PS3GL_FAST_COMPARE: the control, filter and wrap words are the unit's own registers, so each goes out
+         * only when it differs from the one the unit holds. */
+        const int held = (ps3gl.fast & PS3GL_FAST_COMPARE) && tmu->sent;
+        const uint32_t filter = ((uint32_t)t->min_filter << 8) | t->mag_filter;
+        const uint32_t wrap   = ((uint32_t)t->wrap_s << 8) | t->wrap_t;
+        uint32_t ctrl;
 
         rsxLoadTexture(ctx, i, &t->gcm_tex);
         /* maxlod is 4.8 fixed point, NOT an integer level count -- get this wrong and the
@@ -1045,17 +1076,27 @@ void ps3gl_apply_textures(void)
             if (t->num_levels > 1)
                 minlod = PS3GL_MIP_DEBUG_MINLOD;
 #endif
-            rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, t->max_aniso);
+            ctrl = ((uint32_t)minlod << 16) | ((uint32_t)maxlod << 4) | t->max_aniso;
+            if (!held || ctrl != tmu->sent_ctrl)
+                rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, t->max_aniso);
             ps3gl_frame_tex_binds++;
             if (t->num_levels > 1)
                 ps3gl_frame_mipped_binds++;
         }
-        rsxTextureFilter(ctx, i, 0, t->min_filter, t->mag_filter,
-                         GCM_TEXTURE_CONVOLUTION_QUINCUNX);
-        rsxTextureWrapMode(ctx, i, t->wrap_s, t->wrap_t,
-                           GCM_TEXTURE_CLAMP_TO_EDGE,
-                           GCM_TEXTURE_UNSIGNED_REMAP_NORMAL,
-                           GCM_TEXTURE_ZFUNC_NEVER, 0);
+        if (!held || filter != tmu->sent_filter)
+            rsxTextureFilter(ctx, i, 0, t->min_filter, t->mag_filter,
+                             GCM_TEXTURE_CONVOLUTION_QUINCUNX);
+        if (!held || wrap != tmu->sent_wrap)
+            rsxTextureWrapMode(ctx, i, t->wrap_s, t->wrap_t,
+                               GCM_TEXTURE_CLAMP_TO_EDGE,
+                               GCM_TEXTURE_UNSIGNED_REMAP_NORMAL,
+                               GCM_TEXTURE_ZFUNC_NEVER, 0);
+        if (ps3gl.fast & PS3GL_FAST_COMPARE) {
+            tmu->sent        = 1;
+            tmu->sent_ctrl   = ctrl;
+            tmu->sent_filter = filter;
+            tmu->sent_wrap   = wrap;
+        }
 
         tmu->dirty = 0;
         t->dirty = 0;

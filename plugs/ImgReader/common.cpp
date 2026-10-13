@@ -2,6 +2,7 @@
 #include "cdi.h"
 #include "mds.h"
 #include "iso9660.h"
+#include "chd.h"
 #include "ioctl.h"
 #include "os_base.h"
 
@@ -41,6 +42,16 @@ DriveIF drives[]=
 		iso_init,//these need to be filled
 		iso_term,
 		"ISO reader"
+	},
+	{
+		//chd (G14)
+		chd_DriveReadSector,
+		chd_DriveGetTocInfo,
+		chd_DriveGetDiscType,
+		chd_GetSessionsInfo,
+		chd_init,
+		chd_term,
+		"CHD reader"
 	},
 };
 
@@ -198,7 +209,7 @@ bool InitDrive_(char* fn)
 
 	CurrDrive=0;
 
-	for (u32 i=0;i<3;i++)
+	for (u32 i=0;i<4;i++)
 	{
 		if (drives[i].Init(fn))
 		{

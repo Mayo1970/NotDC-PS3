@@ -8,6 +8,8 @@
 #include "aica/aica_if.h"
 #include "maple/maple_if.h"
 #include "dc.h"
+#include "flash_fix.h"
+#include "ps3/ps3_presets.h"
 #include "config/config.h"
 #include "plugins/plugin_manager.h"
 #include "ps3/ps3_sndthr.h"
@@ -304,8 +306,8 @@ static char* BuildFilePath(const char* base_path, const char* filename)
 	return full_path;
 }
 
-void dc_flash_set_time(u32 rtc); // flash_fix.cpp
-void dc_flash_set_region(const char* area);
+// P85: sh4_mem.cpp's forced-exit save writes the flash only while this is set.
+extern volatile bool g_flash_loaded;
 
 // Cable forced for this boot only; -1 = the nullDC.cfg value. Read by bsc.cpp read_BSC_PDTRA.
 int g_cable_override = -1;
@@ -376,6 +378,8 @@ void LoadBiosFiles()
 	}
 
 	// Try to load saved flash first, fallback to default
+	bool flash_ok = false;
+	g_flash_loaded = false;
 	char* flash_path = BuildFilePath(base_path, "dc_flash_wb.bin");
 	if (flash_path)
 	{
@@ -383,6 +387,7 @@ void LoadBiosFiles()
 		{
 			printf("Loaded dc_flash_wb.bin (writeback)\n");
 			any_loaded = true;
+			flash_ok = true;
 		}
 		else
 		{
@@ -396,6 +401,7 @@ void LoadBiosFiles()
 				{
 					printf("Loaded dc_flash.bin\n");
 					any_loaded = true;
+					flash_ok = true;
 				}
 				else
 				{
@@ -405,11 +411,20 @@ void LoadBiosFiles()
 		}
 		if (flash_path)
 			free(flash_path);
+		// P85: no flash file at all.
+		if (!flash_ok && g_flash_defaults_preset)
+		{
+			dc_flash_build();
+			flash_ok = true;
+		}
 		if (any_loaded)
 		{
 			dc_flash_set_time(settings.dreamcast.RTC);
+			dc_flash_fixup(settings.dreamcast.RTC);
 			apply_disc_meta();
+			dc_flash_report();
 		}
+		g_flash_loaded = flash_ok;
 	}
 
 	// Load syscalls

@@ -1,5 +1,5 @@
-// Bundle 4 (plan section 7) PC check, WSL: the draw rules. Rows off: draw_scene makes the frozen file's GL calls,
-// call for call. Rows on: each draw's state, the pass order and the volumes follow a model of the rules.
+// Bundle 4 (plan section 7) PC check, WSL: the draw rules. Rows off: draw_scene makes the frozen file's GL calls.
+// Rows on: a model of the rules; bundle 14: with TR First Pass at OLD, also the calls of the file of before it.
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -104,13 +104,15 @@ static void gen_scene(bool rows)
 		memcpy(&g_param[i * 4], q, 16);
 	}
 	S.nstrip = rndn(8) ? 1 + rndn(120) : 0;
+	// Bundle 14 GAME ORDER: long translucent strips alone do not fit the block twice, so a second block is asked for.
+	const bool all_tr = rows && rndn(6) == 0;
 	g_strip.resize(S.nstrip * 4);
 	g_vtx.clear();
 	u32 prm = 0;
 	for (u32 i = 0; i < S.nstrip; i++)
 	{
-		const u32 count = 3 + rndn(6);
-		const u32 l = rndn(100);
+		const u32 count = 3 + rndn(all_tr ? 12 : 6);
+		const u32 l = all_tr ? 60 : rndn(100);
 		if (rndn(3) == 0)
 			prm = rndn(S.nparam);
 		g_strip[i * 4] = (u32)(g_vtx.size() / 6);
@@ -219,6 +221,7 @@ static void gen_scene(bool rows)
 		S.passes = rndn(3);
 		S.clip_level = rndn(3);
 		S.tri_sort = rndn(4);
+		S.first_pass = rndn(3);
 	}
 }
 
@@ -226,6 +229,8 @@ static void gen_scene(bool rows)
 
 static uint64_t n_draws, n_depth, n_clip_in, n_clip_out, n_clip_all, n_flat, n_shift, n_multi, n_trvol, n_spr, n_tris;
 static uint64_t n_sorted, n_sorted_swap, n_opaque;
+// Bundle 14: depth-only triangles in submission order, triangles SKIP left out, scenes with a second vertex block.
+static uint64_t n_game, n_skipped, n_blocks, n_applied, n_old;
 
 // The largest W of a triangle's corners as bits (W is positive): the sort's key, the farthest corner.
 static u32 tri_w(u32 sid, u32 kc)
@@ -286,8 +291,8 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 	std::vector<u32> colour(S.nstrip, 0), depth(S.nstrip, 0), tris(S.nstrip, 0), pre(S.nstrip, 0);
 	// + OPAQUE DEPTH: the pass whose colour draws have begun (its depth-only draws must all come before them).
 	u32 colour_pass = ~0u;
-	// 3k: the last sorted triangle drawn in each pass.
-	u32 last_pass_tri = ~0u, last_w = 0, last_sid = 0, last_kc = 0;
+	// 3k: the last triangle drawn in each pass, of the colour draws and of the depth-only draws.
+	struct Last { u32 pass, w, sid, kc; } last_col = { ~0u, 0, 0, 0 }, last_pre = { ~0u, 0, 0, 0 };
 	// The last pass that has strips: the TR depth pass runs after every pass but the last one.
 	u32 prev_key = 0;
 	for (u32 i = 0; i < n;)
@@ -329,23 +334,9 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 					die("the draws of one range differ in state");
 			}
 		n_draws++;
-		// 3k: a run of sorted triangles. Each one is three corners of one strip, the newest corner last, wound as the
-		// strip winds it; the draw order is the farthest corner's W falling, and the submission order at equal W.
-		// + OPAQUE DEPTH, the first pass: the same triangles, counted per strip; they come before the pass's colour.
-		if (d.prim == 4 && dpass)
-		{
-			for (u32 k = d.first + 2; k < d.first + d.count; k += 3)
-			{
-				const u32 sid = (u32)bf(vb[(size_t)k * 9 + 4]);
-				if (sid >= S.nstrip)
-					die("draw %u: a depth-only triangle of strip %u", i, sid);
-				if (pass_of(sid, multi) == colour_pass)
-					die("draw %u: a depth-only triangle of strip %u after the colour of its pass", i, sid);
-				pre[sid]++;
-				n_opaque++;
-			}
-		}
-		else if (d.prim == 4)
+		// 3k: sorted triangles, each one three corners of a strip, wound as the strip; farthest W first, then submission
+		// order. + OPAQUE DEPTH's first pass: the same ones before the colour; GAME ORDER: in submission order.
+		if (d.prim == 4)
 		{
 			const u32 fsid = (u32)bf(vb[(size_t)d.first * 9 + 4]);
 			const u32* fp = &S.param[S.strip[fsid * 4 + 3] * 4];
@@ -367,14 +358,36 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 				const u32 swap = (kk[2] & 1) ^ (u32)(eff >= 2 && eff != run_cull);
 				if (kk[0] != (swap ? kk[2] - 1 : kk[2] - 2) || kk[1] != (swap ? kk[2] - 2 : kk[2] - 1))
 					die("draw %u: strip %u triangle %u has corners %u %u (swap %u)", i, sid[2], kk[2], kk[0], kk[1], swap);
+				// Each corner is the strip's vertex: its W, and its colour with the alpha the polygon forces.
+				const bool force = !((p[2] >> 20) & 1) || (((p[0] >> 3) & 1) && ((p[2] >> 6) & 3) == 1);
+				for (int c3 = 0; c3 < 3; c3++)
+				{
+					const u32* v = &S.vtx[(size_t)(S.strip[sid[2] * 4] + kk[c3]) * 6];
+					const u32 col = v[3] | (force ? 0xFF000000u : 0);
+					const u32* o = &vb[(size_t)(k + c3) * 9];
+					if (o[2] != v[2] || o[8] != (col << 8 | col >> 24))
+						die("draw %u: strip %u corner %u is W %08X colour %08X, want %08X %08X", i, sid[2], kk[c3], o[2], o[8],
+						    v[2], col << 8 | col >> 24);
+				}
 				const u32 pass = pass_of(sid[2], multi), w = tri_w(sid[2], kk[2]);
+				Last& l = dpass ? last_pre : last_col;
+				const bool later = sid[2] > l.sid || (sid[2] == l.sid && kk[2] > l.kc);
+				const bool game = dpass && S.first_pass == 2;
+				if (pass == l.pass && (game ? !later : w > l.w || (w == l.w && !later)))
+					die("draw %u: %s triangle %u/%u (W %08X) after %u/%u (W %08X)", i, dpass ? "depth-only" : "colour", sid[2],
+					    kk[2], w, l.sid, l.kc, l.w);
+				const Last now = { pass, w, sid[2], kk[2] };
+				l = now;
+				if (dpass)
+				{
+					if (pass == colour_pass)
+						die("draw %u: a depth-only triangle of strip %u after the colour of its pass", i, sid[2]);
+					pre[sid[2]]++;
+					n_opaque++;
+					n_game += game;
+					continue;
+				}
 				colour_pass = pass;
-				if (pass == last_pass_tri && (w > last_w || (w == last_w && (sid[2] < last_sid || (sid[2] == last_sid && kk[2] <= last_kc)))))
-					die("draw %u: triangle %u/%u (W %08X) after %u/%u (W %08X)", i, sid[2], kk[2], w, last_sid, last_kc, last_w);
-				last_pass_tri = pass;
-				last_w = w;
-				last_sid = sid[2];
-				last_kc = kk[2];
 				tris[sid[2]]++;
 				n_sorted++;
 				n_sorted_swap += swap;
@@ -416,7 +429,8 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 				// the opaque level), or at any alpha (no alpha test). No blend, depth as the game asks.
 				const u32 si = (p[2] >> 29) & 7, di = (p[2] >> 26) & 7;
 				const u32 covers = si == 1 && di == 0 ? 2 : si == 4 && di == 5 ? 1 : 0;
-				if (!covers || d.blend || d.depth_func != GL_NEVER + k_cmp[S.depth_float][6] || d.depth_mask != !zwd ||
+				if (!covers || (S.first_pass && zwd) || d.blend || d.depth_func != GL_NEVER + k_cmp[S.depth_float][6] ||
+				    d.depth_mask != !zwd ||
 				    d.alpha_test != (u32)(covers == 1) || d.alpha_func != 0x206 || d.alpha_ref != fb(240 / 255.0f))
 					die("draw %u strip %u: the opaque depth pass state (covers %u blend %u mask %u test %u func %X)", i, sid,
 					    covers, d.blend, d.depth_mask, d.alpha_test, d.alpha_func);
@@ -517,7 +531,11 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 				want_tris += S.vtx[(st[0] + k) * 6 + 2] && S.vtx[(st[0] + k - 1) * 6 + 2] && S.vtx[(st[0] + k - 2) * 6 + 2];
 			const u32 si = (p[2] >> 29) & 7, di = (p[2] >> 26) & 7;
 			const bool covers = (si == 1 && di == 0) || (si == 4 && di == 5);
-			if (colour[sid] || tris[sid] != want_tris || pre[sid] != (S.tri_sort == 3 && covers ? want_tris : 0u))
+			// TR First Pass: a polygon that writes no depth is not in the first pass.
+			const bool skip = S.first_pass && ((p[1] >> 26) & 1);
+			if (S.tri_sort == 3 && covers && skip)
+				n_skipped += want_tris;
+			if (colour[sid] || tris[sid] != want_tris || pre[sid] != (S.tri_sort == 3 && covers && !skip ? want_tris : 0u))
 				die("strip %u: %u sorted triangles (%u depth-only), want %u (and %u strip draws)", sid, tris[sid], pre[sid],
 				    want_tris, colour[sid]);
 		}
@@ -583,6 +601,45 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 		n_tris += want[t];
 	}
 	n_multi += multi;
+	// TR First Pass: with no clip rect in the scene each run the first pass applies is one draw, so a run that is
+	// left out is not applied. The pass is between the colour mask off with the opaque alpha level, and the mask on.
+	if (S.first_pass && !(S.opt & 16))
+		for (u32 i = 0; i + 1 < n; i++)
+		{
+			if (c[i].kind != R4_CALL || c[i].op != 9 /* OP_COLORMASK */ || c[i].a[0] || c[i + 1].kind != R4_CALL ||
+			    c[i + 1].op != 11 /* OP_ALPHAFUNC */ || c[i + 1].a[0] != 0x206)
+				continue;
+			u32 applied = 0, drawn = 0;
+			for (i += 2; i < n && !(c[i].kind == R4_CALL && c[i].op == 9); i++)
+			{
+				applied += c[i].kind == R4_CALL && c[i].op == 6 /* OP_STENCILFUNC */;
+				drawn += c[i].kind == R4_DRAW;
+			}
+			if (applied > drawn)
+				die("the first pass applied %u states for %u draws", applied, drawn);
+			n_applied += applied;
+		}
+	u32 allocs = 0, last_alloc = 0;
+	for (u32 i = 0; i < n; i++)
+		if (c[i].kind == R4_CALL && c[i].op == 23 /* OP_ALLOC */)
+		{
+			allocs++;
+			last_alloc = c[i].a[0];
+		}
+	n_blocks += allocs > 1;
+	// GAME ORDER asks for a second block of the room left + 3 vertices per triangle, and only when the first one has
+	// no room for 6 per triangle. With one pass the triangles are those of every sorted strip.
+	if (allocs > 1 && !multi)
+	{
+		u32 tri = 0;
+		for (u32 sid = 0; sid < S.nstrip; sid++)
+			for (u32 k = 2; S.strip[sid * 4 + 2] == 2 && k < S.strip[sid * 4 + 1]; k++)
+				tri += S.vtx[(S.strip[sid * 4] + k) * 6 + 2] && S.vtx[(S.strip[sid * 4] + k - 1) * 6 + 2] &&
+				       S.vtx[(S.strip[sid * 4] + k - 2) * 6 + 2];
+		const u32 room = last_alloc - 3 * tri - (S.flat == 2 ? 2 : 0);
+		if (allocs != 2 || S.tri_sort != 3 || S.first_pass != 2 || 6 * tri <= room || 3 * tri > room)
+			die("a second vertex block of %u vertices for %u triangles (%u blocks)", last_alloc, tri, allocs);
+	}
 }
 
 int main(int argc, char** argv)
@@ -619,14 +676,36 @@ int main(int argc, char** argv)
 		u32 un;
 		const u32 nn = r4_new_run(&S, &cn, &vn, &un);
 		model(cn, nn, vn);
+		if (S.first_pass)
+			continue;
+		const R4Call* co;
+		const u32* vo;
+		u32 uo;
+		const u32 no = r4_old_run(&S, &co, &vo, &uo);
+		if (nn != no)
+			die("TR First Pass OLD: %u GL calls, the code of before bundle 14 makes %u", nn, no);
+		for (u32 k = 0; k < nn; k++)
+			if (memcmp(&cn[k], &co[k], sizeof(R4Call)))
+				die("TR First Pass OLD: call %u differs (kind %u/%u op %u/%u a %X/%X first %u/%u count %u/%u hash %X/%X)", k,
+				    cn[k].kind, co[k].kind, cn[k].op, co[k].op, cn[k].a[0], co[k].a[0], cn[k].first, co[k].first,
+				    cn[k].count, co[k].count, cn[k].hash, co[k].hash);
+		if (un != uo || (un && memcmp(vn, vo, (size_t)un * 36)))
+			die("TR First Pass OLD: the vertex block differs");
+		n_old++;
 	}
 	printf("PASS: %u scenes per phase; %llu draws; %llu depth-pass strips, %llu multi-pass scenes; clip: %llu inside, "
 	       "%llu outside, %llu strips cut whole; %llu flat strips (%llu with the colour shift); %llu sprite cull flips; "
-	       "%llu scenes with the TR volumes, %llu volume triangles; %llu sorted triangles (%llu with swapped corners, %llu in an opaque depth pass)\n",
+	       "%llu scenes with the TR volumes, %llu volume triangles; %llu sorted triangles (%llu with swapped corners, %llu in an opaque depth pass); "
+	       "TR First Pass: %llu triangles left out, %llu in submission order, %llu scenes with a second block, "
+	       "%llu scenes at OLD equal to the code of before\n",
 	       scenes, (unsigned long long)n_draws,
 	       (unsigned long long)n_depth, (unsigned long long)n_multi, (unsigned long long)n_clip_in,
 	       (unsigned long long)n_clip_out, (unsigned long long)n_clip_all, (unsigned long long)n_flat,
 	       (unsigned long long)n_shift, (unsigned long long)n_spr, (unsigned long long)n_trvol, (unsigned long long)n_tris,
-	       (unsigned long long)n_sorted, (unsigned long long)n_sorted_swap, (unsigned long long)n_opaque);
+	       (unsigned long long)n_sorted, (unsigned long long)n_sorted_swap, (unsigned long long)n_opaque,
+	       (unsigned long long)n_skipped, (unsigned long long)n_game, (unsigned long long)n_blocks,
+	       (unsigned long long)n_old);
+	if (!n_skipped || !n_game || !n_blocks || !n_applied)
+		die("a TR First Pass case never ran");
 	return 0;
 }

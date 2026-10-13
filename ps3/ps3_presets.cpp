@@ -204,6 +204,19 @@ int g_mmu_bits_preset      = 1;   // 1 = MMUCR's fields at the manual's bits, it
 int g_p4_mirror_preset     = 0;   // 1 = P4 pages E4-E7 and EC-EF mirror VRAM and main RAM, as Flycast 156aafe95 (P30)
 int g_ocr_banks_preset     = 0;   // 1 = the on-chip RAM bank is address bit 13, or bit 25 with CCR.OIX (P30)
 int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and length masked, 0x12 is the TA, DMAOR & 0x8307 (P65)
+// OPTIMIZATION_PLAN section 7, bundle 14 (render-thread draw cost): 0 is the old path in every one; the picture is the
+// same at every value. ON since 2026-10-13 (Matt): HW SUCCESS in Crazy Taxi, Sonic Adventure 2 and Rayman 2.
+int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table, not by a scan of its 4096 slots (P72, HW)
+int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
+int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
+// OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one; a row is off until it is
+// cleared on hardware. No row's value reaches dc_flash_wb.bin but the console ID.
+int g_broadcast_preset     = 0;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59)
+int g_bios_lang_preset     = 0;   // the flash's language: 0 = its own, 1-6 = Japanese, English, German, French, Spanish, Italian (P37)
+int g_flash_defaults_preset = 0;  // 1 = with no flash file one is built (USA, English, NTSC); a new syscfg block is English (P85)
+int g_console_id_preset    = 0;   // 1 = Flycast's console ID: a random one when blank, its checksum, machine version 0xFE (P85)
+int g_exit_save_preset     = 0;   // 1 = the 3 s forced exit saves the flash first (P85)
+int g_rtc_local_preset     = 0;   // 1 = the RTC is UTC + the XMB's time zone and summer time, not UTC (P12)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -375,10 +388,19 @@ static const CfgItem s_items[] = {
 	{ "MapR2",         &g_pad_map[PADBTN_R2] },
 	{ "MapL3",         &g_pad_map[PADBTN_L3] },
 	{ "MapR3",         &g_pad_map[PADBTN_R3] },
+	{ "Broadcast",     &g_broadcast_preset },
+	{ "BiosLanguage",  &g_bios_lang_preset },
+	{ "FlashDefaults", &g_flash_defaults_preset },
+	{ "ConsoleId",     &g_console_id_preset },
+	{ "ExitFlashSave", &g_exit_save_preset },
+	{ "RtcLocal",      &g_rtc_local_preset },
 	{ "FpsOverlay",    &g_fps_overlay_preset },
 	{ "ScreenFormat",  &g_screen_format_preset },
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
+	{ "TexBindTable",  &g_tex_bind_table_preset },
+	{ "GlCompare",     &g_gl_compare_preset },
+	{ "TrFirstPass",   &g_tr_first_pass_preset },
 	{ "MmuBits",       &g_mmu_bits_preset },
 	{ "P4Mirror",      &g_p4_mirror_preset },
 	{ "OcrBanks",      &g_ocr_banks_preset },
@@ -580,6 +602,30 @@ static const CfgItem s_mem_items[] = {
 };
 #define MEM_ITEMS (sizeof(s_mem_items) / sizeof(s_mem_items[0]))
 
+// The bundle 14 rows (plan section 7), in the DRAW COST page's order, then the rows that decide what they act on.
+static const CfgItem s_cost_items[] = {
+	{ "TexBindTable",  &g_tex_bind_table_preset },
+	{ "GlCompare",     &g_gl_compare_preset },
+	{ "TrFirstPass",   &g_tr_first_pass_preset },
+	{ "TrTriSort",     &g_tr_tri_sort_preset },
+	{ "StripMerge",    &g_strip_merge_preset },
+	{ "VertexArrays",  &g_vertex_array_preset },
+	{ "SpeBuild",      &g_spe_build_preset },
+};
+#define COST_ITEMS (sizeof(s_cost_items) / sizeof(s_cost_items[0]))
+
+// The bundle 15 rows (plan section 7), in the FLASH / CLOCK page's order, then the row the forced exit depends on.
+static const CfgItem s_flash_items[] = {
+	{ "Broadcast",     &g_broadcast_preset },
+	{ "BiosLanguage",  &g_bios_lang_preset },
+	{ "FlashDefaults", &g_flash_defaults_preset },
+	{ "ConsoleId",     &g_console_id_preset },
+	{ "ExitFlashSave", &g_exit_save_preset },
+	{ "RtcLocal",      &g_rtc_local_preset },
+	{ "JitExit",       &g_jit_exit_preset },
+};
+#define FLASH_ITEMS (sizeof(s_flash_items) / sizeof(s_flash_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -662,6 +708,20 @@ void ps3_memcfg_print(const char* when, bool always)
 	static int last[MEM_ITEMS];
 	static bool printed;
 	cfg_print("memcfg", s_mem_items, MEM_ITEMS, last, &printed, when, always);
+}
+
+void ps3_costcfg_print(const char* when, bool always)
+{
+	static int last[COST_ITEMS];
+	static bool printed;
+	cfg_print("costcfg", s_cost_items, COST_ITEMS, last, &printed, when, always);
+}
+
+void ps3_flashcfg_print(const char* when, bool always)
+{
+	static int last[FLASH_ITEMS];
+	static bool printed;
+	cfg_print("flashcfg", s_flash_items, FLASH_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {
@@ -781,6 +841,9 @@ int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
 int get_jit_rm_any_preset()    { return g_jit_rm_any_preset; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
+int get_flash_defaults_preset() { return g_flash_defaults_preset; }
+int get_rtc_local_preset()     { return g_rtc_local_preset; }
 
 // JIT backend presets; the fixed 0 ones wait for OPTIMIZATION_PLAN 5. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

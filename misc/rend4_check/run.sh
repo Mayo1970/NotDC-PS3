@@ -1,12 +1,12 @@
 #!/bin/sh
-# Bundle 4 (WSL): ps3_rend.cpp's draw rules over a recording GL, against misc/ta4_check/ref_ps3_rend.inc (rows off)
-# and a model (rows on). Args: scenes (4000), seed (0). REND_SOURCE: a mutated ps3_rend.cpp (mutate.py).
+# Bundle 4 (WSL): ps3_rend.cpp's draw rules over a recording GL. Rows off: ta4_check/ref_ps3_rend.inc; rows on: a model;
+# TR First Pass OLD: ref_b13_ps3_rend.inc (commit 977df14). Args: scenes (4000), seed (0). REND_SOURCE: a mutant.
 set -e
 cd "$(dirname "$0")/../.."
 OUT=${R4_OUT:-/tmp/rend4chk}
 D=misc/rend4_check
 rm -rf $OUT
-mkdir -p $OUT/new $OUT/ref
+mkdir -p $OUT/new $OUT/ref $OUT/old
 extract() {
 	tr -d '\r' < "$1" > $OUT/$2/rend.cpp
 	awk '/^\/\/ Plane through the 3 background vertices/{f=1} /^\/\/ P18: the scene.s depth format and its clear value/{f=0} f{print}' \
@@ -20,10 +20,12 @@ extract() {
 }
 extract "${REND_SOURCE:-ps3/ps3_rend.cpp}" new
 extract misc/ta4_check/ref_ps3_rend.inc ref
+extract misc/rend4_check/ref_b13_ps3_rend.inc old
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all"
 CXX="g++ -O1 -g -ffp-contract=off $SAN -Imisc/spevb_check/stub -Ips3/spu -I$D -I. -w"
 $CXX -I$OUT/new -c $D/side.cpp -o $OUT/new.o
 $CXX -DR4_REF -I$OUT/ref -c $D/side.cpp -o $OUT/ref.o
+$CXX -DR4_OLD -I$OUT/old -c $D/side.cpp -o $OUT/old.o
 $CXX -c $D/rend4_check.cpp -o $OUT/drv.o
-g++ $SAN $OUT/drv.o $OUT/new.o $OUT/ref.o -o $OUT/rend4check -lm
+g++ $SAN $OUT/drv.o $OUT/new.o $OUT/ref.o $OUT/old.o -o $OUT/rend4check -lm
 $OUT/rend4check "${1:-4000}" "${2:-0}"

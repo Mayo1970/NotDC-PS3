@@ -64,6 +64,7 @@ extern "C" void ps3_audio_init();
 extern "C" void ps3_audio_term();
 extern void ps3_audio_stats();
 void ps3_cheats_load(const char* disc);   // ps3_cheats.cpp
+void mem_SaveFlashForced();               // dc/mem/sh4_mem.cpp
 
 // No block manager without a JIT. nullDC.cpp calls this with C linkage, which
 // clashes with blockmanager.h, so it lives here and not in ps3_nojit.cpp.
@@ -148,6 +149,26 @@ extern "C" int ps3_exit_pending()
 	return ps3_exit_requested;
 }
 
+// flash_check: begin zone
+// P12: the XMB's time zone plus its summer time, in seconds east of UTC. A value the system refuses counts as 0.
+extern "C" int ps3_local_offset_seconds()
+{
+	s32 zone = 0, summer = 0;
+	const s32 rz = sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_TIMEZONE, &zone);
+	const s32 rs = sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_SUMMERTIME, &summer);
+	printf("[rtc] PS3 time zone %d min (rc %08X), summer time %d (rc %08X)\n", (int)zone, (unsigned)rz, (int)summer,
+	       (unsigned)rs);
+	if (rz != 0 || zone < -12 * 60 || zone > 14 * 60)
+		zone = 0;
+	// Minutes; a system that answers 1 for "on" means one hour.
+	if (summer == 1)
+		summer = 60;
+	if (rs != 0 || summer < 0 || summer > 120)
+		summer = 0;
+	return (zone + summer) * 60;
+}
+// flash_check: end zone
+
 // XMB exit arrives here; only latch it, the emulator loop acts on it.
 static void ps3_sysutil_cb(u64 status, u64 param, void* userdata)
 {
@@ -179,6 +200,9 @@ static void ps3_monitor_thread(void* arg)
 			// A stuck core (die() loops forever) never returns; an unanswered exit crashes the console.
 			else if (stop_ticks >= 30)
 			{
+				// P85: the settings the BIOS saved survive this exit.
+				if (g_exit_save_preset)
+					mem_SaveFlashForced();
 				printf("[ps3] SH4 did not stop in 3 s, forcing process exit\n");
 				sysProcessExit(0);
 			}

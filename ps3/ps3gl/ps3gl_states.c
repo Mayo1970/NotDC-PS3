@@ -54,36 +54,44 @@ static inline uint32_t gl_to_gcm_stencilop(GLenum op)
 
 /* GL state setters -- record state + mark dirty */
 
+/* PS3GL_FAST_COMPARE: a setter marks its group only when a value changes. A group that is clean holds what the
+ * RSX has: ps3gl_apply_states() sends the whole group, and ps3gl_begin_frame() marks them all. */
+static inline void rs_mark(int changed, uint32_t group)
+{
+    if (changed || !(ps3gl.fast & PS3GL_FAST_COMPARE))
+        ps3gl.dirty |= group;
+}
+
 static void enable_disable(GLenum cap, int val)
 {
     switch (cap) {
     case GL_BLEND:
+        rs_mark(ps3gl.rs.blend_enable != val, PS3GL_DIRTY_BLEND);
         ps3gl.rs.blend_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_BLEND;
         break;
     case GL_ALPHA_TEST:
+        rs_mark(ps3gl.rs.alpha_test_enable != val, PS3GL_DIRTY_ALPHA);
         ps3gl.rs.alpha_test_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_ALPHA;
         break;
     case GL_DEPTH_TEST:
+        rs_mark(ps3gl.rs.depth_test_enable != val, PS3GL_DIRTY_DEPTH);
         ps3gl.rs.depth_test_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_DEPTH;
         break;
     case GL_CULL_FACE:
+        rs_mark(ps3gl.rs.cull_enable != val, PS3GL_DIRTY_CULL);
         ps3gl.rs.cull_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_CULL;
         break;
     case GL_SCISSOR_TEST:
+        rs_mark(ps3gl.rs.scissor_enable != val, PS3GL_DIRTY_SCISSOR);
         ps3gl.rs.scissor_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_SCISSOR;
         break;
     case GL_STENCIL_TEST:
+        rs_mark(ps3gl.rs.stencil_enable != val, PS3GL_DIRTY_STENCIL);
         ps3gl.rs.stencil_enable = val;
-        ps3gl.dirty |= PS3GL_DIRTY_STENCIL;
         break;
     case GL_POLYGON_OFFSET_FILL:
+        rs_mark(ps3gl.rs.polyoffset_fill != val, PS3GL_DIRTY_POLYOFFSET);
         ps3gl.rs.polyoffset_fill = val;
-        ps3gl.dirty |= PS3GL_DIRTY_POLYOFFSET;
         break;
     case GL_TEXTURE_2D:
         if (ps3gl.tmu[ps3gl.active_tmu].enabled != val)
@@ -121,62 +129,77 @@ void glDisable(GLenum cap) { enable_disable(cap, 0); }
 
 void glBlendFunc(GLenum sfactor, GLenum dfactor)
 {
-    ps3gl.rs.blend_src = gl_to_gcm_blend(sfactor);
-    ps3gl.rs.blend_dst = gl_to_gcm_blend(dfactor);
-    ps3gl.dirty |= PS3GL_DIRTY_BLEND;
+    const uint16_t src = gl_to_gcm_blend(sfactor), dst = gl_to_gcm_blend(dfactor);
+
+    rs_mark(ps3gl.rs.blend_src != src || ps3gl.rs.blend_dst != dst, PS3GL_DIRTY_BLEND);
+    ps3gl.rs.blend_src = src;
+    ps3gl.rs.blend_dst = dst;
 }
 
 void glAlphaFunc(GLenum func, GLclampf ref)
 {
-    ps3gl.rs.alpha_func = gl_to_gcm_cmpfunc(func);
-    ps3gl.rs.alpha_ref  = (uint32_t)(ref * 255.0f + 0.5f);
-    if (ps3gl.rs.alpha_ref > 255) ps3gl.rs.alpha_ref = 255;
-    ps3gl.dirty |= PS3GL_DIRTY_ALPHA;
+    const uint32_t f = gl_to_gcm_cmpfunc(func);
+    uint32_t r = (uint32_t)(ref * 255.0f + 0.5f);
+    if (r > 255) r = 255;
+
+    rs_mark(ps3gl.rs.alpha_func != f || ps3gl.rs.alpha_ref != r, PS3GL_DIRTY_ALPHA);
+    ps3gl.rs.alpha_func = f;
+    ps3gl.rs.alpha_ref  = r;
 }
 
 void glDepthFunc(GLenum func)
 {
-    ps3gl.rs.depth_func = gl_to_gcm_cmpfunc(func);
-    ps3gl.dirty |= PS3GL_DIRTY_DEPTH;
+    const uint32_t f = gl_to_gcm_cmpfunc(func);
+
+    rs_mark(ps3gl.rs.depth_func != f, PS3GL_DIRTY_DEPTH);
+    ps3gl.rs.depth_func = f;
 }
 
 void glDepthMask(GLboolean flag)
 {
-    ps3gl.rs.depth_mask = flag ? 1 : 0;
-    ps3gl.dirty |= PS3GL_DIRTY_DEPTH;
+    const int mask = flag ? 1 : 0;
+
+    rs_mark(ps3gl.rs.depth_mask != mask, PS3GL_DIRTY_DEPTH);
+    ps3gl.rs.depth_mask = mask;
 }
 
 void glDepthRange(GLclampd n, GLclampd f)
 {
+    rs_mark(ps3gl.rs.depth_near != (float)n || ps3gl.rs.depth_far != (float)f, PS3GL_DIRTY_VIEWPORT);
     ps3gl.rs.depth_near = (float)n;
     ps3gl.rs.depth_far  = (float)f;
-    ps3gl.dirty |= PS3GL_DIRTY_VIEWPORT;
 }
 
 void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a)
 {
+    rs_mark(ps3gl.rs.color_mask_r != r || ps3gl.rs.color_mask_g != g ||
+            ps3gl.rs.color_mask_b != b || ps3gl.rs.color_mask_a != a, PS3GL_DIRTY_COLORMASK);
     ps3gl.rs.color_mask_r = r;
     ps3gl.rs.color_mask_g = g;
     ps3gl.rs.color_mask_b = b;
     ps3gl.rs.color_mask_a = a;
-    ps3gl.dirty |= PS3GL_DIRTY_COLORMASK;
 }
 
 void glCullFace(GLenum mode)
 {
+    uint32_t face = ps3gl.rs.cull_face;
+
     switch (mode) {
-    case GL_FRONT:          ps3gl.rs.cull_face = GCM_CULL_FRONT; break;
-    case GL_BACK:           ps3gl.rs.cull_face = GCM_CULL_BACK; break;
-    case GL_FRONT_AND_BACK: ps3gl.rs.cull_face = GCM_CULL_ALL; break;
+    case GL_FRONT:          face = GCM_CULL_FRONT; break;
+    case GL_BACK:           face = GCM_CULL_BACK; break;
+    case GL_FRONT_AND_BACK: face = GCM_CULL_ALL; break;
     default: break;
     }
-    ps3gl.dirty |= PS3GL_DIRTY_CULL;
+    rs_mark(ps3gl.rs.cull_face != face, PS3GL_DIRTY_CULL);
+    ps3gl.rs.cull_face = face;
 }
 
 void glFrontFace(GLenum mode)
 {
-    ps3gl.rs.front_face = (mode == GL_CW) ? GCM_FRONTFACE_CW : GCM_FRONTFACE_CCW;
-    ps3gl.dirty |= PS3GL_DIRTY_CULL;
+    const uint32_t front = (mode == GL_CW) ? GCM_FRONTFACE_CW : GCM_FRONTFACE_CCW;
+
+    rs_mark(ps3gl.rs.front_face != front, PS3GL_DIRTY_CULL);
+    ps3gl.rs.front_face = front;
 }
 
 void glScissor(GLint x, GLint y, GLsizei w, GLsizei h)
@@ -184,11 +207,12 @@ void glScissor(GLint x, GLint y, GLsizei w, GLsizei h)
     /* Same GL→RSX Y conversion as glViewport. */
     int rsx_y = (int)ps3gl.screen_h - y - (int)h;
 
+    rs_mark(ps3gl.rs.scissor_x != (int16_t)x || ps3gl.rs.scissor_y != (int16_t)rsx_y ||
+            ps3gl.rs.scissor_w != (uint16_t)w || ps3gl.rs.scissor_h != (uint16_t)h, PS3GL_DIRTY_SCISSOR);
     ps3gl.rs.scissor_x = (int16_t)x;
     ps3gl.rs.scissor_y = (int16_t)rsx_y;
     ps3gl.rs.scissor_w = (uint16_t)w;
     ps3gl.rs.scissor_h = (uint16_t)h;
-    ps3gl.dirty |= PS3GL_DIRTY_SCISSOR;
 }
 
 void glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
@@ -197,25 +221,27 @@ void glViewport(GLint x, GLint y, GLsizei w, GLsizei h)
      * convert with rsx_y = screen_h - gl_y - h. No-op for full-screen viewports (y=0, h=screen_h). */
     int rsx_y = (int)ps3gl.screen_h - y - (int)h;
 
+    rs_mark(ps3gl.rs.vp_x != (int16_t)x || ps3gl.rs.vp_y != (int16_t)rsx_y ||
+            ps3gl.rs.vp_w != (uint16_t)w || ps3gl.rs.vp_h != (uint16_t)h, PS3GL_DIRTY_VIEWPORT);
     ps3gl.rs.vp_x = (int16_t)x;
     ps3gl.rs.vp_y = (int16_t)rsx_y;
     ps3gl.rs.vp_w = (uint16_t)w;
     ps3gl.rs.vp_h = (uint16_t)h;
-    ps3gl.dirty |= PS3GL_DIRTY_VIEWPORT;
 }
 
 void glShadeModel(GLenum mode)
 {
-    ps3gl.rs.shade_model = (mode == GL_FLAT) ? GCM_SHADE_MODEL_FLAT
-                                             : GCM_SHADE_MODEL_SMOOTH;
-    ps3gl.dirty |= PS3GL_DIRTY_SHADE;
+    const uint32_t model = (mode == GL_FLAT) ? GCM_SHADE_MODEL_FLAT : GCM_SHADE_MODEL_SMOOTH;
+
+    rs_mark(ps3gl.rs.shade_model != model, PS3GL_DIRTY_SHADE);
+    ps3gl.rs.shade_model = model;
 }
 
 void glPolygonOffset(GLfloat factor, GLfloat units)
 {
+    rs_mark(ps3gl.rs.polyoffset_factor != factor || ps3gl.rs.polyoffset_units != units, PS3GL_DIRTY_POLYOFFSET);
     ps3gl.rs.polyoffset_factor = factor;
     ps3gl.rs.polyoffset_units  = units;
-    ps3gl.dirty |= PS3GL_DIRTY_POLYOFFSET;
 }
 
 void glPolygonMode(GLenum face, GLenum mode)
@@ -226,24 +252,30 @@ void glPolygonMode(GLenum face, GLenum mode)
 
 void glStencilFunc(GLenum func, GLint ref, GLuint mask)
 {
-    ps3gl.rs.stencil_func = gl_to_gcm_cmpfunc(func);
+    const uint32_t f = gl_to_gcm_cmpfunc(func);
+
+    rs_mark(ps3gl.rs.stencil_func != f || ps3gl.rs.stencil_ref != (uint32_t)ref || ps3gl.rs.stencil_mask != mask,
+            PS3GL_DIRTY_STENCIL);
+    ps3gl.rs.stencil_func = f;
     ps3gl.rs.stencil_ref  = (uint32_t)ref;
     ps3gl.rs.stencil_mask = mask;
-    ps3gl.dirty |= PS3GL_DIRTY_STENCIL;
 }
 
 void glStencilMask(GLuint mask)
 {
+    rs_mark(ps3gl.rs.stencil_writemask != mask, PS3GL_DIRTY_STENCIL);
     ps3gl.rs.stencil_writemask = mask;
-    ps3gl.dirty |= PS3GL_DIRTY_STENCIL;
 }
 
 void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass)
 {
-    ps3gl.rs.stencil_fail  = gl_to_gcm_stencilop(fail);
-    ps3gl.rs.stencil_zfail = gl_to_gcm_stencilop(zfail);
-    ps3gl.rs.stencil_zpass = gl_to_gcm_stencilop(zpass);
-    ps3gl.dirty |= PS3GL_DIRTY_STENCIL;
+    const uint32_t f = gl_to_gcm_stencilop(fail), zf = gl_to_gcm_stencilop(zfail), zp = gl_to_gcm_stencilop(zpass);
+
+    rs_mark(ps3gl.rs.stencil_fail != f || ps3gl.rs.stencil_zfail != zf || ps3gl.rs.stencil_zpass != zp,
+            PS3GL_DIRTY_STENCIL);
+    ps3gl.rs.stencil_fail  = f;
+    ps3gl.rs.stencil_zfail = zf;
+    ps3gl.rs.stencil_zpass = zp;
 }
 
 void glLineWidth(GLfloat width)  { (void)width; }
@@ -286,9 +318,8 @@ void glClearStencil(GLint s)
 
 void glClear(GLbitfield mask)
 {
-    /* A real FIFO write -- a pending deferred GL_POLYGON batch (ps3gl_vertices.c)
-     * must not be reordered across it either way (survive an erase it shouldn't,
-     * or get wiped along with it). */
+    /* A real FIFO write: a pending GL_POLYGON batch (ps3gl_vertices.c) goes out first, or the clear and the batch
+     * swap their order. */
     ps3gl_flush_polygon_batch();
 
     gcmContextData *ctx = ps3gl_get_ctx();
@@ -332,10 +363,8 @@ const GLubyte *glGetString(GLenum name)
     case GL_VENDOR:     return (const GLubyte *)"Sony";
     case GL_RENDERER:   return (const GLubyte *)"RSX Reality Synthesizer";
     case GL_VERSION:    return (const GLubyte *)"1.1 PSL1GHT";
-    /* Only extensions ps3gl really implements. GL_ARB_vertex_buffer_object is
-     * backed by RSX-local memory (ps3gl_glapi.c) and consumed by the
-     * glDrawElements path in ps3gl_draw.c -- ref_gl's GL_CheckExtension greps
-     * this string, so adding a name here is what turns that path on. */
+    /* Only what ps3gl implements. ref_gl greps this string: GL_ARB_vertex_buffer_object turns on its VBO path
+     * (ps3gl_glapi.c and the glDrawElements path of ps3gl_draw.c). */
     case GL_EXTENSIONS: return (const GLubyte *)"GL_ARB_multitexture GL_ARB_vertex_buffer_object";
     default:            return (const GLubyte *)"";
     }
@@ -363,14 +392,8 @@ void glGetBooleanv(GLenum pname, GLboolean *params)
     }
 }
 
-/* Diagnostic: dump everything that decides how a draw composites.
- *
- * The lightmap passes in ref_gl set blend + texenv + vertex color from three
- * different places and never read any of it back, so a wrong composite has no
- * observable cause from the ref_gl side alone. fp_key is the important field:
- * ps3gl_shader_key() picks MODULATE2 (tex0*tex1, vertex color DISCARDED)
- * whenever both TMUs happen to be enabled and bound, regardless of the texenv
- * that was requested. */
+/* Diagnostic: everything that decides how a draw composites. fp_key matters most: with both TMUs enabled and
+ * bound, ps3gl_shader_key() picks MODULATE2 (tex0 * tex1, no vertex colour) whatever texenv was asked for. */
 void ps3gl_log_draw_state(const char *tag)
 {
     ps3gl_log("[ps3gl] %s: fp_key=%d tmu0(en=%d tex=%d) tmu1(en=%d tex=%d) "

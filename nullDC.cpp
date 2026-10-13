@@ -26,6 +26,7 @@ extern "C" int get_audio_buffers_preset();
 // Defined in ps3_presets.cpp — menu preset selecting the SH4 core
 // back-end (0=Interpreter, 1=Dynarec, default).
 extern "C" int get_dynarec_preset();
+extern "C" int get_flash_defaults_preset();
 
 // ---- ELF boot state ----
 // Set by main___() for a .elf; consumed by RunDC() after Reset() so the entry point wins over the BIOS vector.
@@ -132,14 +133,20 @@ int main___(int argc,char* argv[])
 	temp_path=GetEmuPath(_T("data/dc_flash.bin"));
 	printf("[nullDC] checking flash: %s\n", temp_path);
 	fr=fopen(temp_path,"r");
-	if (!fr)
+	// P85: with Flash Defaults at FLYCAST, LoadBiosFiles builds a flash when no file loads.
+	if (!fr && !get_flash_defaults_preset())
 	{
 		msgboxf(_T("Unable to find flash -- exiting\n%s"),MBX_ICONERROR,temp_path);
 		rv=-6;
 		goto cleanup;
 	}
-	fclose(fr);
-	printf("[nullDC] flash found OK\n");
+	if (fr)
+	{
+		fclose(fr);
+		printf("[nullDC] flash found OK\n");
+	}
+	else
+		printf("[nullDC] no dc_flash.bin, Flash Defaults is FLYCAST\n");
 	free(temp_path);
 
 	printf("[nullDC] Loading plugins!\n");

@@ -1774,6 +1774,7 @@ struct DrawOpts
 	u8 clip;           // P10: 0 = no user clip, 1 = inside, 2 = + outside; 0 when the lists carry no rects
 	bool tr_vol;       // P27: the lists hold the translucent volume list
 	u8 tri_sort;       // 3k: 0 = sort per strip, 1 = per triangle with no depth write, 2 = + depth write, 3 = + opaque depth
+	u8 first_pass;     // bundle 14, + opaque depth's first pass: 1 = no run that writes no depth, 2 = also in game order
 };
 static DrawOpts s_do;
 // The pass in draw (0 with one pass), its sort mode, and P10's TR depth pass.
@@ -1786,6 +1787,8 @@ enum { TRI_NONE, TRI_NODEPTH, TRI_GAME, TRI_OPAQUE };
 #define TRI_OPAQUE_REF 240
 static u32 s_tri_mode;
 static u32 s_stat_tris;
+// Bundle 14, the first pass per stats window: its runs, and those of them that write no depth.
+static u32 s_stat_fp_runs, s_stat_fp_nodepth;
 
 // + OPAQUE DEPTH: 2 = the polygon hides what is behind it at any alpha (ONE, ZERO), 1 = at full alpha (SRC_ALPHA,
 // INV_SRC_ALPHA), 0 = never (an additive glow adds to what is behind it; Rayman 2 has such quads with no texture alpha).
@@ -1794,6 +1797,13 @@ static inline u32 tri_covers(const DcParam& p)
 	if (p.tsp.SrcInstr == 1 && p.tsp.DstInstr == 0)
 		return 2;
 	return p.tsp.SrcInstr == 4 && p.tsp.DstInstr == 5;
+}
+
+// The first pass of + OPAQUE DEPTH draws a run that can hide something. Bundle 14 TR First Pass (Flycast's depth
+// pass): and that writes depth; a run it does not draw is not applied either.
+static inline bool tri_first_draws(const DcParam& p)
+{
+	return tri_covers(p) && !(s_do.first_pass && p.isp.ZWriteDis);
 }
 // P25 FIRST VERTEX: vertices the colour attribute of the next draw starts later (0 or 2).
 static u32 s_flat_shift;
@@ -2453,35 +2463,44 @@ static void tri_sort(u32 n)
 	}
 }
 
-// The sorted triangles from vertex base on, in runs of one state (the strip merge's key). emit writes the corners:
-// a strip's odd triangles and the other cull direction of a run each swap the first two, so the winding stays.
-static void tri_runs(u32 n, u32 base, bool emit)
+// The triangles of s_tri from vertex base on, in runs of one state (the merge key). emit writes the corners: an odd
+// triangle and the other cull direction of a run each swap the first two. own: only the runs the pass draws.
+static void tri_runs(u32 n, u32 base, bool emit, bool own)
 {
 	const DcParam* rp = 0;
 	const u32* offs = 0;
-	u32 run_first = 0, run_cull = 0, alpha_or = 0;
+	u32 run_first = 0, run_cull = 0, alpha_or = 0, run_vb = base;
+	bool draws = true;
 	for (u32 t = 0; t <= n; t++)
 	{
 		const DcParam* p = t < n ? &s_rl.param[s_tri[t].id >> 17] : 0;
 		if (!p || !rp || !strip_equivalent(*p, *rp) || (t - run_first) * 3 + 3 > RUN_MAX_VTX)
 		{
-			// The first pass of + OPAQUE DEPTH draws only the runs that can hide something.
-			if (t != run_first && (s_tri_mode != TRI_OPAQUE || tri_covers(*rp)))
+			if (t != run_first && draws)
 			{
 				const u64 t0 = PERF_TICKS();
-				draw_vb(GL_TRIANGLES, (u32)sizeof(ps3gl_vertex_t), base + 3 * run_first, 3 * (t - run_first));
+				draw_vb(GL_TRIANGLES, (u32)sizeof(ps3gl_vertex_t), run_vb, 3 * (t - run_first));
 				s_dt[DT_GLEND] += PERF_TICKS() - t0;
 				s_stat_draws[ListType_Translucent]++;
 			}
 			if (!p)
 				break;
-			alpha_or = apply_param(*p, ListType_Translucent);
+			// The first pass of + OPAQUE DEPTH draws only the runs that can hide something.
+			draws = s_tri_mode != TRI_OPAQUE || tri_first_draws(*p);
+			if (s_tri_mode == TRI_OPAQUE)
+			{
+				s_stat_fp_runs++;
+				s_stat_fp_nodepth += !tri_covers(*p) || p->isp.ZWriteDis;
+			}
+			// TR First Pass: a run that is not drawn has no state to apply; alpha_rule gives its vertex alpha.
+			alpha_or = draws || !s_do.first_pass ? apply_param(*p, ListType_Translucent) : alpha_rule(*p);
 			rp = p;
 			run_first = t;
 			run_cull = eff_cull(*p);
 			offs = run_offs(*p);
+			run_vb = own ? s_vb_used : base + 3 * t;
 		}
-		if (!emit)
+		if (!emit || (own && !draws))
 			continue;
 		const u32 c = s_tri[t].id & 0xFFFF, cull = eff_cull(*p);
 		const u32 swap = ((s_tri[t].id >> 16) & 1) ^ (u32)(cull >= 2 && cull != run_cull);
@@ -2491,18 +2510,46 @@ static void tri_runs(u32 n, u32 base, bool emit)
 	}
 }
 
+static inline u32 vb_spare();
+
+// Bundle 14 TR First Pass GAME ORDER: the first pass writes its own corners, so n triangles take up to 6 n vertices.
+// When the scene's block is too short, the rest of the scene goes to a fresh block. False = the sorted first pass.
+static bool tri_game_room(u32 n)
+{
+	const u32 room = s_vb_cap - s_vb_used;
+	if (6 * n <= room)
+		return true;
+	// No room for the triangles once: the caller cuts them, as before.
+	if (3 * n > room)
+		return false;
+	const u32 cap = room + 3 * n;
+	u32 off;
+	ps3gl_vertex_t* const vb = ps3gl_vring_alloc((int)(cap + vb_spare()), &off);
+	if (!vb)
+		return false;
+	s_vb = vb;
+	s_vb_off = off;
+	s_vb_cap = cap;
+	s_vb_used = 0;
+	return true;
+}
+
 // 3k: the autosorted translucent list of the pass, far to near. ON draws it once with no depth write (Flycast).
 // + DEPTH WRITE keeps the game's depth write. + OPAQUE DEPTH first writes the depth of the near-opaque texels alone.
 static void draw_tr_tris()
 {
 	const u64 t_sort = PERF_TICKS();
 	u32 n = tri_collect();
-	tri_sort(n);
+	// The depth the first pass leaves does not depend on its draw order: GAME ORDER sends it before the sort, in
+	// submission order, where its runs are as long as the merged strips.
+	const bool game = s_do.tri_sort == 3 && s_do.first_pass == 2 && tri_game_room(n);
+	if (!game)
+		tri_sort(n);
 	s_dt[DT_SORT] += PERF_TICKS() - t_sort;
 	if (n > (s_vb_cap - s_vb_used) / 3)
 		n = (s_vb_cap - s_vb_used) / 3;
 	s_stat_tris += n;
-	const u32 base = s_vb_used;
+	u32 base = s_vb_used;
 	reset_param_cache();
 	if (s_do.tri_sort == 3)
 	{
@@ -2510,17 +2557,24 @@ static void draw_tr_tris()
 		s_tri_mode = TRI_OPAQUE;
 		glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 		glAlphaFunc(GL_GEQUAL, TRI_OPAQUE_REF / 255.0f);
-		tri_runs(n, base, true);
+		tri_runs(n, base, true, game);
+		if (game)
+		{
+			const u64 t_late = PERF_TICKS();
+			tri_sort(n);
+			s_dt[DT_SORT] += PERF_TICKS() - t_late;
+			base = s_vb_used;
+		}
 		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 		glAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
 		s_tri_mode = TRI_NODEPTH;
-		tri_runs(n, base, false);
+		tri_runs(n, base, game, false);
 	}
 	else
 	{
 		s_tri_mode = s_do.tri_sort == 2 ? TRI_GAME : TRI_NODEPTH;
-		tri_runs(n, base, true);
+		tri_runs(n, base, true, false);
 	}
 	s_tri_mode = TRI_NONE;
 	reset_param_cache();
@@ -2925,9 +2979,23 @@ struct ListDiag
 	u32 flat, sprcull, clip_in, clip_out, blend;
 	// 3a: strips per FogCtrl (table, vertex, none, table as the base colour), and those the vertex fog acts on.
 	u32 fog[4], fogv;
+	// Bundle 14 (P73's counter): state changes from strip to strip, by the merge key and by the bits the draw reads.
+	u32 runs, runs_read;
 };
 static ListDiag s_diag[3];
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
+
+// strip_equivalent without the bits no draw reads: PCW Volume, Gouraud (no Flat Shading), Offset (no vertex fog); a
+// sorted or PT list's DepthMode; TSP MipMapD, SuperSample, ColorClamp, Src/DstSelect, FogCtrl (no Fog), FilterMode 1-3.
+static bool strip_read_equivalent(const DcParam& a, const DcParam& b, u32 list)
+{
+	const u32 pcw = s_key_pcw & ~(0x40u | (s_do.flat ? 0u : 0x02u) | (s_fog >= 2 ? 0u : 0x04u));
+	const bool own_depth = list == ListType_Opaque || (list == ListType_Translucent && !g_rr.autosort);
+	const u32 isp = own_depth ? s_key_isp : s_key_isp & ~0xE0000000u;
+	const u32 tsp = ~(0xF00u | 0x1000u | 0x6000u | 0x200000u | 0x1000000u | 0x2000000u | (s_fog ? 0u : 0xC00000u));
+	return ((a.pcw.full ^ b.pcw.full) & pcw) == 0 && ((a.isp.full ^ b.isp.full) & isp) == 0
+	    && ((a.tsp.full ^ b.tsp.full) & tsp) == 0 && !a.tsp.FilterMode == !b.tsp.FilterMode && a.tcw.full == b.tcw.full;
+}
 
 static void collect_diag()
 {
@@ -2942,6 +3010,7 @@ static void collect_diag()
 		d.amin = 256; d.amax = 0;
 		d.cmin = 256; d.cmax = 0;
 		d.bigw0 = 1e30f; d.bigw1 = 0.0f;
+		const DcParam* prev = 0;
 		for (u32 i = 0; i < s_rl.nstrip; i++)
 		{
 			const DcStrip& st = s_rl.strip[i];
@@ -2949,6 +3018,9 @@ static void collect_diag()
 				continue;
 			const DcParam& p = s_rl.param[st.param];
 			d.strips++;
+			d.runs += !prev || !strip_equivalent(p, *prev);
+			d.runs_read += !prev || !strip_read_equivalent(p, *prev, lists[L]);
+			prev = &p;
 			d.verts += st.count;
 			d.dm[p.isp.DepthMode & 7]++;
 			d.cull[p.isp.CullMode & 3]++;
@@ -3995,6 +4067,13 @@ static void rth_print_stats()
 	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
 	       s_stat_tris / r);
 	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
+	// Bundle 14: the rows; + OPAQUE DEPTH's first-pass runs per render and those that write no depth; the last
+	// render's state changes per list, by the merge key > by the bits the draw reads (P73's counter).
+	printf("[cost] bind=%d compare=%d first_pass=%d | fp_runs=%u nodepth=%u | key op=%u>%u pt=%u>%u tr=%u>%u\n",
+	       g_tex_bind_table_preset, g_gl_compare_preset, g_tr_first_pass_preset, s_stat_fp_runs / r,
+	       s_stat_fp_nodepth / r, s_diag[0].runs, s_diag[0].runs_read, s_diag[1].runs, s_diag[1].runs_read,
+	       s_diag[2].runs, s_diag[2].runs_read);
+	s_stat_fp_runs = s_stat_fp_nodepth = 0;
 	// 3a: the Fog level, renders sent to the PPU replay for their vertex fog, table uploads, the last render's registers.
 	if (s_fog)
 		printf("[fog] level=%u ppu=%u uploads=%u col_ram=%06X col_vert=%06X density=%04X table=%04X %04X .. %04X %04X\n",
@@ -4239,6 +4318,7 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	s_do.flat = (u8)g_flat_shade_preset;
 	s_do.passes = (u8)g_list_passes_preset;
 	s_do.tri_sort = (u8)g_tr_tri_sort_preset;
+	s_do.first_pass = (u8)g_tr_first_pass_preset;
 	s_mo_sprite = g_sprite_cull_preset != 0;
 	// S3 skips the replay; a late or wrong fence replays from raw_decoded, which S3 never moves.
 	bool spe = fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end);
@@ -4283,6 +4363,8 @@ static void rth_job_draw(int type, u64 hold)
 {
 	double t0 = os_GetSeconds();
 	double end_dt = 0.0, held = 0.0;
+	// Bundle 14: ps3gl's state path for this job's RSX calls (both rows are live).
+	ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0));
 	if (type == JOB_PRESENT)
 	{
 		REND_PHASE(PH_PRESENT);

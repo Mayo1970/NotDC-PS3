@@ -23,6 +23,8 @@ typedef struct
 	float cx0, cy0, cw, ch;
 	// The presets: the draw rules of bundle 4, and the paths.
 	uint32_t pt_depth, tr_nodepth, pt_blend, sprite_cull, flat, passes, clip_level, tri_sort;
+	// Bundle 14 TR First Pass: 1 = no depth-only run that writes no depth, 2 = also in submission order.
+	uint32_t first_pass;
 	uint32_t merge, vertex_arrays, depth_float;
 } R4Scene;
 
@@ -44,9 +46,12 @@ typedef struct
 #ifdef __cplusplus
 extern "C" {
 #endif
-// Runs draw_scene; the calls stay valid until the build's next run. vb: the vertex block's words (9 per vertex).
+// Runs draw_scene; the calls stay valid until the build's next run. vb: the words of the scene's vertex blocks, one
+// after the other (9 per vertex, a spare vertex between two blocks); a DRAW's first counts from the first block.
 uint32_t r4_new_run(const R4Scene* s, const R4Call** calls, const uint32_t** vb, uint32_t* vb_used);
 uint32_t r4_ref_run(const R4Scene* s, const R4Call** calls, const uint32_t** vb, uint32_t* vb_used);
+// The file of before bundle 14: it has every row but TR First Pass.
+uint32_t r4_old_run(const R4Scene* s, const R4Call** calls, const uint32_t** vb, uint32_t* vb_used);
 // The x of every vertex the build sent through glVertex3f in GL_TRIANGLES (the volume triangles), in order.
 uint32_t r4_new_tris(const float** x);
 #ifdef __cplusplus

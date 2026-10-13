@@ -11,10 +11,8 @@ extern uint32_t ps3gl_frame_fallback_verts;
 
 /* GL vertex array functions */
 
-/* Each *Pointer call captures the buffer bound at that moment, per GL's own
- * rule: with a buffer bound, `ptr` is a byte offset INTO that buffer, not an
- * address -- and it is legal (ref_gl does it) for one draw to mix a
- * buffer-backed array with a client-memory one. */
+/* Each *Pointer call keeps the buffer bound at that moment (GL's rule): with a buffer, `ptr` is a byte offset
+ * into it. One draw can mix a buffer-backed array with a client-memory one (ref_gl does). */
 void glVertexPointer(GLint size, GLenum type, GLsizei stride,
                          const void *ptr)
 {
@@ -63,9 +61,8 @@ void glDisableClientState(GLenum cap)
     }
 }
 
-/* An array with a buffer bound is active even at byte offset 0 -- which is
- * exactly ref_gl's world-geometry case (offsetof(vbovertex_t,pos) == 0), so
- * the plain `ptr != NULL` test alone would silently draw nothing. */
+/* A buffer-backed array is active at byte offset 0 too (ref_gl's world geometry: offsetof(vbovertex_t, pos) is
+ * 0), so `ptr != NULL` alone would draw nothing. */
 static int ps3gl_array_active(const ps3gl_array_ptr_t *a)
 {
     return a->buffer != 0 || a->ptr != NULL;
@@ -90,20 +87,8 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count)
     (void)mode; (void)first; (void)count;
 }
 
-/* ---------------------------------------------------------------- *
- * Buffer-object draw path (ref_gl's r_vbo world geometry)
- *
- * Split from the legacy path below rather than folded into it, on purpose:
- * the legacy path's fallback CPU-interleaves every vertex by dereferencing
- * va_*.ptr, and with a buffer bound that "pointer" is a byte offset into
- * GDDR3 -- dereferencing it would read a wild address, and even a corrected
- * version would be a PPE read of video memory (~16 MB/s, the platform's
- * single worst access pattern). So when any array is buffer-backed, nothing
- * here may touch vertex data on the CPU: buffer-backed arrays bind straight
- * from RSX memory, and a client-memory array mixed into the same draw
- * (ref_gl does this for dlight texcoords) is staged into the vertex ring,
- * never merged with the VBO.
- * ---------------------------------------------------------------- */
+/* Buffer-object draw path (ref_gl's r_vbo world geometry). With a buffer bound, va_*.ptr is an offset into GDDR3:
+ * no CPU read of it. Buffer arrays bind from RSX memory; a client array of the same draw is staged in the vring. */
 
 enum { PS3GL_ATTR_POS = 0, PS3GL_ATTR_TC0, PS3GL_ATTR_TC1, PS3GL_ATTR_COL, PS3GL_ATTR_COUNT };
 
@@ -133,12 +118,8 @@ static int ps3gl_index_range(const void *indices, GLsizei count, int idx32,
     return lo <= hi;
 }
 
-/* A stride-0 attribute makes every vertex fetch the same element -- the way
- * to feed a constant down an attribute the vertex program always reads
- * (q3_vp.vcg consumes COLOR0 and both texcoords unconditionally) without
- * materializing one copy per vertex. Leaving the attribute unbound instead
- * would let the previous draw's binding stand, which is stale memory at a
- * stale stride. */
+/* Stride 0 makes every vertex fetch one element: a constant for an attribute the vertex program always reads
+ * (q3_vp.vcg: COLOR0, both texcoords). Left unbound, the last draw's stale binding would stand. */
 static int ps3gl_bind_constant_attrib(gcmContextData *ctx, uint8_t attr,
                                       const void *value, uint32_t bytes,
                                       uint8_t elems, uint8_t dtype)
@@ -165,10 +146,8 @@ static void ps3gl_draw_elements_vbo(gcmContextData *ctx, GLenum mode, GLsizei co
     };
     const int idx32 = (type == GL_UNSIGNED_INT);
 
-    /* Indices address the buffer absolutely. That is already what the RSX
-     * wants for a buffer-backed attribute, so the common all-VBO draw needs
-     * no index scan at all -- the scan only exists to size the staging copy
-     * of a client-memory array, and to rebase indices onto it. */
+    /* Indices address the buffer absolutely, as the RSX wants for a buffer-backed attribute. The scan only sizes
+     * the staging copy of a client-memory array and rebases the indices onto it. */
     int need_scan = idx32;
     for (int i = 0; i < PS3GL_ATTR_COUNT; i++)
         if (ps3gl_array_active(arrays[i]) && arrays[i]->buffer == 0)
@@ -231,9 +210,8 @@ static void ps3gl_draw_elements_vbo(gcmContextData *ctx, GLenum mode, GLsizei co
             ps3gl_buffer_t *b = ps3gl_buffer_lookup(a->buffer);
             uint32_t base = (uint32_t)(uintptr_t)a->ptr;
 
-            /* rsxBindVertexArrayAttrib's stride is a u8 -- a wider one cannot
-             * be expressed at all, and silently binding a wrong stride would
-             * wedge RSX vertex fetch. ref_gl's vbovertex_t is 28 bytes. */
+            /* rsxBindVertexArrayAttrib's stride is a u8; a wrong stride would wedge the RSX vertex fetch.
+             * ref_gl's vbovertex_t is 28 bytes. */
             if (!b || !b->data[b->current] || src_stride > 255 || base >= b->size) {
                 static int warned = 0;
                 if (!warned) {
@@ -269,9 +247,8 @@ static void ps3gl_draw_elements_vbo(gcmContextData *ctx, GLenum mode, GLsizei co
         }
     }
 
-    /* Indices go to RSX memory rather than inline into the FIFO: a world
-     * texture chain can be tens of thousands of indices, and inlining those
-     * would push hundreds of KB through the command buffer every frame. */
+    /* Indices go to RSX memory, not inline into the FIFO: a world texture chain has tens of thousands of them,
+     * hundreds of KB of command buffer per frame. */
     uint32_t idx_offset;
     uint16_t *dst = (uint16_t *)ps3gl_vring_alloc_raw((uint32_t)count * 2u, &idx_offset);
     if (!dst) return;
@@ -315,22 +292,19 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
     gcmContextData *ctx = ps3gl_get_ctx();
     if (!ctx) return;
 
-    /* Any buffer-backed array takes the VBO path wholesale. Everything below
-     * this point is the original client-array path, unchanged: with gl_vbo 0
-     * no buffer is ever bound, so nothing about the immediate/studio-model
-     * behaviour moves. */
+    /* PS3GL_FAST_COMPARE: every path below binds the vertex attributes its own way. */
+    ps3gl.vattr_valid = 0;
+
+    /* Any buffer-backed array takes the VBO path wholesale. Below is the client-array path: with gl_vbo 0 no
+     * buffer is ever bound, so the immediate and studio-model draws are as before. */
     if (ps3gl.va_vertex.buffer || ps3gl.va_color.buffer ||
         ps3gl.va_texcoord[0].buffer || ps3gl.va_texcoord[1].buffer) {
         ps3gl_draw_elements_vbo(ctx, mode, count, type, indices);
         return;
     }
 
-    /* Determine vertex count from glLockArraysEXT or scan indices.
-     * locked_base is the source-array offset a lock implies: indices are
-     * still absolute (e.g. a studio model's Nth mesh references vertex 500
-     * of the whole submodel), but a locked range only needs *this* mesh's
-     * own slice copied, not everything from vertex 0 up to its high-water
-     * mark -- see the fallback-copy and index-rebase below. */
+    /* Vertex count from glLockArraysEXT, or a scan of the indices. Indices stay absolute; with a lock only the
+     * slice from locked_base is copied (see the fallback copy and the index rebase below). */
     int num_verts;
     int locked = (ps3gl.va_locked && ps3gl.va_lock_count > 0);
     int locked_base = locked ? ps3gl.va_lock_first : 0;
@@ -364,14 +338,8 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
 
     const int has_z = (ps3gl.va_vertex.size >= 3);
 
-    /* Direct-bind XDR arrays to RSX, or copy to vring on failure. Hoisted
-     * out of the block below (unlike upstream) so the index-submission code
-     * after it can tell which case ran: direct-bind reads straight from the
-     * original array at absolute offsets (indices stay absolute, no rebase
-     * needed), but the vring-copy fallback below only copies this call's
-     * own `[locked_base, locked_base+num_verts)` slice into a freshly and
-     * locally 0-indexed block -- indices submitted against it must be
-     * rebased by locked_base. */
+    /* Direct-bind XDR arrays, or copy to the vring. Direct reads the original array, so indices stay absolute; the
+     * fallback copies only [locked_base, locked_base + num_verts), so its indices are rebased by locked_base. */
     int direct;
     {
         uint32_t off_pos  = 0;
@@ -388,11 +356,8 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
         if (direct) {
             ps3gl_frame_direct_binds++;
             /* Bind Q3's arrays straight from main memory — zero PPE copy. */
-            /* The component count must be the array's real one: a size-3
-             * position array bound as 4 would fetch the next attribute's
-             * first float as w. (Fewer than 4 components is fine -- the RSX
-             * fills the rest with (0,0,0,1), which is what q3_vp.vcg's
-             * mul(mvp, position) needs.) */
+            /* The array's real component count: a size-3 position bound as 4 would fetch the next attribute's
+             * first float as w. Fewer is fine: the RSX fills the rest with (0,0,0,1). */
             rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0,
                                      off_pos, vs,
                                      (uint8_t)(ps3gl.va_vertex.size >= 4 ? 4 :
@@ -415,11 +380,8 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
                                          GCM_VERTEX_DATA_TYPE_U8,
                                          GCM_LOCATION_CELL);
         } else {
-            /* Fallback: interleave-copy into RSX ring buffer. This is the
-             * expensive branch -- a scalar per-vertex gather from up to four
-             * separate client arrays. The counters distinguish "the direct path
-             * exists but never triggers" from "it triggers and is still slow",
-             * which nothing else could tell apart. */
+            /* Fallback, the expensive branch: a scalar per-vertex gather from up to four client arrays into the
+             * vring. The counters tell "direct never triggers" from "it triggers and is still slow". */
             ps3gl_frame_fallback_binds++;
             ps3gl_frame_fallback_verts += (uint32_t)num_verts;
             uint32_t vb_offset;
@@ -508,33 +470,20 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type,
     }
     int n = (count > 65536) ? 65536 : count;
 
-    /* Indices are always absolute into the original array (e.g. a studio
-     * model's Nth mesh references vertex 500 of the whole submodel). The
-     * direct-bind path above reads that same original array at absolute
-     * offsets, so its indices stay as-is. The vring-copy fallback only
-     * copied this call's own [locked_base, locked_base+num_verts) slice
-     * into a freshly, locally 0-indexed block -- indices submitted against
-     * it must be rebased by locked_base, or they'll read past the small
-     * block into whatever follows it in the vring. */
+    /* Indices are absolute into the original array, which the direct path reads. The fallback copied only the
+     * slice from locked_base into a 0-indexed block: rebase by locked_base, or they read past the block. */
     int idx_rebase = (!direct && locked) ? locked_base : 0;
 
-    /* Software clip plane: cull triangles where all 3 verts are behind plane.
-     * clip_plane_enabled is never set anywhere in ref/gl today (no glClipPlane
-     * caller exists), so this whole block is currently dead code -- rebasing
-     * is applied here too, for consistency with the path above, so it isn't
-     * a landmine if mirror/portal clipping is ever wired up later. */
+    /* Software clip plane: drops triangles with all 3 vertices behind the plane. Dead code today (nothing sets
+     * clip_plane_enabled); it rebases its indices too, as the path above. */
     if (ps3gl.clip_plane_enabled && n >= 3) {
         float nx   = ps3gl.clip_plane[0];
         float ny   = ps3gl.clip_plane[1];
         float nz   = ps3gl.clip_plane[2];
         float dist = ps3gl.clip_plane[3];
 
-        /* World-space clip test: BSP surfaces, no modelview transform needed.
-         * clip_dist is sized for the immediate-mode batch cap (PS3GL_MAX_VERTS),
-         * but num_verts and raw index values here come from a separate,
-         * unrelated path (glLockArraysEXT count or index-buffer scan) and can
-         * exceed it -- clamp the write and skip any triangle referencing an
-         * index we didn't fill in, rather than reading/writing out of bounds. */
+        /* World-space test, no modelview transform. clip_dist holds PS3GL_MAX_VERTS, but num_verts and the indices
+         * can pass it: clamp the write and skip a triangle with an index that was not filled. */
         static float clip_dist[PS3GL_MAX_VERTS];
         int clip_n = (num_verts > PS3GL_MAX_VERTS) ? PS3GL_MAX_VERTS : num_verts;
         for (int i = 0; i < clip_n; i++) {

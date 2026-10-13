@@ -11,7 +11,7 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-12)
+## 0. Resume here (updated 2026-10-13)
 
 **Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
 work is in bundles 10 to 21 now. Bundles 1-9 are closed, and the table of
@@ -20,6 +20,515 @@ has its meaning of before the re-cut: old 10 (Maple) is now 10 and 16,
 old 11 (Output stage) is 11 and 12, 13 and 15 grew, 16-21 are new.
 Nothing is built by the re-cut. Recommended order: 11, 13, 14, 10, 15,
 19, 17, 12, 16, 18, 20, then 21, then G11, then G10 with G13.**
+
+**Bundle 15 (Flash and clock) built 2026-10-13 (Matt: "We will work on
+Bundle 15 now. Prepare everything, when done, I'll tell you when to run
+and when we start the test."). HW run 1 is below; no verdict yet. Package of 09:56 on
+2026-10-13 (`build/notdc_ps3.pkg`, 1675824 bytes) = the G14 package of
+09:35 + this bundle. Built again at 10:05 (Matt: "Build."): the same
+sources and the same size, so the file's time is 10:05. The G14 package itself is kept as
+`build/notdc_ps3_g14_0935.pkg` (1673008 bytes). A new page FLASH / CLOCK
+(13 of 13) has six rows. Every row defaults to the old path (Matt named
+no default).**
+- **HW run 1, 2026-10-13 10:36 to 10:45 (Matt: "Rayman 2 is done. Seems
+  like it worked!"): Broadcast DISC, BIOS Language ENGLISH, Flash
+  Defaults FLYCAST, Console ID FLYCAST, RTC Local Time ON, Exit Flash
+  Save OFF, all from the first boot (no boot with the rows OFF).** Log:
+  `b15_hw.txt`, scratchpad of session e511e0f6 (tool `b15_read.py`
+  there). Three boots (Rayman 2, Capcom vs. SNK 2 at X30, then at X3
+  BACKWARD), no fault line. The first two exits are clean with the
+  flash saved; the third boot still ran when this was written. No
+  verdict and no default named yet.
+  - Broadcast: Rayman 2 runs at `NTSC480i59.95`, VPS 59.95, 29.98
+    renders per second (the old boots: PAL, 49.98 and 24.99), SPEED
+    median 100.00%, lowest window 97.64%. Capcom vs. SNK 2: NTSC 59.95,
+    SPEED median 100.00%. Border Down: not run yet.
+  - The `[flash]` line: `region=1 language=1 broadcast=0 (flash file: 1
+    1 1) syscfg language=1 (flash file: 1) console
+    id=800417C324AD checksum=ok version=FE user blocks=241/254`. So the
+    flash file holds USA, English and PAL: the PAL byte is verified.
+  - BIOS Language ENGLISH is the flash's own language: the row had
+    nothing to change. **BIOS Language ITALIAN, a boot with no disc
+    (Matt: "Done. It works"): the BIOS menus are in Italian.** Log
+    (`b15_hw.txt` from line 24294): `language=5 ... syscfg language=5
+    (flash file: 1)`. The boot before it, with the row at CONSOLE and
+    no disc: `language=1`, and `broadcast=1` at 50 Hz, as DISC keeps
+    the flash's byte when there is no disc. The settings block moved
+    from physical block 241 to 242 in that boot (a BIOS save): 12 are
+    left.
+  - RTC Local Time: `[rtc] PS3 time zone 60 min (rc 00000000), summer
+    time 1 (rc 00000000)`. So the summer-time value is a flag (1), not
+    minutes; the code counts 1 as one hour. `[nullDC] RTC=` is `time()`
+    + 631152000 + 7200 in the three boots: right for Italy.
+  - Console ID: the flash has an ID, and it is not the one the generator
+    makes from this boot's seed, so FLYCAST kept it. The checksum is
+    right. The machine version is FE now; its value in the file before
+    this run was not logged.
+  - Flash Defaults FLYCAST: no effect, as expected (both flash files are
+    there). Exit Flash Save: not run.
+  - Side result for bundle 21: JIT IDLE RULE X3 BACKWARD fixes the
+    Capcom vs. SNK 2 menus (item 4 of bundle 21 has the numbers).
+- The rows (`[flashcfg]` line at boot and at a menu change; cfg keys
+  Broadcast, BiosLanguage, FlashDefaults, ConsoleId, ExitFlashSave,
+  RtcLocal):
+
+  | Row | Values (first = old path) | What it does |
+  |---|---|---|
+  | Broadcast | CONSOLE / NTSC / PAL / DISC | The TV system byte of the flash (0x1a004, 0x1a0a4). DISC: NTSC when the disc lists J or U, PAL when it lists only E; a disc with no region and a boot with no disc keep the flash's byte. |
+  | BIOS Language | CONSOLE / JAPANESE / ENGLISH / GERMAN / FRENCH / SPANISH / ITALIAN | The language byte of the flash (0x1a003, 0x1a0a3) and of the BIOS settings block (syscfg byte 7). |
+  | Flash Defaults | OLD / FLYCAST | FLYCAST: with no `dc_flash.bin` and no `dc_flash_wb.bin` a flash is built (USA, English, NTSC); a new BIOS settings block is English, not Japanese. OLD: the emulator exits when `dc_flash.bin` is missing. |
+  | Console ID | OLD / FLYCAST | FLYCAST: a blank console ID (0x1a058) gets a random one in both copies; the checksum is set; the machine version is 0xFE. |
+  | Exit Flash Save | OFF / ON | The forced exit (3 s after an XMB quit that the SH4 does not answer) saves the flash first. Live. |
+  | RTC Local Time | OFF / ON | The Dreamcast clock is UTC + the XMB's time zone + its summer time. OFF: UTC, as it is today. |
+
+- Facts from the old logs (the scratchpads of the older sessions):
+  - The clock: in each of 293 old boots (2026-10-03 to 2026-10-13) the
+    `[nullDC] RTC=` line is `time()` + 631152000 with no offset. So the
+    PS3's `time()` is UTC, its C library has no time zone, and
+    `tm_isdst` is 0. The Dreamcast clock is UTC: 2 hours behind in the
+    Italian summer, 1 hour in the winter. P12's line (one day, not one
+    hour, under summer time) is fixed, but that line never runs on the
+    PS3. It needs no row.
+  - The broadcast byte: every boot starts at `PAL480i50.00` (the BIOS),
+    so the flash holds a PAL byte. The byte itself was never printed:
+    the new `[flash]` line of HW run 1 shows it.
+  - 10 of the 23 games of the old logs stay at 50 Hz in every boot, not
+    3 as P59 says: Rayman 2 (8 boots), Soul Calibur (6), Space Channel 5
+    (4), Border Down (3), Capcom vs. SNK 2 (3), Ikaruga (3), Sonic
+    Shuffle (3), Spider-Man (3), Sega Rally 2 (2), Shenmue (2). Power
+    Stone 2 is at 50 Hz in 3 of 5 boots, Rez in 2 of 3. Crazy Taxi,
+    Sonic Adventure, Sonic Adventure 2, Looney Tunes, ChuChu Rocket,
+    Quake III Arena, Phantasy Star Online, Jet Grind Radio and Ecco the
+    Dolphin switch to NTSC by themselves (a boot counts once: the logs
+    are split per `[menu] launching` line and per RTC value).
+  - Each disc image of the old logs lists the area `JUE`, and the flash
+    region is 1 (USA). So for Matt's discs DISC gives what NTSC gives.
+  - The BIOS settings block is in physical block 224 to 241 of the 254
+    of the user partition, a new one at each BIOS save. For GOALS.md
+    G11: the dial-up blocks 0x80-0xEA need about 107 free blocks, and
+    Flycast's `alloc_block` takes a block again when a newer copy of its
+    data exists. Ours has no such rule (not built here: it changes the
+    old path for a flash with no settings block).
+- The code:
+  - `dc/flash_fix.cpp` (header `dc/flash_fix.h`): `dc_flash_build()`
+    (Flycast's `Validate()` on an empty chip, then its Region 1,
+    Language 1 and Broadcast 0), `dc_flash_set_time()` (as before, with
+    the language of a new block and the row's language),
+    `dc_flash_fixup()` (the rows' factory bytes, the console ID),
+    `dc_flash_set_region()` (as before, with the DISC rule),
+    `dc_flash_report()` and `dc_flash_restore_region()`.
+    `LoadBiosFiles()` (`dc/dc.cpp`) calls them in that order.
+  - The `[flash]` line, new, at each boot with every row OFF too:
+    `[flash] region=R language=L broadcast=B (flash file: R L B) syscfg
+    language=N (flash file: N) console id=XXXXXXXXXXXX checksum=ok|bad
+    version=XX user blocks=N/254`. The first values are what the BIOS
+    and the game read. The values after "flash file" are the file's own.
+  - `dc/mem/sh4_mem.cpp`: `mem_SaveFlashForced()` for the monitor
+    thread (`ps3/ps3_main.cpp`). It saves only a flash that
+    `LoadBiosFiles()` marked as loaded (`g_flash_loaded`), and one lock
+    lets one thread write the file at a time. Log: `[flash] forced exit:
+    flash saved`.
+  - `dc/aica/aica_if.cpp` `GetRTC_now()` and `ps3/ps3_main.cpp`
+    `ps3_local_offset_seconds()`
+    (`sysUtilGetSystemParamInt(SYSUTIL_SYSTEMPARAM_ID_TIMEZONE)` and
+    `..._SUMMERTIME`). Log at each boot, with the row OFF too: `[rtc]
+    PS3 time zone N min (rc X), summer time N (rc X)`.
+  - `nullDC.cpp`: a missing `dc_flash.bin` ends the boot only at Flash
+    Defaults OLD.
+  - Byte order: none. `misc/flash_check/run.sh` fails if
+    `dc/flash_fix.cpp` holds a `(u16*)` or a `(u32*)` cast.
+- My choices, not in the plan text and not Matt's words:
+  - Row RTC Local Time. P12's one line cannot make the clock right on
+    the PS3 (the fact above), so the row takes the offset from the XMB.
+    The unit of the summer-time value is not verified (minutes are
+    assumed; a value of 1 counts as 60). The `[rtc]` line of HW run 1
+    shows the two raw values before the row is ON.
+  - No row's value reaches `dc_flash_wb.bin`, but the console ID: the
+    factory bytes and the settings block's language go back to the
+    flash's own before each save, as the region did. A language that
+    the user picks in the BIOS in the same run stays. So a row acts
+    again at each boot, and CONSOLE gives back the flash's own value.
+  - Flash Defaults holds two items of P85 in one row: the built flash
+    and the English default of a new settings block. Flycast's
+    `Validate()` runs only when no file loads: a flash that loads is
+    not repaired, and its partition 1 is not erased (Flycast erases it
+    at each boot).
+  - The new console ID comes from an own generator with the RTC as
+    seed, not from `rand()`.
+  - Exit Flash Save is a row and is live, with the lock and the
+    "loaded" flag: a forced exit before the flash loads must not write
+    an empty flash over the saved one.
+  - Not taken: Flycast's PAL-M and PAL-N values and its per-game
+    broadcast lists (a list per game); the `SaveSettings()` call at an
+    RTC write (P85's "Also" line, no effect).
+- PC checks (WSL):
+  - `misc/flash_check/run.sh`: PASS. It builds the real
+    `dc/flash_fix.cpp` and three sections cut from `sh4_mem.cpp`,
+    `aica_if.cpp` and `ps3_main.cpp`. 400 flashes with every row OFF:
+    the bytes and the log lines are those of the code of commit 977df14
+    (`ref_flash_fix.inc`). 400 flashes with random rows: the bytes are
+    those of Flycast's `fixUpDCFlash()`, written in the check in
+    Flycast's own form; after `dc_flash_restore_region()` the flash is
+    the one of a boot with Broadcast and BIOS Language at CONSOLE. Then
+    the built flash, the DISC table, the save lock, the zone and the
+    RTC (on a host with a CET zone too). 58 source line checks.
+  - `misc/flash_check/mutate.py`: 94 of 94 mutants fail `run.sh`.
+  - The older checks that name a changed file, `run.sh` only: PASS for
+    mmu_check, pad_check, rtt_check, screen_check, glpath_check,
+    timebase_check, clock_check, sysgate_check, jit8_check and
+    g2dma_check. `misc/g2dma_check/g2_check.cpp` and
+    `misc/sysgate_check/stubs.inc` have two new stubs
+    (`get_rtc_local_preset`, `ps3_local_offset_seconds`): four checks
+    link `aica_if.cpp`.
+  - Seen, not repaired (not from this bundle): one mutant text of
+    `misc/timebase_check/mutate.py` is stale since bundle 11 ("TMU Fine
+    TCNT in the live list": its line of `k_live_opts` is no longer the
+    last one).
+- Link: `.got` is 0xEAB0 of 0x10000, 0 `r2off`. 5.3 KB of the TOC are
+  left: watch it at the next large addition.
+- HW steps (UDP listener on port 18194, only when Matt says so; SH4
+  Clock 200; install `build/notdc_ps3.pkg` of 10:05):
+  1. Rows OFF, one boot of Rayman 2. Read `[flashcfg] boot:` (every
+     value 0, JitExit=1), `[rtc] PS3 time zone`, `[nullDC] RTC=` and
+     the `[flash] region=` line. Expected: broadcast=1 (PAL), VPS 50.
+  2. Broadcast NTSC. Rayman 2, then Capcom vs. SNK 2 and Border Down:
+     `NTSC480i59.95`, VPS about 60, SPEED, the menus, the sound. Soul
+     Calibur is a fourth 50 Hz game. Crazy Taxi: unchanged.
+  3. BIOS Language at a language that is not the flash's. A boot with
+     no disc shows the BIOS menus in it; the `[flash]` line shows
+     `language=` and `syscfg language=N (flash file: M)`.
+  4. RTC Local Time ON. `[nullDC] RTC=` minus `time()` minus 631152000
+     must be the zone's seconds (7200 in Italy until 2026-10-25). The
+     BIOS clock shows the local time.
+  5. Console ID FLYCAST. The `[flash]` line: `checksum=ok version=FE`,
+     and the ID of the boot before if the flash had one. No effect on
+     a game is expected.
+  6. Exit Flash Save ON with JIT Exit OFF (EMULATION page): with JIT
+     Exit OFF each XMB quit takes the forced exit. Expected: `[flash]
+     forced exit: flash saved`, then `[ps3] SH4 did not stop in 3 s,
+     forcing process exit`. Then JIT Exit ON again.
+  7. Optional (it needs two file renames on the PS3): Flash Defaults
+     FLYCAST with `dc_flash.bin` and `dc_flash_wb.bin` renamed in
+     `/dev_hdd0/data/NotDC/data/`. Expected: `[flash] no flash file:
+     built a new flash (USA, English, NTSC)` and a BIOS in English.
+     Then the two names back.
+
+**GOALS.md G14 (CHD disc images) built 2026-10-13 (Matt: "Can you add CHD
+support?"). Package of 09:35 on 2026-10-13 (`build/notdc_ps3.pkg`,
+1673008 bytes) = the package of 01:15 + the source defaults that waited +
+G14. The HW test is open.** GOALS.md G14 has the whole state (files, PC
+check, what is not done). In short:
+- `.chd` files show in the browser and open through
+  `plugs/ImgReader/chd.cpp` (chdr, LzmaDec and libFLAC's decoder in
+  `deps/`). CHD v1-v5; codecs cdlz, cdzl, cdfl, zlib and none. Out, with a
+  `[chd]` log line: zstd (`cdzs`), parent files.
+- PC check `misc/chd_check`: PASS, 49 of 49 mutants. Three real GD-ROM
+  images (Naomi, chdman v5) decode to the SHA1 of their header.
+- HW test (Matt makes the files: the PC has no chdman, and none of his
+  discs is a `.chd`): a GD-ROM `.chd` and a MIL-CD `.chd` boot and play;
+  CD-DA sounds right; loads are as with the GDI/CDI. Read `[chd] hunks`
+  (file and decode time per hunk) and `[gdr]` (fill times) in the log.
+- Open after the HW run: a read-ahead buffer, only if loads stall.
+- Link: `.got` 0xE9C0 of 0x10000, 0 `r2off`.
+- Another session edited the tree from 09:36 on (flash_fix, sh4_mem,
+  aica_if, presets, menu): its edits are NOT in the package of 09:35. A
+  copy of that package is `notdc_ps3_g14_0935.pkg` in the scratchpad of
+  session 74c76729.
+
+**Bundle 14 (Render-thread draw cost) built 2026-10-13 (Matt: "Let's work
+on bundle 14!"), HW SUCCESS 2026-10-13 (Matt: "Yes, bundle 14 is a
+success. Keep it ON.") after HW runs 1-3 with the three rows ON: Crazy
+Taxi (render busy 47.2% -> 29.2% in 9K+ vertex scenes; Matt: "Done. No
+broken geometry."), Sonic Adventure 2 ("Everything looked right.") and
+Rayman 2 ("ran fine too"). No fault in the three logs. HW run 4 (Sonic
+Adventure, named after the verdict) is clean too: render busy 18.0% ->
+12.0%. Package of 01:15
+on 2026-10-13 (`build/notdc_ps3.pkg`, 1605232 bytes) = commit 977df14 +
+this bundle. **The three rows of the new DRAW COST page are default ON
+in source since 2026-10-13 (Tex Bind Table ON, GL State Compare ON, TR
+First Pass + GAME ORDER), not packaged: the package of 01:15 has them
+OFF, and Matt's settings file has them ON.** No value changes the
+picture. GOALS.md says that G14 (CHD disc images) starts after this
+bundle (Matt, 2026-10-13).**
+- Left after the verdict, nothing asked for yet:
+  - No pause (render to texture) ran with the rows ON in the three logs.
+  - The texture lifetime: 60-68% of the decodes in Crazy Taxi and Sonic
+    Adventure 2 are textures that the 180-frame rule freed (the
+    `[texlife]` counter). A longer life saves them. Not built.
+  - The merge key mask: 13-20% fewer opaque draws in Crazy Taxi, none in
+    Sonic Adventure 2 and Rayman 2 (the `[cost] key` counter). Not built.
+  - The index list: not built.
+  - One Sonic Adventure 2 boot with the three rows OFF on this package:
+    it says if the lighter render thread gives the SH4 thread time (HW
+    run 2 has no such half).
+- **HW run 1, 2026-10-13 01:51 to 01:59: Crazy Taxi with Tex Bind Table
+  ON, GL State Compare ON and TR First Pass + GAME ORDER from the boot.**
+  Log: `sa_anim1.txt` of session d13d658e (its listener still holds the
+  port), lines 393736-403210; the cut is `b14_run1.txt` in the scratchpad
+  of session 6e520dca. `[costcfg] boot: TexBindTable=1 GlCompare=1
+  TrFirstPass=2 TrTriSort=3`. The other settings are those of the
+  baseline boot (the table further down). 14995 renders, 0 dropped, no
+  fault line, a clean exit to the XMB. Two in-game menu opens, no row
+  changed.
+  - Against the baseline, per vertex band (windows of 5 s):
+
+    | Scene | busy | param (tex, of it gl) | glEnd | sort | vtx+other | Draws per render (OP + TR) | us per draw / per bind | SPEED mean / min |
+    |---|---|---|---|---|---|---|---|---|
+    | 9K+ vertices: 28 windows (10.6K) | 29.2% (47.2) | 10.2 (6.3, 2.9) | 6.0 (13.7) | 3.6 | 6.5 (5.2) | 314 + 615 (309 + 1033) | 2.91 / 0.53 (4.42 / 1.47) | 99.7% / 96.1% (99.1 / 88.0) |
+    | 11-13K vertices: 3 windows | 30.3% (51.7) | 10.9 (6.7, 3.2) | 6.4 (14.8) | 3.8 | 6.7 (5.7) | 402 + 598 (337 + 1124) | 2.87 / 0.53 (4.47 / 1.51) | 100.1% / 100.0% (98.2 / 88.0) |
+    | 13K+ vertices: 2 windows (15.8K) | 33.5% (49.0) | 11.7 (7.2, 3.4) | 6.9 (14.2) | 4.0 | 7.0 (5.3) | 481 + 641 (467 + 972) | 2.82 / 0.53 (4.43 / 1.49) | 98.1% / 96.1% (96.8 / 94.7) |
+
+  - Per row (9K+ band). The three rows were ON together, so each row is
+    read from its own number:
+    - Tex Bind Table (with the parameter compare): a bind costs 0.53 us,
+      not 1.47. `gl` is 2.9 points, not 11.7; at the baseline's bind
+      count it would be 4.2.
+    - GL State Compare: `glEnd` per draw is 1.08 us, not 1.71.
+    - TR First Pass + GAME ORDER: 615 TR draws per render, not 1033, for
+      the same sorted triangles (1169, baseline 1204). The estimate was
+      750. Its cost is in `vtx+other`: 6.5 points, not 5.2 (the first
+      pass's own corners).
+    - The sort (3.6) and the volumes (1.3) are as before.
+  - SPEED: the slow windows of the baseline (88.0% at 11.6K vertices) are
+    not in this run; the lowest window is 96.1% at 15.8K. The sample is
+    small (3 and 2 windows in the two high bands), and the route is not
+    the same.
+  - The counters:
+    - `[texlife]`: 3939 textures freed for their age, 2739 came back,
+      2733 of them with the same texels. The run had 4047 decodes, so 68%
+      of the decodes are textures that the 180-frame rule freed (180
+      frames are 3 s at Crazy Taxi's 60 renders per second). At most 335
+      textures live. A longer life saves these decodes (0.7 points of
+      busy, and their time on the SPU).
+    - `[cost] key`: opaque state changes per render by the key of today >
+      by the bits a draw reads: 304>252, 225>193, 337>281, 531>451,
+      157>129 (14 samples read, 13-20% less). TR: 105>95, 111>106,
+      122>105 (2-14% less, and the sorted triangles do not run in this
+      order). So a key mask saves about 50 of the 930 draws per render.
+      The sample is the one of `[rendz]`: some windows print the sample
+      of the window before.
+    - `nodepth` is 0 or 1 of 80-170 first-pass runs: SKIP alone has
+      nothing to leave out in Crazy Taxi, as P73 says.
+  - Not in this run: a pause (`rtt=0/0` in each window, so no render to
+    texture ran with the rows ON); a second game for TR First Pass (Sonic
+    Adventure or Rayman 2).
+- **HW run 4, 2026-10-13 02:11 to 02:17: Sonic Adventure with the three
+  rows ON, JIT IDLE RULE X3 BACKWARD, Screen Format 4:3** (Matt: "I also
+  did a Sonic Adventure (not 2) run.", then "The run looked fine"). Log:
+  `sa_anim1.txt` lines 413705-422419; the cut is `b14_run4.txt`
+  (scratchpad of session 6e520dca, the boot is its line 301). 8209
+  renders, 0 dropped, no fault line, a clean exit, no menu open, no
+  pause. Baseline: the Sonic Adventure boot of bundle 13's HW run 2
+  (`b13_run2.txt` from line 21543; the same code with the rows OFF, X3
+  BACKWARD; it had 16:9 WIDE).
+
+  | Scene | busy: run 4 (baseline) | bind `gl` | `glEnd` | TR draws per render | us per draw / per bind | SPEED mean / min |
+  |---|---|---|---|---|---|---|
+  | 2K+ vertices: 44 windows (10.6K) | 12.0% (18.0) | 1.0 (4.5) | 2.0 (4.7) | 413 (714) | 2.69 / 0.49 (4.41 / 1.59) | 100.1% / 98.3% (99.7 / 93.6) |
+  | 8-12K: 19 | 11.2% (16.9) | 0.9 (4.0) | 1.8 (4.5) | 377 (677) | 2.77 / 0.49 (4.28 / 1.45) | 99.8% / 98.3% (100.1 / 98.0) |
+  | 12-16K: 10 | 13.0% (20.7) | 1.1 (5.3) | 2.2 (5.3) | 427 (786) | 2.71 / 0.49 (4.53 / 1.66) | 100.2% / 99.1% (99.4 / 98.1) |
+  | 16K+: 4 (18.0K) | 20.5% (35.3) | 1.6 (11.6) | 3.4 (8.9) | 786 (1377) | 2.66 / 0.48 (5.22 / 2.24) | 100.8% / 99.9% (99.4 / 98.3) |
+
+  - The game is at full speed in both boots, so the gain is render-thread
+    time only: 6 points on average, 15 points in the 16K+ scenes. The TR
+    draws go from 714 to 413 per render for the same sorted triangles
+    (1587, baseline 1567).
+  - TR First Pass: 52 first-pass runs per render, 4.6 of them write no
+    depth. `[cost] key`: no gain (294>294, 365>365). `[texlife]`: 1905
+    freed for their age, 910 came back, 901 with the same texels, of 2276
+    decodes (40%).
+- **HW run 3, 2026-10-13 02:08 to 02:10: Rayman 2 with the three rows ON**
+  (Matt: "Also Rayman 2 ran fine too."). Log: `sa_anim1.txt` lines
+  410495-413404; the cut is `b14_run3.txt` (scratchpad of session
+  6e520dca, the boot is its line 345). A short run: 2088 renders, 0
+  dropped, no fault line, a clean exit. Render busy 4-7% (2-8K vertices);
+  a bind 0.42-0.51 us. TR First Pass acts: 34-82 first-pass runs per
+  render, 0-12 of them write no depth; 143-190 TR draws per render.
+  `[cost] key`: no gain (77>77, 70>70). `[texlife]`: 277 freed, 56 back.
+  One menu change in the run: Screen Format 16:9 WIDE -> 4:3. No row of
+  this bundle changed. No pause.
+  - Side fact for bundle 19: the disc is a 3-track GDI set (`GDI : 3
+    tracks`), so this is a GDI boot on hardware. Side fact for bundle 15:
+    the US disc runs at `PAL480i50.00` (the broadcast byte).
+- **HW run 2, 2026-10-13 02:00 to 02:07: Sonic Adventure 2 (Europe) with
+  the three rows ON, JIT IDLE RULE X3 BACKWARD** (Matt: "Mind if I try
+  Sonic Adventure 2? That game also was bottlenecked by rendering.", then
+  "Done", then "Everything looked right."). Log: `sa_anim1.txt` lines
+  403688-410150; the cut is `b14_run2.txt` (scratchpad of session
+  6e520dca, the boot is its line 478). 10276 renders, 0 dropped, no fault
+  line, a clean exit. No menu open: the boot has no half with the rows
+  OFF.
+  - So the baseline is the two old boots of 2026-10-12 (`b8_hash_sa2.txt`
+    of 02:01 and `b8_sqcopy_sa2.txt` of 02:45, session 1c8776dd): the same
+    disc image, X3 BACKWARD, TR Triangle Sort + OPAQUE DEPTH. Not the
+    same: an older package (before bundles 9-13), 4:3, no Fog row, no FPS
+    overlay, JIT PR MOVES and JIT IDLE HASH ON, and JIT SQ COPY ON in the
+    second one. The compare is a rough one.
+
+    | Scene | busy: run 2 / old / old + SQ COPY | us per draw / per bind: run 2 (old) | SPEED mean (min): run 2 | old | old + SQ COPY |
+    |---|---|---|---|---|---|
+    | 10-14K vertices | 21.1% / 28.3 / 26.1 | 3.38 / 0.61 (4.81 / 1.43) | 99.8% (98.3), 7 windows | 98.3% (90.5), 10 | 99.0% (95.0), 8 |
+    | 14-16K | 25.0% / 28.5 / 30.0 | 3.15 / 0.59 (4.33 / 1.35) | 94.3% (90.6), 3 | 89.6% (88.3), 2 | 94.9% (91.0), 3 |
+    | 16-18K | 26.3% / 32.6 / 32.0 | 3.13 / 0.59 (4.32 / 1.31) | 100.9% (93.2), 3 | 94.5% (91.7), 5 | 99.2% (95.7), 3 |
+    | 18K+ | 29.0% / 37.8 / 34.3 | 3.08 / 0.59 (4.54 / 1.45) | 94.4% (88.4), 2 | 83.8% (74.8), 4 | 91.4% (87.8), 3 |
+
+  - Windows under SPEED 97% (of those with 2K+ vertices): 4 of 30, mean
+    91.7%. Old: 14 of 33, mean 90.0%. Old + SQ COPY: 8 of 31, mean 93.0%.
+  - Reading: the render thread is 7 to 9 points lighter at 16K+ vertices
+    (a draw 3.1 us, not 4.3-4.5; a bind 0.59 us, not 1.3-1.45), with more
+    work in it than the old boots had (16:9 WIDE, fog, overlay). The SH4
+    thread is still the limit in the heavy windows (`[pace] slept` 0-9 of
+    57-61 at 14K+). SPEED is higher than in the old boot without SQ COPY
+    in every band, but the samples are 2-3 windows and the settings are
+    not the same: this run does not prove that the lighter render thread
+    gives the SH4 thread time (the two share the PPE core). A boot with
+    the three rows OFF on this package decides it.
+  - TR First Pass acts in this game: 50-73 first-pass runs per render, 10
+    to 27 of them write no depth (SKIP leaves them out; Crazy Taxi had
+    none). TR draws 144-198 per render (old boots: 162-339, other scenes).
+  - The counters: `[cost] key op=316>313 tr=57>57`: a key mask saves
+    nothing in this game. `[texlife]`: 1787 freed for their age, 1211 came
+    back, 1210 with the same texels, of 2010 decodes (60%).
+- The DRAW COST page (page 12 of 12; a `[costcfg]` line at boot and at a
+  menu change; all three rows are live):
+  - (The first value of each row is the old path; the defaults are ON
+    since the verdict.)
+  - Tex Bind Table (`TexBindTable`): OFF / ON. ps3gl finds the slot of a
+    texture name in a table of 4096 entries, indexed by the name's low
+    bits. An entry holds the slot of the last texture with those bits; a
+    hit must still hold the name, a miss takes the old scan. OFF scans up
+    to 4096 slots at each bind (the 11.1 points of HW run 5 of 3k).
+  - GL State Compare (`GlCompare`): OFF / ON. ON:
+    - A state setter (blend, alpha, depth, cull, scissor, viewport, colour
+      mask, polygon offset, shade model, stencil) marks its group only
+      when a value changes. OFF marks it at each call, and the next draw
+      sends the whole group again.
+    - A texture parameter that keeps its value does not mark the texture.
+      OFF marks it at each call: the 5 parameters of each bind send 4 RSX
+      calls at the next draw.
+    - At a texture change, the unit's control, filter and wrap words go
+      out only when they differ from the words the unit holds. The
+      texture itself always goes out.
+    - The 4 vertex attribute binds stay when the next draw has the same
+      block, stride, colour shift and texcoord1 form. So in a scene they
+      go out at the first draw, and again when a bump or fog program (the
+      texcoord1 form) or the colour shift comes or goes.
+  - TR First Pass (`TrFirstPass`): OLD / SKIP / + GAME ORDER. It acts on
+    the first pass of TR Triangle Sort + OPAQUE DEPTH only.
+    - SKIP (Flycast's depth pass): a run that writes no depth (its blend
+      hides nothing, or the polygon has ZWriteDis) is not applied and not
+      drawn. OLD applies each run, and draws a ZWriteDis run with every
+      mask off.
+    - + GAME ORDER: the first pass goes out before the sort, in submission
+      order, so its runs are as long as the merged strips. The depth it
+      leaves does not depend on the draw order. It writes its own corners
+      (only the runs it draws); when the scene's vertex block is too short
+      for them, the rest of the scene goes to a second block.
+- Counters only, as the bundle says (no row, no change of the draws):
+  - The merge key: `[cost] key op=A>B pt=A>B tr=A>B`. A = state changes
+    from strip to strip by the merge key of today; B = by the bits a draw
+    reads. A - B is the draws a mask on the key can save. It is the last
+    render of each 5 s window, in submission order.
+  - The texture lifetime: `[texlife] aged=N back=N same=N` per window.
+    aged = textures freed after 180 frames with no draw; back = cache
+    misses whose key one of them had; same = of those, the ones with the
+    same texels (a decode that Flycast's rule saves).
+- Not built: the index list for the sorted triangles. The bundle has it
+  last, with a ceiling of 4.6 points for all vertex work; it needs an RSX
+  draw call that NotDC never ran (`rsxDrawIndexArray`), and FIRST VERTEX
+  flat shading cannot use it. Read `vtx+other` of the first HW run first.
+- Log:
+  - `[costcfg] boot: TexBindTable=1 GlCompare=1 TrFirstPass=2 TrTriSort=3
+    StripMerge=1 VertexArrays=1 SpeBuild=1`, and `[costcfg] menu:` at a
+    change.
+  - `[cost] bind= compare= first_pass= | fp_runs= nodepth= | key ...` per
+    window. fp_runs = runs of the first pass per render; nodepth = those
+    that write no depth (what SKIP leaves out; Crazy Taxi had none in the
+    3k runs).
+  - The measure is in the old lines: `[rend] busy=`, `draw split %: param
+    (tex) glEnd sort`, `tex split %: gl` (the bind), `draws=merge ... tr=`.
+- Code: `ps3/ps3gl/ps3gl.h` (`PS3GL_FAST_BIND`, `PS3GL_FAST_COMPARE`,
+  `ps3gl_fast_path()`), `ps3gl_main.c` (`ps3gl_fast_path()`, the resets in
+  `ps3gl_begin_frame()`), `ps3gl_textures.c` (`ps3gl_texture_find()`,
+  `tex_param()`, `ps3gl_apply_textures()`), `ps3gl_states.c` (`rs_mark()`
+  and each setter), `ps3gl_vertices.c` (`bind_vertex_attribs()`),
+  `ps3gl_draw.c` (`glDrawElements`), `ps3/ps3_rend.cpp`
+  (`tri_first_draws()`, `tri_runs()`, `tri_game_room()`,
+  `draw_tr_tris()`, `strip_read_equivalent()`, `rth_job_draw()`),
+  `ps3/ps3_tex.cpp` (`TexGhost`), `ps3/ps3_menu.cpp`,
+  `ps3/ps3_presets.cpp`. The long comments of `ps3gl_main.c`,
+  `ps3gl_states.c` and `ps3gl_draw.c` are cut to 2 lines (no code change).
+- Traps:
+  - `ps3gl_begin_frame()` marks every group and drops the unit and
+    attribute records. A new RSX call outside ps3gl that changes a
+    register ps3gl holds must come before it, or mark the group. Today
+    the calls outside ps3gl are the surface, the depth format and the
+    transfers, and ps3gl holds none of them.
+  - ps3gl has one dirty flag per texture. A texture on two units misses a
+    parameter change on the second one, on both paths. NotDC has no such
+    texture (the fog table is on unit 1 only).
+  - With GL State Compare ON, ps3gl's GL_POLYGON batch takes in more
+    polygons (a state that stays is no longer marked). NotDC has no
+    GL_POLYGON draw.
+  - A key that is not in an installed `nullDC.cfg` takes the source
+    default: OFF in the package of 01:15, ON from the next package on.
+  - `.got` is 0xE378 of 0x10000 after this bundle.
+- PC checks, all PASS in WSL:
+  - `misc/glpath_check` (new): the real ps3gl files over a model of the
+    RSX registers, 12 seeds of 400 frames of random GL calls of NotDC's
+    kinds. Rows OFF: the RSX calls are those of the files of commit
+    977df14, call for call. Rows ON (each, both, and changed in mid run):
+    the registers at each draw and clear, and after each frame, are those
+    of the run with the rows OFF; no sampler word and no set of attribute
+    binds goes out twice. Before each frame the registers take a poison
+    value. Source lines: the rows have their default in the source (ON
+    since the verdict), are saved, in the menu, live and read by the
+    renderer. `mutate.py`: 73 of 73 planted bugs fail the check.
+  - `misc/rend4_check` (extended): a third build, the file of commit
+    977df14 (`ref_b13_ps3_rend.inc`): with TR First Pass at OLD the GL
+    calls and the vertex block are the old ones in 1357 scenes with the
+    other rows random. The model has the two new levels, the corners'
+    W and colour, the order of the first pass, and the need for a second
+    vertex block. `mutate.py`: 88 of 88 planted bugs fail the check (4
+    of its texts were stale since bundles 11 and 3k; repaired).
+  - The 14 other checks that read a changed file pass (ta4, bump, fog,
+    rtt, screen, tex3, texslot, spetex, spepix, tr4, mmu, pad, timebase,
+    clock). `misc/screen_check/mutate.py`: 2 texts that were stale since
+    bundle 13 are repaired.
+- HW steps (Crazy Taxi, TR Triangle Sort at + OPAQUE DEPTH, one boot; the
+  rows are on the SELECT menu, page DRAW COST):
+  1. Install the package. Boot Crazy Taxi and start a drive. Keep the
+     three rows OFF for about 1 minute in a dense street: the baseline.
+  2. Set Tex Bind Table ON. Drive the same street for 1 minute.
+  3. Set GL State Compare ON too. Drive 1 minute.
+  4. Set TR First Pass to + GAME ORDER too. Drive 1 minute.
+  5. In each step the picture must be as before: no wrong or missing
+     texture, no flicker, no freeze. Pause once (START) with the rows ON.
+  6. Second game for TR First Pass: Sonic Adventure or Rayman 2 (both need
+     + OPAQUE DEPTH) at SKIP, then at + GAME ORDER: the models and the
+     water must look as before.
+  7. Read per step: `[rend] busy=`, `tex split %: gl`, `draw split %:
+     glEnd`, `draws=... tr=`, SPEED at 11-13K vertices. HW run 5 of 3k
+     had busy 45.2%, gl 11.1, glEnd 12.5, 1064 TR draws per render.
+- Baseline with Matt's settings of today (Matt 2026-10-13: "Can I do the
+  compare with it on all the time?", then "Can you check the run from
+  bundle 13?"): the Crazy Taxi boot of bundle 13's HW run 2 (2026-10-12
+  23:48, package of 23:15, `b13_run2.txt` lines 189-9837, scratchpad of
+  session ff1f423e). Its code is this package with the three rows OFF.
+  Settings: TR Triangle Sort + OPAQUE DEPTH, Fog TABLE, 16:9 WIDE, Screen
+  Scaler ON, FPS Overlay ON, Region Scissor ON. No menu change in the boot.
+  So one boot with the three rows ON can be read against it, per vertex
+  band (the route is not the same).
+
+  | Windows | Renders/s | busy | param (tex, of it gl) | glEnd | sort | vtx+other | Draws per render (OP + TR) | us per draw / per bind | SPEED mean / min |
+  |---|---|---|---|---|---|---|---|---|---|
+  | 9K+ vertices: 33 (10.6K) | 59.7 | 47.2% | 21.7 (16.2, 11.7) | 13.7 | 3.7 | 5.2 | 309 + 1033 | 4.42 / 1.47 | 99.1% / 88.0% |
+  | 11-13K vertices: 6 | 59.2 | 51.7% | 23.9 (18.0, 13.1) | 14.8 | 4.0 | 5.7 | 337 + 1124 | 4.47 / 1.51 | 98.2% / 88.0% |
+  | 13K+ vertices: 3 (14.6K) | 57.9 | 49.0% | 22.7 (17.0, 12.4) | 14.2 | 3.5 | 5.3 | 467 + 972 | 4.43 / 1.49 | 96.8% / 94.7% |
+
+  The numbers come from `b13_base.py` (scratchpad of session 6e520dca):
+  windows of 5 s with 25 or more renders; us per draw = (param + glEnd) /
+  all draws; us per bind = gl / `[texfmt] binds=`.
 
 **Bundle 13 (MMU and memory) built 2026-10-12 (Matt: "We will now work on
 Bundle 13."), HW SUCCESS 2026-10-13 after HW runs 1 and 2 (Matt: "Mark it
@@ -2830,7 +3339,10 @@ game.** Two items, nothing designed, nothing built:
 - A cheaper + OPAQUE DEPTH: the first pass (depth only) needs no sorted
   order, so it can draw the merged strips in the game's order. Estimate
   for Crazy Taxi: 1064 -> about 750 TR draws per render, render `busy`
-  45% -> about 37% (20% with the level OFF). Not measured.
+  45% -> about 37% (20% with the level OFF). Not measured. **Built
+  2026-10-13 in bundle 14: row TR First Pass at + GAME ORDER (DRAW COST
+  page). HW SUCCESS 2026-10-13 (Crazy Taxi: 1033 -> 615 TR draws per
+  render), default ON in source (the first block of this section).**
 - Matt's idea: "Maybe an ID checker based off a Dreamcast romset that
   will automatically set the right flags on depending on the game." A
   table keyed by the disc's product ID (IP.BIN header), which sets rows
@@ -6224,7 +6736,9 @@ Status 2026-09-23 (all big-endian checked):
   - Cable: if `Dreamcast.Cable` is VGA (0/1) and the disc has no VGA flag, the
     boot uses composite through `g_cable_override` (`bsc.cpp`). Not saved to
     `nullDC.cfg`. No per-game lists (Matt's rule).
-  - Broadcast is not touched, as in Flycast.
+  - Broadcast is not touched, as in Flycast. Corrected 2026-10-08 (P59):
+    Flycast writes the broadcast byte at each boot. Since 2026-10-13 the
+    row Broadcast does it (bundle 15, section 0), default CONSOLE.
   - Log: `[flash] region X fits` / `[flash] region X -> Y for disc area '...'`.
 - HW test 3g/3i: boot Crazy Taxi and Soul Calibur. Read the `[flash]` line.
   Both must still boot. NBA Hoopz only if Matt has it.
@@ -10815,8 +11329,8 @@ Nothing of the open bundles is built by this re-cut.
 | 11 | Render to texture and present (re-cut 2026-10-12; was Output stage) | P75 (first), P66's RTT scaler, P76, P54, P60, P26 reads | the Crazy Taxi pause freeze; RTT games; no flashing screens or mirrors; interlaced and 24-bit 2D screens | `[x]` HW SUCCESS 2026-10-12 (Matt: "We can consider this a success."; section 0): RTT Read-back FIXED ends the Crazy Taxi pause freeze (Matt: "works as intended"); built 2026-10-12 with bundle 10: 10 rows on a new OUTPUT page (RTT Read-back, RTT Scaler, RTT Size, RTT Pack, Draw Retry, FB Line Double, Blank Video, Present Rule, Region Scissor, FB Reads), every default is the old path (Matt named none), so the Crazy Taxi pause still freezes until RTT Read-back is FIXED; PC checks PASS (`misc/rtt_check`, 88 of 88 mutants); package of 17:40; no HW run: Present Rule, RTT Size TILE CLIP; left: the Looney Tunes boot videos (not on the TV, cause not known); **the fix for the Looney Tunes race loading screen (black but the bar with Region Scissor ON), asked for by Matt after the verdict ("Fix it."): row "Keep Last Frame" (OFF / ON) built 2026-10-12, package of 19:52, PC checks PASS, HW SUCCESS 2026-10-12 (Looney Tunes, Matt: "Success! The image stays."; Crazy Taxi), default ON in source since 2026-10-12 (Matt: "Keep it up as default."), not packaged; it acts only with Region Scissor, which is still default OFF**; not built: the fb_concat bits of P26, P54's writers for pack modes 4 and 5 |
 | 12 | Screen format and test tools (re-cut 2026-10-12; was HW test tools) | P50, P51, P53, P69's stretch, P10 (clip, scaler), P36 | SPEED on the TV without the UDP listener; PNG evidence; 16:9 output | `[x]` HW SUCCESS 2026-10-12 (Matt: "Success!"; section 0): Sonic Adventure with FPS Overlay ON, Screen Format 16:9 WIDE and Screen Scaler ON, SPEED median 99.99%, no fault; Matt named no default, every row stays at its old path; no HW run: the screenshot, 16:9 STRETCH, Cheats; built 2026-10-12 (Matt: "Work on Bundle 12"): a new SCREEN page with FPS Overlay (OFF / ON), Screen Format (4:3 / 16:9 STRETCH / 16:9 WIDE), Screen Scaler (OFF / ON) and Cheats (OFF / ON), every default is the old path; the screenshot is SQUARE in the in-game menu (no row); PC checks PASS (`misc/screen_check`, 178 of 178 mutants); package of 21:37; P10's FB clip was already Region Scissor (bundle 11); not built: Flycast's per-game widescreen table |
 | 13 | MMU and memory (re-cut 2026-10-12; was MMU store queues) | P58, P78 (MMUCR mask, TLB data array 2), P74, P30, P65, bundle 1's P7, P26 write watch and P55 | Border Down, Rez, Ikaruga and Sonic Shuffle get past the BIOS logo; bundle 1's rows get their first run; NHL 2K2 | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Mark it as a success, and we will check the Ikaruga and Rez issues later on."; section 0): with MMUCR Bits FIXED, Border Down, Sonic Shuffle, Ikaruga and Rez get past the BIOS logo and play (HW run 1 2026-10-12; Matt: "The game ran fine!", "Ikaruga runs!", "Rez ran fine!")**; left for later: the SH4-bound heavy scenes of Ikaruga and Rez (bundle 21, item 7); MMUCR Bits default FIXED in source since 2026-10-12 (Matt), not packaged (the package of 23:15 has OLD); HW run 2: Crazy Taxi, Looney Tunes and Sonic Adventure unchanged with FIXED (none turns the MMU on); not run: FB Write Watch ON (Ikaruga), the other three rows; LMMODE has no test game; P74's condition is met (Ikaruga and Rez are SH4-bound in heavy scenes, the old chain takes 15.2% and 11.2% of the SH4 thread); built 2026-10-12 (Matt: "We will now work on Bundle 13."): a new MEMORY page with MMUCR Bits (OLD / FIXED), P4 Mirrors (OFF / ON), Cache RAM Banks (OLD / FLYCAST) and Ch2 DMA Rules (OLD / FLYCAST), every default is the old path, so the four games still stop until MMUCR Bits is FIXED; the PS3 compiler confirms the wrong bits (`misc/mmu_check/bitfield_ppu.sh`); PC checks PASS (`misc/mmu_check`, 75 of 75 mutants); package of 23:15; bundle 1's LMMODE, FB Write Watch and VRAM Direct have no code change and wait for the HW run; P74 not built (the plan: only if a game is SH4-bound after the fix) |
-| 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[ ]` added 2026-10-11 |
-| 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[ ]` |
+| 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, bundle 14 is a success. Keep it ON.")** after HW runs 1-3 with the three rows ON (Crazy Taxi: render busy 47.2% -> 29.2% at 9K+ vertices, a bind 1.47 -> 0.53 us, 1033 -> 615 TR draws per render; Sonic Adventure 2; Rayman 2; no fault); **the three rows default ON in source since 2026-10-13 (TR First Pass at + GAME ORDER), not packaged (the package of 01:15 has them OFF)**; built 2026-10-13 (Matt: "Let's work on bundle 14!"; section 0): a new DRAW COST page with Tex Bind Table (OFF / ON), GL State Compare (OFF / ON) and TR First Pass (OLD / SKIP / + GAME ORDER), all live, every default the old path at the build; counters for the merge key and the texture lifetime (`[cost]`, `[texlife]`); the index list not built; PC checks PASS (`misc/glpath_check`, 73 of 73 mutants; `misc/rend4_check`, 88 of 88 mutants); package of 01:15 on 2026-10-13 |
+| 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[~]` built 2026-10-13 (Matt: "We will work on Bundle 15 now."; section 0), no HW run yet: a new FLASH / CLOCK page with Broadcast (CONSOLE / NTSC / PAL / DISC), BIOS Language (CONSOLE and the six languages), Flash Defaults (OLD / FLYCAST), Console ID (OLD / FLYCAST), Exit Flash Save (OFF / ON, live) and RTC Local Time (OFF / ON), every default is the old path; no row's value reaches `dc_flash_wb.bin` but the console ID; a `[flash]` line at each boot shows the bytes; the old logs: 10 of 23 games stay at 50 Hz in every boot, and the PS3 clock is UTC with no time zone, so P12's line never runs there and the row RTC Local Time (the XMB's zone and summer time) is an addition; PC checks PASS (`misc/flash_check`, 94 of 94 mutants); package of 09:56 on 2026-10-13 (= the G14 package + this bundle); not built: Flycast's block reuse in `alloc_block` (G11 needs it on a flash as full as Matt's) |
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[ ]` |
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[ ]` |
 | 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[ ]` |
@@ -11874,8 +12388,16 @@ Main gains:
 - HW: the four games; Crazy Taxi, Sonic Adventure and Looney Tunes
   unchanged.
 
-### Bundle 14: Render-thread draw cost  `[ ]` added 2026-10-11
+### Bundle 14: Render-thread draw cost  `[x]` HW SUCCESS 2026-10-13 (Matt), the three rows default ON in source (not packaged); left: the texture lifetime, the merge key mask, the index list (section 0); added 2026-10-11
 
+- Built 2026-10-13 (section 0 has the rows, the log lines and the HW
+  steps): the bind table and the compares as two rows (Tex Bind Table, GL
+  State Compare); the first-pass skips as row TR First Pass, with the
+  first pass in game order as its second level (the parked "cheaper +
+  OPAQUE DEPTH" of section 0); the two counters. Not built: the merge key
+  mask and the texture lifetime rule (their counters come first), the
+  index list (last in the order below; read `vtx+other` of the HW run
+  first).
 - Items: P72 (5.10: the ps3gl texture bind scan, compare before set), P73
   (the + OPAQUE DEPTH first-pass skips, the merge key bits that the draw
   never reads, the texture lifetime, an index list for the sorted
@@ -11902,7 +12424,14 @@ Main gains:
 - Checks: `misc/rend4_check` (the draw trace stays equal) and
   `misc/spevb_check` (the merge key). HW: Crazy Taxi at + OPAQUE DEPTH.
 
-### Bundle 15: Flash and clock  `[ ]` re-cut 2026-10-12 (was "Flash defaults"; it takes P12 and the BIOS language row of P37)
+### Bundle 15: Flash and clock  `[~]` built 2026-10-13, every row at its old path by default, no HW run yet (section 0); re-cut 2026-10-12 (was "Flash defaults"; it takes P12 and the BIOS language row of P37)
+
+- Built 2026-10-13: the page FLASH / CLOCK with the rows Broadcast, BIOS
+  Language, Flash Defaults, Console ID, Exit Flash Save and RTC Local
+  Time. The rows, the facts from the old logs, the choices and the HW
+  steps are the bundle 15 block of section 0. Two lines below are
+  corrected by those facts: P59's three games are ten, and P12's one
+  line does not act on the PS3 (the row RTC Local Time does).
 
 - Items: P59 (the broadcast byte: NTSC, as Flycast writes it; corrects
   3i), P85 (the language of a new syscfg block, a flash built when
@@ -12051,6 +12580,33 @@ Main gains:
      and TMU Fine TCNT (default OFF: about 95 ns per TCNT read).
   4. The Capcom vs. SNK 2 menus (5-6 fps; one menu frame is exactly 9 PAL
      vblanks). A test with no code: one boot at Accuracy ACCURATE.
+     **HW 2026-10-13 (Matt's own idea: "I suppose I need to boot Capcom
+     vs SNK 2 in x3 reverse?", then "I was right."): JIT IDLE RULE X3
+     BACKWARD fixes the menus.** Same package, same rows, NTSC 60 Hz
+     (Broadcast DISC, bundle 15): the menus draw 60 renders per second at
+     SPEED 100% (X30: 10 per second, a steady `100% ... RPS:10`). So
+     the cause of the slow menus is the x30 bill, as in Sonic Adventure
+     and Phantasy Star Online, and the game joins the list for item 6.
+     Log: `b15_hw.txt` lines 9731-18547 (X30: lines 5118-9218),
+     scratchpad of session e511e0f6 (tools `fight.py`, `block.py`).
+     **The fights at X3 are SH4-bound (Matt: "avg is 50 FPS. Game is
+     supposed to hard run at 60."):** in the 53 windows with 2K+
+     vertices per frame, SPEED is 87.9% on average (83.5% to 95%), the
+     renders are the vblanks (51-52 per second, so the game drops no
+     frame of its own), and the SH4 thread never sleeps (`[stall]` sleep
+     0 ms in the median window, `[pace] slept=0`). The render load is
+     small (5.5K vertices in a sample window). 12 points of SH4 time are
+     missing at 60 Hz. JIT C-Calls was ON in this boot (my request, for
+     the `[stall]` line). **A second boot with JIT C-Calls OFF (lines
+     26360-30485) gives the same: a steady SPEED 88% and 53 renders per
+     second at 5.56K vertices per frame (37 windows; 82-83% in the last
+     three). So the probe was not the cost** (Matt after it: "Seems like
+     2D games aren't really liked that much"; this is the only 2D game
+     in the logs). No fight ran at X30 (that boot stayed in the menus).
+     This is the class of item 2 (the SH4-bound heavy scenes); no
+     profile of the fight exists (JIT HOTBLOCKS was OFF), so it is not
+     known if the time is game work or a wait loop that X3 runs for
+     real, as in Looney Tunes and Quake III Arena.
   5. Ecco the Dolphin: 18-34 fps at SPEED 100% with X30; X3 BACKWARD runs
      it at SPEED 50%.
   6. Settings per game (Matt's idea of a product-ID table: the idle rule
@@ -12084,7 +12640,8 @@ fixes in 18). What stays out:
 - No target left: P1 steps 0-1 and P2. Soul Calibur runs at full speed
   since P16, and its black textures are closed (2026-10-07). P1 steps 2-3
   were in bundle 3; Matt dropped them on 2026-10-10 (section 0).
-- Section 4 says "Do not take": P35 (CUE/BIN, CHD) and P39 (reios).
+- Section 4 says "Do not take": P35's CUE/BIN and P39 (reios). CHD is
+  GOALS.md G14 since 2026-10-13.
 - P15 (5.19): a pacing option, not a speedup.
 - P38 (WinCE SH4 MMU): stays in 3d (large; the JIT form is very high
   risk).
@@ -12108,7 +12665,7 @@ fixes in 18). What stays out:
 | VRAM lock, SMC page tracking | need mprotect |
 | Naomi, network, savestates | out of scope |
 | SSA optimizer (`dyna/ssa.cpp`) | JIT work measured at 0-3% (`Optimization.md` 4) |
-| CHD/CUE, reios | Reicast and Minicast have them too |
+| CUE/BIN, reios | Reicast and Minicast have them too (CHD left this row on 2026-10-13: GOALS.md G14) |
 | Minicast fallthrough (M7) | our link sites are 3 words and cold code sits between blocks; almost no case to fall through |
 | Minicast register allocator work, XMTRX kept in registers | we pin r0-r15 (not r11) and fr0-fr15; no free FPRs for the matrix |
 | Minicast constprop level 2 (memory baking) | needs SMC page locks (mprotect) |

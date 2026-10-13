@@ -1,6 +1,7 @@
 #include "types.h"
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include "memutil.h"
 #include "sh4_mem.h"
@@ -9,6 +10,7 @@
 #include "dc/pvr/pvr_if.h"
 #include "dc/sh4/sh4_registers.h"
 #include "dc/dc.h"
+#include "dc/flash_fix.h"
 #include "ps3/ps3_presets.h"
 #include "_vmem.h"
 #include "mmu.h"
@@ -157,6 +159,45 @@ void mem_Init()
 	MMU_Init();
 }
 
+// flash_check: begin save
+volatile bool g_flash_loaded;         // dc.cpp: the array holds a loaded or a built flash
+static volatile int s_flash_saving;   // 1 while a thread writes dc_flash_wb.bin
+
+// Persist flash (NVRAM) back to disk, with the flash's own factory bytes. forced: the monitor thread's save
+// before a forced exit (P85); it keeps the lock, so the stuck main thread cannot start a second write.
+static bool save_flash(bool forced)
+{
+	for (int i = 0; !__sync_bool_compare_and_swap(&s_flash_saving, 0, 1); i++)
+	{
+		if (!forced || i >= 20)
+			return false;
+		usleep(100 * 1000);
+	}
+	dc_flash_restore_region();
+	char* temp_path = GetEmuPath("data/");
+	strcat(temp_path, "dc_flash_wb.bin");
+	bool ok = SaveSh4FlashromToFile(temp_path);
+	free(temp_path);
+	if (!forced)
+		__sync_lock_release(&s_flash_saving);
+	return ok;
+}
+
+void mem_SaveFlash()
+{
+	save_flash(false);
+}
+
+// P85: a zeroed or half-loaded array must never replace the saved flash.
+void mem_SaveFlashForced()
+{
+	if (!g_flash_loaded || flash_b.data == 0)
+		printf("[flash] forced exit: no flash loaded, nothing saved\n");
+	else
+		printf("[flash] forced exit: flash %s\n", save_flash(true) ? "saved" : "NOT saved");
+}
+// flash_check: end save
+
 void mem_Reset(bool Manual)
 {
 	if (!Manual)
@@ -164,6 +205,7 @@ void mem_Reset(bool Manual)
 		// Hard reset – clear all RAM and reload firmware
 		mem_b.Zero();
 		bios_b.Zero();
+		g_flash_loaded = false;
 		flash_b.Zero();
 		LoadBiosFiles();
 	}
@@ -171,18 +213,6 @@ void mem_Reset(bool Manual)
 	sh4_area0_Reset(Manual);
 	sh4_internal_reg_Reset(Manual);
 	MMU_Reset(Manual);
-}
-
-void dc_flash_restore_region(); // flash_fix.cpp
-
-// Persist flash (NVRAM) back to disk, with the console's own region.
-void mem_SaveFlash()
-{
-	dc_flash_restore_region();
-	char* temp_path = GetEmuPath("data/");
-	strcat(temp_path, "dc_flash_wb.bin");
-	SaveSh4FlashromToFile(temp_path);
-	free(temp_path);
 }
 
 void mem_Term()

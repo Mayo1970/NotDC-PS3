@@ -79,6 +79,10 @@
 #define PS3GL_FOG_BASE      3
 #define PS3GL_FOG_BASE_TA   4
 
+/* ps3gl_fast_path() bits (NotDC plan section 7, bundle 14). 0 is the old path. */
+#define PS3GL_FAST_BIND     1   /* glBindTexture finds its slot by a table, not by a scan of the pool */
+#define PS3GL_FAST_COMPARE  2   /* setters, texture parameters and attribute binds send only what changed */
+
 /* 36-byte interleaved vertex: pos(16) + tc0(8) + tc1(8) + color(4) */
 #pragma pack(push, 1)
 typedef struct {
@@ -129,6 +133,9 @@ typedef struct {
     int              dirty;
     int              bump;     /* ps3gl_tex_bump(): the texenv's bump program */
     int              aux;      /* ps3gl_tex_aux(): a program's own table; it does not pick MODULATE2 */
+    /* PS3GL_FAST_COMPARE: the unit's control, filter and wrap words as last sent; sent 0 = not known. */
+    int              sent;
+    uint32_t         sent_ctrl, sent_filter, sent_wrap;
 } ps3gl_tmu_t;
 
 /* Matrix stack (column-major 4x4) */
@@ -333,6 +340,12 @@ typedef struct {
     float               dc_fog_scale;
     float               dc_fog_scale_uploaded;
 
+    /* NotDC bundle 14: the PS3GL_FAST_* bits, and for PS3GL_FAST_COMPARE the vertex attribute binds the RSX holds
+     * (vattr_valid 0 = not known). */
+    int                 fast;
+    int                 vattr_valid, vattr_tc1_u8;
+    uint32_t            vattr_off, vattr_stride, vattr_shift;
+
 } ps3gl_state_t;
 
 /* Heap-allocated singleton. Macro allows `ps3gl.field` access. */
@@ -349,6 +362,9 @@ int ps3gl_init(gcmContextData *ctx, uint32_t w, uint32_t h);
 void ps3gl_shutdown(void);
 void ps3gl_begin_frame(void);
 void ps3gl_end_frame(void);
+
+/* NotDC bundle 14: the PS3GL_FAST_* bits of the state path. They can change at any time. */
+void ps3gl_fast_path(int bits);
 
 /* Once per frame from ref/gl/gl_rsurf.c (a local extern there: it cannot include this header across the module
  * boundary). Feeds the dlight-cost telemetry of ps3gl_end_frame's window report. */

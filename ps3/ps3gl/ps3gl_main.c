@@ -6,9 +6,8 @@
 #include <stdlib.h>
 #include <unistd.h> // usleep, used by the vertex-ring fence wait below
 
-/* __gettime() (mftb) and sysGetTimebaseFrequency() for ps3gl_ticks below.
- * Same diagnostic wrap as ps3gl.h uses for the rsx headers -- these vendor
- * headers define LV2 syscall wrappers as foo() rather than foo(void). */
+/* __gettime() (mftb) and sysGetTimebaseFrequency() for ps3gl_ticks. Wrapped as ps3gl.h wraps the rsx headers:
+ * these vendor headers declare foo() instead of foo(void). */
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstrict-prototypes"
 #pragma GCC diagnostic ignored "-Wold-style-definition"
@@ -16,68 +15,37 @@
 #include <sys/systime.h>
 #pragma GCC diagnostic pop
 
-/* ps3gl is linked into the engine (see engine/wscript), so this is the engine's
- * own Con_Printf -- which mirrors to the UDP debug sink through
- * Sys_PrintStdout's XASH_PS3 branch. Declared by hand rather than by pulling in
- * common.h, which would drag the whole engine header chain into a 3rdparty TU. */
+/* The host program's Con_Printf, which mirrors to the UDP debug sink. Declared by hand: its header would pull
+ * a whole header chain into this file. */
 extern void Con_Printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-/* Same "declare just what we need" approach as Con_Printf above -- avoids
- * pulling engine/platform/platform.h's whole header chain into a 3rdparty TU.
- * Real wall-clock double, already implemented for PS3 in sys_ps3.c. */
+/* Declared by hand for the same reason. A wall-clock double. */
 extern double Platform_DoubleTime(void);
 
-/* Profiling accumulators for the frame-time telemetry window below -- pure
- * instrumentation, no behavior change. Answers two open questions before any
- * optimization is attempted: (1) how much of avg frame time is the CPU
- * blocked in ps3gl_begin_frame's vring fence wait vs. real GPU/engine work
- * elsewhere, and (2) how many real draw calls (glEnd flushes) actually
- * happen per frame, since the existing ps3gl_frame_draw_count in
- * ps3gl_vertices.c is only ever incremented from glDrawElements, which xash
- * never calls -- it undercounts every real draw, all of which go through
- * immediate-mode glBegin/glEnd. */
+/* Frame-time telemetry, no behaviour change: the time blocked in ps3gl_begin_frame's vring fence wait, and the
+ * real draw calls (glEnd flushes) per frame; ps3gl_frame_draw_count only counts glDrawElements. */
 double ps3gl_frame_fence_wait_time = 0.0;
 uint32_t ps3gl_frame_flush_count = 0;
-/* Vertices submitted across all flushes this frame -- divided by
- * ps3gl_frame_flush_count in the window report below to get avg
- * vertices/flush, which is what actually distinguishes "many small
- * immediate-mode batches paying fixed per-flush overhead" (fixable by
- * batching) from "same geometry total, just counted differently" (not
- * fixable without a bigger renderer change) when flush count alone
- * correlates with a frame-time regression. */
+/* Vertices over all flushes this frame; with the flush count it gives vertices per flush: many small batches
+ * (fixable by batching), or the same geometry counted another way. */
 uint32_t ps3gl_frame_flush_vertex_count = 0;
-/* GL_POLYGON draws merged into a deferred batch instead of flushed
- * individually this frame (ps3gl_vertices.c). The only way to distinguish
- * "batching is working" from "the state-clean gate never passes" -- given
- * how small the predicted saving already is, an unverifiable no-op is the
- * most likely failure mode of the whole batching mechanism. */
+/* GL_POLYGON draws merged into a deferred batch this frame (ps3gl_vertices.c): tells "batching works" from
+ * "the state-clean gate never passes". */
 uint32_t ps3gl_frame_batched_poly_count = 0;
 
-/* glDrawElements direct-bind vs interleave-copy fallback (ps3gl_draw.c).
- * The `submit` studio phase measured 2.66ms/frame and the whole host-ring
- * work below is premised on those draws taking the fallback -- which was
- * INFERRED from ref_gl's arrays living in un-IO-mapped BSS, never measured.
- * These settle it: fallback_binds near zero would mean the premise was
- * wrong and the cost is somewhere else entirely. */
+/* glDrawElements direct binds against interleave-copy fallbacks (ps3gl_draw.c). The host ring assumes the
+ * draws take the fallback: fallback_binds near zero means the cost is elsewhere. */
 uint32_t ps3gl_frame_direct_binds = 0;
 uint32_t ps3gl_frame_fallback_binds = 0;
 uint32_t ps3gl_frame_fallback_verts = 0;
 
-/* Engine-side (ref/gl/gl_rsurf.c) dlight CPU-cost counters, reported once
- * per frame via ps3gl_report_dlight_cost() below -- test whether
- * dynamic-light lightmap rebuild cost is an independent frame-time driver
- * from RSX flush count. NOT read as extern data: --static-linking's
- * `objcopy -G lib_ref_gl_exports` localizes every symbol in ref_gl.o except
- * GetRefAPI (see engine/wscript's ps3gl-linkage comment), so a data symbol
- * defined in gl_rsurf.c would be invisible here -- only an ordinary
- * undefined-function-call boundary (same mechanism as ref_gl's pglFoo()
- * calls resolving against ps3gl's real glFoo() at final link) crosses it. */
+/* ref_gl's dlight CPU-cost counters, set once per frame through ps3gl_report_dlight_cost(). A function call,
+ * not extern data: the static link localizes ref_gl's data symbols. */
 static uint32_t g_dlight_surface_count = 0;
 static uint32_t g_dlight_luxel_count = 0;
 
-/* Bumped once per ps3gl_begin_frame. Only consumer is the stream-VBO
- * re-specify check in ps3gl_glapi.c, which needs to tell "twice this frame"
- * apart from "once per frame, twice in a row". */
+/* Bumped once per ps3gl_begin_frame, for the stream-VBO re-specify check in ps3gl_glapi.c: "twice this frame"
+ * is not "once per frame, twice in a row". */
 static uint32_t g_frame_index = 0;
 
 uint32_t ps3gl_frame_index(void)
@@ -91,19 +59,8 @@ void ps3gl_report_dlight_cost(uint32_t surface_count, uint32_t luxel_count)
     g_dlight_luxel_count   = luxel_count;
 }
 
-/* Time the CPU spends blocked in vid_ps3.c's PS3_RSX_WaitForFreeBuffer -- the
- * ONE wait in the frame that was never instrumented, and the only place a
- * GPU-bound CPU actually blocks. The vring fence wait below runs AFTER it
- * (PS3_GL_BeginFrame calls WaitForFreeBuffer, then ps3gl_begin_frame), so a
- * GPU that is the real bottleneck burns its slack here first and leaves the
- * fence reading ~0% -- which is exactly what every previous session measured
- * and misread as "never a GPU wait". With this, frame time is fully
- * accounted: total = flip wait + vring fence + everything else.
- *
- * sleeps is the usleep(100) iteration count from the same loop. If measured
- * time / sleeps is far above 100us, LV2 usleep granularity is itself
- * inflating frames and the fix is a short spin before sleeping -- a different
- * bug from "the GPU is slow", and indistinguishable without this second number. */
+/* Time blocked in the video layer's wait for a free buffer: where a GPU-bound CPU waits (the vring fence comes
+ * after it and then reads ~0%). sleeps: its usleep(100) count; time / sleeps far above 100 us = LV2 granularity. */
 static double   g_flip_wait_time = 0.0;
 static uint32_t g_flip_wait_sleeps = 0;
 
@@ -113,39 +70,28 @@ void ps3gl_report_flip_wait(double seconds, uint32_t sleeps)
     g_flip_wait_sleeps += sleeps;
 }
 
-/* Coarse CPU phase split, fed once per frame from engine/common/host.c. The
- * flip-wait measurement above proved the ~50fps floor is CPU-bound (0.00ms
- * spent waiting on the GPU in every slow window), which means the next
- * question is simply WHICH CPU work -- and nothing in this engine build
- * answered that (no host_speeds in this Xash version). See public/ps3_diag.h. */
+/* Coarse CPU phase split, fed once per frame by the host program (public/ps3_diag.h): the flip wait showed the
+ * frame rate floor is CPU-bound, and this says which CPU work. */
 static double g_phase_input = 0.0, g_phase_server = 0.0, g_phase_client = 0.0;
 static double g_phase_render = 0.0, g_phase_sound = 0.0, g_phase_total = 0.0;
 
-/* Breakdown of the server phase itself. The 2026-08-05 rope measurement put
- * the OpFor rope-area cost in `server` (10.50 -> 17.86ms, 64% of frame) but
- * could not say which part. `think` is the game DLL's per-entity think,
- * `link` is SV_LinkEdict's areanode relink; server minus both is the rest
- * (packets, client commands). See public/ps3_diag.h. */
+/* Split of the server phase (public/ps3_diag.h): `think` is the game DLL's per-entity think, `link` is
+ * SV_LinkEdict's areanode relink; the rest is packets and client commands. */
 static double g_phase_sv_think = 0.0, g_phase_sv_link = 0.0;
 static unsigned int g_phase_sv_think_calls = 0, g_phase_sv_link_calls = 0;
 
-/* Round 2: think/link measured flat and tiny while the leftover `rest`
- * carried the entire framerate swing (10.4 -> 20.8ms). These are the three
- * top-level calls inside Host_ServerFrame that `rest` consists of. Note
- * gameframe CONTAINS think and link -- they are nested inside SV_Physics. */
+/* The three top-level calls of Host_ServerFrame that the server's `rest` is made of. gameframe contains think
+ * and link (nested in SV_Physics). */
 static double g_phase_sv_readpackets = 0.0, g_phase_sv_gameframe = 0.0;
 static double g_phase_sv_sendmsgs = 0.0;
 
-/* Round 3: sendmsgs measured 16.15ms of a 20.4ms server frame while looking
- * AWAY from the ropes -- snapshot transmission, not physics, and not view
- * dependent. These split it into the per-entity visibility walk vs the
- * delta encode. */
+/* Split of sendmsgs (snapshot transmission, not physics, not view dependent): the per-entity visibility walk
+ * against the delta encode. */
 static double g_phase_sv_addents = 0.0, g_phase_sv_emit = 0.0;
 static unsigned int g_phase_sv_addents_calls = 0, g_phase_sv_fullpack_calls = 0;
 
-/* Round 4: emit is ~31us/entity over ~90 fields. These say whether field
- * suppression works (written/visited) and whether the game DLL's encoder
- * callbacks survived the delta table rebuilds (with_encoder; 0 = wiped). */
+/* emit is ~31 us per entity over ~90 fields: written/visited says if field suppression works, with_encoder if
+ * the game DLL's encoder callbacks survived the delta table rebuilds (0 = wiped). */
 static unsigned int g_delta_visited = 0, g_delta_written = 0;
 static unsigned int g_delta_entities = 0, g_delta_with_encoder = 0;
 
@@ -154,11 +100,8 @@ static unsigned int g_delta_entities = 0, g_delta_with_encoder = 0;
 static unsigned int g_bl_calls = 0, g_bl_tests = 0, g_bl_iters = 0;
 static unsigned int g_bl_newents = 0, g_bl_num_instanced = 0;
 
-/* Breakdown of the render phase itself, fed from ref_gl's R_RenderScene.
- * ACCUMULATED, not assigned: R_RenderScene runs more than once per frame when
- * a mirror/portal/water-reflection pass is active, and a pass that only shows
- * up on some frames is exactly the kind of cost this is hunting. Zeroed once
- * per frame below, alongside every other per-frame counter. */
+/* Split of the render phase, from ref_gl's R_RenderScene. Accumulated, not assigned: a mirror, portal or water
+ * pass runs the scene again. Zeroed once per frame with the other counters. */
 static double g_scene_setup = 0.0, g_scene_world = 0.0;
 static double g_scene_ents = 0.0, g_scene_water = 0.0;
 static uint32_t g_scene_passes = 0;
@@ -173,11 +116,8 @@ void ps3gl_report_scene_phases(double setup, double world, double entities,
     g_scene_passes++;
 }
 
-/* PPE time base. One mftb, no syscall -- see the header comment on
- * ps3gl_ticks. PSL1GHT's __gettime() spins only on the degenerate tb==0
- * reading, which cannot persist. The frequency is a syscall, so it is queried
- * once and cached; 79.8 MHz on retail hardware, but read it rather than
- * hardcode it. */
+/* PPE time base: one mftb, no syscall. The frequency is a syscall, so it is read once and kept (79.8 MHz on
+ * retail hardware; read, not hardcoded). */
 uint64_t ps3gl_ticks(void)
 {
     return __gettime();
@@ -195,10 +135,8 @@ double ps3gl_ticks_to_sec(uint64_t ticks)
     return (double)ticks * inv_freq;
 }
 
-/* Entity-phase and studio-phase splits (see the header). Ticks, not seconds:
- * the conversion is one multiply and belongs in the once-per-5s report, not in
- * the accumulate path that runs per entity. Accumulated for the same reason as
- * the scene phases -- a mirror/portal pass re-runs R_DrawEntitiesOnList. */
+/* Entity-phase and studio-phase splits, in ticks: the conversion belongs in the report, not in the per-entity
+ * path. Accumulated: a mirror or portal pass runs R_DrawEntitiesOnList again. */
 static uint64_t g_ent_studio = 0, g_ent_brush = 0, g_ent_sprite = 0;
 static uint64_t g_ent_efx = 0, g_ent_clienttri = 0, g_ent_viewmodel = 0;
 static uint64_t g_stu_client = 0, g_stu_entlight = 0, g_stu_skin = 0;
@@ -294,20 +232,15 @@ void ps3gl_report_baseline(unsigned int calls, unsigned int tests, unsigned int 
     g_bl_num_instanced = num_instanced;
 }
 
-/* Texture-upload telemetry -- answers whether occasional stutter/fps dips
- * correlate with synchronous, scalar CPU texture work (new/resized textures,
- * lightmap sub-uploads) rather than genuine GPU/scene-complexity load. See
- * ps3gl_textures.c's glTexImage2D/glTexSubImage2D/ps3gl_defer_texture_free. */
+/* Texture-upload telemetry (ps3gl_textures.c): do stutters come with synchronous CPU texture work (new or
+ * resized textures, sub-uploads) and not with GPU load? */
 uint32_t ps3gl_frame_tex_alloc_count = 0;
 uint32_t ps3gl_frame_subimage_count = 0;
 uint32_t ps3gl_frame_subimage_pixels = 0;
 uint32_t ps3gl_frame_defer_overflow_count = 0;
 
-/* Mip-activation telemetry (ps3gl_textures.c). t->num_levels was pinned at
- * 0/1 forever before this fix -- these answer, on real hardware, whether
- * the engine ever hands ps3gl level>0 data at all (mip_uploads), and
- * whether mipped textures actually reach the RSX bind with maxlod>0
- * (mipped_binds/tex_binds), rather than trusting the CPU-side fix alone. */
+/* Mip telemetry (ps3gl_textures.c), for real hardware: does ps3gl get level > 0 data at all (mip_uploads), and
+ * do mipped textures reach the RSX bind with maxlod > 0 (mipped_binds / tex_binds)? */
 uint32_t ps3gl_frame_mip_uploads = 0;
 uint32_t ps3gl_frame_mipped_binds = 0;
 uint32_t ps3gl_frame_tex_binds = 0;
@@ -439,9 +372,8 @@ void ps3gl_begin_frame(void)
 {
     if (!ps3gl_ptr) return;
 
-    /* Defensive: a mid-frame Host_Error longjmp could skip a normal
-     * ps3gl_end_frame (and its own polygon-batch flush) entirely, leaving a
-     * batch pending across a frame boundary it was never fenced for. */
+    /* Defensive: a mid-frame longjmp could skip ps3gl_end_frame and its batch flush, and leave a batch pending
+     * across a frame it was never fenced for. */
     ps3gl.imm.batch_active  = 0;
     ps3gl.imm.batch_nranges = 0;
     ps3gl.imm.count         = 0;
@@ -466,11 +398,8 @@ void ps3gl_begin_frame(void)
         ps3gl_frame_fence_wait_time += Platform_DoubleTime() - wait_start;
     }
 
-    /* This fence proves the GPU has drained the frame(s) that could still be
-     * sampling a texture unbound/resized last frame -- safe to actually
-     * rsxFree() deferred textures now (see ps3gl_defer_texture_free). The same
-     * fence covers VBO storage retired by glDeleteBuffersARB / a re-specify,
-     * which the RSX fetches from exactly like a texture. */
+    /* The fence proves the GPU drained the frames that could still sample a texture unbound last frame: the
+     * deferred rsxFree() is safe now. The same holds for VBO storage that was retired. */
     ps3gl_flush_deferred_texture_frees();
     ps3gl_buffers_begin_frame();
 
@@ -486,17 +415,30 @@ void ps3gl_begin_frame(void)
     /* Reassert VP once per frame too -- sysutil overlays (OSK, dialogs) can
      * rebind their own vertex program behind our active_vp cache's back. */
     ps3gl.active_vp = NULL;
-    for (int i = 0; i < PS3GL_MAX_TMUS; i++)
+    /* PS3GL_FAST_COMPARE: nothing the RSX held in the last frame counts in this one. */
+    ps3gl.vattr_valid = 0;
+    for (int i = 0; i < PS3GL_MAX_TMUS; i++) {
         ps3gl.tmu[i].dirty = 1;
+        ps3gl.tmu[i].sent = 0;
+    }
+}
+
+/* NotDC bundle 14. The old path does not note the sampler words and attribute binds it sends, so a change of the
+ * bits drops those notes. The dirty flags are right on both paths. */
+void ps3gl_fast_path(int bits)
+{
+    if (!ps3gl_ptr || ps3gl.fast == bits) return;
+
+    ps3gl.fast = bits;
+    ps3gl.vattr_valid = 0;
+    for (int i = 0; i < PS3GL_MAX_TMUS; i++)
+        ps3gl.tmu[i].sent = 0;
 }
 
 void ps3gl_end_frame(void)
 {
-    /* Must run before anything else in this function, in particular before
-     * the fence-label write below: a pending deferred GL_POLYGON batch
-     * (ps3gl_vertices.c) submits vertex fetches of its own, and those need
-     * to be covered by this frame's fence just like every other draw --
-     * exactly the hazard PS3GL_VRING_SEGMENTS' fencing exists to prevent. */
+    /* First, before the fence-label write below: a pending GL_POLYGON batch (ps3gl_vertices.c) submits vertex
+     * fetches of its own, which this frame's fence must cover. */
     ps3gl_flush_polygon_batch();
 
     /* Backend label write, after this frame's draws: RSX only writes fence_val to fence_label
@@ -504,12 +446,8 @@ void ps3gl_end_frame(void)
     gcmContextData *ctx = ps3gl_get_ctx();
     int seg;
 
-    /* Frame-time telemetry: aggregate min/max/avg over a fixed window and
-     * report once, rather than logging per frame (which would itself perturb
-     * the timing it's measuring, same reasoning as the vring peak report
-     * below). Deliberately not routed through PS3_DIAG -- that channel is a
-     * budgeted, one-shot freeze-hunting tool, not meant for continuous
-     * per-frame telemetry. */
+    /* Frame-time telemetry: min/max/avg over a fixed window, reported once; a line per frame would disturb the
+     * timing it measures. Not through PS3_DIAG, which is a budgeted one-shot channel. */
     {
         static double  last_time     = 0.0;
         static double  window_start  = 0.0;
@@ -652,10 +590,8 @@ void ps3gl_end_frame(void)
                           avg_fence * 1000.0, avg > 0.0 ? (avg_fence / avg) * 100.0 : 0.0,
                           avg_flushes, avg_verts_per_flush);
                 {
-                    /* THE decisive CPU-vs-GPU split (see ps3gl_report_flip_wait).
-                     * High % here = GPU-bound. ~0 = CPU-bound, and no amount of
-                     * renderer work will help. us/sleep far above 100 = LV2
-                     * usleep granularity, a third and different problem. */
+                    /* The CPU-vs-GPU split (ps3gl_report_flip_wait): a high % = GPU-bound, ~0 = CPU-bound. us/sleep
+                     * far above 100 = LV2 usleep granularity, a third problem. */
                     double avg_flip = window_flip_wait_sum / window_count;
                     double avg_sleeps = (double)window_flip_sleep_sum / window_count;
                     ps3gl_log("[ps3gl] flip wait: avg %.2fms (%.0f%% of frame), "
@@ -667,12 +603,8 @@ void ps3gl_end_frame(void)
                                   (window_flip_wait_sum * 1e6) / (double)window_flip_sleep_sum : 0.0);
                 }
                 {
-                    /* The whole point of this line: `render` here EXCLUDES the
-                     * flip wait reported above (subtracted), so it is real
-                     * renderer CPU. Whichever phase dominates is where the
-                     * ~50fps floor actually lives -- and `other` catching it
-                     * would mean the cost is outside all four (HTTP_Run,
-                     * XRcon_Frame, Host_ClientBegin, Host_GetCommands). */
+                    /* `render` here has the flip wait taken out: real renderer CPU. The phase that dominates holds
+                     * the frame rate floor; a large `other` is outside all four phases. */
                     double n = (double)window_count;
                     double render_cpu = (window_phase_render - window_flip_wait_sum) / n;
                     double other = (window_phase_total - window_phase_input - window_phase_server
@@ -690,15 +622,8 @@ void ps3gl_end_frame(void)
                               (window_phase_total / n) * 1000.0);
                 }
                 {
-                    /* Splits the `server` figure above. `think` is the game
-                     * DLL's per-entity think (an env_rope's whole RopeThink --
-                     * rope sim AND its per-segment traces -- is in here);
-                     * `link` is SV_LinkEdict's areanode relink, which every
-                     * MOVETYPE_NOCLIP entity pays once per frame (a rope
-                     * spawns 2 segment entities per segment, all NOCLIP).
-                     * `rest` is server minus both: packets, client commands.
-                     * Call counts distinguish "expensive per call" from
-                     * "called an enormous number of times". */
+                    /* Split of `server`: think (game DLL per-entity think), link (SV_LinkEdict's relink), rest
+                     * (packets, client commands). Call counts tell "expensive per call" from "many calls". */
                     double n = (double)window_count;
                     double sv_think = window_sv_think / n;
                     double sv_link  = window_sv_link / n;
@@ -713,14 +638,8 @@ void ps3gl_end_frame(void)
                               (window_phase_server / n) * 1000.0);
                 }
                 {
-                    /* Splits `server` a second way -- by the three top-level
-                     * calls in Host_ServerFrame instead of by think/link.
-                     * gameframe CONTAINS the think and link figures above
-                     * (SV_Physics nests them), so gameframe minus think minus
-                     * link is the physics loop's own per-entity overhead.
-                     * sendmsgs is snapshot build + delta encoding, which
-                     * scales with networked entity count. `other` is the
-                     * remaining bookkeeping (movevars, timeouts, PrepWorldFrame). */
+                    /* `server` by Host_ServerFrame's three top-level calls. gameframe contains think and link;
+                     * sendmsgs is snapshot build + delta encode; `other` is bookkeeping. */
                     double n = (double)window_count;
                     double rp = window_sv_readpackets / n;
                     double gf = window_sv_gameframe / n;
@@ -731,14 +650,8 @@ void ps3gl_end_frame(void)
                               rp * 1000.0, gf * 1000.0, sm * 1000.0, oth * 1000.0);
                 }
                 {
-                    /* Splits `sendmsgs`. `addents` is the per-entity
-                     * visibility walk (SV_AddEntitiesToPacket -> the game
-                     * DLL's pfnAddToFullPack, once per entity per client);
-                     * `emit` is the delta encode (MSG_WriteDeltaEntity).
-                     * fullpack/frame is the entity count that walk visits --
-                     * if the rope segments dominate, this is where they show
-                     * up, and cost/call separates "too many entities" from
-                     * "each entity too expensive". */
+                    /* Split of `sendmsgs`: addents (the per-entity visibility walk, pfnAddToFullPack) and emit (the
+                     * delta encode). fullpack/frame is the entity count; cost/call tells count from cost. */
                     double n = (double)window_count;
                     double ae = window_sv_addents / n;
                     double em = window_sv_emit / n;
@@ -751,12 +664,8 @@ void ps3gl_end_frame(void)
                               (double)window_sv_addents_calls / n);
                 }
                 {
-                    /* Explains emit's per-entity cost. written/visited near
-                     * 1.00 together with encoders 0 means the game DLL's
-                     * delta encoders were wiped, field suppression is off,
-                     * and every field is transmitted unconditionally -- a
-                     * known regression on this port. A small ratio means
-                     * suppression works and the comparison scan is the cost. */
+                    /* emit's per-entity cost: written/visited near 1.00 with encoders 0 = the delta encoders were
+                     * wiped and every field is sent. A small ratio = suppression works; the scan is the cost. */
                     double n = (double)window_count;
                     double vis = (double)window_delta_visited;
                     double wr  = (double)window_delta_written;
@@ -771,12 +680,8 @@ void ps3gl_end_frame(void)
                                   ? vis / (double)window_delta_entities : 0.0);
                 }
                 {
-                    /* The work the delta-field counters above cannot see.
-                     * Each `test` is a full Delta_TestBaseline field loop, so
-                     * est.compares = tests x fields/ent should reconcile with
-                     * emit's measured time. num_instanced 0 means the cheap
-                     * classname path was never available and every new entity
-                     * paid the full backward search. */
+                    /* What the delta-field counters cannot see: each test is a Delta_TestBaseline field loop.
+                     * num_instanced 0 = every new entity paid the full backward search. */
                     double n = (double)window_count;
                     double fpe = window_delta_entities > 0
                         ? (double)window_delta_visited / (double)window_delta_entities : 0.0;
@@ -790,12 +695,8 @@ void ps3gl_end_frame(void)
                               ((double)window_bl_tests / n) * fpe);
                 }
                 {
-                    /* Sums to the `render` figure above minus 2D/HUD drawing,
-                     * so a large gap between (setup+world+ents+water) and
-                     * `render` means the cost is in the HUD/console/menu pass,
-                     * not the 3D scene -- a bucket nothing else covers.
-                     * `passes` > 1 means a mirror/portal/water-reflection pass
-                     * is re-running the whole scene. */
+                    /* Sums to `render` minus the 2D/HUD pass: a large gap means the cost is in the HUD, console or
+                     * menu. passes > 1 = a mirror, portal or water pass runs the scene again. */
                     double n = (double)window_count;
                     ps3gl_log("[ps3gl] scene phases: setup %.2f world %.2f entities %.2f "
                               "water %.2f | %.1f passes/frame\n",
@@ -806,11 +707,8 @@ void ps3gl_end_frame(void)
                               (double)window_scene_passes / n);
                 }
                 {
-                    /* Splits the `entities` figure above. The previous session
-                     * assumed that phase was all studio models; it is not --
-                     * everything on this line lives inside R_DrawEntitiesOnList.
-                     * A large `clienttri` means the cost is in the game DLL's
-                     * HUD/tri callbacks, which no renderer change can touch. */
+                    /* Split of `entities` (all inside R_DrawEntitiesOnList, not only studio models). A large
+                     * clienttri is in the game DLL's HUD/tri callbacks, which no renderer change reaches. */
                     double n = (double)window_count;
                     ps3gl_log("[ps3gl] entity phases: studio %.2f brush %.2f sprite %.2f "
                               "efx %.2f clienttri %.2f viewmodel %.2f ms\n",
@@ -822,14 +720,8 @@ void ps3gl_end_frame(void)
                               ps3gl_ticks_to_sec(window_ent_viewmodel) / n * 1000.0);
                 }
                 {
-                    /* Splits `studio` + `viewmodel` above, and now fully
-                     * accounts for them: client+entlight+skin+light+build should
-                     * reconcile with those two (`client` is derived by
-                     * subtraction, so it absorbs any residual by construction).
-                     * fill/submit are sub-items OF build -- build minus both is
-                     * the per-mesh GL state churn. Round 1 measured build 4.82ms
-                     * vs light 1.58, so the target is vertex packing and draw
-                     * submission, NOT per-normal lighting. */
+                    /* Split of studio + viewmodel: client (by subtraction), entlight, skin, light, build. fill and
+                     * submit are parts of build; build minus both is the per-mesh GL state churn. */
                     double n = (double)window_count;
                     ps3gl_log("[ps3gl] studio phases: client %.2f entlight %.2f skin %.2f "
                               "light %.2f build %.2f (fill %.2f submit %.2f) ms "
@@ -851,10 +743,8 @@ void ps3gl_end_frame(void)
                               ps3gl_ticks_to_sec(window_stu_cevents) / n * 1000.0);
                 }
                 {
-                    /* The premise check for the whole host-ring change: if
-                     * fallback is ~0 then studio draws were already direct-bound
-                     * and `submit` is something else. hring drops mean the ring
-                     * is undersized and those runs silently fell back to BSS. */
+                    /* The host ring's premise: fallback ~0 means studio draws were direct-bound already. hring
+                     * drops mean the ring is too small and those runs fell back to BSS. */
                     double n = (double)window_count;
                     ps3gl_log("[ps3gl] drawelements: %.1f direct binds/frame, %.1f fallback "
                               "binds/frame (%.0f verts copied/frame) | hring peak %u KB "
@@ -887,11 +777,8 @@ void ps3gl_end_frame(void)
                           (unsigned)window_mip_upload_sum, (unsigned)window_mipped_bind_sum,
                           (unsigned)window_tex_bind_sum);
                 {
-                    /* Once per 5s window, not per frame: cheap scan (<=4096
-                     * slots) over the whole texture pool answering "does the
-                     * mip pyramid actually exist in VRAM right now", the
-                     * strongest CPU-side evidence short of the debug-tint
-                     * visual test. */
+                    /* Once per 5 s window: a scan of the texture pool (4096 slots at most) that says if mip
+                     * chains exist in VRAM now. */
                     unsigned live = 0, mipped = 0, maxlv = 0, swizzled = 0;
                     uint64_t lvsum = 0;
                     for (int i = 0; i < PS3GL_MAX_TEXTURES; i++) {
@@ -905,10 +792,8 @@ void ps3gl_end_frame(void)
                             if (t->num_levels > maxlv) maxlv = t->num_levels;
                         }
                     }
-                    /* swizzled count is not optional instrumentation: with the
-                     * layout change measuring flat against linear, "it made no
-                     * difference" and "it never engaged" produce identical logs
-                     * AND identical visuals without this number. */
+                    /* The swizzled count is needed: with no speed difference against linear, "no gain" and "never
+                     * engaged" give the same log and the same picture without it. */
                     ps3gl_log("[ps3gl] texture layout: %u/%u live textures swizzled, "
                               "%u mipped (avg %.1f levels, max %u)\n",
                               swizzled, live, mipped,
@@ -986,10 +871,8 @@ void ps3gl_end_frame(void)
         ps3gl_frame_fallback_verts = 0;
     }
 
-    /* Report vertex-ring exhaustion once per affected frame. Dropped draws mean
-     * geometry is missing from what the player sees, so this is never noise --
-     * if it appears at all, PS3GL_VRING_SIZE is too small. peak_head is the
-     * high-water mark to size it from. */
+    /* Vertex-ring exhaustion, once per affected frame: dropped draws are missing geometry, so PS3GL_VRING_SIZE
+     * is too small. peak_head is the mark to size it from. */
     if (ps3gl.vring.frame_drops) {
         ps3gl_log("[ps3gl] WARNING: vertex ring exhausted -- dropped %u draw(s) this "
                   "frame (%u total). peak=%u of %u per segment; raise PS3GL_VRING_SIZE\n",
@@ -998,9 +881,8 @@ void ps3gl_end_frame(void)
         ps3gl.vring.frame_drops = 0;
     }
 
-    /* Report the high-water mark as it grows, so the ring can be sized from a
-     * real play session rather than a guess. Only on a 256 KB step, so a long
-     * session produces a handful of lines, not one per frame. */
+    /* The high-water mark as it grows, on 256 KB steps only: a long session gives a few lines, and the ring
+     * can be sized from real play. */
     {
         static uint32_t last_reported_peak = 0;
         if (ps3gl.vring.peak_head >= last_reported_peak + (256u * 1024u)) {

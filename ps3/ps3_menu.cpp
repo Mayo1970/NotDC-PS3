@@ -222,9 +222,9 @@ static bool has_disc_extension(const char* name)
 	const char* dot = strrchr(name, '.');
 	if (!dot)
 		return false;
-	// Only what plugs/ImgReader actually reads: .gdi (iso9660.cpp), .cdi, and
-	// .mds/.nrg (mds.cpp). A .mds pulls in its own .mdf, so that is not listed.
-	static const char* ext[] = { ".gdi", ".cdi", ".mds", ".nrg", ".elf", NULL };
+	// Only what plugs/ImgReader reads: .gdi (iso9660.cpp), .cdi, .chd (chd.cpp) and .mds/.nrg (mds.cpp). A .mds
+	// pulls in its own .mdf, so that is not listed.
+	static const char* ext[] = { ".gdi", ".cdi", ".chd", ".mds", ".nrg", ".elf", NULL };
 	for (int i = 0; ext[i]; i++)
 		if (strcasecmp(dot, ext[i]) == 0)
 			return true;
@@ -343,6 +343,10 @@ static const char* k_oldfly[]    = { "OLD", "FLYCAST", NULL };
 static const char* k_present[]   = { "ALL", "SHOWN", "+ KEEP COLOUR", NULL };
 // SCREEN_* order (ps3_screen.h).
 static const char* k_scrformat[] = { "4:3", "16:9 STRETCH", "16:9 WIDE", NULL };
+static const char* k_firstpass[] = { "OLD", "SKIP", "+ GAME ORDER", NULL };
+// CONSOLE is the byte of the flash file. After it: the DC's own order (NTSC 0, PAL 1; Japanese 0 to Italian 5).
+static const char* k_broadcast[] = { "CONSOLE", "NTSC", "PAL", "DISC", NULL };
+static const char* k_bioslang[]  = { "CONSOLE", "JAPANESE", "ENGLISH", "GERMAN", "FRENCH", "SPANISH", "ITALIAN", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -733,6 +737,33 @@ static Option s_memory[] = {
 	  "FLYCAST: a channel 2 DMA always ends, 0x12 is the TA, DMAOR keeps its real bits (P65). Live." },
 };
 
+// Plan section 7, bundle 14: one row per item; the first value is the old path. No value changes the picture.
+static Option s_cost[] = {
+	{ "Tex Bind Table",  &g_tex_bind_table_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "A texture bind finds its slot in a table, not in a scan of 4096 slots (P72). Live." },
+	{ "GL State Compare", &g_gl_compare_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Render state, sampler and vertex binds go to the RSX only when they change (P72). Live." },
+	{ "TR First Pass",   &g_tr_first_pass_preset, OPT_CHOICE, k_firstpass, 0, 0,0,0, NULL,
+	  "+ OPAQUE DEPTH's depth pass: SKIP draws only what writes depth; GAME ORDER merges (P73). Live." },
+};
+
+// Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's
+// own bytes: a row acts again at each boot.
+static Option s_flash[] = {
+	{ "Broadcast",       &g_broadcast_preset,     OPT_CHOICE, k_broadcast, 0, 0,0,0, NULL,
+	  "TV system in the flash. NTSC: 60 Hz. DISC: PAL for Europe-only discs (P59). Set before boot." },
+	{ "BIOS Language",   &g_bios_lang_preset,     OPT_CHOICE, k_bioslang,  0, 0,0,0, NULL,
+	  "The language the BIOS and the games read from the flash (P37). Set before boot." },
+	{ "Flash Defaults",  &g_flash_defaults_preset, OPT_CHOICE, k_oldfly,   0, 0,0,0, NULL,
+	  "FLYCAST: with no dc_flash.bin a flash is built: USA, English, NTSC (P85). Set before boot." },
+	{ "Console ID",      &g_console_id_preset,    OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: a blank console ID gets a random one; checksum, version set (P85). Set before boot." },
+	{ "Exit Flash Save", &g_exit_save_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The forced exit (3 s after an XMB quit with no answer) saves the flash first (P85). Live." },
+	{ "RTC Local Time",  &g_rtc_local_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The DC clock is the PS3's local time (XMB zone, summer time), not UTC (P12). Set before boot." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -781,6 +812,8 @@ static Page s_opt_pages[] = {
 	{ "OUTPUT",        s_output, (int)(sizeof(s_output) / sizeof(s_output[0])) },
 	{ "SCREEN",        s_screen, (int)(sizeof(s_screen) / sizeof(s_screen[0])) },
 	{ "MEMORY",        s_memory, (int)(sizeof(s_memory) / sizeof(s_memory[0])) },
+	{ "DRAW COST",     s_cost,  (int)(sizeof(s_cost) / sizeof(s_cost[0])) },
+	{ "FLASH / CLOCK", s_flash, (int)(sizeof(s_flash) / sizeof(s_flash[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1248,6 +1281,8 @@ static int* const k_live_opts[] = {
 	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,
 	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
 	&g_ch2_dma_fix_preset,
+	&g_tex_bind_table_preset, &g_gl_compare_preset, &g_tr_first_pass_preset,
+	&g_exit_save_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
@@ -1436,6 +1471,8 @@ void ps3_menu_ingame(void)
 		ps3_outcfg_print("menu", false);
 		ps3_scrcfg_print("menu", false);
 		ps3_memcfg_print("menu", false);
+		ps3_costcfg_print("menu", false);
+		ps3_flashcfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1530,5 +1567,7 @@ int ps3_menu_run(void)
 	ps3_outcfg_print("boot", true);
 	ps3_scrcfg_print("boot", true);
 	ps3_memcfg_print("boot", true);
+	ps3_costcfg_print("boot", true);
+	ps3_flashcfg_print("boot", true);
 	return 1;
 }

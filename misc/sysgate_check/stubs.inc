@@ -22,6 +22,9 @@ extern "C" int get_aica_race_fix_preset() { return getenv("RACEFIX") != 0; }
 // Bundle 6: G2SMALL=1 ends the short G2 DMAs in the start call (P24); the guest here never sets SB_ADDIR.
 extern "C" int get_g2_dma_small_preset() { return getenv("G2SMALL") != 0; }
 extern "C" int get_g2_dma_read_preset() { return 0; }
+// Bundle 15: GetRTC_now()'s row and zone; misc/flash_check tests them.
+extern "C" int get_rtc_local_preset() { return 0; }
+extern "C" int ps3_local_offset_seconds() { return 0; }
 // Named by regs.cpp since bundle 4 and by aica_if.cpp since bundle 5; the presets at their source defaults.
 int g_core_reset_preset = 1, g_ta_list_regs_preset = 1;
 // Bundle 7: regs.cpp's reset value row. OLD here, so the timelines keep their lines; timebase_check moves it.

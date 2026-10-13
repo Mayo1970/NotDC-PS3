@@ -14,6 +14,8 @@ extern "C" int get_dma_fix_preset();
 extern "C" int get_aica_race_fix_preset();
 extern "C" int get_g2_dma_small_preset();
 extern "C" int get_g2_dma_read_preset();
+extern "C" int get_rtc_local_preset();
+extern "C" int ps3_local_offset_seconds();   // ps3/ps3_main.cpp
 extern u32 g_aram_hz_dma;   // ps3/ps3_aica_spe.cpp: 1 while the G2 DMA copies
 
 // G2 DMA counters for [aicafix] (plan 6.5, bundle 6), taken by g2dma_take().
@@ -39,12 +41,19 @@ u32 rtc_EN  = 0;
 
 // ---- RTC ----
 
-// Known Dreamcast epoch: 1998-11-27 00:00:00 local time
-// DC RTC base value at that moment: 0x5BFC8900
+// flash_check: begin rtc
+// 1998-11-27 00:00:00 local time is 0x5BFC8900 on the DC's clock.
 static const time_t  DC_EPOCH_OFFSET = 0x5BFC8900UL;
+// The DC counts from 1950-01-01: 20 years and 5 leap days before the Unix epoch.
+static const time_t  DC_EPOCH_1970   = (20 * 365 + 5) * 24 * 60 * 60;
 
 u32 GetRTC_now()
 {
+    // P12: the PS3's clock is UTC and its C library has no time zone, so the code below gives UTC there.
+    const int zone = ps3_local_offset_seconds();
+    if (get_rtc_local_preset())
+        return (u32)(DC_EPOCH_1970 + time(NULL) + zone);
+
     // Build the reference wall-clock time for the DC epoch
     struct tm ref = {};
     ref.tm_year = 1998 - 1900;
@@ -67,10 +76,11 @@ u32 GetRTC_now()
     localtime_r(&now, &local_now);
 #endif
     if (local_now.tm_isdst > 0)
-        delta += 24 * 3600;
+        delta += 3600;
 
     return (u32)(DC_EPOCH_OFFSET + (u32)delta);
 }
+// flash_check: end rtc
 
 extern s32 rtc_cycles;
 

@@ -1,0 +1,100 @@
+#pragma once
+// Bundle 14 PC check: the rsx/gcm_sys.h names ps3gl uses. The check compares two runs of one build, so each
+// value only has to differ from the others of its kind; most are PSL1GHT's.
+#define GCM_TRUE  1
+#define GCM_FALSE 0
+#define GCM_LOCATION_RSX  0
+#define GCM_LOCATION_CELL 1
+#define GCM_INVALIDATE_TEXTURE 1
+
+#define GCM_NEVER    0x200
+#define GCM_LESS     0x201
+#define GCM_EQUAL    0x202
+#define GCM_LEQUAL   0x203
+#define GCM_GREATER  0x204
+#define GCM_NOTEQUAL 0x205
+#define GCM_GEQUAL   0x206
+#define GCM_ALWAYS   0x207
+
+#define GCM_ZERO                0
+#define GCM_ONE                 1
+#define GCM_SRC_COLOR           0x300
+#define GCM_ONE_MINUS_SRC_COLOR 0x301
+#define GCM_SRC_ALPHA           0x302
+#define GCM_ONE_MINUS_SRC_ALPHA 0x303
+#define GCM_DST_ALPHA           0x304
+#define GCM_ONE_MINUS_DST_ALPHA 0x305
+#define GCM_DST_COLOR           0x306
+#define GCM_ONE_MINUS_DST_COLOR 0x307
+#define GCM_SRC_ALPHA_SATURATE  0x308
+#define GCM_FUNC_ADD            0x8006
+
+#define GCM_KEEP    0x1E00
+#define GCM_REPLACE 0x1E01
+#define GCM_INCR    0x1E02
+#define GCM_DECR    0x1E03
+#define GCM_INVERT  0x150A
+
+#define GCM_CULL_FRONT 0x404
+#define GCM_CULL_BACK  0x405
+#define GCM_CULL_ALL   0x408
+#define GCM_FRONTFACE_CW  0x900
+#define GCM_FRONTFACE_CCW 0x901
+#define GCM_SHADE_MODEL_FLAT   0x1D00
+#define GCM_SHADE_MODEL_SMOOTH 0x1D01
+
+#define GCM_COLOR_MASK_B 0x00000001
+#define GCM_COLOR_MASK_G 0x00000100
+#define GCM_COLOR_MASK_R 0x00010000
+#define GCM_COLOR_MASK_A 0x01000000
+#define GCM_CLEAR_Z 0x01
+#define GCM_CLEAR_S 0x02
+#define GCM_CLEAR_R 0x10
+#define GCM_CLEAR_G 0x20
+#define GCM_CLEAR_B 0x40
+#define GCM_CLEAR_A 0x80
+
+#define GCM_TYPE_POINTS         1
+#define GCM_TYPE_LINES          2
+#define GCM_TYPE_LINE_LOOP      3
+#define GCM_TYPE_LINE_STRIP     4
+#define GCM_TYPE_TRIANGLES      5
+#define GCM_TYPE_TRIANGLE_STRIP 6
+#define GCM_TYPE_TRIANGLE_FAN   7
+#define GCM_TYPE_QUADS          8
+#define GCM_TYPE_QUAD_STRIP     9
+
+#define GCM_VERTEX_ATTRIB_POS    0
+#define GCM_VERTEX_ATTRIB_COLOR0 3
+#define GCM_VERTEX_ATTRIB_TEX0   8
+#define GCM_VERTEX_ATTRIB_TEX1   9
+#define GCM_VERTEX_DATA_TYPE_F32 2
+#define GCM_VERTEX_DATA_TYPE_U8  4
+#define GCM_INDEX_TYPE_32B 0
+#define GCM_INDEX_TYPE_16B 1
+
+#define GCM_TEXTURE_DIMS_2D 2
+#define GCM_TEXTURE_FORMAT_SWZ 0x00
+#define GCM_TEXTURE_FORMAT_LIN 0x20
+#define GCM_TEXTURE_FORMAT_A8R8G8B8 5
+#define GCM_TEXTURE_MAX_ANISO_1  0
+#define GCM_TEXTURE_MAX_ANISO_2  1
+#define GCM_TEXTURE_MAX_ANISO_4  2
+#define GCM_TEXTURE_MAX_ANISO_6  3
+#define GCM_TEXTURE_MAX_ANISO_8  4
+#define GCM_TEXTURE_MAX_ANISO_10 5
+#define GCM_TEXTURE_MAX_ANISO_12 6
+#define GCM_TEXTURE_MAX_ANISO_16 7
+#define GCM_TEXTURE_NEAREST 1
+#define GCM_TEXTURE_LINEAR 2
+#define GCM_TEXTURE_NEAREST_MIPMAP_NEAREST 3
+#define GCM_TEXTURE_LINEAR_MIPMAP_NEAREST 4
+#define GCM_TEXTURE_NEAREST_MIPMAP_LINEAR 5
+#define GCM_TEXTURE_LINEAR_MIPMAP_LINEAR 6
+#define GCM_TEXTURE_CONVOLUTION_QUINCUNX 1
+#define GCM_TEXTURE_REPEAT 1
+#define GCM_TEXTURE_MIRRORED_REPEAT 2
+#define GCM_TEXTURE_CLAMP_TO_EDGE 3
+#define GCM_TEXTURE_CLAMP 5
+#define GCM_TEXTURE_UNSIGNED_REMAP_NORMAL 0
+#define GCM_TEXTURE_ZFUNC_NEVER 0

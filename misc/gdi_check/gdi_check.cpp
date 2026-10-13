@@ -1,6 +1,5 @@
-// Plan section 7, bundle 2 PC check (WSL) for plugs/ImgReader: the real iso9660.cpp and common.cpp on GDI sets made
-// here in the layouts of Flycast's tests/files/test_gdis (a: '\' paths, b: plain, c: a sub-folder, d: a quoted name).
-// P23 GDI parser and TOC fields, P57 paths, P9 2340-byte sectors, P47 track lookup, P34 file close. Arg: a work folder.
+// Plan section 7, bundle 2 PC check (WSL): the real iso9660.cpp and common.cpp on GDI sets made here in the layouts of
+// Flycast's test_gdis (a: '\' paths, b: plain, c: sub-folder, d: quoted name). P23, P57, P9, P47, P34. Arg: work folder.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -19,7 +18,13 @@ int get_gdi_parser_preset() { return o_parser; }
 int get_gdi_paths_preset() { return o_paths; }
 }
 
-// ---- what common.cpp links to: no CDI, no MDS ----
+// ---- what common.cpp links to: no CDI, no MDS, no CHD ----
+void chd_DriveReadSector(u8*, u32, u32, u32) {}
+void chd_DriveGetTocInfo(TocInfo*, DiskArea) {}
+u32 chd_DriveGetDiscType() { return NoDisk; }
+void chd_GetSessionsInfo(SessionInfo*) {}
+bool chd_init(char*) { return false; }
+void chd_term() {}
 void cdi_DriveReadSector(u8*, u32, u32, u32) {}
 void cdi_DriveGetTocInfo(TocInfo*, DiskArea) {}
 u32 cdi_DriveGetDiscType() { return NoDisk; }

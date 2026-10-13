@@ -182,6 +182,17 @@ extern int g_mmu_bits_preset;
 extern int g_p4_mirror_preset;
 extern int g_ocr_banks_preset;
 extern int g_ch2_dma_fix_preset;
+// Bundle 14 (plan section 7), the DRAW COST page.
+extern int g_tex_bind_table_preset;
+extern int g_gl_compare_preset;
+extern int g_tr_first_pass_preset;
+// Bundle 15 (plan section 7), the FLASH / CLOCK page.
+extern int g_broadcast_preset;
+extern int g_bios_lang_preset;
+extern int g_flash_defaults_preset;
+extern int g_console_id_preset;
+extern int g_exit_save_preset;
+extern int g_rtc_local_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -204,3 +215,7 @@ void ps3_outcfg_print(const char* when, bool always);
 void ps3_scrcfg_print(const char* when, bool always);
 // [memcfg] line: the MEMORY page's rows, the same way.
 void ps3_memcfg_print(const char* when, bool always);
+// [costcfg] line: the DRAW COST page's rows, the same way.
+void ps3_costcfg_print(const char* when, bool always);
+// [flashcfg] line: the FLASH / CLOCK page's rows, the same way.
+void ps3_flashcfg_print(const char* when, bool always);

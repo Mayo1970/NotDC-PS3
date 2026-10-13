@@ -1,5 +1,5 @@
 // Bundle 4 PC check, one build of the draw code (run.sh cuts bg_eval..draw_scene out of ps3_rend.cpp) over a GL that
-// records every call. Built twice: the tree's file, and R4_REF = the frozen one. The SPU build is off.
+// records every call. Three builds: the tree, R4_REF (before bundle 4), R4_OLD (before bundle 14). No SPU build.
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -11,6 +11,8 @@
 #include "rend4.h"
 #ifdef R4_REF
 #define SIDE(x) r4_ref_##x
+#elif defined(R4_OLD)
+#define SIDE(x) r4_old_##x
 #else
 #define SIDE(x) r4_new_##x
 #endif
@@ -195,22 +197,27 @@ typedef struct
 } ps3gl_vertex_t;
 #pragma pack(pop)
 
+// Every block of the scene, one after the other with a spare vertex between: bundle 14 GAME ORDER can ask for a
+// second one. The region writes only the newest block, so a move of the older words is safe.
 std::vector<uint32_t> g_vbmem;
-uint32_t g_vb_alloc;
+uint32_t g_vb_alloc, g_vb_start;  // the end of the newest block and its first vertex, counted over all blocks
 ps3gl_vertex_t* ps3gl_vring_alloc(int count, uint32_t* off)
 {
 	call(OP_ALLOC, (uint32_t)count);
-	g_vbmem.assign((size_t)count * 9 + 9, 0xEEEEEEEEu);
-	g_vb_alloc = (uint32_t)count;
-	*off = 0x1000;
-	return (ps3gl_vertex_t*)g_vbmem.data();
+	g_vb_start = (uint32_t)(g_vbmem.size() / 9);
+	g_vbmem.resize(g_vbmem.size() + (size_t)count * 9 + 9, 0xEEEEEEEEu);
+	g_vb_alloc = g_vb_start + (uint32_t)count;
+	*off = 0x1000 + g_vb_start * 36;
+	return (ps3gl_vertex_t*)(g_vbmem.data() + (size_t)g_vb_start * 9);
 }
 void* ps3gl_vring_alloc_raw(uint32_t, uint32_t*) { r4_die("the SPU's vertex block with the SPU build off"); }
 
 void draw_range(GLenum prim, uint32_t off, uint32_t stride, int first, int count, uint32_t shift)
 {
-	if (off != 0x1000 || first < 0 || count <= 0 || (uint32_t)(first + count) + shift > g_vb_alloc + shift * 0 + (shift ? 2 : 0))
-		r4_die("draw of %d+%d (offset %X, shift %u) outside the block of %u", first, count, off, shift, g_vb_alloc);
+	if (off != 0x1000 + g_vb_start * 36 || first < 0 || count <= 0 ||
+	    g_vb_start + (uint32_t)(first + count) + shift > g_vb_alloc + (shift ? 2 : 0))
+		r4_die("draw of %d+%d (offset %X, shift %u) outside the block %u..%u", first, count, off, shift, g_vb_start, g_vb_alloc);
+	first += (int)g_vb_start;
 	R4Call c = snap(R4_DRAW);
 	c.prim = prim;
 	c.first = (uint32_t)first;
@@ -369,6 +376,9 @@ uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, 
 	s_do.flat = (u8)s->flat;
 	s_do.passes = (u8)s->passes;
 	s_do.tri_sort = (u8)s->tri_sort;
+#ifndef R4_OLD
+	s_do.first_pass = (u8)s->first_pass;
+#endif
 	s_mo_sprite = s->sprite_cull != 0;
 	const bool rects = (s_rl.opt & TAOPT_TILE_CLIP) != 0;
 	s_do.clip = rects ? (u8)s->clip_level : 0;
@@ -382,7 +392,7 @@ uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, 
 	g_calls.clear();
 	g_tri_x.clear();
 	g_vbmem.clear();
-	g_vb_alloc = 0;
+	g_vb_alloc = g_vb_start = 0;
 	memset(&g_st, 0, sizeof(g_st));
 	g_st.color_mask = 1;
 	g_st.depth_mask = 1;
@@ -397,7 +407,7 @@ uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, 
 	return (uint32_t)g_calls.size();
 }
 
-#ifndef R4_REF
+#if !defined(R4_REF) && !defined(R4_OLD)
 uint32_t r4_new_tris(const float** x)
 {
 	*x = g_tri_x.data();

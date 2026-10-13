@@ -127,7 +127,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | GD-ROM DMA part merged: plan 5.34; TArender.MD TR4 covers the store stage only |
 | P10 | PVR register and list rules (7) | bug | unknown games | small to medium | new |
 | P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
-| P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new |
+| P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new; built 2026-10-13, bundle 15, with the row "RTC Local Time" (the line never runs on the PS3) |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
 | P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a (built 2026-10-12, "Fog" row, HW SUCCESS 2026-10-12, default TABLE in source), 3b (open), 3j (done) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
@@ -152,7 +152,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P34 | Disc swap | feature | Shenmue, Skies of Arcadia, Grandia II, D2, RE Code Veronica | ~150 lines | corrects section 4 |
 | P35 | CUE/BIN and CHD readers | feature | more image formats | ~250 lines / 6-8K lines | new |
 | P36 | Cheat files and 16:9 output | feature | widescreen codes | ~250 lines | new |
-| P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13 |
+| P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13; the BIOS language built 2026-10-13 as the row "BIOS Language", bundle 15, default CONSOLE, no HW run |
 | P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it) |
 | P39 | reios (HLE BIOS) | feature | boot without `dc_boot.bin` | ~2K lines | low value |
 | P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | merged: plan 6.8 |
@@ -174,7 +174,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (old logs: Space Channel 5 35-62 fmov/s, Quake3.cdi up to 3.5K/s, Rayman 2 1-3/s) | ~5 lines | built 2026-10-11 without fneg (bundle 8, "JIT PR MOVES" OFF), no HW run; merged: plan 5.39; fneg after P32 |
 | P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify built 2026-10-11 (bundle 8, "JIT RM 2/3" VERIFY), no HW run; merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
 | P58 | MMUCR fields read the wrong bits on big endian | bug | Border Down (no picture); every game that uses the TLB for store queues | 2 lines; + JIT cache clear (~3) and V = 0 skip (1) | bundle 13 (2026-10-11); Border Down is an open item in plan section 0 |
-| P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | bundle 15 (2026-10-11); corrects plan 3i ("Broadcast is not touched, as in Flycast") |
+| P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | bundle 15 (2026-10-11); corrects plan 3i ("Broadcast is not touched, as in Flycast"); built 2026-10-13 as the row "Broadcast", default CONSOLE, no HW run; 10 games at 50 Hz in the old logs |
 | P60 | Present only the renders the game shows | bug (image) | flashing screens and mirrors (South Park, NFL QB Club 2000, Vanishing Point, Metropolis Street Racer), FMV glitches; Quake III split screen | ~40-80 lines + ~30 | fits bundle 11; P2 has the swap rule as pacing only |
 | P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
 | P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
@@ -187,8 +187,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 12; VMU beep: bundle 18 (re-cut 2026-10-12) |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
 | P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
-| P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | bundle 14; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
-| P73 | Small render-thread items (4) | speed | fewer draws and copies (not measured) | 4-30 lines each | bundle 14; plan 3k's parked "cheaper first pass"; counters first |
+| P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | HW SUCCESS 2026-10-13 (Matt; bundle 14): rows Tex Bind Table and GL State Compare, default ON in source; Crazy Taxi: a bind 1.47 -> 0.53 us, `glEnd` per draw 1.71 -> 1.08 us; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
+| P73 | Small render-thread items (4) | speed | fewer draws and copies (not measured) | 4-30 lines each | the first pass: HW SUCCESS 2026-10-13 (Matt; bundle 14): row TR First Pass (the skips, and the first pass in game order), default + GAME ORDER in source; Crazy Taxi: 1033 -> 615 TR draws per render; the merge key mask, the texture lifetime and the index list are open (not built); `[texlife]`: 68% of the decodes are textures the 180-frame rule freed; `[cost] key`: 13-20% fewer opaque state changes with a key mask; counters for the merge key and the texture lifetime; the index list not built; plan 3k's parked "cheaper first pass" |
 | P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there |
 | P75 | RTT read-back never returns (PSL1GHT `rsxSetTransferData`) | bug (hang) | the Crazy Taxi pause freeze; every render to texture | 3 + 2 lines | bundle 11, first; the open item of plan section 0; then P66's RTT scaler |
 | P76 | Small RTT and present fixes (5) | bug | RTT games; static 2D screens | 1-8 lines each | bundle 11; new facts for P54 and P10; corrects section 4 (`9dbca9632`) |
@@ -200,7 +200,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: bundle 19 (P61) |
 | P83 | G11 facts: a first stage with no V.42, the flash account, the traps | reference | G11 (modem) | stage 1 ~1,600 lines, not 4,176 | GOALS.md G11 (not bundled); extends P70 |
 | P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
-| P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6 |
+| P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save", default old path, no HW run |
 | P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 21 (parked for the end, Matt 2026-10-12); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
@@ -833,7 +833,7 @@ Adventure intro FMV, `[stall] dma`.
   sum of entries x (billed - plain cycles) on the `[HOTC]` line.
 - Byte order: none.
 
-### P72 ps3gl state path: texture bind scan, no compare before set  `[ ]`
+### P72 ps3gl state path: texture bind scan, no compare before set  `[x]` HW SUCCESS 2026-10-13 (Matt; plan bundle 14): rows Tex Bind Table and GL State Compare on the DRAW COST page, default ON in source (not packaged); Crazy Taxi: a bind 1.47 -> 0.53 us, `glEnd` per draw 1.71 -> 1.08 us, render busy 47.2% -> 29.2% with the three rows of the bundle ON (plan section 0)
 
 - Flycast keeps a GL state cache (`core/rend/gles/glcache.h:11-28`,
   :57-70, :85-112, :126 on): every setter compares first. A run that
@@ -874,7 +874,7 @@ Adventure intro FMV, `[stall] dma`.
 - HW: a dense Crazy Taxi drive at + OPAQUE DEPTH: busy, the `gl` share,
   SPEED at 11-13K vertices. Byte order: none.
 
-### P73 Small render-thread items  `[ ]`
+### P73 Small render-thread items  `[~]` the first pass: HW SUCCESS 2026-10-13 (Matt; plan bundle 14): row TR First Pass (OLD / SKIP / + GAME ORDER), default + GAME ORDER in source (not packaged); Crazy Taxi: 1033 -> 615 TR draws per render; open: the merge key mask, the texture lifetime, the index list (not built); counters for the merge key (`[cost] key`) and the texture lifetime (`[texlife]`); the index list not built (plan section 0)
 
 - The first pass of + OPAQUE DEPTH (plan 3k, the parked "cheaper first
   pass"). The sort leaves about 2.4 triangles per run (Crazy Taxi: 1240
@@ -1215,7 +1215,7 @@ Games affected: unknown for each.
   handler cannot see the time inside the slice: the JIT would need to store it
   before a cold memory call. Medium, minor gain.
 
-### P12 RTC under DST  `[ ]`
+### P12 RTC under DST  `[~]` the line fixed 2026-10-13, bundle 15 (plan section 0); it never runs on the PS3 (293 old boots: the clock is UTC, `tm_isdst` is 0), so row "RTC Local Time" (the XMB's time zone and summer time) built with it, default OFF, no HW run
 
 - `GetRTC_now()` adds 24 * 3600 when `tm_isdst > 0`
   (`dc/aica/aica_if.cpp:66-67`); it should be 3600. Reicast uses the
@@ -1975,7 +1975,7 @@ Flycast's RTT games).
   UTLB entries, with no MMU-enabled line, and stop right after the BIOS
   logo; Sonic Shuffle's flushes land in boot ROM. Add them to the HW check.
 
-### P59 Flash broadcast byte: NTSC, as Flycast writes it  `[ ]`
+### P59 Flash broadcast byte: NTSC, as Flycast writes it  `[~]` "Broadcast" (CONSOLE / NTSC / PAL / DISC) built 2026-10-13, bundle 15 (plan section 0), default CONSOLE, no HW run; the old logs: 10 of 23 games stay at 50 Hz in every boot, not 3
 
 - Flycast `fixUpDCFlash()` (`core/hw/flashrom/nvmem.cpp:151-170`) runs at
   every boot, after the console flash loads (:255-257). It writes Region,
@@ -2710,7 +2710,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   seen by the JIT (our only SMC guards are CCR.ICI clears and a list of known
   addresses).
 
-### P37 Front-end extras  `[ ]`
+### P37 Front-end extras  `[~]` the BIOS language: "BIOS Language" built 2026-10-13, bundle 15 (plan section 0), default CONSOLE, no HW run; the rest open (bundle 16)
 
 - One VMU file per game, named by the product ID from the disc header
   (Flycast `core/oslib/oslib.cpp:50-72`; `PerGameVmu` defaults to true,
@@ -3039,7 +3039,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   corners go above 128. G12 step 1 would copy this dead zone to the right
   stick. About 15 lines. The feel is not verified on HW.
 
-### P85 Flash defaults, and the flash save at exit  `[ ]` reference for GOALS.md G13 and G10
+### P85 Flash defaults, and the flash save at exit  `[~]` "Flash Defaults", "Console ID" and "Exit Flash Save" built 2026-10-13, bundle 15 (plan section 0), default OLD, OLD and OFF, no HW run; the `SaveSettings()` call at an RTC write not touched; reference for GOALS.md G13 and G10
 
 - Language: a new syscfg block gets language 0 = Japanese
   (`dc_flash_set_time()`, `dc/flash_fix.cpp:113-118`; its comment says

@@ -38,6 +38,12 @@ SRCS := $(patsubst ./%,%,$(SRCS))
 EXCLUDE := plugs/nullAICA/mem.cpp
 SRCS := $(filter-out $(EXCLUDE),$(SRCS))
 
+# G14 (CHD images): chdr, the LZMA decoder and libFLAC's decoder files from Reicast's deps, unchanged. Ours: the
+# shims deps/coreio, deps/crypto, deps/zlib and LzmaEncProps.c (the encoder's property bytes). misc/chd_check reads CHD_DEFS.
+CHD_SRCS := $(wildcard deps/chdr/*.c) deps/lzma/LzmaDec.c deps/lzma/LzmaEncProps.c $(wildcard deps/flac/src/libFLAC/*.c)
+CHD_DEFS := -DCHD5_LZMA -DCHD5_FLAC -D_7ZIP_ST -DBUILD_COMPILER=0 -DCOMPILER_CLANG=1 -DPACKAGE_VERSION=\"1.3.2\" -DFLAC__HAS_OGG=0 -DFLAC__NO_DLL -DFLAC__NO_ASM -DHAVE_LROUND -DHAVE_STDINT_H -DHAVE_STDLIB_H -DHAVE_SYS_PARAM_H
+SRCS += $(CHD_SRCS)
+
 ASMS := $(wildcard ps3/*.S)
 OBJS := $(patsubst %,$(BUILD)/%.o,$(basename $(SRCS) $(ASMS)))
 
@@ -62,6 +68,9 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
           -I$(PS3DEV)/portlibs/ppu/include/freetype2
 
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
+
+# libFLAC's bit reader takes the host byte order from WORDS_BIGENDIAN: without it the PPU decodes noise.
+$(BUILD)/deps/%.o: CFLAGS += -w $(CHD_DEFS) -DWORDS_BIGENDIAN=1 -Ideps/flac/include -Ideps/flac/src/libFLAC/include -Ideps/flac/compat
 
 # --no-multi-toc: a split TOC emits r2off stubs that hang the PS3 at boot.
 # --wrap: stdout has no console; ps3/ps3_main.cpp sends it to the UDP log.

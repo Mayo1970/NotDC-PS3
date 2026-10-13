@@ -205,12 +205,27 @@ extern uint32_t ps3gl_frame_batched_poly_count;
  * NotDC P25: the colour attribute starts color_shift vertices later (flat shading from the RSX's first vertex). */
 static void bind_vertex_attribs(gcmContextData *ctx, uint32_t vb_offset, uint32_t stride, uint32_t color_shift)
 {
+    const int tc1_u8 = ps3gl.active_shader >= PS3GL_TENV_BUMP_REPLACE;
+
+    /* PS3GL_FAST_COMPARE: the binds are register state, so a draw from the same block with the same stride,
+     * colour shift and texcoord1 form keeps them. */
+    if (ps3gl.fast & PS3GL_FAST_COMPARE) {
+        if (ps3gl.vattr_valid && ps3gl.vattr_off == vb_offset && ps3gl.vattr_stride == stride &&
+            ps3gl.vattr_shift == color_shift && ps3gl.vattr_tc1_u8 == tc1_u8)
+            return;
+        ps3gl.vattr_valid  = 1;
+        ps3gl.vattr_off    = vb_offset;
+        ps3gl.vattr_stride = stride;
+        ps3gl.vattr_shift  = color_shift;
+        ps3gl.vattr_tc1_u8 = tc1_u8;
+    }
+
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_POS, 0, vb_offset + PS3GL_VATTR_POS_OFF,
                              stride, 4, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX0, 0, vb_offset + PS3GL_VATTR_TC0_OFF,
                              stride, 2, GCM_VERTEX_DATA_TYPE_F32, GCM_LOCATION_RSX);
     /* NotDC 3j: a bump program reads u1's 4 bytes (the offset colour) as normalised RGBA, as COLOR0 is read. */
-    if (ps3gl.active_shader >= PS3GL_TENV_BUMP_REPLACE)
+    if (tc1_u8)
         rsxBindVertexArrayAttrib(ctx, GCM_VERTEX_ATTRIB_TEX1, 0, vb_offset + PS3GL_VATTR_TC1_OFF,
                                  stride, 4, GCM_VERTEX_DATA_TYPE_U8, GCM_LOCATION_RSX);
     else
