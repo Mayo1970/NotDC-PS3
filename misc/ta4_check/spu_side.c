@@ -114,6 +114,10 @@ void SIDE(fence)(uint32_t ctx, T4Lists* l)
 		exit(1);
 	}
 	memcpy(l->vtx, o->vtx, (size_t)res.nvtx * sizeof(SpeVtx));
+#ifndef T4_REF
+	if (res.opt & TAOPT_OFFS)
+		memcpy(l->offs, o->offs, (size_t)res.nvtx * 4);
+#endif
 	for (uint32_t i = 0; i < res.nstrip; i++)
 	{
 		l->strip[i][0] = o->strip[i].first;
@@ -139,4 +143,6 @@ void SIDE(fence)(uint32_t ctx, T4Lists* l)
 
 #ifndef T4_REF
 uint32_t spu_new_bad(void) { return echo.bad; }
+uint32_t spu_new_planes(void) { return echo.spr_plane; }
+double spu_new_div(double a, double b) { return spr_div(a, b); }
 #endif

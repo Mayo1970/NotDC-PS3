@@ -25,6 +25,9 @@
 #define TAOPT_TR_VOL     4u   // P27: the translucent volume list is kept, tagged 1 in the volume record
 #define TAOPT_VOL_8K     8u   // P66: 8192 volume triangles
 #define TAOPT_TILE_CLIP  16u  // P10: the user clip rect in the param's reserved bits (ISP 19:0, PCW 9:8)
+// Plan section 7, bundle 17.
+#define TAOPT_SPR_PLANE  32u  // P80: a sprite's fourth corner takes its 1/W, u and v from the plane of the other three
+#define TAOPT_OFFS       64u  // 3b: every vertex's offset colour is kept (SpeOut.offs, TaContext.offs)
 // Flycast's tileclip rect, xmin | xmax << 6 | ymin << 12 | ymax << 17, at a list init: tiles 0..39 by 0..14.
 #define TA_CLIP_RESET    ((39u << 6) | (14u << 17))
 
@@ -78,7 +81,8 @@ typedef struct
 	volatile uint32_t wden;       // 1/W below FLT_MIN (the PPU keeps a denormal)
 	volatile uint32_t rel_waits;  // S3: RESETs that waited for the render thread, and the ticks they waited
 	volatile uint32_t rel_ticks;
-	uint32_t pad[4];
+	volatile uint32_t spr_plane;  // P80: sprites whose fourth corner came from the plane
+	uint32_t pad[3];
 } __attribute__((aligned(128))) SpeEcho;
 
 // One per FENCE: the context's position and list counts since its last RESET. Floats as bits.
@@ -108,6 +112,8 @@ typedef struct
 	SpeParam param[SPE_MAX_PARAMS];
 	SpeModTri mtri[SPE_MAX_MODTRI];
 	SpeModVol mvol[SPE_MAX_MODVOL];
+	// 3b: vtx's offset colours (ARGB), written with TAOPT_OFFS only. The spare words take the builder's last window.
+	uint32_t offs[SPE_MAX_VTX + 512];
 } __attribute__((aligned(128))) SpeOut;
 
 // Read once by the SPU at start.

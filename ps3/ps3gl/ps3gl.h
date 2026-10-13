@@ -70,7 +70,11 @@
 #define PS3GL_TENV_FOGB_MODULATE      21
 #define PS3GL_TENV_FOGB_MODULATE_TA   22   /* alpha from the texture alone (DC ShadInstr 1) */
 #define PS3GL_TENV_FOGB_DECAL         23
-#define PS3GL_TENV_COUNT        24
+/* NotDC bundle 17: the programs of shaders/compile_dc.sh (ps3gl_shader_dc.h), which ps3gl_dc_offs() and ps3gl_dc_xt()
+ * pick: the offset colour, the colour clamp and the trilinear weight. */
+#define PS3GL_TENV_DC_FIRST     24
+#define PS3GL_DC_PROGRAMS       39
+#define PS3GL_TENV_COUNT        (PS3GL_TENV_DC_FIRST + PS3GL_DC_PROGRAMS)
 
 /* ps3gl_dc_fog() modes. */
 #define PS3GL_FOG_NONE      0
@@ -215,6 +219,8 @@ typedef struct {
     rsxProgramConst    *mvp_const;
     rsxProgramConst    *clip_plane_const; /* world-space clip plane uniform; NULL if not in binary */
     rsxProgramConst    *fog_const;        /* NotDC 3a: fogp of the fog VP, else NULL */
+    rsxProgramConst    *cmin_const;       /* NotDC bundle 17: cmin and cmax of the dc VP, else NULL */
+    rsxProgramConst    *cmax_const;
 
     rsxFragmentProgram *fp;
     void               *fp_ucode;
@@ -339,6 +345,11 @@ typedef struct {
     int                 dc_fog;
     float               dc_fog_scale;
     float               dc_fog_scale_uploaded;
+
+    /* NotDC bundle 17: ps3gl_dc_offs() and ps3gl_dc_xt() of the next draws; the dc VP's cmin, cmax and weight (9 floats)
+     * with the values last sent. */
+    int                 dc_offs, dc_xt;
+    float               dc_xt_v[9], dc_xt_uploaded[9];
 
     /* NotDC bundle 14: the PS3GL_FAST_* bits, and for PS3GL_FAST_COMPARE the vertex attribute binds the RSX holds
      * (vattr_valid 0 = not known). */
@@ -489,6 +500,13 @@ void ps3gl_tex_bump(int on);
 void ps3gl_dc_fog(int mode);
 /* The fog VP's scale: texcoord0.z = position.z * scale. */
 void ps3gl_dc_fog_scale(float scale);
+
+/* PS3-only (NotDC bundle 17, plan 3b): the next textured draws add texcoord1's RGB (the offset colour) after the
+ * texture. A texenv or a bump program with no such program draws without it. */
+void ps3gl_dc_offs(int on);
+/* PS3-only (NotDC bundle 17): the next draws clamp the colour to cmin..cmax (RGBA) before the fog and scale it by tril
+ * after it. A draw that only needs one of the two gives the other its neutral value. on = 0 ends it. */
+void ps3gl_dc_xt(int on, const float *cmin, const float *cmax, float tril);
 /* The active TMU holds a program's own table: enabled, it binds its texture but does not pick MODULATE2. */
 void ps3gl_tex_aux(int on);
 

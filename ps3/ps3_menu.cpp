@@ -321,6 +321,8 @@ static const char* k_passes[]    = { "OFF", "ON", "+ TR DEPTH", NULL };
 static const char* k_tileclip[]  = { "OFF", "INSIDE", "+ OUTSIDE", NULL };
 static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEPTH", NULL };
 static const char* k_fog[]       = { "OFF", "TABLE", "+ VERTEX", NULL };
+static const char* k_ptblend[]   = { "OFF", "ON", "+ ALPHA 1", NULL };
+static const char* k_corner[]    = { "OLD", "PLANE", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_aicasync[]  = { "OFF", "ON", "+ BLOCK SYNC", "+ SAMPLE SYNC", NULL };
 static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
@@ -651,8 +653,8 @@ static Option s_renderer[] = {
 	  "Punch-through polygons always write depth (P25, Worms World Party)." },
 	{ "TR Depth Write",  &g_tr_sort_depth_preset, OPT_CHOICE, k_trdepth,   0, 0,0,0, NULL,
 	  "OFF IF SORTED: auto-sorted translucent polygons write no depth (P25)." },
-	{ "PT Blend",        &g_pt_blend_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Punch-through polygons blend with their own factors (P25)." },
+	{ "PT Blend",        &g_pt_blend_preset,      OPT_CHOICE, k_ptblend,   0, 0,0,0, NULL,
+	  "Punch-through polygons blend (P25). + ALPHA 1: with alpha 1 after their test (P79)." },
 	{ "Sprite Cull",     &g_sprite_cull_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Sprites cull the other face (P25, South Park Rally menus)." },
 	{ "Flat Shading",    &g_flat_shade_preset,    OPT_CHOICE, k_flat,      0, 0,0,0, NULL,
@@ -671,6 +673,14 @@ static Option s_renderer[] = {
 	  "Auto-sorted translucent polygons sort per triangle. 3 ways to write depth (3k)." },
 	{ "Fog",             &g_fog_preset,           OPT_CHOICE, k_fog,       0, 0,0,0, NULL,
 	  "Distance fog from the fog table. + VERTEX adds the fog games set per vertex (3a)." },
+	{ "Sprite Corner",   &g_sprite_corner_preset, OPT_CHOICE, k_corner,    0, 0,0,0, NULL,
+	  "PLANE: a sprite's fourth corner lies on the plane of the other three (P80)." },
+	{ "Offset Colour",   &g_offset_colour_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Textured polygons add their offset colour: highlights on models (3b)." },
+	{ "Colour Clamp",    &g_colour_clamp_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Polygons that ask for it clamp their colour to the FOG_CLAMP registers (3b)." },
+	{ "Trilinear",       &g_trilinear_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The two passes of a trilinear polygon draw with their weights (P25, NFL 2K2)." },
 };
 
 // Plan section 7, bundle 7: one row per item; the first value is the old path.
@@ -1308,6 +1318,7 @@ static int* const k_live_opts[] = {
 	&g_exit_save_preset,
 	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,
 	&g_maple_frame_preset, &g_vmu_screen_preset,
+	&g_sprite_corner_preset, &g_offset_colour_preset, &g_colour_clamp_preset, &g_trilinear_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 

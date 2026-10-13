@@ -1,0 +1,30 @@
+// NotDC bundle 17: fog_vp plus what the XT programs of dc_fp.fcg read. cmin and cmax are the colour clamp's ends
+// (FOG_CLAMP_MIN, FOG_CLAMP_MAX as RGBA), fogp.y is the trilinear weight; all three are constants of the draw.
+void main(
+    float4 position : ATTR0,
+    float4 color    : ATTR3,
+    float2 tc0      : ATTR8,
+    float4 offs     : ATTR9,
+
+    uniform float4x4 mvp,
+    uniform float4   fogp,
+    uniform float4   cmin,
+    uniform float4   cmax,
+
+    out float4 oPosition : POSITION,
+    out float4 oColor    : COLOR0,
+    out float3 oTc0      : TEXCOORD0,
+    out float4 oOffs     : TEXCOORD1,
+    out float4 oCmin     : TEXCOORD2,
+    out float4 oCmax     : TEXCOORD3,
+    out float4 oXtp      : TEXCOORD4
+)
+{
+    oPosition = mul(mvp, position);
+    oColor    = color;
+    oTc0      = float3(tc0, position.z * fogp.x);
+    oOffs     = offs;
+    oCmin     = cmin;
+    oCmax     = cmax;
+    oXtp      = fogp.yyyy;
+}

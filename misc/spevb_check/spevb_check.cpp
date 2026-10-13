@@ -64,8 +64,10 @@ static void die(const char* fmt, ...)
 
 // Plan 3j: the bump passes set it; the SPU compare runs with it off, as the PPU never builds bump scenes there.
 static bool s_bump_on;
-// Plan 3a: off, so a run carries offset colours only as a bump run.
+// Plan 3a: off, so a run carries offset colours only as a bump run, or (3b) as an offset-colour run.
 static u32 s_fog;
+// Bundle 17, 3b Offset Colour: the one draw rule the region reads.
+static struct { bool offs; } s_do;
 // The 3j glBegin pass (Strip Merge off) records each vertex and its offset colour; any other pass has a buffer.
 struct ImmVtx { const DcVertex* v; u32 offs; };
 static std::vector<ImmVtx>* g_imm;
@@ -88,7 +90,7 @@ static u32 apply_param(const DcParam& p, u32)
 }
 // Bundle 4: draw_vb's clip and colour shift are off here (misc/rend4_check runs them); the draw is one range.
 enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
-struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; };
+struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; int bx, by, bw, bh; };
 static ClipView s_cv;
 static u32 s_clip_mode, s_flat_shift;
 static int s_clip_r[4];
@@ -146,6 +148,8 @@ struct Scene
 	bool autosort, wild;
 	// Bundle 4: Sprite Cull (P25), the clip rect bits in the merge key (P10); 3k: the TR list is the PPU's.
 	bool spr, clip, notr;
+	// Bundle 17, 3b: SpeOut.offs holds every vertex's offset colour, and offset-colour runs carry it.
+	bool offs;
 };
 
 static u32 gen_xy()
@@ -243,6 +247,8 @@ static u32 tr_ppu_expected(const Scene& s)
 	return ntr > SPEVB_TR_MAX;
 }
 
+static u32 offs_of(u32 u, u32 v);
+
 static void gen_scene(Scene& s, u32 kind)
 {
 	s.ctx = rnd32() % SPE_CTX;
@@ -251,6 +257,7 @@ static void gen_scene(Scene& s, u32 kind)
 	s.spr = rnd32() & 1;
 	s.clip = rnd32() % 3 == 0;
 	s.notr = rnd32() % 4 == 0;
+	s.offs = rnd32() % 3 == 0;
 	SpeOut* o = g_out[s.ctx];
 	u32 max_strip = 40, max_count = 12;
 	switch (kind)
@@ -310,6 +317,8 @@ static void gen_scene(Scene& s, u32 kind)
 		x.col = rnd32();
 		x.u = (rnd32() % 10) ? fb(rndf(0.f, 1.f)) : rnd32();
 		x.v = (rnd32() % 10) ? fb(rndf(0.f, 1.f)) : rnd32();
+		// Without the option the array holds what an older scene left: the builder must not read it.
+		o->offs[i] = s.offs ? offs_of(x.u, x.v) : 0xDEADBEEFu;
 	}
 	s.cap = 3 * s.nvtx + 4 * s.nstrip + 16;
 	if (kind == 6 || rnd32() % 20 == 0)
@@ -336,7 +345,8 @@ static void ref_run(const Scene& s, bool dry, RefOut& r, bool bump = false, bool
 	s_rl.vtx = (const DcVertex*)o->vtx;
 	s_rl.strip = (const DcStrip*)o->strip;
 	s_rl.param = (const DcParam*)o->param;
-	s_rl.offs = bump || offs ? g_offs.data() : 0;
+	s_rl.offs = bump || offs ? g_offs.data() : s.offs ? o->offs : 0;
+	s_do.offs = s.offs && !bump && !offs;
 	s_bump_on = bump;
 	s_rl.nvtx = s.nvtx;
 	s_rl.nstrip = s.nstrip;
@@ -486,7 +496,7 @@ static void spu_check(const Scene& s, const RefOut& ref)
 	q.vb_ea = (u32)spu_ea(g_vb);
 	q.cap = s.cap;
 	q.flags = (s.autosort ? SPEVB_AUTOSORT : 0) | (s.spr ? SPEVB_SPRITE_CULL : 0) | (s.clip ? SPEVB_CLIP_KEY : 0) |
-	          (s.notr ? SPEVB_NO_TR : 0);
+	          (s.notr ? SPEVB_NO_TR : 0) | (s.offs ? SPEVB_OFFS : 0);
 	if (spu_build(&q))
 		die("DMA left in the queue");
 	const SpeVbEcho* e = g_echo;
@@ -515,6 +525,33 @@ static u32 rgba(u32 argb) { return argb << 8 | argb >> 24; }
 static bool bump_param(const SpeParam& p) { return (p.pcw & 8) && ((p.tcw >> 27) & 7) == 4; }
 
 static u64 g_bump_vtx, g_bump_imm;
+
+// ---- 3b: offset-colour runs carry each vertex's offset colour in u1 ---------
+
+static bool offc_par(const SpeParam& p) { return (p.pcw & 8) && (p.pcw & 4) && ((p.tcw >> 27) & 7) != 4; }
+static u64 g_offc_vtx, g_offc_scenes;
+
+// The PPU reference against the rule itself: u1 is the source vertex's offset colour as RGBA in an offset-colour
+// run of a scene with the option, else 0. gen_scene makes the colour from u and v, which each copy carries.
+static void offc_check(const Scene& s, const RefOut& ref)
+{
+	const SpeOut* o = g_out[s.ctx];
+	std::vector<u8> in_run(ref.vb.size() / 9, 0);
+	if (s.offs)
+		for (const SpeRun& r : ref.runs)
+			if (offc_par(o->param[r.param]))
+				for (u32 i = r.first; i < r.first + r.count && i < in_run.size(); i++)
+					in_run[i] = 1;
+	for (u32 i = 0; i < in_run.size(); i++)
+	{
+		const u32* a = &ref.vb[(size_t)i * 9];
+		const u32 want = in_run[i] ? rgba(offs_of(a[4], a[5])) : 0;
+		if (a[6] != want)
+			die("vertex %u u1 %08X, want %08X (%s run)", i, a[6], want, in_run[i] ? "an offset-colour" : "a plain");
+		g_offc_vtx += in_run[i];
+	}
+	g_offc_scenes += s.offs;
+}
 
 // With Bump Maps on, the runs and every word but u1 stay as in the plain pass; u1 is the source's offset colour as
 // RGBA in a bump run, else 0. Then the glBegin path (Strip Merge off): each vertex gets its own strip's offs.
@@ -737,15 +774,21 @@ int main(int argc, char** argv)
 		ref_run(s, false, b);
 		same_ref(a, b);
 		spu_check(s, a);
-		bump_check(s, b);
+		offc_check(s, a);
+		// The bump passes hold their own offset colours; they compare with a plain pass that has none.
+		if (!s.offs)
+			bump_check(s, b);
 		trppu += g_trppu_exp;
 		capped += a.vtx_end[2] >= s.cap && s.cap < 3 * s.nvtx + 4 * s.nstrip + 16;
 		runs += a.runs.size();
 		vtx += a.vtx_end[2];
 	}
 	printf("PASS: %u scenes (%u with TR left to the PPU, %u at the cap), %llu runs, %llu vertices; %llu float checks; "
-	       "3j bump vertices %llu (vertex arrays), %llu (glBegin)\n",
+	       "3j bump vertices %llu (vertex arrays), %llu (glBegin); 3b: %llu scenes, %llu offset-colour vertices\n",
 	       cases, trppu, capped, (unsigned long long)runs, (unsigned long long)vtx, (unsigned long long)g_float_checks,
-	       (unsigned long long)g_bump_vtx, (unsigned long long)g_bump_imm);
+	       (unsigned long long)g_bump_vtx, (unsigned long long)g_bump_imm, (unsigned long long)g_offc_scenes,
+	       (unsigned long long)g_offc_vtx);
+	if (!g_offc_vtx)
+		die("no offset-colour vertex ran");
 	return 0;
 }

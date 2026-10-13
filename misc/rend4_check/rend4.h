@@ -25,6 +25,10 @@ typedef struct
 	uint32_t pt_depth, tr_nodepth, pt_blend, sprite_cull, flat, passes, clip_level, tri_sort;
 	// Bundle 14 TR First Pass: 1 = no depth-only run that writes no depth, 2 = also in submission order.
 	uint32_t first_pass;
+	// Bundle 17: each vertex's offset colour (ARGB), the rows Offset Colour, Colour Clamp and Trilinear, and the
+	// FOG_CLAMP registers. pt_blend 2 is PT Blend's + ALPHA 1.
+	const uint32_t* offs;
+	uint32_t offs_row, clamp_row, tril_row, fog_clamp_min, fog_clamp_max;
 	uint32_t merge, vertex_arrays, depth_float;
 } R4Scene;
 
@@ -41,6 +45,8 @@ typedef struct
 	uint32_t alpha_func, alpha_ref;
 	// The primitive of a DRAW or an IMM; IMM: its vertex count (hash: of its vertices).
 	uint32_t prim, nv;
+	// Bundle 17, state at a draw: ps3gl_dc_offs, ps3gl_dc_xt and its 9 values (cmin, cmax, the weight) as bits.
+	uint32_t dc_offs, dc_xt, xt[9];
 } R4Call;
 
 #ifdef __cplusplus

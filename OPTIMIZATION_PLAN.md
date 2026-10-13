@@ -28,6 +28,346 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**Bundle 17 (Draw rules tail) built 2026-10-13 (Matt: "Let's work with
+Bundle 17."). HW run 1 the same day: PT Blend + ALPHA 1 in Jet Grind
+Radio (Matt: "It's looking good."). HW run 2: the four new rows ON in
+Sonic Adventure. Only Offset Colour acts there: the models look right
+(Matt), no fault, but a scene's build took 3.8 times as long. The fast
+step for it is built (Matt: "I want the fast step build."): package of
+16:56 on 2026-10-13 (`build/notdc_ps3.pkg`, 1695728 bytes). HW run 4
+with it, Sonic Adventure: HW SUCCESS (Matt: "It runs like before
+now!"), the build time is back at 1.0 to 1.1 times the time with the
+row OFF. Colour Clamp, Trilinear and Sprite Corner still have no game
+that hits them. The package of 14:10 (1690544 bytes; commit e7b19fc, the
+package of 12:39 with bundle 16's defaults, + this bundle) is kept as
+`build/notdc_ps3_b17_1410.pkg`, the package of 12:39 as
+`build/notdc_ps3_b16_1239.pkg`. The RENDERER page has
+four new rows (22 rows now), and PT Blend has a third level. The four
+new rows are ON by default in source since 2026-10-13 (Matt after run 4,
+for Offset Colour: "Let's keep it in default ON."; then for Sprite
+Corner, Colour Clamp and Trilinear: "I'd keep the also the other ones on
+by default. We may run into a game that uses them."). Not packaged: the
+package of 16:56 has them OFF, and an install keeps its saved values.
+PT Blend stays ON (not + ALPHA 1). Sprite Corner PLANE, Colour Clamp and
+Trilinear have no HW draw yet: the first game that uses one is its first
+HW test (`[rend17] planes spu=`, `applied clamp= tril=`).**
+- **HW run 1, 2026-10-13 about 16:26 to 16:29 (Jet Grind Radio, PT Blend
+  + ALPHA 1 from the boot, the four new rows OFF; Matt: "It's looking
+  good.").** Log: `b17_hw.txt`, scratchpad of session 57436e7d.
+  - The punch-through list: 103 strips in each of the 12 windows that
+    have one, all with SRC_ALPHA and INV_SRC_ALPHA, so all 103 draw
+    with no blend (`pt_one=103`).
+  - No fault: 140 s, SPEED median 99.99% (lowest second 86.2%; at 2000
+    vertices or more 90.4%), 30 renders per second, render busy median
+    10%, at most 35%, `drop=0`, the SPU builder `fail=0`, a clean exit.
+    No boot with the row at ON: no cost number.
+  - The 39 new programs load on hardware (`Shaders loaded: 63 modes`).
+    None of them drew: the four rows were OFF.
+  - What the game can use (the new counters): 329 opaque and 9
+    translucent strips have an offset colour, so Jet Grind Radio is a
+    test game for Offset Colour. 1368 opaque strips have the ColorClamp
+    bit, but FOG_CLAMP is 00000000 / FFFFFFFF in all 27 windows: Colour
+    Clamp has nothing to do there. No trilinear pass, no sprite with a
+    fourth corner off the parallelogram.
+  - No default named: PT Blend stays ON in source.
+- **HW run 2, 2026-10-13 about 16:40 to 16:45 (Sonic Adventure, the four
+  new rows ON and PT Blend + ALPHA 1 from the boot; Matt: "The game
+  feels "heavier" to run though. But nothing that some small
+  optimization could fix." On the picture, later: "Yes, the models
+  looked right.").** Same log
+  file, from byte 583897. Tools `win.py` and `cmp_sa.py` in the same
+  scratchpad.
+  - Only Offset Colour has a target in this game: 432 to 2973 opaque
+    and 109 to 702 translucent strips per render have an offset colour
+    (54000 to 192000 states per 5 s drew with the offset colour
+    programs). No strip has the ColorClamp bit and FOG_CLAMP is
+    00000000 / FFFFFFFF, no trilinear pass, no sprite off its
+    parallelogram: Colour Clamp, Trilinear and Sprite Corner did
+    nothing, so the clamp and weight programs still have no HW draw.
+  - No fault: SPEED 99.6 to 100.1% in each level window, 30 renders
+    per second, `drop=0`, the SPU builder `fail=0`.
+  - The cost, against the Sonic Adventure boot of bundle 14's run 4
+    (`b14_run4.txt`, session 6e520dca; the same game at full speed, not
+    the same play) by vertices per render:
+
+    | Vertices | Render busy | SPU decoder busy | SPU builder busy | Build time per scene | Render thread waits for the builder, per 5 s |
+    |---|---|---|---|---|---|
+    | 6000-8000 | 8.9 -> 11.7% | 5.2 -> 6.1% | 1.0 -> 3.6% | 331 -> 1216 us | 10 -> 114 ms |
+    | 8000-10000 | 9.8 -> 13.8% | 6.5 -> 8.2% | 1.3 -> 5.2% | 445 -> 1742 us | 14 -> 158 ms |
+    | 10000-12000 | 12.2 -> 15.4% | 8.4 -> 9.6% | 1.8 -> 6.4% | 583 -> 2134 us | 16 -> 205 ms |
+    | 12000-15000 | 13.0 -> 17.6% | 9.9 -> 11.6% | 2.0 -> 7.9% | 694 -> 2654 us | 21 -> 268 ms |
+    | 15000 and more | 20.5 -> 24.3% | 13.5 -> 15.7% | 2.8 -> 11.0% | 936 -> 3670 us | 30 -> 380 ms |
+
+    So a scene's build takes 3.7 to 3.9 times as long: most strips of
+    the game have an offset colour, and each of their vertices takes
+    the builder's exact step. The render thread waits for it (3 to 4
+    points of busy). The SPEED did not fall. The fix (a fast form of
+    that step) is the next item.
+  - The intro video ran at SPEED 73.5% (lowest second 67.9%). The boot
+    of bundle 14's run 4 has 71.7% there: this bundle did not change it.
+  - Matt set Offset Colour OFF and ON again from the SELECT menu for a
+    moment (two windows at SPEED 30%, the menu): no OFF part to compare.
+- **HW run 3, 2026-10-13, up to 17:06 (three more boots in the same log
+  while the fast step was in work, so with the package of 14:10 and its
+  exact step; no word from Matt on them).** From byte 1362444.
+  - Capcom vs. SNK 2 (60 s, the menus): no fault. Matt changed PT Blend,
+    Sprite Corner and Colour Clamp from the menu. Up to 179 opaque and
+    120 translucent strips have an offset colour there. No sprite off
+    its parallelogram, FOG_CLAMP 00000000 / FFFFFFFF.
+  - Sonic Adventure, one scene of 20500 to 21500 vertices at 30 renders
+    per second, Offset Colour set OFF and ON again from the menu. So the
+    same scene with the row OFF and ON (three full windows each):
+
+    | Offset Colour | Build time per scene | SPU builder busy | SPU decoder busy | Render busy |
+    |---|---|---|---|---|
+    | OFF | 1201 to 1238 us | 3.6 to 3.7% | 16.5% | 22% |
+    | ON (exact step) | 4030 to 4213 us | 12.2 to 12.8% | 18.0 to 18.8% | 31 to 32% |
+
+    3.4 times the build time, 10 points more render busy, SPEED 100% in
+    both. This is the baseline for the fast step.
+  - Crazy Taxi, Offset Colour ON from the boot, 60 renders per second:
+    718 to 3154 opaque strips per render have an offset colour. Build
+    time 1283 to 2126 us at 7000 to 10700 vertices (SPU builder busy 7.7
+    to 12.7%, render busy 44 to 59%; bundle 14's run had 29% with the
+    row not built). Two heavy windows fall under full speed: 16580
+    vertices, build 3672 us, SPEED 89.0%; 14248 vertices, 3020 us, SPEED
+    93.3%. No boot with the row OFF in this run, so the log does not
+    tell how much of that is the exact step.
+- **The fast step for Offset Colour, built 2026-10-13 after HW run 2
+  (Matt: "Yes, the models looked right. I want the fast step build.").
+  Package of 16:56. HW SUCCESS in run 4 (below).**
+  - What it is: the vertices of a polygon with an offset colour take the
+    builder's fast step (`strip_fast()`, two vertices at a time), each
+    with its colour from the array beside the vertices (one load and
+    one shuffle more per vertex, `uv_offs()`). The exact step stays for
+    the vertices that the fast step leaves, as for a plain polygon. The
+    step is in each pass, as the plain one (not a call per strip). The
+    in-order pass takes the offset window inside that step, so a plain
+    strip no longer tests its param for it.
+  - The SPU simulator (`misc/spevb_check/sim.sh`, the real image, new
+    option `OFFS=percent` of the params with the Offset bit; a scene of
+    38400 vertices, time per build):
+
+    | Scene | Exact step (package of 14:10) | Fast step (package of 16:56) |
+    |---|---|---|
+    | No offset colour | 2.29 ms | 2.25 ms |
+    | 60% of the vertices with one | 6.53 ms | 2.41 ms |
+    | Each vertex with one | 9.15 ms | 2.50 ms |
+
+    The exact step's 4.0 times agrees with HW run 2 (3.7 to 3.9 times).
+    A scene of 15000 vertices: 0.89 ms plain (HW run of bundle 14: 936
+    us), 0.99 ms with a colour on each vertex (HW run 2: 3670 us). So
+    the estimate for Sonic Adventure is about 1.0 ms, not measured on
+    HW. What is left (about 10%): two branches per strip that the SPU
+    takes with no hint, and the colour's load.
+  - PC check: `misc/spevb_check` PASS, 3000 scenes, 959 with offset
+    colours (6629782 vertices that carry one), bit for bit against the
+    PPU merge. Planted bugs: 125 of 127 fail (14 new ones for the fast step;
+    the two that pass are the old chance-only ones).
+  - Sizes: the builder's SPU image 248768 bytes (13.3 KB for its stack;
+    the simulator's scenes use 2.6 KB).
+  - HW step: Sonic Adventure with Offset Colour ON, the same levels:
+    `[spevb] build avg` against run 2 (1216 to 3670 us) and against the
+    row OFF (331 to 936 us); `[rend] busy`; the models as in run 2.
+    Then Crazy Taxi with the row ON: the SPEED of the heavy scenes
+    against run 3 (89 to 93%), and one part with the row OFF.
+- **HW run 4, 2026-10-13 about 17:50 to 17:54 (Sonic Adventure, the
+  package of 16:56, the four new rows ON and PT Blend + ALPHA 1 from the
+  boot; Matt: "Done. It runs like before now!"). HW SUCCESS for the fast
+  step.** Same log file, from byte 2917752.
+  - No fault: SPEED 99.5 to 100.0% in each level window, 30 renders per
+    second, `drop=0`, the SPU builder `fail=0`, a clean exit. 657 to
+    3434 opaque strips per render have an offset colour.
+  - The build time per scene, by vertices per render (row OFF = bundle
+    14's run 4 and run 3's scene; exact step = runs 2 and 3; not the
+    same play):
+
+    | Vertices | Row OFF | ON, exact step | ON, fast step (this run) | SPU builder busy, exact -> fast |
+    |---|---|---|---|---|
+    | 6000-8000 | 331 us | 1216 us | 321 to 364 us | 3.6 -> 1.0% |
+    | 8000-10000 | 445 us | 1742 us | 450 to 499 us | 5.2 -> 1.4% |
+    | 10000-12000 | 583 us | 2134 us | 630 to 768 us | 6.4 -> 2.1% |
+    | 12000-15000 | 694 us | 2654 us | 696 to 857 us | 7.9 -> 2.3% |
+    | 16200 | 936 us | 3670 us | 1023 to 1070 us | 11.0 -> 3.1% |
+    | 20800 | 1201 to 1238 us | 4030 to 4213 us | 1333 us | 12.4 -> 3.9% |
+
+    So 1.0 to 1.1 times the time with the row OFF, as the simulator
+    said (1.0 ms at 16000 vertices). Render busy 9 to 17% in the level
+    windows and 22% at 20800 vertices (run 3 there: 22% with the row
+    OFF, 31 to 32% with the exact step).
+  - Not run with this package: Crazy Taxi (run 3 had SPEED 89 to 93% in
+    two heavy windows with the exact step).
+  - Defaults, after the run. Matt: "Let's keep it in default ON."
+    (Offset Colour), then: "I'd keep the also the other ones on by
+    default. We may run into a game that uses them." So in source
+    Sprite Corner is PLANE and Offset Colour, Colour Clamp and Trilinear
+    are ON (`ps3/ps3_presets.cpp`). Not packaged. PT Blend stays ON.
+- The rows (`[rendcfg]` line at boot and at a menu change; cfg keys
+  PtBlend, SpriteCorner, OffsetColour, ColourClamp, Trilinear; all act
+  from the in-game menu):
+
+  | Row | Values (first = old path) | What it does |
+  |---|---|---|
+  | PT Blend | OFF / ON / + ALPHA 1 | + ALPHA 1: a punch-through texel that passes the alpha test has alpha 1 (Flycast's GL renderer). SRC_ALPHA acts as ONE and INV_SRC_ALPHA as ZERO; a polygon that then has ONE and ZERO draws with no blend (the punch-through list of Jet Grind Radio). ON is the default since bundle 4. |
+  | Sprite Corner | OLD / PLANE | PLANE: a sprite's fourth corner takes its 1/W, u and v from the plane through the other three, at its own x and y. OLD: A + C - B, right only for a parallelogram. A parallelogram keeps the old corner, bit for bit. Acts at the next list init. |
+  | Offset Colour | OFF / ON | ON: a textured polygon with the Offset bit adds its offset colour after the texture (highlights on models). The two decoders keep one offset colour per vertex; the draw sends it with each vertex of such a polygon. Acts at the next list init. |
+  | Colour Clamp | OFF / ON | ON: a polygon with the ColorClamp bit clamps its colour to FOG_CLAMP_MIN..FOG_CLAMP_MAX before the fog. As Flycast, it acts only when the registers clamp something (MIN not 00000000 or MAX not FFFFFFFF). |
+  | Trilinear | OFF / ON | ON: the two passes of a trilinear polygon (FilterMode 2 and 3, a mipmapped texture, not the punch-through list) draw with the weights 1 - f and f; f is a quarter of MipMapD's low 2 bits. OFF: both passes at full weight (too bright). |
+
+- Traps:
+  - Offset Colour ON has a cost: 4 more bytes per vertex from the SPU
+    decoder (+1 to 2 points of its busy in HW run 2), and one more load
+    per vertex in the SPU builder (the simulator: about 10% more build
+    time; HW run 2 had the exact step: 3.8 times). Read `[spevb] spu
+    busy` and `[rend] busy` against a boot with the row OFF.
+  - Offset Colour and Sprite Corner are decode options: the lists of the
+    frame in progress keep the old value.
+  - With Offset Colour ON a scene with vertex fog (Fog at + VERTEX)
+    stays on the SPU path, because its lists hold the offset colours. A
+    bump scene (Rayman 2) still goes to the PPU replay.
+  - Colour Clamp and Trilinear draw with programs that read three new
+    texture coordinates (2, 3, 4) from a new vertex program. That form
+    has no HW run. The Offset Colour programs use only the forms of the
+    bump and the fog programs, which are HW proven.
+  - Trilinear makes a polygon darker when a game draws only one of the
+    two passes with a MipMapD that is not a whole number. Flycast does
+    the same.
+  - With Render Thread OFF the PPU replay runs with the game's rounding
+    mode. A trapezoid sprite can then differ from the SPU's by one bit,
+    and the S2 compare says so.
+- New log lines, with every row OFF too:
+  - `[rend17] pt_blend= corner= offs= clamp= tril= | opt= lists_offs=
+    planes ppu= spu= | applied offs= clamp= tril= | fog_clamp min= max=`
+    each 5 s. `planes`: sprites that took the plane's corner (the PPU
+    replay, the SPU decoder). `applied`: states drawn with the offset
+    colour program, with the clamp, with a weight under 1. `fog_clamp`:
+    the last render's registers; a game can use Colour Clamp only when
+    min is not 00000000 or max is not FFFFFFFF.
+  - A fourth `[rendz]` line per list: `offs= cclamp= tril=a/b pt_one=
+    spr_quad=` = the last render's strips with an offset colour, with
+    the ColorClamp bit, trilinear passes with a weight under 1 / all
+    trilinear passes, punch-through strips that + ALPHA 1 draws with no
+    blend, sprites whose fourth corner is not the parallelogram's. So
+    one boot with the rows OFF tells which rows a game can use.
+- The code:
+  - `ps3/spu/spe_sprite.h` (new): the plane, one text for the PPU replay
+    and the SPU decoder. Doubles in single steps (each product goes
+    through memory, so no compiler fuses it with an add), Cramer's rule,
+    a value outside 2^-40..2^40 keeps the old corner. The SPU has no
+    exact double divide (its libgcc call is a Newton step), so it takes
+    the quotient bit by bit.
+  - `ps3/spu/spe_bell.h`: TAOPT_SPR_PLANE (32), TAOPT_OFFS (64),
+    `SpeOut.offs` (one word per vertex; 1 MB more main memory for the
+    four contexts), `SpeEcho.spr_plane`.
+  - `ps3/spu/spe_dec.c`: a sixth output stream (the offset colours), the
+    face offset colour of PolyParam 2B, the sprite's corner.
+  - `ps3/spu/spe_vb_build.h` (flag SPEVB_OFFS): input windows for the
+    offset colours in the in-order passes, the sorted TR ring and long
+    strips; `strip_fast()` with its constant `offs` (`uv_offs()`),
+    `strip_rest_offs()`. The 24-byte vertex did not change, and a plain
+    polygon's fast step is the same code as before.
+  - `ps3/ps3_rend.cpp`: the decoder (`VTX_NO_OFFS`, the sprite),
+    `offc_param()` and `run_offs()`, `xt_apply()`, `tril_weight()`, the
+    punch-through factors in `apply_param_body()`, the two log lines.
+    `draw_modvols()` turns the new programs off: the volumes have no
+    texture and would take the last polygon's clamp.
+  - ps3gl: 39 fragment programs and one vertex program
+    (`shaders/dc_fp.fcg`, `dc_vp.vcg`, `compile_dc.sh`,
+    `ps3gl_shader_dc.h`; the older shader headers are not touched),
+    `ps3gl_dc_offs()`, `ps3gl_dc_xt()`, the table `dc_tab`.
+  - Sizes: the decoder's SPU image 128264 bytes of 262144; the builder's
+    248768 with the fast step (13.3 KB left for its stack; 20 KB in the
+    package of 14:10, 30 KB before the bundle); `.got` 0xECB8 of 0x10000
+    (4.8 KB left).
+- My choices, not Matt's words:
+  - Offset Colour by the SPU path (the plan's merge point), with the
+    offset colours in an array beside the vertices: with the row OFF
+    nothing is paid, and SPE Draw and SPE Build stay in use with it ON.
+  - A polygon with an offset colour took the builder's exact step per
+    vertex until HW run 2 gave its cost. The fast step is Matt's order.
+    My choice in it: the step is in each pass and not one shared copy
+    (4.7 KB more code; the simulator: 2.50 against 2.95 ms).
+  - Colour Clamp and Trilinear are two rows on one set of programs.
+  - The trilinear weight is in the fragment program, as Flycast. The
+    plan's text (scale the vertex colour) is wrong for a decal texture.
+  - The background polygon gets no offset colour. A bump polygon does
+    not add its offset colour (Flycast).
+  - + ALPHA 1 keeps the texel's real alpha in the framebuffer (Flycast
+    writes 1). Only a later blend with DST_ALPHA can show it.
+  - `misc/spevb_check` did not build since bundle 11. It is repaired
+    (two lines of its stubs, five mutant texts), because it is the PC
+    check of the SPU builder.
+  - Not built: bundle 14's merge key mask, so no bit goes back into it.
+    Its counter (`[cost] key`) reads the new rows' bits.
+- PC checks (WSL), all PASS:
+  - `misc/ta4_check` (both decoders, 6000 frames per phase): with the
+    options off the tree's decoders give the lists of the frozen ones;
+    with any options the PPU replay and the SPU decoder agree bit for
+    bit, offset colours and plane corners too (3026037 offset colours;
+    326773 sprites, 50827 at the plane's corner against a model in long
+    double; 2000000 divides of the SPU's form against the host's).
+  - `misc/spevb_check` (the SPU builder, 3000 scenes): bit for bit against the PPU
+    merge, 959 scenes with offset colours (6629782 vertices that carry
+    one), with the sorted TR ring and long strips.
+  - `misc/rend4_check` (the draw, 4000 scenes per phase): rows off =
+    the old code's GL calls; the new rows against a model: 8783 punch-through draws
+    with no blend and 1120 with new factors, 25226 draws with the offset
+    colour program (170067 vertices with a colour), 42423 with the clamp,
+    9007 with a trilinear weight; the volumes and the depth pass draw
+    with none of the new programs.
+  - `misc/glpath_check` (ps3gl, 10 seeds): rows OFF = the RSX calls of
+    the old files; new: at each draw under `ps3gl_dc_offs()` or
+    `ps3gl_dc_xt()` the RSX holds the program that the table names, its
+    vertex program and that program's constants (about 40000 draws per
+    seed).
+  - Planted bugs: ta4_check 74 of 74, rend4_check 108 of 108, spevb_check 125 of 127
+    (with the fast step's), bump_check 35 of 35, glpath_check 81 of 81
+    fail their check (each `mutate.py`; 99 of them are new).
+    The two builder bugs that pass are old ones in code that this bundle
+    did not change (the pair test's W range, the output window's slide
+    wait). They pass at 400 scenes with the scenes of before this bundle
+    too: only chance cases show them. One old builder bug is left out:
+    it makes `scan_lists` loop for ever.
+  - The older checks that name a changed file PASS: bump, fog, rtt,
+    screen, flash, mmu, pad, spepix, timebase, tr4, clock, maple, chd.
+    `misc/ramsq_check` does not build, as before bundle 12. The mutant
+    "TMU Fine TCNT in the live list" of timebase_check is stale, as
+    before.
+- Facts from the saved HW logs (65 files since 2026-10-11), for the rows
+  that bundles 3 and 4 left with no verdict. The numbers are the largest
+  count of strips in one render (`[rendz]`, `[rend4]`, `[texfmt]`):
+  - Flat Shading (strips with no Gouraud): Rez 1584, Crazy Taxi 1178,
+    Capcom vs. SNK 2 379, Project Justice 253, Sonic Adventure 122.
+    Matt saw no difference in HW run 1 of bundle 4 (Crazy Taxi, Sonic
+    Adventure, Jet Grind Radio, Rayman 2); Rez was not in that run.
+  - Tile Clip, inside: Looney Tunes 5940, Spider-Man 4824, Sonic Shuffle
+    3132, Ikaruga 786. Outside: only `NewTests/NippleTale/disc.gdi`
+    (2214).
+  - List Passes: Spider-Man (508 TA_LIST_CONT writes, 253 renders by
+    passes in a window). TA Data Gate: Looney Tunes (6 records dropped).
+  - No game: Sprite Cull, the TR volume draw, VQ Formats.
+  - Punch-through lists: Shenmue 864 strips, Jet Grind Radio 272,
+    Phantasy Star Online 26, Looney Tunes 26, Ikaruga 18.
+- HW steps, when Matt names the moment (each row acts from the SELECT
+  menu; the log tells if a game hits the row):
+  1. Jet Grind Radio, PT Blend + ALPHA 1: the edges of the
+     punch-through textures; `[rendz] pt ... pt_one=`.
+  2. Sonic Adventure or Crazy Taxi, Offset Colour ON: highlights on the
+     models; `[rendz] ... offs=`, `[rend17] applied offs=`, then
+     `[spevb] spu busy` and `[rend] busy` against the row OFF. Done for
+     the picture in HW run 2; open for the fast step's time (package of
+     16:56).
+  3. Shenmue, Trilinear ON; `[rendz] ... tril=a/b`.
+  4. Any 2D game, Sprite Corner PLANE; `[rendz] ... spr_quad=` and
+     `[rend17] planes spu=`.
+  5. Colour Clamp ON in a game whose `[rend17] fog_clamp` values clamp.
+  6. Optional, for the two SPU paths: a boot with SPE Draw OFF and SPE
+     Doorbell ON (`[spe] ok= bad=`: the decoders), and a boot with SPE
+     Build at CHECK (`[spevb]`: the builder), both with Offset Colour ON
+     and Sprite Corner PLANE.
+  7. The open verdicts: Flat Shading in Rez or Crazy Taxi (LAST VERTEX,
+     then FIRST VERTEX); List Passes in Spider-Man.
+
 **Bundle 16 (Maple bus and VMU) built 2026-10-13 (Matt: "We will now work
 at bundle 16."). HW runs 1-3 the same day: VMU Screen works; Maple Bus
 Speed REAL eats inputs, so it stays OLD; the USB keyboard and mouse rows
@@ -6632,7 +6972,7 @@ not caused by S3 (5.12 S3 runs 2-3).
 | 3f NaN colour = 255 | `[x]` HW, no regression |
 | 3g GD-ROM CD-DA 2352 + zero-fill | `[x]` HW, no regression |
 | 3i region / cable from IP.BIN | `[x]` HW, no regression, switch path unexercised |
-| 3a fog, 3b offset colour, 3j bump maps | 3a built 2026-10-12 as the "Fog" row, HW SUCCESS 2026-10-12 (Ecco the Dolphin), default TABLE in source since 2026-10-12 (Matt), not packaged (section 0); 3b OPEN: needs the offset colour in every vertex; reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
+| 3a fog, 3b offset colour, 3j bump maps | 3a built 2026-10-12 as the "Fog" row, HW SUCCESS 2026-10-12 (Ecco the Dolphin), default TABLE in source since 2026-10-12 (Matt), not packaged (section 0); 3b built 2026-10-13 as the rows "Offset Colour" and "Colour Clamp" (bundle 17), default OFF, no HW run (section 0); reference P14 (merged); 3j added 2026-10-08 (Rayman 2), built as design A (bump programs, PPU path), `[x]` HW SUCCESS 2026-10-08, default ON (section 0) |
 | 3h GD-ROM CDDA lead-out / restart rules | pause rule `[x]` HW 2026-10-03; lead-out / restart: P47, P21, P23 (TOC fields), P61, P62 built 2026-10-10 in bundle 2 (section 0), HW SUCCESS 2026-10-10, default ON in source |
 
 Section 3 correctness (3a, 3b, 3h) is SHELVED by Matt on 2026-09-23. Active
@@ -11518,7 +11858,7 @@ built by the change.
 | 14 | Render-thread draw cost | P72 (5.10), P73 | the cost of TR Triangle Sort (Crazy Taxi render busy 45%, SPEED 97.9% at 11-13K vertices); every draw | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, bundle 14 is a success. Keep it ON.")** after HW runs 1-3 with the three rows ON (Crazy Taxi: render busy 47.2% -> 29.2% at 9K+ vertices, a bind 1.47 -> 0.53 us, 1033 -> 615 TR draws per render; Sonic Adventure 2; Rayman 2; no fault); **the three rows default ON in source since 2026-10-13 (TR First Pass at + GAME ORDER), not packaged (the package of 01:15 has them OFF)**; built 2026-10-13 (Matt: "Let's work on bundle 14!"; section 0): a new DRAW COST page with Tex Bind Table (OFF / ON), GL State Compare (OFF / ON) and TR First Pass (OLD / SKIP / + GAME ORDER), all live, every default the old path at the build; counters for the merge key and the texture lifetime (`[cost]`, `[texlife]`); the index list not built; PC checks PASS (`misc/glpath_check`, 73 of 73 mutants; `misc/rend4_check`, 88 of 88 mutants); package of 01:15 on 2026-10-13 |
 | 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[x]` **HW SUCCESS 2026-10-13 (Matt: "I'd say that as of now It's a success."; section 0)**: Broadcast DISC gives Rayman 2 and Capcom vs. SNK 2 60 Hz at SPEED 100% (Rayman 2: 29.98 renders per second, 24.99 before), BIOS Language ITALIAN gives Italian BIOS menus (Matt: "It works"), RTC Local Time gives UTC + 2 h, Console ID keeps the flash's ID and sets version FE; **defaults in source since 2026-10-13 (Matt: "Place the one I used for the Rayman 2 run as defaults."): Broadcast DISC, BIOS Language ENGLISH, Flash Defaults FLYCAST, Console ID FLYCAST, Exit Flash Save OFF, RTC Local Time ON, not packaged (the package of 10:05 has the old path in each)**; open for the last checks before the release (Matt): Border Down, Exit Flash Save, Flash Defaults with no flash file; built 2026-10-13 (Matt: "We will work on Bundle 15 now."): a new FLASH / CLOCK page with Broadcast (CONSOLE / NTSC / PAL / DISC), BIOS Language (CONSOLE and the six languages), Flash Defaults (OLD / FLYCAST), Console ID (OLD / FLYCAST), Exit Flash Save (OFF / ON, live) and RTC Local Time (OFF / ON), every default is the old path; no row's value reaches `dc_flash_wb.bin` but the console ID; a `[flash]` line at each boot shows the bytes; the old logs: 10 of 23 games stay at 50 Hz in every boot, and the PS3 clock is UTC with no time zone, so P12's line never runs there and the row RTC Local Time (the XMB's zone and summer time) is an addition; PC checks PASS (`misc/flash_check`, 94 of 94 mutants); package of 09:56 on 2026-10-13 (= the G14 package + this bundle); not built: Flycast's block reuse in `alloc_block` (G11 needs it on a flash as full as Matt's) |
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, mark it as a success.")**; built 2026-10-13 (Matt: "We will now work at bundle 16."; section 0): a new MAPLE / VMU page with eight rows, every default the old path at the build: Maple Reply Delay, Maple Bus Speed, Maple Commands, Maple VBlank DMA, Maple Guards, Maple Frame Rules, VMU Per Game (OFF / SLOT A1 / ALL SLOTS), VMU Screen; **defaults in source since 2026-10-13 (Matt: "Keep them up as default then. Except Maple Bus Speed."): the rows ON but Maple Bus Speed (OLD) and VMU Per Game (OFF, no run), not packaged**; **HW runs 1-3 2026-10-13: VMU Screen works (Matt: "The VMU pictures are very cute! It works."); Maple Bus Speed REAL eats inputs in Sonic Adventure at Players 4 and stays OLD (Matt: "Maple Bus Speed fixes it."); the other five Maple rows ran ON with no fault**; the USB Keyboard and USB Mouse rows were built and removed the same day (Matt: "frankly I'd just remove this feature altogether. Very few games use it anyway."); VMU Per Game not run; PC checks PASS (`misc/maple_check`, 99 of 99 mutants); package of 12:39 on 2026-10-13; not built: the VMU beep (bundle 18) |
-| 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[ ]` |
+| 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
 | 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[ ]` |
 | 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[ ]` |
 | 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[ ]` nothing built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
@@ -12680,7 +13020,16 @@ Main gains:
   not packaged. HW SUCCESS 2026-10-13 (Matt: "Yes, mark it as a success.").
   The rows, the runs and what is left are the first block of section 0.
 
-### Bundle 17: Draw rules tail  `[ ]` new at the re-cut of 2026-10-12 (the tails of bundles 3 and 4, and 3b)
+### Bundle 17: Draw rules tail  `[~]` built 2026-10-13, the four new rows default ON in source since 2026-10-13 (Matt; not packaged), PT Blend stays ON; HW run 1 2026-10-13: PT Blend + ALPHA 1 looks good in Jet Grind Radio (Matt); HW run 2: Offset Colour looks right in Sonic Adventure (Matt), its fast step built after it (package of 16:56), HW SUCCESS in run 4 (Matt: "It runs like before now!"), the other three new rows had no target (section 0); new at the re-cut of 2026-10-12 (the tails of bundles 3 and 4, and 3b)
+
+- Built 2026-10-13 (Matt: "Let's work with Bundle 17."): every code item
+  below. P79 is PT Blend's level + ALPHA 1, P80 is the row Sprite Corner,
+  3b is the rows Offset Colour and Colour Clamp, the trilinear weights
+  are the row Trilinear. The verdicts wait for the HW run. Two points
+  are not as the text below says: the offset colours are in an array
+  beside the vertices (the SPU vertex stays 24 bytes), and the trilinear
+  weight is in the fragment program, not in the vertex colour. The text
+  below is the plan of 2026-10-12.
 
 - Items: P79 (punch-through alpha is 1 after the alpha test, a third
   level of the PT Blend row), P80 (the sprite's fourth corner from the
@@ -12774,8 +13123,39 @@ Main gains:
     exceptions, the FPU-disabled exception (SR.FD). About 1.3K-1.6K
     lines, expected speed 25-50%: enough to see a boot (estimates, not
     verified). The JIT form (about 0.8K-1.2K lines more, very high risk)
-    only after a Windows CE game boots on the interpreter, and only if
-    Matt asks.
+    only after a Windows CE game boots on the interpreter. It is a
+    planned step since 2026-10-13, behind the gate below.
+  - Gate (Matt 2026-10-13: "what if we made a toggleable JIT that will
+    only effectively work when a CE game is detected? That won't break
+    compatibility with non-Windows CE games this way."; then "Add it to
+    the Windows CE bundle. This is actually a good idea."): the full MMU,
+    on the interpreter and then in the JIT, runs only for a Windows CE
+    disc. Nothing is built.
+    - Row: OFF / AUTO / ON, in place of the OFF / ON row above. AUTO =
+      the disc's IP.BIN names Windows CE: the byte at 0x3E is '1', or
+      the boot file name at 0x60 is `0WINCEOS.BIN` (12 bytes). This is
+      Flycast's `isWindowsCE()` (`core/reios/reios.h:39`); Reicast and
+      Minicast test the boot file name only
+      (`libswirl/reios/reios.cpp:161`). ON = forced, for a disc that AUTO
+      does not detect.
+    - Where: `apply_disc_meta()` (`dc/dc.cpp`) reads IP.BIN at each boot
+      (region, cable, product number). Byte reads: no byte order.
+    - JIT: the flag is set before the first block compiles and stays for
+      the boot. The emitter tests it when it compiles a block; the
+      generated code has no test. A disc that is not Windows CE gets the
+      same blocks as today. With the flag set: blocks keyed by the
+      virtual address, the exception exit, and no fastmem, inline
+      store-queue stores, constprop or DYN_IC (P38).
+    - Trap: `RunDC()` (`nullDC.cpp`) picks the engine before
+      `Start_DC()`; `apply_disc_meta()` runs later (`LoadBiosFiles()`,
+      from the memory reset), and only when a BIOS or flash file loaded.
+      The detection must come before the engine choice, or the
+      interpreter step cannot pick its engine.
+    - Flycast's own switch is a different rule: this Flycast copy does
+      not call `isWindowsCE()`. Its full MMU turns on on demand
+      (`fastmmu.cpp:201`): AT = 1 and a valid UTLB entry outside the
+      store queue that is not VPN 0x30000 or 0x30040. That rule is not a
+      part of the gate.
   - Traps (P38): the build has -fno-exceptions, so an exception leaves
     the op with longjmp (the jmp_buf AltiVec size: libc uses 512 bytes).
     The "SH-4 Kernel" detection text is UTF-16 in RAM: read it with

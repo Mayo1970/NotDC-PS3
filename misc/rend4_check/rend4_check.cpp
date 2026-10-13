@@ -44,7 +44,7 @@ static const unsigned char k_cmp[2][8] = { { 0, 4, 2, 6, 1, 5, 3, 7 }, { 0, 1, 2
 
 // ---- scenes -------------------------------------------------------------------
 
-static std::vector<u32> g_vtx, g_strip, g_param, g_mtri, g_mvol;
+static std::vector<u32> g_vtx, g_strip, g_param, g_mtri, g_mvol, g_offs;
 static R4Scene S;
 
 // A clip rect in the reserved bits: tiles, sometimes over the whole area, sometimes off the canvas.
@@ -78,7 +78,7 @@ static void gen_scene(bool rows)
 		// The blend: any, or often the two that hide what is behind (SRC_ALPHA with INV_SRC_ALPHA; ONE with ZERO).
 		const u32 bl = rndn(4);
 		base[k][2] = bl == 0 ? rnd() : (rnd() & 0x03FFFFFFu) | (bl == 3 ? 1u << 29 : 4u << 29 | 5u << 26);
-		base[k][3] = rnd() & 0x07FFFFFFu;  // no bump texture
+		base[k][3] = (rnd() & 0x07FFFFFFu) | (rndn(2) << 31);  // no bump texture; often MipMapped
 	}
 	S.nparam = 1 + rndn(40);
 	g_param.resize(S.nparam * 4);
@@ -129,6 +129,11 @@ static void gen_scene(bool rows)
 		}
 	}
 	S.nvtx = (u32)(g_vtx.size() / 6);
+	// Bundle 17: one offset colour per vertex.
+	g_offs.resize(S.nvtx + 1);
+	for (u32 i = 0; i < S.nvtx; i++)
+		g_offs[i] = rnd();
+	S.offs = g_offs.data();
 	// Volumes: runs of records of one list, each run closed by its end record. A triangle's id is every x of it.
 	g_mvol.clear();
 	g_mtri.clear();
@@ -182,7 +187,7 @@ static void gen_scene(bool rows)
 	S.mv_shared = rows ? rndn(2) : 0;
 	S.glob_clip_x = 640;
 	S.glob_clip_y = 480;
-	S.bg_param[0] = (rnd() & 0x8A);
+	S.bg_param[0] = (rnd() & 0x8E);
 	S.bg_param[1] = rnd() & 0xFFF00000u;
 	S.bg_param[2] = rnd();
 	S.bg_param[3] = rnd() & 0x07FFFFFFu;
@@ -215,13 +220,19 @@ static void gen_scene(bool rows)
 	{
 		S.pt_depth = rndn(2);
 		S.tr_nodepth = rndn(2);
-		S.pt_blend = rndn(2);
+		S.pt_blend = rndn(3) ? rndn(2) : 2;
 		S.sprite_cull = rndn(2);
 		S.flat = rndn(3);
 		S.passes = rndn(3);
 		S.clip_level = rndn(3);
 		S.tri_sort = rndn(4);
 		S.first_pass = rndn(3);
+		// Bundle 17: the registers clamp in two scenes of three with the row on.
+		S.offs_row = rndn(3) == 0;
+		S.clamp_row = rndn(3) == 0;
+		S.tril_row = rndn(3) == 0;
+		S.fog_clamp_min = rndn(3) ? rnd() : 0;
+		S.fog_clamp_max = rndn(3) ? rnd() : 0xFFFFFFFFu;
 	}
 }
 
@@ -231,6 +242,49 @@ static uint64_t n_draws, n_depth, n_clip_in, n_clip_out, n_clip_all, n_flat, n_s
 static uint64_t n_sorted, n_sorted_swap, n_opaque;
 // Bundle 14: depth-only triangles in submission order, triangles SKIP left out, scenes with a second vertex block.
 static uint64_t n_game, n_skipped, n_blocks, n_applied, n_old;
+// Bundle 17: PT draws that ALPHA 1 makes blend-free and those it blends with new factors; draws with the offset
+// colour program, with the clamp, with a weight under 1; vertices that carry their offset colour.
+static uint64_t n_pt_one, n_pt_fac, n_dc_offs, n_dc_clamp, n_dc_tril, n_offs_vtx;
+
+static bool m_offc(const u32* p) { return ((p[0] >> 3) & 1) && ((p[0] >> 2) & 1) && ((p[3] >> 27) & 7) != 4; }
+
+// Bundle 17: the offset colour program and the clamp and weight program at a draw of a strip of list L with param p.
+// off: a depth pass of List Passes, which draws with neither. bg: the background, which has no offset colours.
+static void model_dc(const R4Call& d, const u32* p, u32 L, u32 i, u32 sid, bool off, bool bg = false)
+{
+	const bool tex = (p[0] >> 3) & 1;
+	const bool offc = !off && !bg && S.offs_row && m_offc(p);
+	if (d.dc_offs != (u32)offc)
+		die("draw %u strip %u: offset colour program %u, want %u", i, sid, d.dc_offs, (u32)offc);
+	const bool regs = S.fog_clamp_min != 0 || S.fog_clamp_max != 0xFFFFFFFFu;
+	const bool cl = !off && S.clamp_row && regs && ((p[2] >> 21) & 1);
+	float w = 1.0f;
+	const u32 fm = (p[2] >> 13) & 3;
+	if (!off && S.tril_row && tex && fm >= 2 && L != 4 && (p[3] >> 31))
+	{
+		const float f = 0.25f * (float)((p[2] >> 8) & 3);
+		w = fm == 2 ? 1.0f - f : f;
+	}
+	const bool xt = cl || w != 1.0f;
+	if (d.dc_xt != (u32)xt)
+		die("draw %u strip %u: clamp and weight program %u, want %u (clamp %d weight %g)", i, sid, d.dc_xt, (u32)xt, cl, (double)w);
+	if (xt)
+	{
+		static const int sh[4] = { 16, 8, 0, 24 };
+		for (int k = 0; k < 4; k++)
+		{
+			const u32 lo = cl ? fb((float)((S.fog_clamp_min >> sh[k]) & 0xFF) / 255.0f) : fb(-1e9f);
+			const u32 hi = cl ? fb((float)((S.fog_clamp_max >> sh[k]) & 0xFF) / 255.0f) : fb(1e9f);
+			if (d.xt[k] != lo || d.xt[4 + k] != hi)
+				die("draw %u strip %u: clamp channel %d is %08X..%08X, want %08X..%08X", i, sid, k, d.xt[k], d.xt[4 + k], lo, hi);
+		}
+		if (d.xt[8] != fb(w))
+			die("draw %u strip %u: weight %08X, want %08X", i, sid, d.xt[8], fb(w));
+	}
+	n_dc_offs += offc;
+	n_dc_clamp += cl;
+	n_dc_tril += w != 1.0f;
+}
 
 // The largest W of a triangle's corners as bits (W is positive): the sort's key, the farthest corner.
 static u32 tri_w(u32 sid, u32 kc)
@@ -294,7 +348,7 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 	// 3k: the last triangle drawn in each pass, of the colour draws and of the depth-only draws.
 	struct Last { u32 pass, w, sid, kc; } last_col = { ~0u, 0, 0, 0 }, last_pre = { ~0u, 0, 0, 0 };
 	// The last pass that has strips: the TR depth pass runs after every pass but the last one.
-	u32 prev_key = 0;
+	u32 prev_key = 0, n_imm = 0;
 	for (u32 i = 0; i < n;)
 	{
 		if (c[i].kind != R4_DRAW)
@@ -305,6 +359,13 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 				const u32 view[4] = { (u32)S.vx, (u32)S.vy, (u32)S.vw, (u32)S.vh };
 				if (c[i].scissor != (u32)S.scissor || (S.scissor && memcmp(c[i].sc, view, 16)))
 					die("call %u: a glBegin draw under a clip scissor", i);
+				// Bundle 17: the background (the first of them) takes the clamp and weight of its own param; the
+				// volumes and their shade quad take no program of the polygon before them.
+				if (n_imm++ == 0)
+					model_dc(c[i], S.bg_param, 0, i, ~0u, false, true);
+				else if (c[i].dc_offs || c[i].dc_xt)
+					die("call %u: a volume draw with the offset colour program %u, clamp and weight program %u", i,
+					    c[i].dc_offs, c[i].dc_xt);
 			}
 			i++;
 			continue;
@@ -334,6 +395,20 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 					die("the draws of one range differ in state");
 			}
 		n_draws++;
+		// Bundle 17, 3b: each vertex of the range carries its strip's offset colour in u1 when the row is on and the
+		// polygon has one, else 0. u and v name the strip and the vertex in it.
+		for (u32 k = d.first; k < d.first + d.count; k++)
+		{
+			const u32 sid = (u32)bf(vb[(size_t)k * 9 + 4]), kk = (u32)bf(vb[(size_t)k * 9 + 5]);
+			if (sid >= S.nstrip || kk >= S.strip[sid * 4 + 1])
+				die("draw %u: a vertex of strip %u, corner %u", i, sid, kk);
+			const u32* p = &S.param[S.strip[sid * 4 + 3] * 4];
+			const u32 o = S.offs[S.strip[sid * 4] + kk];
+			const u32 want = S.offs_row && m_offc(p) ? o << 8 | o >> 24 : 0;
+			if (vb[(size_t)k * 9 + 6] != want)
+				die("draw %u: strip %u corner %u has u1 %08X, want %08X", i, sid, kk, vb[(size_t)k * 9 + 6], want);
+			n_offs_vtx += want != 0;
+		}
 		// 3k: sorted triangles, each one three corners of a strip, wound as the strip; farthest W first, then submission
 		// order. + OPAQUE DEPTH's first pass: the same ones before the colour; GAME ORDER: in submission order.
 		if (d.prim == 4)
@@ -434,6 +509,7 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 				    d.alpha_test != (u32)(covers == 1) || d.alpha_func != 0x206 || d.alpha_ref != fb(240 / 255.0f))
 					die("draw %u strip %u: the opaque depth pass state (covers %u blend %u mask %u test %u func %X)", i, sid,
 					    covers, d.blend, d.depth_mask, d.alpha_test, d.alpha_func);
+				model_dc(d, p, L, i, sid, false);
 			}
 			else if (dpass)
 			{
@@ -441,16 +517,29 @@ static void model(const R4Call* c, u32 n, const u32* vb)
 					die("draw %u: a depth pass over strip %u (pass %u of %u, list %u)", i, sid, pass, last_pass, L);
 				if (d.blend || d.depth_func != GL_NEVER + k_cmp[S.depth_float][6] || d.depth_mask != !zwd || d.texture)
 					die("draw %u strip %u: the depth pass state", i, sid);
+				model_dc(d, p, L, i, sid, true);
 				depth[sid]++;
 				n_depth++;
 			}
 			else
 			{
-				const bool blend = L == 2 || (L == 4 && S.pt_blend) || (L == 0 && pass != 0);
+				// P79, PT Blend + ALPHA 1: in the punch-through list SRC_ALPHA is ONE and INV_SRC_ALPHA is ZERO; ONE with
+				// ZERO is no blend.
+				u32 si = (p[2] >> 29) & 7, di = (p[2] >> 26) & 7;
+				const bool one = L == 4 && S.pt_blend == 2;
+				if (one)
+				{
+					si = si == 4 ? 1 : si == 5 ? 0 : si;
+					di = di == 4 ? 1 : di == 5 ? 0 : di;
+				}
+				const bool blend = L == 2 || (L == 4 && S.pt_blend && !(one && si == 1 && di == 0)) || (L == 0 && pass != 0);
 				if (d.blend != (u32)blend)
 					die("draw %u strip %u (list %u pass %u): blend %u", i, sid, L, pass, d.blend);
-				if (blend && (d.src != k_src[(p[2] >> 29) & 7] || d.dst != k_dst[(p[2] >> 26) & 7]))
+				if (blend && (d.src != k_src[si] || d.dst != k_dst[di]))
 					die("draw %u strip %u: blend factors %X %X", i, sid, d.src, d.dst);
+				n_pt_one += one && !blend;
+				n_pt_fac += one && blend && (si != ((p[2] >> 29) & 7) || di != ((p[2] >> 26) & 7));
+				model_dc(d, p, L, i, sid, false);
 				bool zw = !zwd;
 				if (L == 4 && S.pt_depth)
 					zw = true;
@@ -676,7 +765,8 @@ int main(int argc, char** argv)
 		u32 un;
 		const u32 nn = r4_new_run(&S, &cn, &vn, &un);
 		model(cn, nn, vn);
-		if (S.first_pass)
+		// The code of before bundle 14 has none of bundle 17's rows either.
+		if (S.first_pass || S.pt_blend == 2 || S.offs_row || S.clamp_row || S.tril_row)
 			continue;
 		const R4Call* co;
 		const u32* vo;
@@ -707,5 +797,11 @@ int main(int argc, char** argv)
 	       (unsigned long long)n_old);
 	if (!n_skipped || !n_game || !n_blocks || !n_applied)
 		die("a TR First Pass case never ran");
+	printf("bundle 17: PT Blend + ALPHA 1: %llu draws with no blend, %llu with new factors; %llu draws with the offset "
+	       "colour program (%llu vertices with a colour), %llu with the clamp, %llu with a trilinear weight\n",
+	       (unsigned long long)n_pt_one, (unsigned long long)n_pt_fac, (unsigned long long)n_dc_offs,
+	       (unsigned long long)n_offs_vtx, (unsigned long long)n_dc_clamp, (unsigned long long)n_dc_tril);
+	if (!n_pt_one || !n_pt_fac || !n_dc_offs || !n_offs_vtx || !n_dc_clamp || !n_dc_tril)
+		die("a bundle 17 case never ran");
 	return 0;
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # 5.12 #2 (WSL): plants one bug at a time in a copy of spe_vb_build.h; run.sh must FAIL on each.
+# Args: scenes (400), name parts with commas: only the mutants whose name has one of them ("3b": bundle 17).
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -15,12 +16,17 @@ MUTANTS = [
     ('join without the parity copy', 'emit_last(1 + (run.reversed ^ flip));', 'emit_last(1);'),
     ('join keeps reversed', 'run.reversed = flip;\n\t\tst.dupe_next = 1;', 'st.dupe_next = 1;'),
     ('join without dupe_next', 'run.reversed = flip;\n\t\tst.dupe_next = 1;', 'run.reversed = flip;\n\t\tst.dupe_next = 0;'),
-    ('join cull from bit 26', 'const uint32_t cull = (p->isp >> 27) & 3;', 'const uint32_t cull = (p->isp >> 26) & 3;'),
-    ('run cull from bit 26', 'run.cull = (p->isp >> 27) & 3;', 'run.cull = (p->isp >> 26) & 3;'),
+    ('cull mode from bit 26', 'return ((p->isp >> 27) & 3) ^ (spr_cull', 'return ((p->isp >> 26) & 3) ^ (spr_cull'),
+    ('join takes the raw cull mode', 'const uint32_t cull = eff_cull(p);', 'const uint32_t cull = (p->isp >> 27) & 3;'),
+    ('run takes the raw cull mode', 'run.cull = eff_cull(p);', 'run.cull = (p->isp >> 27) & 3;'),
+    ('sprite cull flip for every polygon', '(spr_cull & ((p->pcw >> 29) == 5))', 'spr_cull'),
+    ('sprite cull flip without its flag', 'spr_cull = (q->flags & SPEVB_SPRITE_CULL) != 0;', 'spr_cull = 0;'),
+    ('clip rect bits not in the merge key', '? ((vec_uint4){ 0x303CEu, 0xF40FFFFFu, ~0u, ~0u })', '? ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u })'),
+    ('TR list built with the PPU sort asked', 'if (q->flags & SPEVB_NO_TR)\n\t\tflag = SPEVB_TR_PPU;', 'if (0)\n\t\tflag = SPEVB_TR_PPU;'),
     ('run param of the last strip', 'run.param = s->param;\n\trun.p = *p;', 'run.p = *p;'),
-    ('PCW mask takes UV_16bit', '0x300CEu, 0xF4000000u, ~0u, ~0u', '0x300CFu, 0xF4000000u, ~0u, ~0u'),
-    ('ISP mask takes the cull direction', '0x300CEu, 0xF4000000u, ~0u, ~0u', '0x300CEu, 0xFC000000u, ~0u, ~0u'),
-    ('TCW not compared', '0x300CEu, 0xF4000000u, ~0u, ~0u', '0x300CEu, 0xF4000000u, ~0u, 0'),
+    ('PCW mask takes UV_16bit', ': ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u })', ': ((vec_uint4){ 0x300CFu, 0xF4000000u, ~0u, ~0u })'),
+    ('ISP mask takes the cull direction', ': ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u })', ': ((vec_uint4){ 0x300CEu, 0xFC000000u, ~0u, ~0u })'),
+    ('TCW not compared', ': ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, ~0u })', ': ((vec_uint4){ 0x300CEu, 0xF4000000u, ~0u, 0 })'),
     ('alpha force ShadInstr 2', '((p->tsp >> 6) & 3) == 1)', '((p->tsp >> 6) & 3) == 2)'),
     ('alpha force UseAlpha bit', '!((p->tsp >> 20) & 1)', '!((p->tsp >> 19) & 1)'),
     ('pair color without alpha_or', 'run.cmask1 = run.alpha_or ? m_col1_ff : m_col1;', 'run.cmask1 = m_col1;'),
@@ -92,7 +98,7 @@ MUTANTS = [
     ('slide waits for this window', 'vb_wait(1u << (s->tag + o), VB_STAGE_SLIDE);', 'vb_wait(1u << (s->tag + s->cur), VB_STAGE_SLIDE);'),
     ('put one quadword short', 'end - s->put, s->tag + s->cur, 0, 0);', 'end - s->put - 16, s->tag + s->cur, 0, 0);'),
     # input
-    ('window one element long', 'if (__builtin_expect(i - w->clo + c > n, 0))', 'if (__builtin_expect(i - w->clo + c > n + 1, 0))'),
+    # Left out: "window one element long" (i - w->clo + c > n + 1). scan_lists then never moves its window: no end.
     ('window switch without the wait', 'vb_wait(1u << (w->tag + k), VB_STAGE_IN);\n\tw->cur = k;', 'w->cur = k;'),
     ('jump load not aligned', 'iw_load(w, k, i & ~(w->align - 1));', 'iw_load(w, k, i);'),
     ('long strip chunk one too far', 'w->hi = i + n;', 'w->hi = i + n + 1;'),
@@ -127,10 +133,44 @@ MUTANTS = [
     ('fmul ties away from even', 'if (rem > half || (rem == half && (m & 1)))', 'if (rem >= half)'),
     ('fmul denormal shift', 'sh += (uint32_t)(1 - e);', 'sh += (uint32_t)(-e);'),
     ('fmul NaN of b first', 'if (ea == 0xFF && ma)\n\t\t\treturn a | 0x400000u;', 'if (0)\n\t\t\treturn a | 0x400000u;'),
+    # bundle 17, 3b: offset-colour runs
+    ('3b: offs for a bump texture', '& (((p->tcw >> 27) & 7) != 4);', '& 1;'),
+    ('3b: offs without the Texture bit', 'return ((p->pcw >> 2) & (p->pcw >> 3) & 1)', 'return ((p->pcw >> 2) & 1)'),
+    ('3b: offs without the Offset bit', 'return ((p->pcw >> 2) & (p->pcw >> 3) & 1)', 'return ((p->pcw >> 3) & 1)'),
+    ('3b: the colour not turned to RGBA', 'st.good[1] = spu_insert((o << 8) | (o >> 24), st.good[1], 2);', 'st.good[1] = spu_insert(o, st.good[1], 2);'),
+    ('3b: the colour in word 7', 'st.good[1] = spu_insert((o << 8) | (o >> 24), st.good[1], 2);',
+     'st.good[1] = spu_insert((o << 8) | (o >> 24), st.good[1], 3);'),
+    ('3b: the colour of the strip first vertex', 'const uint32_t o = w->ob[i - w->lo];', 'const uint32_t o = w->ob[0];'),
+    ('3b: an offset run takes the plain fast step', 'const uint32_t i = strip_fast(w, 0, n, 1);', 'const uint32_t i = strip_fast(w, 0, n, 0);'),
+    ('3b: the rest of an offset strip takes the plain fast step', 'const uint32_t f = strip_fast(w, i, n, 1);',
+     'const uint32_t f = strip_fast(w, i, n, 0);'),
+    ('3b: an offset strip ends at its first exact vertex', '\t\tif (__builtin_expect(i < n, 0))\n\t\t\tstrip_rest_offs(w, i, n);\n', ''),
+    ('3b: the offset window not taken', '\t\tif (ow_win)\n\t\t\tow_strip(s, w);\n', ''),
+    ('3b: a plain run takes offset colours', 'const uint32_t i = strip_fast(w, 0, n, 0);', 'const uint32_t i = strip_fast(w, 0, n, 1);'),
+    ('3b: fast colour not turned to RGBA', 'm_offs = { 0, 1, 2, 3, 4, 5, 6, 7, 17, 18, 19, 16,', 'm_offs = { 0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19,'),
+    ('3b: fast colour in word 7', 'm_offs = { 0, 1, 2, 3, 4, 5, 6, 7, 17, 18, 19, 16, 0x80, 0x80, 0x80, 0x80 };',
+     'm_offs = { 0, 1, 2, 3, 4, 5, 6, 7, 0x80, 0x80, 0x80, 0x80, 17, 18, 19, 16 };'),
+    ('3b: fast first vertex without its colour', '\tif (offs)\n\t\tq[1] = uv_offs(q[1], op[0]);\n', ''),
+    ('3b: fast colours from the window start', 'const uint32_t* op = offs ? w->ob + (i - w->lo) : 0;', 'const uint32_t* op = offs ? w->ob : 0;'),
+    ('3b: pair A without its colour', '\t\t\t\t\to[1] = uv_offs(o[1], op[j]);\n\t\t\t\t\to[4]', '\t\t\t\t\to[4]'),
+    ('3b: pair B without its colour', 'op[j]);\n\t\t\t\t\to[4] = uv_offs(o[4], op[j + 1]);\n', 'op[j]);\n'),
+    ('3b: pair B takes the colour of A', 'o[4] = uv_offs(o[4], op[j + 1]);', 'o[4] = uv_offs(o[4], op[j]);'),
+    ('3b: single vertex without its colour', 'break;\n\t\tif (offs)\n\t\t\to[1] = uv_offs(o[1], op[j]);\n', 'break;\n'),
+    ('3b: single vertex takes the colour before', 'break;\n\t\tif (offs)\n\t\t\to[1] = uv_offs(o[1], op[j]);',
+     'break;\n\t\tif (offs)\n\t\t\to[1] = uv_offs(o[1], op[j - 1]);'),
+    ('3b: a run keeps the last run kind', '\trun.offs = bld_offs & par_offs(p);\n', ''),
+    ('3b: the slot window from its line start', 'slot_ooff[k] = oe - o0;', 'slot_ooff[k] = 0;'),
+    ('3b: the slot pulls the strip before', 'const uint32_t oe = offs_ea + j->first * 4;', 'const uint32_t oe = offs_ea + (j->first & ~3u) * 4;'),
+    ('3b: a long strip keeps its first chunk place', 'w->ob = (const uint32_t*)(longoffs + (oe - o0));', 'w->ob = (const uint32_t*)longoffs;'),
+    ('3b: a long strip pulls from its start', 'const uint32_t oe = offs_ea + (w->first + i) * 4;', 'const uint32_t oe = offs_ea + w->first * 4;'),
+    ('3b: the colours of the vertex array', 'offs_ea = out + offsetof(SpeOut, offs);', 'offs_ea = out + offsetof(SpeOut, vtx);'),
+    ('3b: offs with the flag of the TR list', 'bld_offs = (q->flags & SPEVB_OFFS) != 0;', 'bld_offs = (q->flags & SPEVB_NO_TR) != 0;'),
 ]
 
 def main():
     cases = sys.argv[1] if len(sys.argv) > 1 else '400'
+    only = sys.argv[2].split(',') if len(sys.argv) > 2 else ['']
+    ran = 0
     src = open(os.path.join(ROOT, SRC), encoding='utf-8').read().replace('\r\n', '\n')
     caught = 0
     os.makedirs(os.path.dirname(TMP), exist_ok=True)
@@ -141,6 +181,9 @@ def main():
         print('BASELINE FAILS: run.sh fails on the unchanged copy')
         sys.exit(2)
     for name, find, repl in MUTANTS:
+        if not any(o in name for o in only):
+            continue
+        ran += 1
         if src.count(find) != 1:
             print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
             sys.exit(2)
@@ -152,7 +195,7 @@ def main():
         ok = r.returncode != 0
         caught += ok
         print(f"{'caught' if ok else 'MISSED'}: {name}: {(out[0] if out else '')[:110]}")
-    print(f'{caught} of {len(MUTANTS)} mutants fail run.sh')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught} of {ran} mutants fail run.sh')
+    sys.exit(0 if caught == ran else 1)
 
 main()

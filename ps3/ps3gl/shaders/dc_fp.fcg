@@ -1,0 +1,62 @@
+// NotDC bundle 17: fog_fp.fcg's text with the offset colour (OFFS, plan 3b), and with the colour clamp and the trilinear
+// weight (XT). FOG and ENV are fog_fp.fcg's; no bump map. The order is Flycast's: texture, offset, clamp, fog, weight.
+
+float4 fog_table(sampler2D fogtab, float fogc)
+{
+    return tex2D(fogtab, float2(saturate(log2(fogc) * -0.125), 0.25));
+}
+
+void main(
+    float4 color : COLOR0,
+#if FOG == 0 && XT == 0
+    float2 tc0   : TEXCOORD0,
+#else
+    float3 tc0   : TEXCOORD0,
+#endif
+    float4 offs  : TEXCOORD1,
+#if XT
+    // dc_vp.vcg: FOG_CLAMP_MIN and FOG_CLAMP_MAX (far outside 0..1 with no clamp), and the weight in x.
+    float4 cmin  : TEXCOORD2,
+    float4 cmax  : TEXCOORD3,
+    float4 xtp   : TEXCOORD4,
+#endif
+
+    uniform sampler2D tex0   : TEXUNIT0,
+    uniform sampler2D fogtab : TEXUNIT1,
+
+    out float4 oColor : COLOR
+)
+{
+    float4 c = color;
+#if FOG == 3
+    c = fog_table(fogtab, tc0.z);
+#endif
+#if ENV != 0
+    float4 t = tex2D(tex0, tc0.xy);
+#if ENV == 1
+    c = c * t;
+#elif ENV == 2
+    c = t;
+#elif ENV == 3
+    c.rgb = lerp(c.rgb, t.rgb, t.a);
+#else
+    c = float4(c.rgb * t.rgb, t.a);
+#endif
+#if OFFS
+    c.rgb = c.rgb + offs.rgb;
+#endif
+#endif
+#if XT
+    c = clamp(c, cmin, cmax);
+#endif
+#if FOG == 1
+    float4 f = fog_table(fogtab, tc0.z);
+    c.rgb = lerp(c.rgb, f.rgb, f.a);
+#elif FOG == 2
+    c.rgb = lerp(c.rgb, tex2D(fogtab, float2(saturate(tc0.z), 0.75)).rgb, offs.a);
+#endif
+#if XT
+    c = c * xtp.x;
+#endif
+    oColor = c;
+}

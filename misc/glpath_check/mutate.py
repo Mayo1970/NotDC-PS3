@@ -7,11 +7,20 @@ SEEDS = sys.argv[1] if len(sys.argv) > 1 else '8'
 FRAMES = sys.argv[2] if len(sys.argv) > 2 else '300'
 TMP = '/tmp/glpmut'
 REF = '/tmp/glpath'
-S, T, V, D, M = 'states', 'textures', 'vertices', 'draw', 'main'
+S, T, V, D, M, X = 'states', 'textures', 'vertices', 'draw', 'main', 'shaders'
 # Files of ps3/ that only run.sh's source lines read.
 P, N, R = 'ps3_presets.cpp', 'ps3_menu.cpp', 'ps3_rend.cpp'
 
 MUTANTS = [
+    # Bundle 17: the dc programs (ps3gl_shaders.c).
+    ('dc: no program without fog as the second choice', X, '    if (k < 0)\n        k = dc_tab[ps3gl.dc_xt][offs][PS3GL_FOG_NONE][tenv];\n', ''),
+    ('dc: the offset colour with no texture', X, 'const int offs = ps3gl.dc_offs && tenv != PS3GL_TENV_DISABLED;', 'const int offs = ps3gl.dc_offs;'),
+    ('dc: a bump texture takes a dc program', X, 'if ((ps3gl.dc_offs || ps3gl.dc_xt) && !(tmu0 && ps3gl.tmu[0].bump)) {', 'if (ps3gl.dc_offs || ps3gl.dc_xt) {'),
+    ('dc: the weight is not sent', X, 'const float fogp[4] = { ps3gl.dc_fog_scale, ps3gl.dc_xt_v[8], 0.0f, 0.0f };', 'const float fogp[4] = { ps3gl.dc_fog_scale, 1.0f, 0.0f, 0.0f };'),
+    ('dc: a new clamp is not sent', X, '            memcmp(ps3gl.dc_xt_v, ps3gl.dc_xt_uploaded, sizeof(ps3gl.dc_xt_v)) != 0) {', '            0) {'),
+    ('dc: cmax takes cmin', X, 'rsxSetVertexProgramParameter(ctx, s->vp, s->cmax_const, &ps3gl.dc_xt_v[4]);', 'rsxSetVertexProgramParameter(ctx, s->vp, s->cmax_const, &ps3gl.dc_xt_v[0]);'),
+    ('dc: the table one program off', X, 'return k < 0 ? -1 : PS3GL_TENV_DC_FIRST + k;', 'return k < 0 ? -1 : PS3GL_TENV_DC_FIRST + (k ^ 1);'),
+    ('dc: ps3gl_dc_xt keeps the old ends', X, '    memcpy(&ps3gl.dc_xt_v[0], cmin, 4 * sizeof(float));\n', ''),
     # Left out as equivalent: the table with the row OFF or not written (a hit is checked); a new frame keeping the
     # attribute record (frames take the two vring segments in turn: the last frame's offsets do not come back).
     ('compare path: a setter never marks', S, 'if (changed || !(ps3gl.fast & PS3GL_FAST_COMPARE))', 'if (!(ps3gl.fast & PS3GL_FAST_COMPARE))'),

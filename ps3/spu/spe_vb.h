@@ -7,7 +7,7 @@
 #define SPEVB_RUN_MAX_VTX 16000  // RUN_MAX_VTX in ps3_rend.cpp
 #define SPEVB_TR_MAX      4096   // TR strips the SPU sorts; with more, the PPU draws the TR list
 #define SPEVB_MAX_RUNS    SPE_MAX_STRIPS
-#define SPEVB_VTX_BYTES   36     // ps3gl_vertex_t: x*W, y*W, W, 1, u, v, 0, 0, RGBA
+#define SPEVB_VTX_BYTES   36     // ps3gl_vertex_t: x*W, y*W, W, 1, u, v, offset colour or 0, 0, RGBA
 // The SPU writes each vertex as 3 whole quadwords (ps3gl_vertex_t and 12 zero bytes); the RSX reads stride 48.
 #define SPEVB_VTX_STRIDE  48
 
@@ -19,6 +19,8 @@
 #define SPEVB_SPRITE_CULL 8u   // P25: a sprite's cull direction is the other one
 #define SPEVB_CLIP_KEY    16u  // P10: the clip rect bits (ISP 19:0, PCW 9:8) are part of the merge key
 #define SPEVB_NO_TR       32u  // 3k: the PPU sorts the TR list by triangle; the build answers TR_PPU at once
+// Bundle 17, 3b: a run of textured polygons with the Offset bit carries SpeOut.offs in slot word 6 (run_offs).
+#define SPEVB_OFFS        64u
 
 // Echo flags. TR_PPU: the TR list is left to the PPU, which continues the vertex buffer at vb_used.
 #define SPEVB_OP_DONE 1u

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stddef.h>
 #include "spe_dec.h"
+#include "spe_sprite.h"
 
 #define LIST_NONE 0xFFFFFFFFu
 #define F_ONE     0x3F800000u
@@ -33,13 +34,14 @@ typedef struct
 	uint32_t win, esize, off, cur, base, tag;
 } Stream;
 
-enum { S_VTX, S_STRIP, S_PARAM, S_MTRI, S_MVOL, S_COUNT };
+enum { S_VTX, S_STRIP, S_PARAM, S_MTRI, S_MVOL, S_OFFS, S_COUNT };
 
 static uint8_t ls_vtx[2][16384] __attribute__((aligned(128)));
 static uint8_t ls_strip[2][4096] __attribute__((aligned(128)));
 static uint8_t ls_param[2][2048] __attribute__((aligned(128)));
 static uint8_t ls_mtri[2][4096] __attribute__((aligned(128)));
 static uint8_t ls_mvol[2][1024] __attribute__((aligned(128)));
+static uint8_t ls_offs[2][4096] __attribute__((aligned(128)));
 static Stream st[S_COUNT];
 
 static DecCtx dctx[SPE_CTX];
@@ -53,6 +55,10 @@ static uint32_t cur_list;          // FifoSplitter::CurrentList
 static uint32_t dec_list, mv_list; // s_cur_list, s_mv_list
 static uint32_t face_a = F_ONE, face_r = F_ONE, face_g = F_ONE, face_b = F_ONE;
 static uint32_t face8 = 0xFFFFFFFFu;  // P8: the face colour as saturated ARGB bytes (s_face8)
+// 3b: the face offset colour of PolyParam 2B (s_foffs_*, s_foffs8) and the sprite's offset colour.
+static uint32_t foffs_a = F_ONE, foffs_r = F_ONE, foffs_g = F_ONE, foffs_b = F_ONE;
+static uint32_t foffs8 = 0xFFFFFFFFu;
+static uint32_t sprite_offs;
 static uint32_t clip_rect;            // P10: the last User_Tile_Clip rect (s_clip_rect)
 static uint32_t sprite_col = 0xFFFFFFFFu;
 static uint32_t spr_x[4], spr_y[4], spr_z[3];
@@ -157,6 +163,18 @@ static inline uint32_t intensity_argb(uint32_t i)
 	return (clamp_byte(face_a) << 24) | (mul_byte(face_r, i) << 16) | (mul_byte(face_g, i) << 8) | mul_byte(face_b, i);
 }
 
+// intensity_offs of the PPU: the face offset colour by the vertex's offset intensity, alpha unscaled.
+static uint32_t intensity_offs(uint32_t i)
+{
+	if (d->opt & TAOPT_INT_CLAMP)
+	{
+		const uint32_t s = clamp_byte(i);
+		return (foffs8 & 0xFF000000u) | (((((foffs8 >> 16) & 0xFF) * s) >> 8) << 16) |
+		       (((((foffs8 >> 8) & 0xFF) * s) >> 8) << 8) | (((foffs8 & 0xFF) * s) >> 8);
+	}
+	return (clamp_byte(foffs_a) << 24) | (mul_byte(foffs_r, i) << 16) | (mul_byte(foffs_g, i) << 8) | mul_byte(foffs_b, i);
+}
+
 // track_w + track_inv_w; returns W. Signed compares on the bits, as the PPU's float compares order them.
 static uint32_t track_w(uint32_t z)
 {
@@ -227,6 +245,8 @@ static void st_counts(const DecCtx* c, uint32_t* n)
 	n[S_PARAM] = c->nparam;
 	n[S_MTRI] = c->nmtri;
 	n[S_MVOL] = c->nmvol;
+	// 3b: one offset colour per vertex, only for a context that keeps them.
+	n[S_OFFS] = (c->opt & TAOPT_OFFS) ? c->nvtx : 0;
 }
 
 static void st_flush(void)
@@ -306,6 +326,22 @@ static inline void set_face(const uint32_t* f)
 	face8 = float_argb(f[0], f[1], f[2], f[3]);
 }
 
+// PolyParam 2B: the face offset colour follows the face colour.
+static inline void set_foffs(const uint32_t* f)
+{
+	foffs_a = f[0];
+	foffs_r = f[1];
+	foffs_g = f[2];
+	foffs_b = f[3];
+	foffs8 = float_argb(f[0], f[1], f[2], f[3]);
+}
+
+// 3b: vertex i's offset colour, as VTX_OFFS on the PPU under TAOPT_OFFS; a type with none gets 0.
+static inline void put_offs(uint32_t i, uint32_t argb)
+{
+	*(uint32_t*)st_at(&st[S_OFFS], i) = argb;
+}
+
 // mv_kept and mv_cap of the PPU: the opaque volume list, with P27 the translucent one too; P66's cap.
 static inline int mv_kept(uint32_t list)
 {
@@ -376,6 +412,8 @@ static void vtx_one(uint32_t t, const uint32_t* r)
 	case 9: v->col = r[4]; v->u = v->v = 0; break;
 	case 10: v->col = intensity_argb(r[4]); v->u = v->v = 0; break;
 	}
+	if (d->opt & TAOPT_OFFS)
+		put_offs(d->nvtx, (t == 3 || t == 4) ? r[7] : (t == 7 || t == 8) ? intensity_offs(r[7]) : 0);
 	d->nvtx++;
 }
 
@@ -400,6 +438,9 @@ static void vtx_a(uint32_t t, const uint32_t* r)
 	case 13: v->col = intensity_argb(r[6]); v->u = r[4]; v->v = r[5]; break;
 	case 14: v->col = intensity_argb(r[6]); uv16(v, r[4]); break;
 	}
+	// Volume 0 is drawn, so its offset colour is the one kept; types 5 and 6 have theirs in the second half.
+	if ((d->opt & TAOPT_OFFS) && t >= 11)
+		put_offs(d->nvtx, t <= 12 ? r[7] : intensity_offs(r[7]));
 }
 
 // Second half (VTX_B / VTX_B_KEEP): b is the record at byte 32 of the vertex.
@@ -411,6 +452,8 @@ static void vtx_b(uint32_t t, const uint32_t* b)
 	{
 		SpeVtx* v = (SpeVtx*)st_at(&st[S_VTX], d->nvtx);
 		v->col = float_argb(b[0], b[1], b[2], b[3]);
+		if (d->opt & TAOPT_OFFS)
+			put_offs(d->nvtx, float_argb(b[4], b[5], b[6], b[7]));
 	}
 	d->nvtx++;
 }
@@ -435,10 +478,7 @@ static void sprite_b(const uint32_t* b)
 	spr_x[3] = b[2];
 	spr_y[3] = b[3];
 	uint32_t w[4], u[4], v[4];
-	w[0] = track_w(spr_z[0]);
-	w[1] = track_w(spr_z[1]);
-	w[2] = track_w(spr_z[2]);
-	w[3] = track_w(add_sub(spr_z[0], spr_z[2], spr_z[1]));
+	uint32_t z3 = add_sub(spr_z[0], spr_z[2], spr_z[1]);
 	for (int k = 0; k < 3; k++)
 	{
 		u[k] = b[5 + k] & 0xFFFF0000u;
@@ -446,12 +486,30 @@ static void sprite_b(const uint32_t* b)
 	}
 	u[3] = add_sub(u[0], u[2], u[1]);
 	v[3] = add_sub(v[0], v[2], v[1]);
+	if (d->opt & TAOPT_SPR_PLANE)
+	{
+		// P80, as the PPU: D's own x and y on the plane through A, B and C.
+		uint32_t o[3];
+		if (spr_plane(spr_x, spr_y, spr_z, u, v, o))
+		{
+			z3 = o[0];
+			u[3] = o[1];
+			v[3] = o[2];
+			echo.spr_plane++;
+		}
+	}
+	w[0] = track_w(spr_z[0]);
+	w[1] = track_w(spr_z[1]);
+	w[2] = track_w(spr_z[2]);
+	w[3] = track_w(z3);
 
 	static const int order[4] = { 3, 2, 0, 1 };
 	d->strip_first = d->nvtx;
 	for (int i = 0; i < 4; i++)
 	{
 		const int k = order[i];
+		if (d->opt & TAOPT_OFFS)
+			put_offs(d->nvtx, sprite_offs);
 		SpeVtx* o = (SpeVtx*)st_at(&st[S_VTX], d->nvtx++);
 		o->x = spr_x[k];
 		o->y = spr_y[k];
@@ -573,6 +631,8 @@ static const uint32_t* step(const uint32_t* r, const uint32_t* end)
 	case TC_PARAM_B:
 		tc = TC_MAIN;
 		set_face(r);
+		if (tc_type == 2)
+			set_foffs(r + 4);
 		return r + 8;
 	case TC_VTX_B:
 	case TC_VTX_B_END:
@@ -635,10 +695,13 @@ static const uint32_t* step(const uint32_t* r, const uint32_t* end)
 				set_face(r + 4);
 			else if (ppid == 2 || ppid == 4)
 				set_face(r + 8);
+			if (ppid == 2)
+				set_foffs(r + 12);
 			return r + psz * 8;
 		}
 		add_param(r);
 		tc = TC_PARAM_B;
+		tc_type = ppid;
 		return r + 8;
 	}
 	case 5:  // Sprite
@@ -647,6 +710,7 @@ static const uint32_t* step(const uint32_t* r, const uint32_t* end)
 		vd = VD_SPRITE;
 		add_param(r);
 		sprite_col = r[4];
+		sprite_offs = r[5];
 		return r + 8;
 	case 7:  // Vertex
 		switch (vd)
@@ -718,14 +782,15 @@ void dec_init(const SpeSetup* setup)
 {
 	static uint8_t* const win[S_COUNT][2] = {
 		{ ls_vtx[0], ls_vtx[1] }, { ls_strip[0], ls_strip[1] }, { ls_param[0], ls_param[1] },
-		{ ls_mtri[0], ls_mtri[1] }, { ls_mvol[0], ls_mvol[1] } };
+		{ ls_mtri[0], ls_mtri[1] }, { ls_mvol[0], ls_mvol[1] }, { ls_offs[0], ls_offs[1] } };
 	static const uint32_t size[S_COUNT] = {
-		sizeof(ls_vtx[0]), sizeof(ls_strip[0]), sizeof(ls_param[0]), sizeof(ls_mtri[0]), sizeof(ls_mvol[0]) };
+		sizeof(ls_vtx[0]), sizeof(ls_strip[0]), sizeof(ls_param[0]), sizeof(ls_mtri[0]), sizeof(ls_mvol[0]),
+		sizeof(ls_offs[0]) };
 	static const uint32_t esize[S_COUNT] = {
-		sizeof(SpeVtx), sizeof(SpeStrip), sizeof(SpeParam), sizeof(SpeModTri), sizeof(SpeModVol) };
+		sizeof(SpeVtx), sizeof(SpeStrip), sizeof(SpeParam), sizeof(SpeModTri), sizeof(SpeModVol), 4 };
 	static const uint32_t off[S_COUNT] = {
 		offsetof(SpeOut, vtx), offsetof(SpeOut, strip), offsetof(SpeOut, param),
-		offsetof(SpeOut, mtri), offsetof(SpeOut, mvol) };
+		offsetof(SpeOut, mtri), offsetof(SpeOut, mvol), offsetof(SpeOut, offs) };
 	for (int i = 0; i < S_COUNT; i++)
 	{
 		st[i].ls[0] = win[i][0];
@@ -760,6 +825,8 @@ void dec_reset(uint32_t ctx, uint32_t opt)
 	{
 		face_a = face_r = face_g = face_b = F_ONE;
 		face8 = 0xFFFFFFFFu;
+		foffs_a = foffs_r = foffs_g = foffs_b = F_ONE;
+		foffs8 = 0xFFFFFFFFu;
 	}
 	if (opt & TAOPT_TILE_CLIP)
 		clip_rect = TA_CLIP_RESET;

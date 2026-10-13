@@ -3,6 +3,7 @@
 #include "plugs/drkPvr/ta.h"
 #include "ps3/ps3_rend_regs.h"
 #include "ps3/spu/spe_bell.h"
+#include "ps3/spu/spe_sprite.h"
 #include <vector>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +34,7 @@ static u32 s_sprite_col = 0xFFFFFFFF;
 static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
 static u32 s_sprite_offs;
 static bool s_bump_param;
+static u32 s_stat_spr_plane;
 static bool s_bump_on;
 // Plan 3a: off here, so only the bump gate keeps offset colours.
 static u32 s_fog;

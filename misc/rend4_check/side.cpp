@@ -50,6 +50,7 @@ enum
 	OP_ENABLE, OP_DISABLE, OP_BLENDFUNC, OP_DEPTHFUNC, OP_DEPTHMASK, OP_CULLFACE, OP_STENCILFUNC, OP_STENCILMASK,
 	OP_STENCILOP, OP_COLORMASK, OP_TEXENV, OP_ALPHAFUNC, OP_SHADEMODEL, OP_FRONTFACE, OP_MATRIXMODE, OP_LOADMATRIX,
 	OP_LOADIDENTITY, OP_DEPTHRANGE, OP_SCISSOR, OP_TEXBIND, OP_TEXBUMP, OP_TEX1, OP_DEPTHFLOAT, OP_ALLOC,
+	OP_DCOFFS, OP_DCXT,
 };
 
 std::vector<R4Call> g_calls;
@@ -144,6 +145,27 @@ void ps3gl_tex_bump(int on) { call(OP_TEXBUMP, (uint32_t)on); }
 enum { PS3GL_FOG_NONE, PS3GL_FOG_TABLE, PS3GL_FOG_VERTEX, PS3GL_FOG_BASE, PS3GL_FOG_BASE_TA };
 void ps3gl_dc_fog(int) { r4_die("ps3gl_dc_fog with Fog off"); }
 void ps3gl_tex1_bits(uint32_t b) { g_cur[1] ^= 0; (void)b; }
+// Bundle 17: the offset colour program, and the clamp and weight program with its values.
+void ps3gl_dc_offs(int on)
+{
+	call(OP_DCOFFS, (uint32_t)on);
+	g_st.dc_offs = (uint32_t)on;
+}
+void ps3gl_dc_xt(int on, const float* cmin, const float* cmax, float tril)
+{
+	memset(g_st.xt, 0, sizeof(g_st.xt));
+	if (on)
+	{
+		for (int k = 0; k < 4; k++)
+		{
+			g_st.xt[k] = fbits(cmin[k]);
+			g_st.xt[4 + k] = fbits(cmax[k]);
+		}
+		g_st.xt[8] = fbits(tril);
+	}
+	call(OP_DCXT, (uint32_t)on, g_st.xt[0], g_st.xt[3], g_st.xt[4], g_st.xt[7], g_st.xt[8]);
+	g_st.dc_xt = (uint32_t)on;
+}
 void ps3_video_depth_float(int on) { call(OP_DEPTHFLOAT, (uint32_t)on); }
 bool ps3tex_bind(TSP tsp, TCW tcw, u32 slot, bool pt)
 {
@@ -295,6 +317,7 @@ std::vector<DcStrip> g_s;
 std::vector<DcParam> g_p;
 std::vector<ModTri> g_mt;
 std::vector<ModVolParam> g_mv;
+std::vector<u32> g_of;
 }
 
 uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, uint32_t* vb_used)
@@ -372,7 +395,21 @@ uint32_t SIDE(run)(const R4Scene* s, const R4Call** calls, const uint32_t** vb, 
 	s_rl.pass_mvol = s->pass_mvol;
 	s_do.pt_depth = s->pt_depth != 0;
 	s_do.tr_nodepth = s->tr_nodepth != 0;
+#ifdef R4_OLD
 	s_do.pt_blend = s->pt_blend != 0;
+#else
+	// Bundle 17: the PPU replay's lists hold every offset colour (TAOPT_OFFS); the rows are latched as in rth_job_decode.
+	g_of.resize(s->nvtx + 1);
+	if (s->offs)
+		memcpy(g_of.data(), s->offs, (size_t)s->nvtx * 4);
+	s_rl.offs = g_of.data();
+	s_do.pt_blend = (u8)s->pt_blend;
+	s_do.offs = s->offs_row != 0;
+	s_do.clamp = s->clamp_row != 0;
+	s_do.tril = s->tril_row != 0;
+	g_rr.fog_clamp_min = s->fog_clamp_min;
+	g_rr.fog_clamp_max = s->fog_clamp_max;
+#endif
 	s_do.flat = (u8)s->flat;
 	s_do.passes = (u8)s->passes;
 	s_do.tri_sort = (u8)s->tri_sort;

@@ -1,6 +1,8 @@
 // Bundle 14 PC check (WSL): random GL calls of NotDC's kinds through ps3gl onto a model of the RSX registers.
 // "run": a hash of the RSX calls (run.sh: rows OFF = the old files). "cmp": rows ON hold the registers of rows OFF.
 #include "ps3gl.h"
+// Bundle 17: the table of the dc programs (the offset colour, the clamp and the weight), for check_dc().
+#include "ps3gl_shader_dc.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -643,13 +645,66 @@ static void op_tex(void)
 	}
 }
 
+// Bundle 17: at a draw under ps3gl_dc_offs() or ps3gl_dc_xt() the RSX holds the program that compile_dc.sh's table
+// names for the state (or the one with no fog), its vertex program, and the constants of that vertex program.
+static uint64_t g_dc_checks, g_dc_xt_checks;
+
+static uint32_t const_hash(const float* v)
+{
+	uint32_t h = 0x811C9DC5u;
+	for (int k = 0; k < 4; k++)
+		h = (h ^ fbits(v[k])) * 0x01000193u;
+	return h;
+}
+
+static void check_dc(void)
+{
+	const ps3gl_tmu_t* t0 = &ps3gl.tmu[0];
+	const int tmu0 = t0->enabled && t0->bound && t0->bound->data;
+	if (!(ps3gl.dc_offs || ps3gl.dc_xt) || (tmu0 && t0->bump))
+		return;
+	const int tenv = tmu0 ? t0->texenv : PS3GL_TENV_DISABLED, offs = ps3gl.dc_offs && tmu0;
+	int key = -1;
+	for (int pass = 0; pass < 2 && key < 0; pass++)
+		for (int i = 0; i < PS3GL_DC_PROGRAMS && key < 0; i++)
+			if (shader_dc_fp[i].xt == ps3gl.dc_xt && shader_dc_fp[i].offs == offs && shader_dc_fp[i].env == tenv &&
+			    shader_dc_fp[i].fog == (pass ? PS3GL_FOG_NONE : ps3gl.dc_fog))
+				key = i;
+	if (key < 0)
+		return;
+	const ps3gl_shader_t* s = &ps3gl.shaders[PS3GL_TENV_DC_FIRST + key];
+	if (reg[R_FPROG] != s->fp_offset || reg[R_VPROG] != ptr_id(s->vp))
+		die("a draw with dc program %d: the RSX holds fragment program %X (want %X), vertex program %X (want %X)", key,
+		    reg[R_FPROG], s->fp_offset, reg[R_VPROG], ptr_id(s->vp));
+	g_dc_checks++;
+	if (!shader_dc_fp[key].xt && !shader_dc_fp[key].fog)
+		return;
+	const float fogp[4] = { ps3gl.dc_fog_scale, shader_dc_fp[key].xt ? ps3gl.dc_xt_v[8] : 0.0f, 0.0f, 0.0f };
+	if (reg[R_CONST + (s->fog_const - g_const)] != const_hash(fogp))
+		die("a draw with dc program %d: fogp is not (%g, %g)", key, (double)fogp[0], (double)fogp[1]);
+	if (!shader_dc_fp[key].xt)
+		return;
+	if (reg[R_CONST + (s->cmin_const - g_const)] != const_hash(&ps3gl.dc_xt_v[0]) ||
+	    reg[R_CONST + (s->cmax_const - g_const)] != const_hash(&ps3gl.dc_xt_v[4]))
+		die("a draw with dc program %d: the clamp's ends are not the ones set", key);
+	g_dc_xt_checks++;
+}
+
 static void op_program(void)
 {
-	switch (rndn(6))
+	switch (rndn(9))
 	{
 	case 0: case 1: ps3gl_tex_bump((int)rndn(2)); break;
 	case 2: case 3: ps3gl_dc_fog((int)rndn(5)); break;
 	case 4: ps3gl_dc_fog_scale((float)(1 + rndn(3))); break;
+	case 5: ps3gl_dc_offs((int)rndn(2)); break;
+	case 6: case 7:
+	{
+		const float lo[4] = { (float)rndn(3) * 0.25f, 0.0f, (float)rndn(2) * 0.5f, 0.0f };
+		const float hi[4] = { 1.0f, (float)(1 + rndn(3)) * 0.25f, 1.0f, (float)(1 + rndn(2)) * 0.5f };
+		ps3gl_dc_xt((int)rndn(3) != 0, lo, hi, (float)(1 + rndn(4)) * 0.25f);
+		break;
+	}
 	default:
 		glMatrixMode(rndn(2) ? GL_PROJECTION : GL_MODELVIEW);
 		if (rndn(2))
@@ -680,6 +735,7 @@ static void op_draw(void)
 		const int first = (int)rndn(200), count = 3 + (int)rndn(40);
 		ps3gl_draw_vb_shift(rndn(2) ? GL_TRIANGLE_STRIP : GL_TRIANGLES, g_vb_off[b], b && rndn(4) ? 48 : 36, first, count,
 		                    rndn(7) == 0 ? 2 : 0);
+		check_dc();
 	}
 	else if (r < 85)
 	{
@@ -695,6 +751,7 @@ static void op_draw(void)
 			glVertex3f((float)v, 0.0f, 1.0f);
 		}
 		glEnd();
+		check_dc();
 	}
 	else if (r < 92)
 	{
@@ -703,6 +760,7 @@ static void op_draw(void)
 		glTexCoordPointer(2, GL_FLOAT, 0, g_ct);
 		glColorPointer(4, GL_UNSIGNED_BYTE, 0, g_cc);
 		glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, idx);
+		check_dc();
 	}
 	else if (r < 97)
 	{
@@ -821,8 +879,11 @@ int main(int argc, char** argv)
 			die("%s: %llu RSX calls, more than the %llu at 0", g_what, (unsigned long long)g_calls,
 			    (unsigned long long)calls0);
 	}
-	printf("cmp %u: %u draws and clears; RSX calls: %llu at 0, %llu with the compares (%.1f%%), %llu with changes\n", seed,
+	if (!g_dc_checks || !g_dc_xt_checks)
+		die("no draw with a dc program was checked");
+	printf("cmp %u: %u draws and clears; RSX calls: %llu at 0, %llu with the compares (%.1f%%), %llu with changes; "
+	       "%llu draws with a dc program checked (%llu with the clamp and the weight)\n", seed,
 	       g_nbase, (unsigned long long)calls0, (unsigned long long)calls[3], 100.0 * (double)calls[3] / (double)calls0,
-	       (unsigned long long)calls[4]);
+	       (unsigned long long)calls[4], (unsigned long long)g_dc_checks, (unsigned long long)g_dc_xt_checks);
 	return 0;
 }

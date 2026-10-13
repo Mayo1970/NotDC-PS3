@@ -1,5 +1,6 @@
-// Bundle 4 (plan section 7) PC check, WSL: the PPU replay and the SPU decoder with the decode options, against each
-// other, the frozen decoders of before bundle 4 (options off), and a model of the ported rules. See run.sh.
+// Bundles 4 and 17 (plan section 7) PC check, WSL: the PPU replay and the SPU decoder with the decode options, against
+// each other, the frozen decoders of before bundle 4 (options off), and a model of the ported rules. See run.sh.
+#include <math.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -98,7 +99,30 @@ static u32 m_int(u32 opt, u32 ibits)
 	       m_byte(fb(bf(m_face[3]) * i));
 }
 
+// Bundle 17: the face offset colour (PolyParam 2B), and an intensity vertex's offset colour from it.
+static u32 m_foffs[4] = { 0x3F800000u, 0x3F800000u, 0x3F800000u, 0x3F800000u };
+static u32 m_foffs8 = 0xFFFFFFFFu;
+static void m_set_foffs(const u32* f)
+{
+	memcpy(m_foffs, f, 16);
+	m_foffs8 = m_argb(f[0], f[1], f[2], f[3]);
+}
+static u32 m_ioffs(u32 opt, u32 ibits)
+{
+	if (opt & TAOPT_INT_CLAMP)
+	{
+		const u32 s = m_byte(ibits);
+		return (m_foffs8 & 0xFF000000u) | ((((m_foffs8 >> 16) & 0xFF) * s / 256) << 16) |
+		       ((((m_foffs8 >> 8) & 0xFF) * s / 256) << 8) | ((m_foffs8 & 0xFF) * s / 256);
+	}
+	const float i = bf(ibits);
+	return m_byte(m_foffs[0]) << 24 | m_byte(fb(bf(m_foffs[1]) * i)) << 16 | m_byte(fb(bf(m_foffs[2]) * i)) << 8 |
+	       m_byte(fb(bf(m_foffs[3]) * i));
+}
+
 struct MVol { u32 first, cull, depth, vl, list; };
+// A sprite: its first vertex in the lists (corner D), and the record's x, y of A, B, C, D and z, u, v of A, B, C.
+struct Spr { u32 first, x[4], y[4], z[3], u[3], v[3]; };
 
 struct Frame
 {
@@ -109,6 +133,8 @@ struct Frame
 	std::vector<u32> strips_after;  // strips and volume records in the lists after each record
 	std::vector<u32> mvols_after;
 	std::vector<u32> col;           // the colour of each vertex
+	std::vector<u32> offs;          // its offset colour, as TAOPT_OFFS keeps it
+	std::vector<Spr> spr;
 	std::vector<u32> param;         // pcw, isp of each param
 	std::vector<MVol> mvol;
 	u32 nmtri, nstrip, nbad;
@@ -209,6 +235,22 @@ static void gen_vertex(u32 pdid, bool eos)
 		break;
 	}
 	F.col.push_back(col);
+	// Bundle 17: the offset colour of the vertex; a type with none gets 0.
+	u32 off = 0;
+	switch (pdid)
+	{
+	case 3: case 4: case 11: case 12: off = a[7]; break;
+	case 5: case 6:
+		for (int k = 4; k < 8; k++)
+			b[k] = rnd_colf();
+		off = m_argb(b[4], b[5], b[6], b[7]);
+		break;
+	case 7: case 8: case 13: case 14:
+		a[7] = rnd_colf();
+		off = m_ioffs(F.opt, a[7]);
+		break;
+	}
+	F.offs.push_back(off);
 	strip_vtx++;
 	if (!is64(pdid))
 	{
@@ -257,6 +299,8 @@ static void gen_poly(u32 list)
 		m_set_face(h + 4);
 	else if (ppid == 2 || ppid == 4)
 		m_set_face(h + 8);
+	if (ppid == 2)
+		m_set_foffs(h + 12);
 	rec(h);
 	if (psz == 2)
 		rec(h + 8);
@@ -302,8 +346,40 @@ static void gen_sprite(u32 list)
 		b[4] = rnd();
 		for (int k = 5; k < 8; k++)
 			b[k] = rnd_uv16() << 16 | rnd_uv16();
+		// Bundle 17: shape 0 is any four corners; else a rectangle, a trapezoid or a sheared quad of screen size.
+		const u32 shape = rndn(4);
+		if (shape)
+		{
+			const float x0 = (float)rndn(6000) / 10.0f, y0 = (float)rndn(4000) / 10.0f;
+			const float w = (float)(1 + rndn(3000)) / 10.0f, hh = (float)(1 + rndn(2000)) / 10.0f;
+			const float sh = shape == 1 ? 0.0f : (float)rndn(400) / 10.0f - 20.0f;
+			const float in = shape == 2 ? (float)(1 + rndn(200)) / 10.0f : 0.0f;
+			a[1] = fb(x0);
+			a[2] = fb(y0);
+			a[4] = fb(x0 + w);
+			a[5] = fb(y0);
+			a[7] = fb(x0 + w + sh - in);
+			b[0] = fb(y0 + hh);
+			b[2] = fb(x0 + sh + in);
+			b[3] = fb(y0 + hh);
+		}
+		Spr sp;
+		sp.first = (u32)F.col.size();
+		sp.x[0] = a[1]; sp.y[0] = a[2]; sp.z[0] = a[3];
+		sp.x[1] = a[4]; sp.y[1] = a[5]; sp.z[1] = a[6];
+		sp.x[2] = a[7]; sp.y[2] = b[0]; sp.z[2] = b[1];
+		sp.x[3] = b[2]; sp.y[3] = b[3];
+		for (int k = 0; k < 3; k++)
+		{
+			sp.u[k] = b[5 + k] & 0xFFFF0000u;
+			sp.v[k] = b[5 + k] << 16;
+		}
+		F.spr.push_back(sp);
 		for (int k = 0; k < 4; k++)
+		{
 			F.col.push_back(h[4]);
+			F.offs.push_back(h[5]);
+		}
 		rec(a);
 		// The quad is a strip of 4 vertices, taken at the second record.
 		if (F.nstrip < T4_MAX_STRIPS)
@@ -420,6 +496,8 @@ static void gen_frame(u32 opt, bool bad, u32 kind)
 	F.strips_after.clear();
 	F.mvols_after.clear();
 	F.col.clear();
+	F.offs.clear();
+	F.spr.clear();
 	F.param.clear();
 	F.mvol.clear();
 	F.nmtri = F.nstrip = F.nbad = 0;
@@ -430,8 +508,8 @@ static void gen_frame(u32 opt, bool bad, u32 kind)
 	if (opt & TAOPT_FACE_RESET)
 	{
 		for (int k = 0; k < 4; k++)
-			m_face[k] = 0x3F800000u;
-		m_face8 = 0xFFFFFFFFu;
+			m_face[k] = m_foffs[k] = 0x3F800000u;
+		m_face8 = m_foffs8 = 0xFFFFFFFFu;
 	}
 	if (opt & TAOPT_TILE_CLIP)
 		m_clip = TA_CLIP_RESET;
@@ -552,6 +630,10 @@ static void same(const T4Lists& a, const T4Lists& b, const char* what)
 			die("%s: vertex %u: %08X %08X %08X %08X %08X %08X / %08X %08X %08X %08X %08X %08X", what, i,
 			    a.vtx[i][0], a.vtx[i][1], a.vtx[i][2], a.vtx[i][3], a.vtx[i][4], a.vtx[i][5],
 			    b.vtx[i][0], b.vtx[i][1], b.vtx[i][2], b.vtx[i][3], b.vtx[i][4], b.vtx[i][5]);
+	if (a.opt & b.opt & TAOPT_OFFS)
+		for (u32 i = 0; i < a.nvtx; i++)
+			if (a.offs[i] != b.offs[i])
+				die("%s: offset colour of vertex %u: %08X / %08X", what, i, a.offs[i], b.offs[i]);
 	for (u32 i = 0; i < a.nstrip; i++)
 		if (memcmp(a.strip[i], b.strip[i], 16))
 			die("%s: strip %u: %u+%u l%u p%u / %u+%u l%u p%u", what, i, a.strip[i][0], a.strip[i][1], a.strip[i][2],
@@ -571,6 +653,111 @@ static void same(const T4Lists& a, const T4Lists& b, const char* what)
 }
 
 static uint64_t n_vtx, n_int, n_param, n_clip, n_mvol, n_tr_mvol, n_capped, n_marks, n_badrec, n_rec;
+// Bundle 17: offset colours checked; sprites, those at the plane's corner, at the old one, and near a limit of the
+// rule (a flat sprite, a result at the range's end), where both corners pass.
+static uint64_t n_offs, n_spr, n_spr_plane, n_spr_old, n_spr_either;
+
+// set_pos of the decoders: W for a 1/W, with its floor.
+static u32 m_w(float z)
+{
+	const float safe = (z >= 1e-9f) ? z : 1e-9f;
+	return fb(1.0f / safe);
+}
+static bool m_plain(u32 b)
+{
+	const u32 e = (b >> 23) & 0xFF;
+	return !b || (e >= 87 && e <= 167);
+}
+
+// P80: the sprite's corner D in the lists against the plane through A, B and C, in long double. The decoders keep
+// the old corner (A + C - B) for a parallelogram and for values they do not take.
+static void model_sprite(const T4Lists& l, const Spr& s)
+{
+	typedef long double ld;
+	const u32* d = l.vtx[s.first];
+	n_spr++;
+	const u32 zo = fb(bf(s.z[0]) + bf(s.z[2]) - bf(s.z[1]));
+	const u32 uo = fb(bf(s.u[0]) + bf(s.u[2]) - bf(s.u[1])), vo = fb(bf(s.v[0]) + bf(s.v[2]) - bf(s.v[1]));
+	const bool is_old = d[2] == m_w(bf(zo)) && d[4] == uo && d[5] == vo;
+	bool plain = true;
+	for (int k = 0; k < 4; k++)
+		plain = plain && m_plain(s.x[k]) && m_plain(s.y[k]);
+	for (int k = 0; k < 3; k++)
+		plain = plain && m_plain(s.z[k]) && m_plain(s.u[k]) && m_plain(s.v[k]);
+	const char* why = !(F.opt & TAOPT_SPR_PLANE) ? "the option is off" : !plain ? "a value is not plain" : 0;
+	ld m[3], mag[3];
+	if (!why)
+	{
+		const ld ax = bf(s.x[0]), ay = bf(s.y[0]);
+		const ld abx = (ld)bf(s.x[1]) - ax, aby = (ld)bf(s.y[1]) - ay;
+		const ld acx = (ld)bf(s.x[2]) - ax, acy = (ld)bf(s.y[2]) - ay;
+		const ld apx = (ld)bf(s.x[3]) - ax, apy = (ld)bf(s.y[3]) - ay;
+		const ld det = abx * acy - aby * acx, n1 = apx * acy - apy * acx, n2 = abx * apy - aby * apx;
+		const ld sd = fabsl(abx * acy) + fabsl(aby * acx), s1 = fabsl(apx * acy) + fabsl(apy * acx);
+		const ld s2 = fabsl(abx * apy) + fabsl(aby * apx);
+		if (apx == acx - abx && apy == acy - aby)
+			why = "a parallelogram";
+		else if (det == 0)
+			why = "no area";
+		else if (fabsl(det) < 1e-7L * sd || (n1 != 0 && fabsl(n1) < 1e-7L * s1) || (n2 != 0 && fabsl(n2) < 1e-7L * s2))
+		{
+			// A difference that loses 7 digits: the decoders' doubles and this model can part.
+			n_spr_either++;
+			return;
+		}
+		else
+		{
+			// AP = k1 AB + k2 AC defines k1 and k2; D's value is then A's plus k1 and k2 times the sides' steps.
+			const ld k1 = n1 / det, k2 = n2 / det;
+			if (fabsl(k1 * abx + k2 * acx - apx) > 1e-9L * (fabsl(k1 * abx) + fabsl(k2 * acx) + fabsl(apx)) ||
+			    fabsl(k1 * aby + k2 * acy - apy) > 1e-9L * (fabsl(k1 * aby) + fabsl(k2 * acy) + fabsl(apy)))
+				die("the model's k1 and k2 do not give D (sprite at vertex %u)", s.first);
+			const u32* const w[3] = { s.z, s.u, s.v };
+			bool edge = false;
+			for (int k = 0; k < 3; k++)
+			{
+				const ld a = bf(w[k][0]);
+				const ld t1 = k1 * ((ld)bf(w[k][1]) - a), t2 = k2 * ((ld)bf(w[k][2]) - a);
+				m[k] = a + t1 + t2;
+				mag[k] = fabsl(a) + fabsl(t1) + fabsl(t2);
+				const ld am = fabsl(m[k]);
+				// A result outside 2^-100 .. 2^101 keeps the old corner; near a limit, or lost in the sum, both pass.
+				if (am != 0 && (am < 0x1p-100L || am >= 0x1p101L))
+					why = "a result out of range";
+				if ((am > 0x1p-102L && am < 0x1p-98L) || (am > 0x1p99L && am < 0x1p103L) || (am != 0 && am < 1e-9L * mag[k]))
+					edge = true;
+			}
+			if (edge)
+			{
+				n_spr_either++;
+				return;
+			}
+		}
+	}
+	if (why)
+	{
+		if (!is_old)
+			die("model: sprite at vertex %u: the old corner is expected (%s), got W %08X u %08X v %08X", s.first, why,
+			    d[2], d[4], d[5]);
+		n_spr_old++;
+		return;
+	}
+	const ld ez = 4e-6L * mag[0];
+	if (fabsl(m[0] - 1e-9L) > ez)
+	{
+		const ld zf = m[0] >= 1e-9L ? m[0] : 1e-9L;
+		if (fabsl((ld)bf(d[2]) * zf - 1) > 1e-5L + ez / zf)
+			die("model: sprite at vertex %u: W %g, the plane's 1/W is %Lg", s.first, (double)bf(d[2]), m[0]);
+	}
+	for (int k = 1; k < 3; k++)
+		if (fabsl((ld)bf(d[3 + k]) - m[k]) > 4e-6L * mag[k] + 1e-37L)
+			die("model: sprite at vertex %u: %c %g, the plane's is %Lg", s.first, k == 1 ? 'u' : 'v',
+			    (double)bf(d[3 + k]), m[k]);
+	// The trapezoid's corner must not be the parallelogram's: a decoder that never takes the plane fails here.
+	if (is_old && fabsl((ld)bf(uo) - m[1]) + fabsl((ld)bf(vo) - m[2]) > 1e-3L * (mag[1] + mag[2]))
+		die("model: sprite at vertex %u: the old corner, with the plane's far from it", s.first);
+	n_spr_plane++;
+}
 
 // The lists against the model of the frame.
 static void model(const T4Lists& l)
@@ -619,12 +806,53 @@ static void model(const T4Lists& l)
 			    l.pass_mvol[k], ws, wm);
 	}
 	n_marks += np;
+	if (F.opt & TAOPT_OFFS)
+	{
+		for (u32 i = 0; i < l.nvtx; i++)
+			if (l.offs[i] != F.offs[i])
+				die("model: vertex %u offset colour %08X, want %08X (opt %02X)", i, l.offs[i], F.offs[i], F.opt);
+		n_offs += l.nvtx;
+	}
+	for (const Spr& s : F.spr)
+		model_sprite(l, s);
 	n_vtx += l.nvtx;
 	n_param += l.nparam;
 	n_mvol += l.nmvol;
 	const u32 sent = F.mv_tris[1] + ((F.opt & TAOPT_TR_VOL) ? F.mv_tris[3] : 0);
 	if (sent > F.nmtri)
 		n_capped++;
+}
+
+// A normal double: any sign, an exponent of -300 to 300; one in four has a short mantissa (exact quotients).
+static double rnd_dbl()
+{
+	uint64_t m = ((uint64_t)rnd() << 32 | rnd()) & 0xFFFFFFFFFFFFFull;
+	if (rndn(4) == 0)
+		m &= ~((1ull << rndn(53)) - 1);
+	const uint64_t b = (uint64_t)(rnd() & 1) << 63 | (uint64_t)(723 + rndn(601)) << 52 | m;
+	double d;
+	memcpy(&d, &b, 8);
+	return d;
+}
+
+// Bundle 17 (P80): the SPU's divide of spe_sprite.h against the host's, which rounds to nearest as the PPU's does.
+static u32 div_checks(u32 n)
+{
+	for (u32 i = 0; i < n; i++)
+	{
+		double a = rnd_dbl();
+		const double b = rnd_dbl();
+		// One in four: an exact quotient.
+		if (rndn(4) == 0)
+		{
+			volatile double q = (double)(1 + rndn(1u << 20)) * b;
+			a = q;
+		}
+		const double want = a / b, got = spu_new_div(a, b);
+		if (memcmp(&want, &got, 8))
+			die("spr_div(%a, %a) = %a, the host's divide gives %a", a, b, got, want);
+	}
+	return n;
 }
 
 int main(int argc, char** argv)
@@ -641,6 +869,7 @@ int main(int argc, char** argv)
 	const SpuSide sr = { spu_ref_reset, spu_ref_data, spu_ref_fence };
 	spu_new_init(0);
 	spu_ref_init(0);
+	const u32 n_div = div_checks(2000000);
 
 	// Phase 1, options off: the tree's decoders against the frozen ones, and against each other.
 	for (g_frame = 0; g_frame < frames; g_frame++)
@@ -665,10 +894,12 @@ int main(int argc, char** argv)
 	{
 		for (g_frame = 0; g_frame < frames; g_frame++)
 		{
-			const u32 opt = rndn(8) ? rnd() & 31 : rndn(2) ? 31 : 1u << rndn(5);
+			const u32 opt = rndn(8) ? rnd() & 127 : rndn(2) ? 127 : 1u << rndn(7);
 			gen_frame(opt, phase == 3, g_frame % 23 == 5 ? 1 : g_frame % 29 == 7 ? 2 : g_frame % 31 == 9 ? 3 : 0);
 			const u32 ctx = rndn(SPE_CTX);
 			const u32 bp = ppu_new_bad(), bs = spu_new_bad();
+			const u32 pp = ppu_new_planes(), ps = spu_new_planes();
+			const uint64_t mp = n_spr_plane, me = n_spr_either;
 			run_ppu(pn, &Lp);
 			run_spu(sn, ctx, &Ls);
 			same(Lp, Ls, "PPU / SPU");
@@ -677,6 +908,11 @@ int main(int argc, char** argv)
 			if (ppu_new_bad() - bp != F.nbad || spu_new_bad() - bs != F.nbad)
 				die("bad records counted %u / %u, want %u", ppu_new_bad() - bp, spu_new_bad() - bs, F.nbad);
 			model(Lp);
+			// Each decoder counts its plane corners: the same count, and it holds every sprite the model is sure of.
+			const u32 dp = ppu_new_planes() - pp, ds = spu_new_planes() - ps;
+			if (dp != ds || dp < n_spr_plane - mp || dp > n_spr_plane - mp + (n_spr_either - me))
+				die("plane corners counted %u / %u, the model has %llu sure and %llu near a limit", dp, ds,
+				    (unsigned long long)(n_spr_plane - mp), (unsigned long long)(n_spr_either - me));
 			n_badrec += F.nbad;
 			if (opt & TAOPT_INT_CLAMP)
 				n_int++;
@@ -689,5 +925,10 @@ int main(int argc, char** argv)
 	       (unsigned long long)n_param, (unsigned long long)n_clip, (unsigned long long)n_mvol,
 	       (unsigned long long)n_tr_mvol, (unsigned long long)n_capped, (unsigned long long)n_marks,
 	       (unsigned long long)n_badrec, (unsigned long long)n_int);
+	printf("bundle 17: %llu offset colours; %llu sprites: %llu at the plane's corner, %llu at the old one, %llu near a "
+	       "limit of the rule; %u divides\n", (unsigned long long)n_offs, (unsigned long long)n_spr,
+	       (unsigned long long)n_spr_plane, (unsigned long long)n_spr_old, (unsigned long long)n_spr_either, n_div);
+	if (!n_offs || !n_spr_plane || !n_spr_old)
+		die("a bundle 17 case never ran");
 	return 0;
 }

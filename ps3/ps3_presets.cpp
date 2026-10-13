@@ -80,7 +80,7 @@ int g_ta_bad_rec_preset    = 1;   // 1 = Object_List_Set, the reserved and the t
 int g_ta_data_gate_preset  = 1;   // 1 = TA records with no list init current are dropped (P66, HW)
 int g_pt_depth_preset      = 1;   // 1 = punch-through always writes depth (P25, HW)
 int g_tr_sort_depth_preset = 0;   // 1 = an autosorted translucent polygon writes no depth (P25; HW: Rayman 2 water right, Sonic models wrong)
-int g_pt_blend_preset      = 1;   // 1 = punch-through blends with its TSP factors (P25, HW)
+int g_pt_blend_preset      = 1;   // 1 = punch-through blends with its TSP factors (P25, HW), 2 = with alpha 1 after its test (P79)
 int g_sprite_cull_preset   = 1;   // 1 = a sprite culls the other face (P25, HW)
 int g_flat_shade_preset    = 0;   // flat shading without Gouraud: 0 = off, 1 = the RSX takes the last vertex, 2 = the first (P25; HW: no difference seen)
 int g_region_array_preset  = 1;   // 1 = the region array as Flycast reads it: an empty first entry is skipped (P10, HW)
@@ -90,6 +90,11 @@ int g_ta_list_regs_preset  = 1;   // 1 = TA_LIST_INIT puts TA_ITP_CURRENT and TA
 int g_core_reset_preset    = 1;   // 1 = SOFTRESET bit 1 cancels the pending render-done interrupts (P10, HW)
 int g_tr_tri_sort_preset   = 3;   // autosorted translucent list per triangle: 1 = no depth write, 2 = the game's, 3 = opaque texels first (3k, HW at 3)
 int g_fog_preset           = 1;   // PVR fog: 1 = table fog per pixel, 2 = also vertex fog, whose scenes decode on the PPU (3a, HW at 1 and 2)
+// Bundle 17 (plan section 7), the RENDERER page's last rows and PT Blend's third level: 0 is the old path.
+int g_sprite_corner_preset = 1;   // 1 = a sprite's fourth corner takes 1/W, u and v from the plane of the other three (P80)
+int g_offset_colour_preset = 1;   // 1 = a textured polygon with the Offset bit adds its offset colour (3b, HW at 1)
+int g_colour_clamp_preset  = 1;   // 1 = a polygon with ColorClamp clamps to FOG_CLAMP_MIN..MAX before the fog (3b)
+int g_trilinear_preset     = 1;   // 1 = the two passes of a trilinear polygon draw with their weights (P25)
 int g_jit_fschg_preset     = 2;   // 1 = fschg skips the UpdateFPSCR() call, 2 also no sync and no block end (5.37, HW)
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -304,6 +309,10 @@ static const CfgItem s_items[] = {
 	{ "CoreReset",     &g_core_reset_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
 	{ "Fog",           &g_fog_preset },
+	{ "SpriteCorner",  &g_sprite_corner_preset },
+	{ "OffsetColour",  &g_offset_colour_preset },
+	{ "ColourClamp",   &g_colour_clamp_preset },
+	{ "Trilinear",     &g_trilinear_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -539,6 +548,10 @@ static const CfgItem s_rend_items[] = {
 	{ "CoreReset",     &g_core_reset_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
 	{ "Fog",           &g_fog_preset },
+	{ "SpriteCorner",  &g_sprite_corner_preset },
+	{ "OffsetColour",  &g_offset_colour_preset },
+	{ "ColourClamp",   &g_colour_clamp_preset },
+	{ "Trilinear",     &g_trilinear_preset },
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 

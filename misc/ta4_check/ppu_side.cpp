@@ -14,6 +14,8 @@
 #define SIDE_NS ppu_new_ns
 #define SIDE(x) ppu_new_##x
 #include "ps3/spu/spe_bell.h"
+// run.sh puts the tree's header (or a mutant) on the include path.
+#include "spe_sprite.h"
 #endif
 
 namespace SIDE_NS
@@ -47,6 +49,7 @@ static u32 s_fog;  // plan 3a: off
 static u32 s_face8 = 0xFFFFFFFF, s_foffs8 = 0xFFFFFFFF;
 static u32 s_dopt;
 static u32 s_clip_rect;
+static u32 s_stat_spr_plane;
 #endif
 
 // reset_lists of ps3_rend.cpp.
@@ -140,6 +143,7 @@ void SIDE(lists)(T4Lists* l)
 	l->npass = c->npass;
 	memcpy(l->pass_strip, c->pass_strip, sizeof(l->pass_strip));
 	memcpy(l->pass_mvol, c->pass_mvol, sizeof(l->pass_mvol));
+	memcpy(l->offs, c->offs, (size_t)c->nvtx * 4);
 #endif
 	memcpy(l->vtx, c->vtx, (size_t)c->nvtx * sizeof(DcVertex));
 	for (u32 i = 0; i < c->nstrip; i++)
@@ -167,4 +171,5 @@ void SIDE(lists)(T4Lists* l)
 
 #ifndef T4_REF
 uint32_t ppu_new_bad(void) { return g_ta_bad_records; }
+uint32_t ppu_new_planes(void) { return s_stat_spr_plane; }
 #endif

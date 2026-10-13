@@ -4,8 +4,9 @@
 import os, subprocess, sys
 
 SCENES = sys.argv[1] if len(sys.argv) > 1 else '1500'
-# A second argument keeps the planted bugs whose name has it (3k: the triangle sort).
-ONLY = sys.argv[2] if len(sys.argv) > 2 else ''
+# A second argument keeps the planted bugs whose name has one of its parts ("3k": the triangle sort;
+# "P79,3b:,clamp,trilinear": bundle 17).
+ONLY = sys.argv[2].split(',') if len(sys.argv) > 2 else ['']
 TMP = '/tmp/rend4mut'
 os.makedirs(TMP, exist_ok=True)
 
@@ -101,13 +102,44 @@ MUTANTS = [
     ('GAME ORDER: a block that has room is left', '\tif (6 * n <= room)\n\t\treturn true;\n', ''),
     ('GAME ORDER: a new block at the old offset', '\ts_vb = vb;\n\ts_vb_off = off;\n', '\ts_vb = vb;\n'),
     ('GAME ORDER: a run of the first pass from the shared place', 'run_vb = own ? s_vb_used : base + 3 * t;', 'run_vb = base + 3 * t;'),
+    # bundle 17
+    ('P79: ALPHA 1 at PT Blend ON', 'const bool one = list == ListType_Punch_Through && s_do.pt_blend == 2;',
+     'const bool one = list == ListType_Punch_Through && s_do.pt_blend != 0;'),
+    ('P79: ALPHA 1 in the opaque list', 'const bool one = list == ListType_Punch_Through && s_do.pt_blend == 2;', 'const bool one = s_do.pt_blend == 2;'),
+    ('P79: the source factor stays', '\t\t\t\tsrc = src == 4 ? 1 : src == 5 ? 0 : src;\n', ''),
+    ('P79: INV_SRC_ALPHA as ONE', 'dst = dst == 4 ? 1 : dst == 5 ? 0 : dst;', 'dst = dst == 4 ? 1 : dst == 5 ? 1 : dst;'),
+    ('P79: ONE and ZERO still blend', '\t\t\tif (one && src == 1 && dst == 0)\n\t\t\t\tglDisable(GL_BLEND);\n\t\t\telse\n', ''),
+    ('3b: the offset colour program for the background', 'const bool offc = textured && &p != &g_rr.bg_param && offc_offs(p) != 0;',
+     'const bool offc = textured && offc_offs(p) != 0;'),
+    ('3b: the offset colour program for every texture', 'const bool offc = textured && &p != &g_rr.bg_param && offc_offs(p) != 0;',
+     'const bool offc = textured && &p != &g_rr.bg_param;'),
+    ('3b: the program stays in the depth pass', '\t\tif (s_do.offs)\n\t\t\tps3gl_dc_offs(0);\n\t\tif (s_clamp_on', '\t\tif (s_clamp_on'),
+    ('3b: an offset-colour run carries nothing', 'return offs ? offs : offc_offs(p);', 'return offs;'),
+    ('3b: the volumes keep the polygon programs',
+     '\tif (s_do.offs)\n\t\tps3gl_dc_offs(0);\n\tif (s_clamp_on || s_do.tril)\n\t\tps3gl_dc_xt(0, 0, 0, 1.0f);\n\tglDisable(GL_ALPHA_TEST);',
+     '\tglDisable(GL_ALPHA_TEST);'),
+    ('clamp: with registers that do not clamp', 's_clamp_on = s_do.clamp && (g_rr.fog_clamp_min != 0 || g_rr.fog_clamp_max != 0xFFFFFFFFu);',
+     's_clamp_on = s_do.clamp;'),
+    ('clamp: for a polygon without ColorClamp', 'const bool clamp = s_clamp_on && p.tsp.ColorClamp;', 'const bool clamp = s_clamp_on;'),
+    ('clamp: red and blue swapped', 'static const int shift[4] = { 16, 8, 0, 24 };', 'static const int shift[4] = { 0, 8, 16, 24 };'),
+    ('clamp: the maximum from the minimum', 's_clamp_max[k] = (float)((g_rr.fog_clamp_max >> shift[k]) & 0xFF) / 255.0f;',
+     's_clamp_max[k] = (float)((g_rr.fog_clamp_min >> shift[k]) & 0xFF) / 255.0f;'),
+    ('clamp: the program stays after the polygon', '\tif (!clamp && tril == 1.0f)\n\t{\n\t\tps3gl_dc_xt(0, 0, 0, 1.0f);\n\t\treturn;\n\t}\n',
+     '\tif (!clamp && tril == 1.0f)\n\t\treturn;\n'),
+    ('trilinear: in the punch-through list', 'if (!textured || p.tsp.FilterMode < 2 || list == ListType_Punch_Through || !p.tcw.NO_PAL.MipMapped)',
+     'if (!textured || p.tsp.FilterMode < 2 || !p.tcw.NO_PAL.MipMapped)'),
+    ('trilinear: without mip levels', 'if (!textured || p.tsp.FilterMode < 2 || list == ListType_Punch_Through || !p.tcw.NO_PAL.MipMapped)',
+     'if (!textured || p.tsp.FilterMode < 2 || list == ListType_Punch_Through)'),
+    ('trilinear: the passes swapped', 'return p.tsp.FilterMode == 2 ? 1.0f - w : w;', 'return p.tsp.FilterMode == 2 ? w : 1.0f - w;'),
+    ('trilinear: all of MipMapD', 'const float w = 0.25f * (float)(p.tsp.MipMapD & 3);', 'const float w = 0.25f * (float)p.tsp.MipMapD;'),
+    ('trilinear: for bilinear polygons', 'if (!textured || p.tsp.FilterMode < 2 ||', 'if (!textured || p.tsp.FilterMode < 1 ||'),
     ('3k: the last run is not drawn', '\tfor (u32 t = 0; t <= n; t++)\n\t{\n\t\tconst DcParam* p = t < n', '\tfor (u32 t = 0; t < n; t++)\n\t{\n\t\tconst DcParam* p = t < n'),
 ]
 
 src = open('ps3/ps3_rend.cpp', 'rb').read().decode('utf-8').replace('\r\n', '\n')
 killed = survived = 0
 for k, (name, old, new) in enumerate(MUTANTS):
-    if ONLY not in name:
+    if not any(o in name for o in ONLY):
         continue
     if src.count(old) != 1:
         print('NOT FOUND (%d): %s' % (src.count(old), name), flush=True)

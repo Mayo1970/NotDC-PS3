@@ -79,6 +79,11 @@ extern int g_ta_list_regs_preset;
 extern int g_core_reset_preset;
 extern int g_tr_tri_sort_preset;
 extern int g_fog_preset;
+// Bundle 17 (plan section 7), the RENDERER page's last rows.
+extern int g_sprite_corner_preset;
+extern int g_offset_colour_preset;
+extern int g_colour_clamp_preset;
+extern int g_trilinear_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;

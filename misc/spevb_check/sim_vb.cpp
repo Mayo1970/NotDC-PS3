@@ -1,5 +1,5 @@
-// 5.12 #2 (WSL): the real spe_vb image in misc/spu_sim on Looney Tunes-like scenes: SPU cycles per vertex, a profile,
-// and the output against ps3_rend.cpp's merge, bit for bit. Usage: sim_vb elf [op_strips tr_strips seed builds]
+// 5.12 #2 (WSL): the real spe_vb image in misc/spu_sim on Looney Tunes-like scenes: SPU cycles, a profile, the output
+// against ps3_rend.cpp's merge. Usage: [OFFS=percent of params with the Offset bit, 3b] sim_vb elf [op tr seed builds]
 #include "spusim.h"
 #include <stdint.h>
 #include <stdarg.h>
@@ -54,12 +54,13 @@ static void die(const char* fmt, ...)
 static void emit_vertex(const DcVertex*, u32, u32) { die("emit_vertex"); }
 static bool s_bump_on;  // plan 3j: off, as on the PS3 for every scene the SPU builds
 static u32 s_fog;       // plan 3a: off
+static struct { bool offs; } s_do;  // bundle 17, 3b: off
 static void glBegin(GLenum) { die("glBegin"); }
 static void glEnd() { die("glEnd"); }
 static u32 apply_param(const DcParam&, u32) { die("apply_param in the DRY pass"); }
 // Bundle 4: what draw_vb reads; the DRY pass never draws.
 enum { CLIP_NONE, CLIP_INSIDE, CLIP_OUTSIDE, CLIP_ALL };
-struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; };
+struct ClipView { int x, y, w, h; bool scissor; float cx0, cy0, cw, ch; int bx, by, bw, bh; };
 static ClipView s_cv;
 static u32 s_clip_mode, s_flat_shift;
 static int s_clip_r[4];
@@ -98,6 +99,8 @@ static float rndf(float lo, float hi) { return lo + (hi - lo) * (float)(g_rng() 
 static std::vector<SpeVtx> g_vtx;
 static std::vector<SpeStrip> g_strip;
 static std::vector<SpeParam> g_param;
+static std::vector<uint32_t> g_offs;
+static uint32_t g_offs_pct;
 
 static void gen_list(uint32_t list, uint32_t n, uint32_t run_len)
 {
@@ -108,6 +111,8 @@ static void gen_list(uint32_t list, uint32_t n, uint32_t run_len)
 		if (!left)
 		{
 			p.pcw = 0x00000008u | (rnd(2) << 1) | (list << 24);
+			if (g_offs_pct && rnd(100) < g_offs_pct)
+				p.pcw |= 4;
 			p.isp = (rnd(8) << 29) | (rnd(4) << 27);
 			p.tsp = rnd(0x7FFFFFFF) | 0x00100000u;
 			p.tcw = rnd(64) << 8;
@@ -134,6 +139,8 @@ static void gen_list(uint32_t list, uint32_t n, uint32_t run_len)
 			v.u = fb(rndf(0.f, 1.f));
 			v.v = fb(rndf(0.f, 1.f));
 			g_vtx.push_back(v);
+			if (g_offs_pct)
+				g_offs.push_back((uint32_t)g_rng());
 		}
 	}
 }
@@ -145,6 +152,7 @@ int main(int argc, char** argv)
 	const uint32_t n_op = argc > 2 ? (uint32_t)atoi(argv[2]) : 4620, n_tr = argc > 3 ? (uint32_t)atoi(argv[3]) : 889;
 	g_rng.seed(argc > 4 ? (uint32_t)atoi(argv[4]) : 1);
 	const uint32_t builds = argc > 5 ? (uint32_t)atoi(argv[5]) : 3;
+	g_offs_pct = getenv("OFFS") ? (uint32_t)atoi(getenv("OFFS")) : 0;
 	gen_list(0, n_op, 12);
 	gen_list(4, 25, 25);
 	gen_list(2, n_tr, 3);
@@ -162,6 +170,8 @@ int main(int argc, char** argv)
 	s_rl.nvtx = nvtx;
 	s_rl.nstrip = nstrip;
 	s_rl.nparam = nparam;
+	s_rl.offs = g_offs_pct ? g_offs.data() : 0;
+	s_do.offs = g_offs_pct != 0;
 	s_merge = true;
 	s_strip_lo = 0;
 	s_strip_hi = nstrip;
@@ -202,6 +212,8 @@ int main(int argc, char** argv)
 		for (int k = 0; k < 4; k++)
 			put32(o + offsetof(SpeOut, param) + i * 16 + 4 * k, w[k]);
 	}
+	for (uint32_t i = 0; i < (uint32_t)g_offs.size(); i++)
+		put32(o + offsetof(SpeOut, offs) + 4 * i, g_offs[i]);
 	for (uint32_t i = 0; i < SPE_CTX; i++)
 		put32(ctl(SETUP + 4 * i), EA_OUT + i * (uint32_t)sizeof(SpeOut));
 	put32(ctl(SETUP + offsetof(SpeVbSetup, runs_ea)), EA_RUNS);
@@ -235,7 +247,7 @@ int main(int argc, char** argv)
 		put32(ctl(BELL + 20), nparam);
 		put32(ctl(BELL + 24), EA_VB);
 		put32(ctl(BELL + 28), cap);
-		put32(ctl(BELL + 32), SPEVB_AUTOSORT);
+		put32(ctl(BELL + 32), SPEVB_AUTOSORT | (g_offs_pct ? SPEVB_OFFS : 0));
 		put32(ctl(BELL + 0), b);
 		spusim_llr_lost(sim);
 		const uint64_t c0 = sim->cycle;
@@ -263,6 +275,13 @@ int main(int argc, char** argv)
 	const double per = (double)busy / builds;
 	printf("scene: %u vertices, %u strips (op %u pt 25 tr %u), %u params | %u runs, %u vertices out | same as the PPU merge\n",
 	       nvtx, nstrip, n_op, n_tr, nparam, ref_n, ref_v);
+	if (g_offs_pct)
+	{
+		uint32_t ov = 0;
+		for (uint32_t i = 0; i < nstrip; i++)
+			ov += (g_param[g_strip[i].param].pcw & 4) ? g_strip[i].count : 0;
+		printf("OFFS %u%%: %u of the %u vertices in have an offset colour\n", g_offs_pct, ov, nvtx);
+	}
 	printf("SPU: %.0f cycles per build = %.2f ms at 3.2 GHz | %.0f cycles per vertex in, %.0f per vertex out | ipc %.2f dual "
 	       "%.1f%% br_miss %.0f/build dma_wait %.1f%%\n",
 	       per, per / 3.2e6, per / nvtx, per / ref_v, (double)(sim->insns - i0) / busy,
@@ -272,6 +291,8 @@ int main(int argc, char** argv)
 	       DIAGF(t_key) / 79.8 / builds, DIAGF(t_sort) / 79.8 / builds, DIAGF(t_tr) / 79.8 / builds,
 	       DIAGF(t_slot) / 79.8 / builds, DIAGF(t_pub) / 79.8 / builds, DIAGF(t_slide) / 79.8 / builds,
 	       DIAGF(t_in) / 79.8 / builds, DIAGF(t_qfull) / 79.8 / builds);
+	printf("SPU LS: image end %05X, lowest stack store %05X: %u bytes of stack used, %u spare\n", sim->stack_floor,
+	       sim->stack_low, 0x40000 - sim->stack_low, sim->stack_low - sim->stack_floor);
 	spusim_print_profile(sim, busy, 20);
 	if (getenv("HOT"))
 		spusim_print_hot(sim, getenv("HOT"), getenv("HOTN") ? atoi(getenv("HOTN")) : 60);

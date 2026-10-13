@@ -129,7 +129,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
 | P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new; built 2026-10-13, bundle 15, with the row "RTC Local Time" (the line never runs on the PS3); HW SUCCESS 2026-10-13; default ON in source since 2026-10-13 (Matt) |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
-| P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a (built 2026-10-12, "Fog" row, HW SUCCESS 2026-10-12, default TABLE in source), 3b (open), 3j (done) |
+| P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a (built 2026-10-12, "Fog" row, HW SUCCESS 2026-10-12, default TABLE in source), 3b (built 2026-10-13 as the rows "Offset Colour" and "Colour Clamp", bundle 17, default OFF, no HW run), 3j (done) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
 | P16 | Texture cache slots collide | speed | Soul Calibur texture decode (82-85% of the render thread) | 3 lines | merged: plan section 0, parked Soul Calibur faults (first); do before P1 and P2; HW SUCCESS 2026-10-06, default ON |
 | P17 | Small JIT items: fschg, BCACHE | speed | noise level (estimate) | 5-10 lines each | fschg HW SUCCESS 2026-10-10; BCACHE HW SUCCESS 2026-10-11 (bundle 8, "JIT BCACHE" default ON; Looney Tunes race +2.3 points of SPEED); merged: BCACHE = plan 5.3 `bcache`, fschg = plan 5.37 |
@@ -194,8 +194,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P76 | Small RTT and present fixes (5) | bug | RTT games; static 2D screens | 1-8 lines each | bundle 11; new facts for P54 and P10; corrects section 4 (`9dbca9632`) |
 | P77 | Disc Swap: the command in flight, the lid-open phase | bug (hang) | every disc swap (Disc Swap is not HW tested yet) | 8 lines less, then ~12 | bundle 19 (re-cut 2026-10-12); corrects P34 (the Reicast `c050ee8f` clears) |
 | P78 | Small MMU and BSC register fixes (3) | bug | WinCE (P38); robustness | 1-2 lines each | bundle 13 (with P58); RFCR: bundle 20 |
-| P79 | Punch-through alpha is 1 after the alpha test | bug (image), speed | Langrisser Millennium (Flycast); Jet Grind Radio draws with no blend | ~6 lines | bundle 17 (re-cut 2026-10-12); corrects P25 ("PT Blend") |
-| P80 | Sprite fourth corner from the plane | bug (image) | trapezoid sprites (no game named) | ~15 lines PPU, ~30 SPU | bundle 17 (re-cut 2026-10-12) |
+| P79 | Punch-through alpha is 1 after the alpha test | bug (image), speed | Langrisser Millennium (Flycast); Jet Grind Radio draws with no blend | ~6 lines | built 2026-10-13 as PT Blend's level "+ ALPHA 1", bundle 17 (plan section 0); the default stays ON; no HW run; corrects P25 ("PT Blend") |
+| P80 | Sprite fourth corner from the plane | bug (image) | trapezoid sprites (no game named) | ~15 lines PPU, ~30 SPU | built 2026-10-13 as the row "Sprite Corner" (OLD / PLANE), bundle 17 (plan section 0), default OLD, no HW run |
 | P81 | Sound output levels: the budget, and a probe | investigation | the Looney Tunes balance; the SPU clipping | 2 tests with no code; probe ~45 lines | bundle 18 (re-cut 2026-10-12); extends P20 ("Output stage"); corrects plan section 0 and 6.6 |
 | P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: bundle 19 (P61) |
 | P83 | G11 facts: a first stage with no V.42, the flash account, the traps | reference | G11 (modem) | stage 1 ~1,600 lines, not 4,176 | GOALS.md G11 (not bundled); extends P70 |
@@ -1507,7 +1507,7 @@ More hangs on rare input (P9 has the first five). Flycast
   the Read_SB_ADST double-DMA guard (Flycast has the same at :414-427).
   3 lines. Separate from plan 6.5.
 
-### P25 Render rules (fixed function)  `[~]` palette VQ and planar VQ built 2026-10-10 as "VQ Formats", bundle 3 (plan section 0), default ON in source (Matt), no game with such a texture run on HW yet; "PT Depth Write", "TR Depth Write", "PT Blend", "Sprite Cull", "Flat Shading" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt) but TR Depth Write (GAME: OFF IF SORTED fixes Rayman 2 water and breaks Sonic Adventure models; plan 3k "TR Triangle Sort" at + OPAQUE DEPTH fixes both, HW SUCCESS 2026-10-11, default in source) and Flat Shading (OFF: no difference seen on HW); the trilinear weights left out
+### P25 Render rules (fixed function)  `[~]` palette VQ and planar VQ built 2026-10-10 as "VQ Formats", bundle 3 (plan section 0), default ON in source (Matt), no game with such a texture run on HW yet; "PT Depth Write", "TR Depth Write", "PT Blend", "Sprite Cull", "Flat Shading" built 2026-10-11, bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt) but TR Depth Write (GAME: OFF IF SORTED fixes Rayman 2 water and breaks Sonic Adventure models; plan 3k "TR Triangle Sort" at + OPAQUE DEPTH fixes both, HW SUCCESS 2026-10-11, default in source) and Flat Shading (OFF: no difference seen on HW); the trilinear weights built 2026-10-13 as the row "Trilinear", bundle 17 (plan section 0), default OFF, no HW run
 
 Each one is small and needs no shader.
 - Depth write. Flycast (`core/rend/gles/gldraw.cpp:261-280`, the same in
@@ -1545,6 +1545,9 @@ Each one is small and needs no shader.
   - The trilinear weights above were left out of bundle 3 (Matt): the
     vertex colour does not reach a decal texture, and SPE Build makes the
     vertices on the SPU.
+  - Built 2026-10-13 (bundle 17, the "Trilinear" row): the weight is a
+    constant of a vertex program, and the fragment program scales the
+    colour by it after the fog, as Flycast. No vertex changes.
 
 ### P26 Framebuffer output: write watch, interlaced and 24-bit reads  `[~]` the reads: "FB Reads" built 2026-10-12, bundle 11 (plan section 0), default OLD; HW runs 2026-10-12 at FLYCAST (Looney Tunes, Quake III Arena): no fault, the "24-bit framebuffer read not handled" line is gone, no picture verdict (the Looney Tunes 24-bit frames are blanked ones); the fb_concat bits not built (the SPU convert has none); the write watch: bundle 13
 
@@ -2461,7 +2464,7 @@ None of the named games is in Matt's set.
   spin in ours. No game known. 2 lines.
 - Byte order: none (masks on whole words).
 
-### P79 Punch-through alpha is 1 after the alpha test  `[ ]`
+### P79 Punch-through alpha is 1 after the alpha test  `[~]` built 2026-10-13 as PT Blend's level "+ ALPHA 1", bundle 17 (plan section 0); the default stays ON; no HW run
 
 - Flycast GL and DX11: in the punch-through list a texel that passes the
   alpha test is drawn with alpha 1 (`core/rend/gles/gles.cpp:345-350`;
@@ -2477,7 +2480,7 @@ None of the named games is in Matt's set.
 - Confidence: medium. HW: Jet Grind Radio (the edges of punch-through
   textures), Crazy Taxi, Sonic Adventure.
 
-### P80 Sprite fourth corner from the plane  `[ ]`
+### P80 Sprite fourth corner from the plane  `[~]` built 2026-10-13 as the row "Sprite Corner" (OLD / PLANE), bundle 17 (plan section 0), default OLD, no HW run
 
 - Flycast (`core/hw/pvr/ta_vtx.cpp:1030-1077`, :1099), Reicast and
   Minicast (`libswirl/hw/pvr/ta_vtx.cpp:1347-1392`): the Z, U and V of a
@@ -2490,6 +2493,9 @@ None of the named games is in Matt's set.
   keep the two decoders bit-exact through doubles, `misc/ta4_check`). Keep
   the old path when D is the parallelogram point, so today's output does
   not change there.
+- Built 2026-10-13 (bundle 17): one header for both decoders
+  (`ps3/spu/spe_sprite.h`), Cramer's rule in doubles. The SPU has no
+  exact double divide, so it takes the quotient bit by bit.
 
 ### P81 Sound output levels: the budget, and a probe  `[ ]`
 
@@ -2602,7 +2608,7 @@ None of the named games is in Matt's set.
   reads `AST = dma_buffer_in[10]` (`core/hw/maple/maple_devs.cpp:1091`); on
   our word-ordered buffer that needs XOR-3 byte access.
 
-### P14 Fog, offset colour and bump map reference (plan 3a, 3b, 3j)  `[ ]` merged: plan 3a, 3b, 3j
+### P14 Fog, offset colour and bump map reference (plan 3a, 3b, 3j)  `[ ]` merged: plan 3a, 3b, 3j; 3b built 2026-10-13 as the rows "Offset Colour" and "Colour Clamp", bundle 17 (plan section 0), default OFF, no HW run
 
 Reicast GLES shader, the reference for a PVR Cg shader:
 - shader text `rend/gles/glesrend.cpp:138-323`: `fog_mode2()` :208-216,

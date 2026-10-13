@@ -202,6 +202,8 @@ const SpeFence* ps3spe_wait_fence(u32 id)
 
 const SpeOut* ps3spe_out(u32 ctx) { return &s_out[ctx % SPE_CTX]; }
 
+u32 ps3spe_spr_planes() { return echo()->spr_plane; }
+
 void ps3spe_result(bool ok, u64 ticks)
 {
 	if (ok)

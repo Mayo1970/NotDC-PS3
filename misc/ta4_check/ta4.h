@@ -22,6 +22,7 @@ typedef struct
 	uint32_t param[T4_MAX_PARAMS][4]; // pcw, isp, tsp, tcw
 	uint32_t mtri[T4_MAX_MODTRI][9];
 	uint32_t mvol[T4_MAX_MODVOL][5];  // first, cull, depth, volume_last, list
+	uint32_t offs[T4_MAX_VTX];        // bundle 17: the offset colours (new builds, with TAOPT_OFFS)
 } T4Lists;
 
 #ifdef __cplusplus
@@ -33,6 +34,11 @@ void ppu_new_data(const uint32_t* rec, uint32_t nrec);
 void ppu_new_cont(void);
 void ppu_new_lists(T4Lists* l);
 uint32_t ppu_new_bad(void);
+// Bundle 17: sprites whose fourth corner came from the plane, counted by each decoder.
+uint32_t ppu_new_planes(void);
+uint32_t spu_new_planes(void);
+// spr_div as the SPU builds it (bit by bit); the driver's own divide is the PPU's form.
+double spu_new_div(double a, double b);
 void ppu_ref_reset(uint32_t opt, int bad_skip);
 void ppu_ref_data(const uint32_t* rec, uint32_t nrec);
 void ppu_ref_cont(void);

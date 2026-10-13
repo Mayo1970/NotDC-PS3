@@ -2,8 +2,8 @@
 // OPTIMIZATION_PLAN 5.12 S2: the SPU TA decoder (spe_dec.c), driven by the command loop in spe_bell.c.
 #include "spe_bell.h"
 
-#define TAG_OUT0     8                      // two per output stream: 8..17
-#define TAG_OUT_MASK (0x3FFu << TAG_OUT0)
+#define TAG_OUT0     8                      // two per output stream: 8..19
+#define TAG_OUT_MASK (0xFFFu << TAG_OUT0)
 
 extern SpeEcho echo;
 

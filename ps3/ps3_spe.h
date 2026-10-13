@@ -15,6 +15,8 @@ void ps3spe_sys_init();
 bool ps3spe_init();
 void ps3spe_term();
 void ps3spe_stats(double secs);
+// Bundle 17 (P80): sprites of the SPU decoder whose fourth corner came from the plane, since the boot.
+u32 ps3spe_spr_planes();
 
 // SH4 thread only: each call writes one ring entry and rings the bell. DATA returns its command number.
 u32 ps3spe_data(u32 ctx, const u8* raw, u32 from, u32 to);

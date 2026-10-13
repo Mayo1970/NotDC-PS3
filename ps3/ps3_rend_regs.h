@@ -44,6 +44,8 @@ struct RenderRegs
 	// 3a Fog, taken only with the Fog row on: FOG_COL_RAM, FOG_COL_VERT, FOG_DENSITY, and FOG_TABLE's low 16 bits.
 	u32 fog_col_ram, fog_col_vert, fog_density;
 	u16 fog_table[128];
+	// Bundle 17 Colour Clamp: FOG_CLAMP_MIN and FOG_CLAMP_MAX (ARGB), taken at every render: the log shows them.
+	u32 fog_clamp_min, fog_clamp_max;
 	// Bundle 11. reg_*: the region array's tiles in pixels inside TA_GLOB_TILE_CLIP, ends not included (Flycast
 	// tileClip); reg_ok = they were read. flip: 0 = the render waits for its FB_R_SOF write (P60); keep: no colour clear.
 	u32 scaler_ctl;

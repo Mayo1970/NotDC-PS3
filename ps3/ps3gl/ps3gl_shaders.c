@@ -5,11 +5,17 @@
 #include "ps3gl_shader_data.h"
 #include "ps3gl_shader_bump.h"
 #include "ps3gl_shader_fog.h"
+#include "ps3gl_shader_dc.h"
 #include <stdio.h>
 
 /* Forward declarations */
 
 #if PS3GL_SHADERS_AVAILABLE
+
+/* NotDC bundle 17: the dc program (from PS3GL_TENV_DC_FIRST) of each [clamp and weight][offset colour][PS3GL_FOG_*]
+ * [texenv 0-3], -1 = none. */
+static signed char dc_tab[2][2][5][4];
+typedef char dc_count_check[sizeof(shader_dc_fp) / sizeof(shader_dc_fp[0]) == PS3GL_DC_PROGRAMS ? 1 : -1];
 
 /* Shader loading helpers */
 
@@ -72,11 +78,33 @@ void ps3gl_shaders_init(void)
         FOG_FP(fogb_coloronly), FOG_FP(fogb_modulate), FOG_FP(fogb_modulate_ta), FOG_FP(fogb_decal),
 #undef FOG_FP
     };
-    for (int i = PS3GL_TENV_FOGT_DISABLED; i < PS3GL_TENV_COUNT; i++) {
+    for (int i = PS3GL_TENV_FOGT_DISABLED; i < PS3GL_TENV_DC_FIRST; i++) {
         load_vp(&ps3gl.shaders[i], shader_vp_fog_data, shader_vp_fog_data_size);
         ps3gl.shaders[i].mvp_const = rsxVertexProgramGetConst(ps3gl.shaders[i].vp, "mvp");
         ps3gl.shaders[i].fog_const = rsxVertexProgramGetConst(ps3gl.shaders[i].vp, "fogp");
         load_fp(&ps3gl.shaders[i], fog_fp[i - PS3GL_TENV_FOGT_DISABLED].data, fog_fp[i - PS3GL_TENV_FOGT_DISABLED].size);
+    }
+
+    /* NotDC bundle 17: the offset colour alone draws with the bump VP (no fog) or the fog VP; the clamp and the weight
+     * need the dc VP, whose fogp.y is the weight. */
+    memset(dc_tab, -1, sizeof(dc_tab));
+    for (int i = 0; i < PS3GL_DC_PROGRAMS; i++) {
+        ps3gl_shader_t *s = &ps3gl.shaders[PS3GL_TENV_DC_FIRST + i];
+        if (shader_dc_fp[i].xt)
+            load_vp(s, shader_vp_dc_data, shader_vp_dc_data_size);
+        else if (shader_dc_fp[i].fog)
+            load_vp(s, shader_vp_fog_data, shader_vp_fog_data_size);
+        else
+            load_vp(s, shader_vp_bump_data, shader_vp_bump_data_size);
+        s->mvp_const = rsxVertexProgramGetConst(s->vp, "mvp");
+        if (shader_dc_fp[i].xt || shader_dc_fp[i].fog)
+            s->fog_const = rsxVertexProgramGetConst(s->vp, "fogp");
+        if (shader_dc_fp[i].xt) {
+            s->cmin_const = rsxVertexProgramGetConst(s->vp, "cmin");
+            s->cmax_const = rsxVertexProgramGetConst(s->vp, "cmax");
+        }
+        load_fp(s, shader_dc_fp[i].data, shader_dc_fp[i].size);
+        dc_tab[shader_dc_fp[i].xt][shader_dc_fp[i].offs][shader_dc_fp[i].fog][shader_dc_fp[i].env] = (signed char)i;
     }
 
     ps3gl.active_shader = -1;
@@ -119,10 +147,29 @@ static int fog_key(int mode, int tenv, int bump)
     }
 }
 
+/* NotDC bundle 17: the dc program of a texenv key under ps3gl_dc_offs() and ps3gl_dc_xt(), -1 if there is none. A fog
+ * mode with no program for the texenv draws without fog, as fog_key's -1 does. */
+static int dc_key(int tenv)
+{
+    if (tenv > PS3GL_TENV_DECAL)
+        return -1;
+    const int offs = ps3gl.dc_offs && tenv != PS3GL_TENV_DISABLED;
+    int k = dc_tab[ps3gl.dc_xt][offs][ps3gl.dc_fog][tenv];
+    if (k < 0)
+        k = dc_tab[ps3gl.dc_xt][offs][PS3GL_FOG_NONE][tenv];
+    return k < 0 ? -1 : PS3GL_TENV_DC_FIRST + k;
+}
+
 int ps3gl_shader_key(void)
 {
     int tmu0 = ps3gl.tmu[0].enabled && ps3gl.tmu[0].bound && ps3gl.tmu[0].bound->data;
     int tmu1 = ps3gl.tmu[1].enabled && !ps3gl.tmu[1].aux && ps3gl.tmu[1].bound && ps3gl.tmu[1].bound->data;
+
+    if ((ps3gl.dc_offs || ps3gl.dc_xt) && !(tmu0 && ps3gl.tmu[0].bump)) {
+        int key = dc_key(tmu0 ? ps3gl.tmu[0].texenv : PS3GL_TENV_DISABLED);
+        if (key >= 0)
+            return key;
+    }
 
     if (ps3gl.dc_fog) {
         int key = fog_key(ps3gl.dc_fog, tmu0 ? ps3gl.tmu[0].texenv : PS3GL_TENV_DISABLED,
@@ -163,6 +210,21 @@ void ps3gl_dc_fog(int mode)
 void ps3gl_dc_fog_scale(float scale)
 {
     ps3gl.dc_fog_scale = scale;
+}
+
+void ps3gl_dc_offs(int on)
+{
+    ps3gl.dc_offs = on != 0;
+}
+
+void ps3gl_dc_xt(int on, const float *cmin, const float *cmax, float tril)
+{
+    ps3gl.dc_xt = on != 0;
+    if (!on)
+        return;
+    memcpy(&ps3gl.dc_xt_v[0], cmin, 4 * sizeof(float));
+    memcpy(&ps3gl.dc_xt_v[4], cmax, 4 * sizeof(float));
+    ps3gl.dc_xt_v[8] = tril;
 }
 
 void ps3gl_tex_aux(int on)
@@ -216,6 +278,20 @@ void ps3gl_apply_shader(void)
         memcpy(ps3gl.clip_plane_uploaded, ps3gl.clip_plane, sizeof(ps3gl.clip_plane));
     }
 
+    /* NotDC bundle 17: the dc VP's clamp ends, and its fogp with the weight in y; when one changed or on a VP reload. */
+    if (s->cmin_const && s->cmax_const && s->fog_const) {
+        if (vp_reloaded || ps3gl.dc_fog_scale != ps3gl.dc_fog_scale_uploaded ||
+            memcmp(ps3gl.dc_xt_v, ps3gl.dc_xt_uploaded, sizeof(ps3gl.dc_xt_v)) != 0) {
+            const float fogp[4] = { ps3gl.dc_fog_scale, ps3gl.dc_xt_v[8], 0.0f, 0.0f };
+            rsxSetVertexProgramParameter(ctx, s->vp, s->fog_const, fogp);
+            rsxSetVertexProgramParameter(ctx, s->vp, s->cmin_const, &ps3gl.dc_xt_v[0]);
+            rsxSetVertexProgramParameter(ctx, s->vp, s->cmax_const, &ps3gl.dc_xt_v[4]);
+            ps3gl.dc_fog_scale_uploaded = ps3gl.dc_fog_scale;
+            memcpy(ps3gl.dc_xt_uploaded, ps3gl.dc_xt_v, sizeof(ps3gl.dc_xt_v));
+        }
+        return;
+    }
+
     /* NotDC 3a: the fog VP's scale, when it changed or on a VP reload. */
     if (s->fog_const && (vp_reloaded || ps3gl.dc_fog_scale != ps3gl.dc_fog_scale_uploaded)) {
         const float fogp[4] = { ps3gl.dc_fog_scale, 0.0f, 0.0f, 0.0f };
@@ -244,6 +320,10 @@ void ps3gl_tex_bump(int on) { (void)on; }
 void ps3gl_dc_fog(int mode) { (void)mode; }
 
 void ps3gl_dc_fog_scale(float scale) { (void)scale; }
+
+void ps3gl_dc_offs(int on) { (void)on; }
+
+void ps3gl_dc_xt(int on, const float *cmin, const float *cmax, float tril) { (void)on; (void)cmin; (void)cmax; (void)tril; }
 
 void ps3gl_tex_aux(int on) { (void)on; }
 

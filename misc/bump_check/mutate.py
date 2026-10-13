@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Plan 3j (WSL): plants one bug at a time in a copy of ps3_rend.cpp; the decoder bugs must FAIL bump_check/run.sh, the
-# draw bugs spevb_check/run.sh (its bump passes). Args: streams (4000) scenes (60).
+# draw bugs spevb_check/run.sh (its bump passes). Args: streams (4000) scenes (60), name parts with commas ("3b").
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -62,6 +62,13 @@ MUTANTS = [
     ('draw', 'bump_offs ignores the toggle', 'return s_bump_on && p.pcw.Texture', 'return p.pcw.Texture'),
     ('draw', 'bump_offs ignores the Texture bit', 'return s_bump_on && p.pcw.Texture && p.tcw', 'return s_bump_on && p.tcw'),
     ('draw', 'glBegin path takes the strip first offs', 'offs ? offs[s.first + k] : 0', 'offs ? offs[s.first] : 0'),
+    # bundle 17, 3b: an offset-colour run (the SPU build's flag is the row, so the two sides part)
+    ('draw', '3b: offs for a bump texture', 'return p.pcw.Texture && p.pcw.Offset && p.tcw.NO_PAL.PixelFmt != 4;',
+     'return p.pcw.Texture && p.pcw.Offset;'),
+    ('draw', '3b: offs without the Offset bit', 'return p.pcw.Texture && p.pcw.Offset && p.tcw.NO_PAL.PixelFmt != 4;',
+     'return p.pcw.Texture && p.tcw.NO_PAL.PixelFmt != 4;'),
+    ('draw', '3b: offs with the row off', 'return s_do.offs && offc_param(p) ? s_rl.offs : 0;', 'return offc_param(p) ? s_rl.offs : 0;'),
+    ('draw', '3b: an offset-colour run carries nothing', 'return offs ? offs : offc_offs(p);', 'return offs;'),
 ]
 
 def run(kind, args, src):
@@ -78,8 +85,12 @@ def main():
         if run(kind, args, src).returncode != 0:
             print(f'BASELINE FAILS: {RUN[kind]} fails on the unchanged copy')
             sys.exit(2)
-    caught = 0
+    caught = ran = 0
+    only = sys.argv[3].split(',') if len(sys.argv) > 3 else ['']
     for kind, name, find, repl in MUTANTS:
+        if not any(o in name for o in only):
+            continue
+        ran += 1
         if src.count(find) != 1:
             print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
             sys.exit(2)
@@ -89,7 +100,7 @@ def main():
         ok = r.returncode != 0
         caught += ok
         print(f"{'caught' if ok else 'MISSED'}: {kind} {name}: {(out[0] if out else '')[:110]}")
-    print(f'{caught} of {len(MUTANTS)} mutants fail')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught} of {ran} mutants fail')
+    sys.exit(0 if caught == ran else 1)
 
 main()

@@ -12,6 +12,7 @@
 #include "ps3_vmulcd.h"
 #include "ps3_depth.h"
 #include "ps3_spe.h"
+#include "spu/spe_sprite.h"
 #include "ps3_spevb.h"
 #include "ps3_spetex.h"
 #include "ps3_spepix.h"
@@ -109,7 +110,7 @@ struct TaContext
 {
 	u32 addr;
 	DcVertex vtx[MAX_VTX];
-	// Plan 3j: each vertex's offset colour (ARGB), written for bump polygons only; the SPU lists carry none.
+	// Offset colours (ARGB): of bump (3j) and vertex-fog (3a) polygons, or with TAOPT_OFFS of every vertex (3b).
 	u32 offs[MAX_VTX];
 	DcStrip strip[MAX_STRIPS];
 	DcParam param[MAX_PARAMS];
@@ -213,12 +214,16 @@ static u32 s_sprite_col = 0xFFFFFFFF;
 static float s_foffs_a = 1, s_foffs_r = 1, s_foffs_g = 1, s_foffs_b = 1;
 static u32 s_sprite_offs;
 static bool s_bump_param;
+// P80 Sprite Corner: sprites of the PPU replay whose fourth corner came from the plane, per stats window.
+static u32 s_stat_spr_plane;
 // Plan 3j Bump Maps, latched per job: the decoder keeps offset colours, the draw picks the bump programs.
 static bool s_bump_on;
 static u32 s_stat_bump_ppu;
 // Plan 3a Fog, latched per job: 0 = off, 1 = table fog, 2 = also vertex fog, which needs the offset colours.
 static u32 s_fog;
 static u32 s_stat_fog_ppu, s_stat_fog_up;
+// Bundle 17, 3b Offset Colour, latched per job: the draw reads the offset colours of lists that carry them all.
+static bool s_offc_row;
 
 static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 
@@ -313,7 +318,8 @@ static u32 ta_opts_now()
 {
 	return (g_int_clamp_preset ? TAOPT_INT_CLAMP : 0) | (g_face_reset_preset ? TAOPT_FACE_RESET : 0) |
 	       (g_tr_volumes_preset ? TAOPT_TR_VOL : 0) | (g_volume_cap_preset ? TAOPT_VOL_8K : 0) |
-	       (g_tile_clip_preset ? TAOPT_TILE_CLIP : 0);
+	       (g_tile_clip_preset ? TAOPT_TILE_CLIP : 0) | (g_sprite_corner_preset ? TAOPT_SPR_PLANE : 0) |
+	       (g_offset_colour_preset ? TAOPT_OFFS : 0);
 }
 
 // The stored stream is per list-init, so it is cleared with the decoded lists.
@@ -518,9 +524,11 @@ static inline DcVertex* vtx_slot()
 	if (!v) return;                                                  \
 	set_pos(v, (pkt)->xyz[0], (pkt)->xyz[1], (pkt)->xyz[2]);
 
-// 3j: vertex i's offset colour; argb is evaluated only for a bump polygon.
+// Vertex i's offset colour; argb is evaluated only when the polygon keeps it (3j, 3a; 3b: every polygon).
 #define VTX_OFFS(i, argb)                                            \
 	do { if (s_bump_param) s_dec->offs[i] = (argb); } while (0)
+// 3b: a vertex type with no offset colour gets 0, so both decoders write one value for each vertex.
+#define VTX_NO_OFFS() VTX_OFFS(v - s_dec->vtx, 0)
 
 #define VTX_B(color, offs)                                           \
 	if (s_dec->nvtx >= MAX_VTX) return;                              \
@@ -569,6 +577,9 @@ struct Ps3VertexDecoder
 		// 3a: a vertex-fog polygon keeps its offset colours too; their alpha is the fog.
 		if (s_fog >= 2 && pp->pcw.Texture && pp->pcw.Offset && pp->tsp.FogCtrl == 1)
 			s_bump_param = true;
+		// 3b Offset Colour: every polygon keeps them, as the SPU decoder does with the same option.
+		if (s_dopt & TAOPT_OFFS)
+			s_bump_param = true;
 	}
 
 	static void AppendPolyParam0(TA_PolyParam0* pp) { add_param(pp); }
@@ -616,9 +627,12 @@ struct Ps3VertexDecoder
 	}
 
 	// Types without UV write 0, so every vertex field is defined (the SPE decoder compares them, 5.12 S2).
-	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); v->u = v->v = 0.0f; }
-	static void AppendPolyVertex1(TA_Vertex1* p) { VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); v->u = v->v = 0.0f; }
-	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = v->v = 0.0f; }
+	static void AppendPolyVertex0(TA_Vertex0* p) { VTX_ONE(p, p->BaseCol); v->u = v->v = 0.0f; VTX_NO_OFFS(); }
+	static void AppendPolyVertex1(TA_Vertex1* p)
+	{
+		VTX_ONE(p, float_argb(p->BaseA, p->BaseR, p->BaseG, p->BaseB)); v->u = v->v = 0.0f; VTX_NO_OFFS();
+	}
+	static void AppendPolyVertex2(TA_Vertex2* p) { VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = v->v = 0.0f; VTX_NO_OFFS(); }
 	static void AppendPolyVertex3(TA_Vertex3* p)
 	{
 		VTX_ONE(p, p->BaseCol); v->u = p->u; v->v = p->v;
@@ -649,8 +663,8 @@ struct Ps3VertexDecoder
 		VTX_ONE(p, intensity_argb(p->BaseInt)); v->u = uv16(p->u); v->v = uv16(p->v);
 		VTX_OFFS(v - s_dec->vtx, intensity_offs(p->OffsInt));
 	}
-	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); v->u = v->v = 0.0f; }
-	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); v->u = v->v = 0.0f; }
+	static void AppendPolyVertex9(TA_Vertex9* p) { VTX_ONE(p, p->BaseCol0); v->u = v->v = 0.0f; VTX_NO_OFFS(); }
+	static void AppendPolyVertex10(TA_Vertex10* p) { VTX_ONE(p, intensity_argb(p->BaseInt0)); v->u = v->v = 0.0f; VTX_NO_OFFS(); }
 	// Volume 0 is drawn, so its offset colour is the one kept.
 	static void AppendPolyVertex11A(TA_Vertex11A* p)
 	{
@@ -685,7 +699,7 @@ struct Ps3VertexDecoder
 	}
 
 	// Sprite corners A,B,C arrive with UVs; D is sent without z or UV, so it completes the parallelogram.
-	// Strip order D,C,A,B makes the quad from two triangles.
+	// Strip order D,C,A,B makes the quad from two triangles. P80 Sprite Corner: D from the plane of A, B and C.
 	static DcVertex s_spr[4];
 	static float s_spr_z[3];
 	static void AppendSpriteVertexA(TA_Sprite1A* sv)
@@ -703,15 +717,32 @@ struct Ps3VertexDecoder
 		}
 		s_spr[2].y = sv->y2; s_spr_z[2] = sv->z2;
 		float z3 = s_spr_z[0] + s_spr_z[2] - s_spr_z[1];
-		set_pos(&s_spr[0], s_spr[0].x, s_spr[0].y, s_spr_z[0]);
-		set_pos(&s_spr[1], s_spr[1].x, s_spr[1].y, s_spr_z[1]);
-		set_pos(&s_spr[2], s_spr[2].x, s_spr[2].y, s_spr_z[2]);
-		set_pos(&s_spr[3], sv->x3, sv->y3, z3);
 		s_spr[0].u = uv16(sv->u0); s_spr[0].v = uv16(sv->v0);
 		s_spr[1].u = uv16(sv->u1); s_spr[1].v = uv16(sv->v1);
 		s_spr[2].u = uv16(sv->u2); s_spr[2].v = uv16(sv->v2);
 		s_spr[3].u = s_spr[0].u + s_spr[2].u - s_spr[1].u;
 		s_spr[3].v = s_spr[0].v + s_spr[2].v - s_spr[1].v;
+		if (s_dopt & TAOPT_SPR_PLANE)
+		{
+			// The bits in, the bits out: spr_plane is the SPU decoder's text too.
+			const u32 x[4] = { spr_bits(s_spr[0].x), spr_bits(s_spr[1].x), spr_bits(s_spr[2].x), spr_bits(sv->x3) };
+			const u32 y[4] = { spr_bits(s_spr[0].y), spr_bits(s_spr[1].y), spr_bits(s_spr[2].y), spr_bits(sv->y3) };
+			const u32 z[3] = { spr_bits(s_spr_z[0]), spr_bits(s_spr_z[1]), spr_bits(s_spr_z[2]) };
+			const u32 u[3] = { spr_bits(s_spr[0].u), spr_bits(s_spr[1].u), spr_bits(s_spr[2].u) };
+			const u32 t[3] = { spr_bits(s_spr[0].v), spr_bits(s_spr[1].v), spr_bits(s_spr[2].v) };
+			u32 o[3];
+			if (spr_plane(x, y, z, u, t, o))
+			{
+				memcpy(&z3, &o[0], 4);
+				memcpy(&s_spr[3].u, &o[1], 4);
+				memcpy(&s_spr[3].v, &o[2], 4);
+				s_stat_spr_plane++;
+			}
+		}
+		set_pos(&s_spr[0], s_spr[0].x, s_spr[0].y, s_spr_z[0]);
+		set_pos(&s_spr[1], s_spr[1].x, s_spr[1].y, s_spr_z[1]);
+		set_pos(&s_spr[2], s_spr[2].x, s_spr[2].y, s_spr_z[2]);
+		set_pos(&s_spr[3], sv->x3, sv->y3, z3);
 
 		static const int order[4] = { 3, 2, 0, 1 };
 		StartPolyStrip();
@@ -1555,6 +1586,8 @@ static void snapshot_render_regs()
 	else if (g_screen_format_preset == SCREEN_WIDE)
 		snapshot_region_box();
 	background_plane(s_snap.bg_vtx, &s_snap.bg_param);
+	s_snap.fog_clamp_min = FOG_CLAMP_MIN;
+	s_snap.fog_clamp_max = FOG_CLAMP_MAX;
 	// 3a: the fog registers are native u32, so the draw's shifts are the DC's bit numbers.
 	if (g_fog_preset)
 	{
@@ -1769,13 +1802,17 @@ struct DrawOpts
 {
 	bool pt_depth;     // P25: punch-through always writes depth
 	bool tr_nodepth;   // P25: an autosorted translucent polygon writes no depth
-	bool pt_blend;     // P25: punch-through blends with its TSP factors
+	u8 pt_blend;       // P25: 1 = punch-through blends with its TSP factors; P79: 2 = with alpha 1 after its test
 	u8 flat;           // P25: 0 = always Gouraud, 1 = flat from the RSX's last vertex, 2 = from its first
 	u8 passes;         // P10: 0 = one pass, 1 = one per TA_LIST_CONT, 2 = + the TR depth pass
 	u8 clip;           // P10: 0 = no user clip, 1 = inside, 2 = + outside; 0 when the lists carry no rects
 	bool tr_vol;       // P27: the lists hold the translucent volume list
 	u8 tri_sort;       // 3k: 0 = sort per strip, 1 = per triangle with no depth write, 2 = + depth write, 3 = + opaque depth
 	u8 first_pass;     // bundle 14, + opaque depth's first pass: 1 = no run that writes no depth, 2 = also in game order
+	// Bundle 17. offs needs lists that carry every offset colour (TAOPT_OFFS); clamp needs FOG_CLAMP values that clamp.
+	bool offs;         // 3b: a textured polygon with the Offset bit adds its offset colour
+	bool clamp;        // 3b: a polygon with ColorClamp clamps its colour to FOG_CLAMP_MIN..MAX before the fog
+	bool tril;         // P25: a trilinear pass scales its colour by its weight
 };
 static DrawOpts s_do;
 // The pass in draw (0 with one pass), its sort mode, and P10's TR depth pass.
@@ -1914,6 +1951,7 @@ static void clip_apply(const DcParam& p)
 static u32 apply_param_body(const DcParam& p, u32 list);
 static inline const u32* bump_offs(const DcParam& p);
 static inline const u32* fogv_offs(const DcParam& p);
+static inline const u32* offc_offs(const DcParam& p);
 static inline u32 eff_cull(const DcParam& p);
 
 // 3a, Flycast pp_FogCtrl: 0 = table fog, 1 = vertex fog, 3 = the fog texel is the base colour (with ShadInstr 1
@@ -1927,6 +1965,49 @@ static inline int fog_mode(const DcParam& p, bool textured)
 	case 3: return textured && p.tsp.ShadInstr == 1 ? PS3GL_FOG_BASE_TA : PS3GL_FOG_BASE;
 	default: return PS3GL_FOG_NONE;
 	}
+}
+
+// Bundle 17, per scene: Colour Clamp with FOG_CLAMP values that clamp (Flycast SetGPState), and the ends as RGBA.
+static bool s_clamp_on;
+static float s_clamp_min[4], s_clamp_max[4];
+// Per stats window: states applied with the offset colour, with the clamp, with a trilinear weight.
+static u32 s_stat_offc, s_stat_cclamp, s_stat_tril;
+
+static void xt_scene_begin()
+{
+	s_clamp_on = s_do.clamp && (g_rr.fog_clamp_min != 0 || g_rr.fog_clamp_max != 0xFFFFFFFFu);
+	static const int shift[4] = { 16, 8, 0, 24 };
+	for (int k = 0; k < 4; k++)
+	{
+		s_clamp_min[k] = (float)((g_rr.fog_clamp_min >> shift[k]) & 0xFF) / 255.0f;
+		s_clamp_max[k] = (float)((g_rr.fog_clamp_max >> shift[k]) & 0xFF) / 255.0f;
+	}
+}
+
+// P25 (Flycast SetGPState): FilterMode 2 and 3 are the two passes of a trilinear polygon; MipMapD's fraction is the
+// second pass's weight. Not in the punch-through list, and only for a mipmapped texture.
+static inline float tril_weight(const DcParam& p, u32 list, bool textured)
+{
+	if (!textured || p.tsp.FilterMode < 2 || list == ListType_Punch_Through || !p.tcw.NO_PAL.MipMapped)
+		return 1.0f;
+	const float w = 0.25f * (float)(p.tsp.MipMapD & 3);
+	return p.tsp.FilterMode == 2 ? 1.0f - w : w;
+}
+
+// The polygon's clamp and weight: one program does both, so the one that is off gets a value that changes nothing.
+static void xt_apply(const DcParam& p, u32 list, bool textured)
+{
+	const bool clamp = s_clamp_on && p.tsp.ColorClamp;
+	const float tril = s_do.tril ? tril_weight(p, list, textured) : 1.0f;
+	if (!clamp && tril == 1.0f)
+	{
+		ps3gl_dc_xt(0, 0, 0, 1.0f);
+		return;
+	}
+	static const float lo[4] = { -1e9f, -1e9f, -1e9f, -1e9f }, hi[4] = { 1e9f, 1e9f, 1e9f, 1e9f };
+	ps3gl_dc_xt(1, clamp ? s_clamp_min : lo, clamp ? s_clamp_max : hi, tril);
+	s_stat_cclamp += clamp;
+	s_stat_tril += tril != 1.0f;
 }
 
 // 5.12 #3: p's slot in this scene's SPU texture hashes: its list index, or the background's slot.
@@ -1961,6 +2042,10 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		ps3gl_tex_bump(0);
 		if (s_fog)
 			ps3gl_dc_fog(PS3GL_FOG_NONE);
+		if (s_do.offs)
+			ps3gl_dc_offs(0);
+		if (s_clamp_on || s_do.tril)
+			ps3gl_dc_xt(0, 0, 0, 1.0f);
 		glDepthFunc(dc_depth_func(DC_GEQUAL));
 		glDepthMask(p.isp.ZWriteDis ? GL_FALSE : GL_TRUE);
 		set_cull(eff_cull(p));
@@ -1988,8 +2073,22 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 		// P25 PT Blend: punch-through blends (Flycast 1a019b79b). P10 List Passes: so does opaque after pass 0.
 		if ((list == ListType_Punch_Through && s_do.pt_blend) || (list == ListType_Opaque && s_pass != 0))
 		{
-			glEnable(GL_BLEND);
-			glBlendFunc(blend_src[p.tsp.SrcInstr], blend_dst[p.tsp.DstInstr]);
+			u32 src = p.tsp.SrcInstr, dst = p.tsp.DstInstr;
+			// P79 (Flycast GL): a punch-through texel that passes the alpha test has alpha 1, so SRC_ALPHA is ONE
+			// and INV_SRC_ALPHA is ZERO; ONE with ZERO is no blend (Jet Grind Radio's whole list).
+			const bool one = list == ListType_Punch_Through && s_do.pt_blend == 2;
+			if (one)
+			{
+				src = src == 4 ? 1 : src == 5 ? 0 : src;
+				dst = dst == 4 ? 1 : dst == 5 ? 0 : dst;
+			}
+			if (one && src == 1 && dst == 0)
+				glDisable(GL_BLEND);
+			else
+			{
+				glEnable(GL_BLEND);
+				glBlendFunc(blend_src[src], blend_dst[dst]);
+			}
 		}
 		else
 			glDisable(GL_BLEND);
@@ -2032,6 +2131,15 @@ static u32 apply_param_body(const DcParam& p, u32 list)
 	// 3a: the texenv's fog program, by the polygon's FogCtrl.
 	if (s_fog)
 		ps3gl_dc_fog(fog_mode(p, textured));
+	// Bundle 17, 3b: the texenv's program with the offset colour; the background has no offset colours.
+	if (s_do.offs)
+	{
+		const bool offc = textured && &p != &g_rr.bg_param && offc_offs(p) != 0;
+		ps3gl_dc_offs(offc);
+		s_stat_offc += offc;
+	}
+	if (s_clamp_on || s_do.tril)
+		xt_apply(p, list, textured);
 
 	// 3k + OPAQUE DEPTH, first pass: the polygon's own state, but depth alone and only where alpha passes the test.
 	if (s_tri_mode == TRI_OPAQUE)
@@ -2146,11 +2254,22 @@ static inline const u32* fogv_offs(const DcParam& p)
 {
 	return s_fog >= 2 && fogv_param(p) ? s_rl.offs : 0;
 }
-// The offset colours a run carries in texcoord1: a bump run's or a vertex-fog run's.
+// 3b Offset Colour (Flycast pp_Offset): a textured polygon with the Offset bit and no bump map adds its offset colour.
+static inline bool offc_param(const DcParam& p)
+{
+	return p.pcw.Texture && p.pcw.Offset && p.tcw.NO_PAL.PixelFmt != 4;
+}
+static inline const u32* offc_offs(const DcParam& p)
+{
+	return s_do.offs && offc_param(p) ? s_rl.offs : 0;
+}
+// The offset colours a run carries in texcoord1: a bump run's, a vertex-fog run's, or an offset-colour run's.
 static inline const u32* run_offs(const DcParam& p)
 {
 	const u32* offs = bump_offs(p);
-	return offs ? offs : fogv_offs(p);
+	if (!offs)
+		offs = fogv_offs(p);
+	return offs ? offs : offc_offs(p);
 }
 static u32 s_stat_bump_strips;  // 3j: strips drawn with their offset colours
 
@@ -2692,7 +2811,7 @@ static int spevb_begin(int build)
 	}
 	const u32 flags = (g_rr.autosort ? SPEVB_AUTOSORT : 0) | (s_mo_sprite ? SPEVB_SPRITE_CULL : 0) |
 	                  ((s_rl.opt & TAOPT_TILE_CLIP) ? SPEVB_CLIP_KEY : 0) |
-	                  ((s_do.tri_sort && g_rr.autosort) ? SPEVB_NO_TR : 0);
+	                  ((s_do.tri_sort && g_rr.autosort) ? SPEVB_NO_TR : 0) | (s_do.offs ? SPEVB_OFFS : 0);
 	return ps3spevb_request((u32)s_rl_spe, s_rl.nvtx, s_rl.nstrip, s_rl.nparam, dst, cap, flags)
 	     ? build : SPEVB_OFF;
 }
@@ -2873,6 +2992,11 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w,
 	// 3a: the volumes and the shade quad draw with no fog.
 	if (s_fog)
 		ps3gl_dc_fog(PS3GL_FOG_NONE);
+	// Bundle 17: and with no offset colour, clamp or weight of the polygon before them.
+	if (s_do.offs)
+		ps3gl_dc_offs(0);
+	if (s_clamp_on || s_do.tril)
+		ps3gl_dc_xt(0, 0, 0, 1.0f);
 	glDisable(GL_ALPHA_TEST);
 	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	glDepthMask(GL_FALSE);
@@ -2982,6 +3106,9 @@ struct ListDiag
 	u32 fog[4], fogv;
 	// Bundle 14 (P73's counter): state changes from strip to strip, by the merge key and by the bits the draw reads.
 	u32 runs, runs_read;
+	// Bundle 17, strips a row acts on: an offset colour; ColorClamp; a trilinear pass and those with a weight under 1;
+	// PT strips that ALPHA 1 draws with no blend; sprites whose fourth corner is not the parallelogram's.
+	u32 offc, cclamp, tril, tril_w, pt_one, spr_quad;
 };
 static ListDiag s_diag[3];
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
@@ -2990,10 +3117,12 @@ static const char* s_diag_name[3] = { "op", "pt", "tr" };
 // sorted or PT list's DepthMode; TSP MipMapD, SuperSample, ColorClamp, Src/DstSelect, FogCtrl (no Fog), FilterMode 1-3.
 static bool strip_read_equivalent(const DcParam& a, const DcParam& b, u32 list)
 {
-	const u32 pcw = s_key_pcw & ~(0x40u | (s_do.flat ? 0u : 0x02u) | (s_fog >= 2 ? 0u : 0x04u));
+	const u32 pcw = s_key_pcw & ~(0x40u | (s_do.flat ? 0u : 0x02u) | (s_fog >= 2 || s_do.offs ? 0u : 0x04u));
 	const bool own_depth = list == ListType_Opaque || (list == ListType_Translucent && !g_rr.autosort);
 	const u32 isp = own_depth ? s_key_isp : s_key_isp & ~0xE0000000u;
-	const u32 tsp = ~(0xF00u | 0x1000u | 0x6000u | 0x200000u | 0x1000000u | 0x2000000u | (s_fog ? 0u : 0xC00000u));
+	// Bundle 17: Colour Clamp reads ColorClamp, Trilinear reads MipMapD's low bits and the FilterMode.
+	const u32 tsp = ~((s_do.tril ? 0xC00u : 0xF00u) | 0x1000u | (s_do.tril ? 0u : 0x6000u) | (s_clamp_on ? 0u : 0x200000u) |
+	                  0x1000000u | 0x2000000u | (s_fog ? 0u : 0xC00000u));
 	return ((a.pcw.full ^ b.pcw.full) & pcw) == 0 && ((a.isp.full ^ b.isp.full) & isp) == 0
 	    && ((a.tsp.full ^ b.tsp.full) & tsp) == 0 && !a.tsp.FilterMode == !b.tsp.FilterMode && a.tcw.full == b.tcw.full;
 }
@@ -3044,6 +3173,23 @@ static void collect_diag()
 			if (p.tsp.SrcInstr != 1 || p.tsp.DstInstr != 0) d.blend++;
 			d.fog[p.tsp.FogCtrl & 3]++;
 			if (fogv_param(p)) d.fogv++;
+			if (offc_param(p)) d.offc++;
+			if (p.tsp.ColorClamp) d.cclamp++;
+			if (p.pcw.Texture && p.tsp.FilterMode >= 2 && p.tcw.NO_PAL.MipMapped)
+			{
+				d.tril++;
+				d.tril_w += tril_weight(p, lists[L], true) != 1.0f;
+			}
+			if (L == 1 && (p.tsp.SrcInstr == 1 || p.tsp.SrcInstr == 4) && (p.tsp.DstInstr == 0 || p.tsp.DstInstr == 5))
+				d.pt_one++;
+			// A sprite is D, C, A, B: its corner D against A + C - B, as spr_plane tests it.
+			if ((p.pcw.full >> 29) == 5 && st.count == 4)
+			{
+				const DcVertex* q = &s_rl.vtx[st.first];
+				if ((double)q[0].x - q[2].x != ((double)q[1].x - q[2].x) - ((double)q[3].x - q[2].x) ||
+				    (double)q[0].y - q[2].y != ((double)q[1].y - q[2].y) - ((double)q[3].y - q[2].y))
+					d.spr_quad++;
+			}
 			float sx0 = 1e30f, sx1 = -1e30f, sy0 = 1e30f, sy1 = -1e30f;
 			float sw0 = 1e30f, sw1 = 0.0f;
 			for (u32 k = 0; k < st.count; k++)
@@ -3107,6 +3253,8 @@ static void print_diag()
 		printf("[rendz] %s flat=%u sprcull=%u clip=%u/%u blend=%u fog=%u/%u/%u/%u fogv=%u\n",
 		       s_diag_name[L], d.flat, d.sprcull, d.clip_in, d.clip_out, d.blend,
 		       d.fog[0], d.fog[1], d.fog[2], d.fog[3], d.fogv);
+		printf("[rendz] %s offs=%u cclamp=%u tril=%u/%u pt_one=%u spr_quad=%u\n",
+		       s_diag_name[L], d.offc, d.cclamp, d.tril_w, d.tril, d.pt_one, d.spr_quad);
 	}
 }
 
@@ -3180,6 +3328,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 
 	fog_scene_begin();
+	xt_scene_begin();
 
 	// Background quad over the whole canvas at the background depth; colors and UV from its plane.
 	reset_param_cache();
@@ -3295,6 +3444,10 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	if (s_do.flat)
 		glShadeModel(GL_SMOOTH);
 	fog_scene_end();
+	if (s_do.offs)
+		ps3gl_dc_offs(0);
+	if (s_clamp_on || s_do.tril)
+		ps3gl_dc_xt(0, 0, 0, 1.0f);
 	ps3gl_tex_bump(0);
 	ps3gl_tex1_bits(0);
 	glDisable(GL_ALPHA_TEST);
@@ -4078,6 +4231,19 @@ static void rth_print_stats()
 	       s_stat_fp_nodepth / r, s_diag[0].runs, s_diag[0].runs_read, s_diag[1].runs, s_diag[1].runs_read,
 	       s_diag[2].runs, s_diag[2].runs_read);
 	s_stat_fp_runs = s_stat_fp_nodepth = 0;
+	// Bundle 17: the rows; the last lists' options; plane corners of the PPU replay and of the SPU decoder; states
+	// applied with an offset colour, a clamp and a weight; the last render's FOG_CLAMP_MIN and MAX.
+	{
+		static u32 s_spu_planes;
+		const u32 spu_planes = ps3spe_spr_planes();
+		printf("[rend17] pt_blend=%d corner=%d offs=%d clamp=%d tril=%d | opt=%02X lists_offs=%d planes ppu=%u spu=%u | "
+		       "applied offs=%u clamp=%u tril=%u | fog_clamp min=%08X max=%08X\n",
+		       g_pt_blend_preset, g_sprite_corner_preset, g_offset_colour_preset, g_colour_clamp_preset,
+		       g_trilinear_preset, s_rl.opt, (int)s_do.offs, s_stat_spr_plane, spu_planes - s_spu_planes,
+		       s_stat_offc, s_stat_cclamp, s_stat_tril, g_rr.fog_clamp_min, g_rr.fog_clamp_max);
+		s_spu_planes = spu_planes;
+		s_stat_spr_plane = s_stat_offc = s_stat_cclamp = s_stat_tril = 0;
+	}
 	// 3a: the Fog level, renders sent to the PPU replay for their vertex fog, table uploads, the last render's registers.
 	if (s_fog)
 		printf("[fog] level=%u ppu=%u uploads=%u col_ram=%06X col_vert=%06X density=%04X table=%04X %04X .. %04X %04X\n",
@@ -4176,6 +4342,14 @@ static void spe_compare(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 				spe_report(fence, ctx, "vtx", i, (const u32*)&o->vtx[i], (const u32*)&c->vtx[i], 6);
 				ok = false;
 			}
+	// 3b: with TAOPT_OFFS both decoders keep one offset colour per vertex.
+	if (ok && (c->opt & TAOPT_OFFS) && memcmp(o->offs, c->offs, c->nvtx * sizeof(u32)) != 0)
+		for (u32 i = 0; i < c->nvtx && ok; i++)
+			if (o->offs[i] != c->offs[i])
+			{
+				spe_report(fence, ctx, "offs", i, &o->offs[i], &c->offs[i], 1);
+				ok = false;
+			}
 	for (u32 i = 0; i < c->nstrip && ok; i++)
 	{
 		const SpeStrip& a = o->strip[i];
@@ -4272,7 +4446,8 @@ static bool lists_from_spe(TaContext* c, u32 fence, u32 raw_end, u32 cont_end)
 	s_rl.param = (const DcParam*)o->param;
 	s_rl.mtri = (const ModTri*)o->mtri;
 	s_rl.mvol = (const ModVolParam*)o->mvol;
-	s_rl.offs = 0;
+	// 3b: the SPU keeps the offset colours with TAOPT_OFFS; they are read only while the row is on.
+	s_rl.offs = (r->opt & TAOPT_OFFS) && s_offc_row ? o->offs : 0;
 	s_rl.nvtx = r->nvtx;
 	s_rl.nstrip = r->nstrip;
 	s_rl.nparam = r->nparam;
@@ -4298,7 +4473,7 @@ static bool has_bump(const DcParam* p, u32 n)
 	return false;
 }
 
-// 3a: so does a scene with a vertex-fog polygon.
+// 3a: so does a scene with a vertex-fog polygon, when the lists hold no offset colours (3b).
 static bool has_fogv(const DcParam* p, u32 n)
 {
 	for (u32 i = 0; i < n; i++)
@@ -4315,10 +4490,13 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	double t0 = os_GetSeconds();
 	s_bump_on = g_bump_map_preset != 0;
 	s_fog = (u32)g_fog_preset;
+	s_offc_row = g_offset_colour_preset != 0;
 	// Bundle 4: this job's draw rules (ps3_presets.cpp, all live).
 	s_do.pt_depth = g_pt_depth_preset != 0;
 	s_do.tr_nodepth = g_tr_sort_depth_preset != 0;
-	s_do.pt_blend = g_pt_blend_preset != 0;
+	s_do.pt_blend = (u8)g_pt_blend_preset;
+	s_do.clamp = g_colour_clamp_preset != 0;
+	s_do.tril = g_trilinear_preset != 0;
 	s_do.flat = (u8)g_flat_shade_preset;
 	s_do.passes = (u8)g_list_passes_preset;
 	s_do.tri_sort = (u8)g_tr_tri_sort_preset;
@@ -4331,7 +4509,7 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 		spe = false;
 		s_stat_bump_ppu++;
 	}
-	if (spe && s_fog >= 2 && has_fogv(s_rl.param, s_rl.nparam))
+	if (spe && s_fog >= 2 && !s_rl.offs && has_fogv(s_rl.param, s_rl.nparam))
 	{
 		spe = false;
 		s_stat_fog_ppu++;
@@ -4347,7 +4525,9 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 		decode_pending(c, raw_end, cont_end);
 		lists_from_ctx(c);
 	}
-	// What the lists carry decides the rest: the clip rects in the params (and the merge key), the TR volumes.
+	// What the lists carry decides the rest: the clip rects in the params (and the merge key), the TR volumes, and
+	// (3b) every vertex's offset colour.
+	s_do.offs = s_offc_row && (s_rl.opt & TAOPT_OFFS) != 0;
 	const bool rects = (s_rl.opt & TAOPT_TILE_CLIP) != 0;
 	s_do.clip = rects ? (u8)g_tile_clip_preset : 0;
 	s_do.tr_vol = (s_rl.opt & TAOPT_TR_VOL) != 0;

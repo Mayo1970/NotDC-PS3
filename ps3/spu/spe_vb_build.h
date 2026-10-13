@@ -18,6 +18,7 @@
 #define TAG_SW   3   // two per input window: strip records 3, 4; vertices 5, 6; params 20, 21
 #define TAG_VW   5
 #define TAG_PW   20
+#define TAG_OW   22  // 3b, the offset colour windows: 22, 23
 #define TAG_SLOT 8   // one per ring slot: 8..15
 #define TAG_VB   16  // two per output stream: 16..19
 #define TAG_RUN  18
@@ -309,6 +310,8 @@ typedef struct { uint32_t first, count, param; } Job;
 
 // EAs fit in 32 bits on the PS3: 64-bit math costs __muldi3 calls on the SPU.
 static uint32_t vtx_ea, strip_ea, par_ea;
+// 3b, SPEVB_OFFS of the build (0 or 1) and SpeOut.offs.
+static uint32_t bld_offs, offs_ea;
 static uint32_t vb_used, vb_cap, nruns, pub_vtx, sec_strips;
 
 // s_run of ps3_rend.cpp. last holds the words of the last vertex emitted: run_emit(s_run.last) writes them again.
@@ -316,6 +319,7 @@ static uint32_t vb_used, vb_cap, nruns, pub_vtx, sec_strips;
 static struct
 {
 	uint32_t open, reversed, cull, param, list, count, first, alpha_or;
+	uint32_t offs;  // 3b: the run's vertices carry their offset colours (run_offs of ps3_rend.cpp)
 	SpeParam p __attribute__((aligned(16)));
 	vec_uint4 last[3];
 	vec_uchar16 cmask, cmask1;
@@ -363,7 +367,7 @@ static void publish(uint32_t flags, int sec)
 }
 
 // vb_emit's words of v in its 48-byte slot: x*W, y*W, W, 1 | u, v, 0, 0 | RGBA, 0, 0, 0. A strip's vertex gets them
-// once: every copy run_emit makes of it is the same.
+// once: every copy run_emit makes of it is the same. 3b: an offset run's colour goes in the first 0.
 static void vtx_words(const SpeVtx* v, vec_uint4* o)
 {
 	uint32_t xw, yw;
@@ -435,6 +439,12 @@ static inline uint32_t eff_cull(const SpeParam* p)
 	return ((p->isp >> 27) & 3) ^ (spr_cull & ((p->pcw >> 29) == 5));
 }
 
+// offc_param of ps3_rend.cpp: a textured polygon with the Offset bit and no bump map (PixelFmt 4).
+static inline uint32_t par_offs(const SpeParam* p)
+{
+	return ((p->pcw >> 2) & (p->pcw >> 3) & 1) & (((p->tcw >> 27) & 7) != 4);
+}
+
 // apply_param's alpha force: UseAlpha off, or a texture (it always binds) with ShadInstr 1.
 static inline uint32_t alpha_rule(const SpeParam* p)
 {
@@ -468,6 +478,9 @@ static uint8_t ls_pw[2][PW_N * 16] __attribute__((aligned(128)));
 static IWin sw = { 0, 0, { ls_sw[0], ls_sw[1] }, { 0, 0 }, 0, SW_N, SW_N, 4, 12, TAG_SW, 0, 0 };
 static IWin vw = { 0, 0, { ls_vw[0], ls_vw[1] }, { 0, 0 }, 0, VW_N, VW_STEP, 2, 24, TAG_VW, 0, 0 };
 static IWin pw = { 0, 0, { ls_pw[0], ls_pw[1] }, { 0, 0 }, 0, PW_N, PW_N, 8, 16, TAG_PW, 0, 0 };
+// 3b: the offset colours of the vertex window's vertices, 4 bytes each, from a multiple of 4.
+static uint8_t ls_ow[2][VW_N * 4] __attribute__((aligned(128)));
+static IWin ow = { 0, 0, { ls_ow[0], ls_ow[1] }, { 0, 0 }, 0, VW_N, VW_STEP, 4, 4, TAG_OW, 0, 0 };
 
 // A prefetch of an earlier pass may still be landing in the buffer: its tag goes first.
 static void iw_load(IWin* w, uint32_t k, uint32_t lo)
@@ -514,9 +527,13 @@ typedef struct
 {
 	const uint8_t* base;
 	uint32_t lo, hi, first, count;
+	// 3b: offs = the strip's offset colours come with its vertices; ob = those of vertices lo.. in LS.
+	uint32_t offs;
+	const uint32_t* ob;
 } VWin;
 
 static uint8_t longbuf[16384] __attribute__((aligned(128)));
+static uint8_t longoffs[LONG_VTX * 4 + 32] __attribute__((aligned(128)));
 
 static const SpeVtx* vwin_load(VWin* w, uint32_t i)
 {
@@ -525,6 +542,14 @@ static const SpeVtx* vwin_load(VWin* w, uint32_t i)
 	const uint32_t a0 = ea & ~15u, a1 = (ea + n * (uint32_t)sizeof(SpeVtx) + 15) & ~15u;
 	q_room();
 	mfc_get(longbuf, a0, a1 - a0, TAG_IN, 0, 0);
+	if (w->offs)
+	{
+		const uint32_t oe = offs_ea + (w->first + i) * 4;
+		const uint32_t o0 = oe & ~15u, o1 = (oe + n * 4 + 15) & ~15u;
+		q_room();
+		mfc_get(longoffs, o0, o1 - o0, TAG_IN, 0, 0);
+		w->ob = (const uint32_t*)(longoffs + (oe - o0));
+	}
 	vb_wait(1u << TAG_IN, VB_STAGE_IN);
 	w->base = longbuf + (ea - a0);
 	w->lo = i;
@@ -547,11 +572,21 @@ static inline __attribute__((always_inline)) void vw_strip(const Job* j, VWin* w
 	w->lo = 0;
 	w->hi = 0;
 	w->base = 0;
+	w->offs = 0;
+	w->ob = 0;
 	if (__builtin_expect(j->count - 1u < SLOT_VTX, 1))
 	{
 		w->base = iw_get(&vw, j->first, j->count, VW_N, sizeof(SpeVtx));
 		w->hi = j->count;
 	}
+}
+
+// 3b: the offset colours of the strip's vertices from their window; a long strip loads them in vwin_load.
+static inline __attribute__((always_inline)) void ow_strip(const Job* j, VWin* w)
+{
+	w->offs = 1;
+	if (j->count - 1u < SLOT_VTX)
+		w->ob = (const uint32_t*)iw_get(&ow, j->first, j->count, VW_N, 4);
 }
 
 // ---- the prefetch ring (the sorted TR pass) ------------------------------
@@ -560,6 +595,9 @@ static uint8_t slot_vtx[RING][SLOT_VTX * 24 + 112] __attribute__((aligned(128)))
 static SpeParam slot_par[RING] __attribute__((aligned(16)));
 static Job slot_job[RING];
 static uint32_t slot_off[RING];
+// 3b: the same vertices' offset colours, pulled only in a build with SPEVB_OFFS.
+static uint8_t slot_offs[RING][SLOT_VTX * 4 + 16] __attribute__((aligned(128)));
+static uint32_t slot_ooff[RING];
 
 static void slot_issue(uint32_t k, const Job* j)
 {
@@ -570,6 +608,14 @@ static void slot_issue(uint32_t k, const Job* j)
 	mfc_get(slot_vtx[k], a0, a1 - a0, TAG_SLOT + k, 0, 0);
 	q_room();
 	mfc_get(&slot_par[k], par_ea + j->param * (uint32_t)sizeof(SpeParam), sizeof(SpeParam), TAG_SLOT + k, 0, 0);
+	if (bld_offs)
+	{
+		const uint32_t oe = offs_ea + j->first * 4;
+		const uint32_t o0 = oe & ~15u, o1 = (oe + n * 4 + 15) & ~15u;
+		q_room();
+		mfc_get(slot_offs[k], o0, o1 - o0, TAG_SLOT + k, 0, 0);
+		slot_ooff[k] = oe - o0;
+	}
 	slot_off[k] = ea - a0;
 	slot_job[k] = *j;
 }
@@ -582,6 +628,8 @@ static inline void slot_win(uint32_t k, VWin* w)
 	w->hi = j->count < SLOT_VTX ? j->count : SLOT_VTX;
 	w->first = j->first;
 	w->count = j->count;
+	w->offs = bld_offs;
+	w->ob = (const uint32_t*)(slot_offs[k] + slot_ooff[k]);
 }
 
 // Jobs from next() in order, RING strips in flight ahead of proc(). Inlined, so next and proc are direct calls.
@@ -637,6 +685,8 @@ static const vec_uchar16 m_uv0 = { 0, 1, 2, 3, 4, 5, 6, 7, 0x80, 0x80, 0x80, 0x8
 static const vec_uchar16 m_uv1 = { 8, 9, 10, 11, 12, 13, 14, 15, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 };
 static const vec_uchar16 m_wA = { DW(0, 16), DW(0, 16) };
 static const vec_uchar16 m_q0A = { 0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 0x80, 0x80, 0x80, 0x80 };
+// 3b: u, v, then the offset colour (ARGB in the second vector's lane 0) as RGBA: slot words 4 to 7.
+static const vec_uchar16 m_offs = { 0, 1, 2, 3, 4, 5, 6, 7, 17, 18, 19, 16, 0x80, 0x80, 0x80, 0x80 };
 
 // A vertex for vtx_check and vtx_out: its two quadwords, x y w col, |x y w col|, the lanes that are 0.
 typedef struct
@@ -738,11 +788,18 @@ static inline __attribute__((always_inline)) void pair_out(const PairIn* v, vec_
 	o[5] = spu_shuffle(v->n2, v->n2, cm1);
 }
 
+// 3b: the second slot quadword of an offset run's vertex, with its offset colour c as strip_slow writes it.
+static inline __attribute__((always_inline)) vec_uint4 uv_offs(vec_uint4 uv, uint32_t c)
+{
+	return spu_shuffle(uv, spu_promote(c, 0), m_offs);
+}
+
 #define FAST_MAX 64  // vertices per strip_fast call; their slots fit in a window after a slide
 
-// draw_strip's loop from vertex i on: the first vertex goes out 1 to 3 times (dupe_next, the parity copy), each
-// later one once. Stops at the first vertex for strip_slow: inf, floats mul_xy's fast case misses, the window, the cap.
-static inline __attribute__((always_inline)) uint32_t strip_fast(const VWin* w, uint32_t i, uint32_t n)
+// draw_strip's loop from vertex i on: the first vertex goes out 1 to 3 times (dupe_next, the parity copy), each later
+// one once. Stops for strip_slow: inf, floats off mul_xy's fast case, the window, the cap. offs (3b): colours from w->ob.
+static inline __attribute__((always_inline)) uint32_t strip_fast(const VWin* w, uint32_t i, uint32_t n,
+                                                                 const uint32_t offs)
 {
 	if (__builtin_expect(i - w->lo >= w->hi - w->lo, 0))
 		return i;
@@ -759,9 +816,12 @@ static inline __attribute__((always_inline)) uint32_t strip_fast(const VWin* w, 
 		vb_slide();
 	const vec_uchar16 cm = run.cmask;
 	const uint8_t* vp = w->base + (i - w->lo) * sizeof(SpeVtx);
+	const uint32_t* op = offs ? w->ob + (i - w->lo) : 0;
 	vec_uint4 q[3];
 	if (__builtin_expect(vtx_fast(vp, cm, q), 0))
 		return i;
+	if (offs)
+		q[1] = uv_offs(q[1], op[0]);
 	const uint32_t dupe = st.dupe_next;
 	const uint32_t r0 = 1 + dupe + ((((i ^ (run.count + dupe)) & 1)) ^ run.reversed);
 	vec_uint4* o = vb_p;
@@ -784,6 +844,11 @@ static inline __attribute__((always_inline)) uint32_t strip_fast(const VWin* w, 
 				PairIn N;
 				const vec_uint4 u = pair_check(vp + 2 * sizeof(SpeVtx), nm, &N);
 				pair_out(&P, cm, cm1, o);
+				if (offs)
+				{
+					o[1] = uv_offs(o[1], op[j]);
+					o[4] = uv_offs(o[4], op[j + 1]);
+				}
 				j += 2;
 				vp += 2 * sizeof(SpeVtx);
 				o += 6;
@@ -793,8 +858,12 @@ static inline __attribute__((always_inline)) uint32_t strip_fast(const VWin* w, 
 			}
 	}
 	for (; j < k; j++, vp += sizeof(SpeVtx), o += 3)
+	{
 		if (vtx_fast(vp, cm, o))
 			break;
+		if (offs)
+			o[1] = uv_offs(o[1], op[j]);
+	}
 	run.last[0] = st.good[0] = o[-3];
 	run.last[1] = st.good[1] = o[-2];
 	run.last[2] = st.good[2] = o[-1];
@@ -829,6 +898,12 @@ static uint32_t strip_slow(VWin* w, uint32_t i, uint32_t n)
 		return i + 1;
 	}
 	vtx_words(v, st.good);
+	if (run.offs)
+	{
+		// Slot word 6: the offset colour as RGBA bytes, as vb_emit writes it.
+		const uint32_t o = w->ob[i - w->lo];
+		st.good[1] = spu_insert((o << 8) | (o >> 24), st.good[1], 2);
+	}
 	st.have_good = 1;
 	if (st.dupe_next)
 	{
@@ -847,7 +922,17 @@ static void __attribute__((noinline)) strip_rest(VWin* w, uint32_t i, uint32_t n
 {
 	while (i < n)
 	{
-		const uint32_t f = strip_fast(w, i, n);
+		const uint32_t f = strip_fast(w, i, n, 0);
+		i = f != i ? f : strip_slow(w, i, n);
+	}
+}
+
+// 3b: strip_rest for a run with offset colours.
+static void __attribute__((noinline)) strip_rest_offs(VWin* w, uint32_t i, uint32_t n)
+{
+	while (i < n)
+	{
+		const uint32_t f = strip_fast(w, i, n, 1);
 		i = f != i ? f : strip_slow(w, i, n);
 	}
 }
@@ -885,11 +970,14 @@ static inline __attribute__((always_inline)) void run_open(const Job* s, const S
 	run.p = *p;
 	run.list = list;
 	run.count = 0;
+	run.offs = bld_offs & par_offs(p);
 	st.dupe_next = 0;
 }
 
 // Inlined into each pass, so its registers are saved once per pass, not once per strip.
-static inline __attribute__((always_inline)) void draw_strip(const Job* s, const SpeParam* p, VWin* w, uint32_t list)
+// ow_win (a constant, 3b): an offset run's strip takes its colours from the offset window, not from its slot.
+static inline __attribute__((always_inline)) void draw_strip(const Job* s, const SpeParam* p, VWin* w, uint32_t list,
+                                                             const uint32_t ow_win)
 {
 	const uint32_t n = s->count;
 	sec_strips++;
@@ -909,7 +997,17 @@ static inline __attribute__((always_inline)) void draw_strip(const Job* s, const
 	}
 	else
 		run_open(s, p, list);
-	const uint32_t i = strip_fast(w, 0, n);
+	// The merge key holds the Texture and Offset bits and the TCW: every strip of the run is of one kind.
+	if (__builtin_expect(run.offs, 0))
+	{
+		if (ow_win)
+			ow_strip(s, w);
+		const uint32_t i = strip_fast(w, 0, n, 1);
+		if (__builtin_expect(i < n, 0))
+			strip_rest_offs(w, i, n);
+		return;
+	}
+	const uint32_t i = strip_fast(w, 0, n, 0);
 	if (__builtin_expect(i < n, 0))
 		strip_rest(w, i, n);
 }
@@ -918,7 +1016,7 @@ static inline __attribute__((always_inline)) void proc_draw(uint32_t k)
 {
 	VWin w;
 	slot_win(k, &w);
-	draw_strip(&slot_job[k], &slot_par[k], &w, cur_list);
+	draw_strip(&slot_job[k], &slot_par[k], &w, cur_list, 0);
 }
 
 // ---- the TR keys ---------------------------------------------------------
@@ -1114,6 +1212,8 @@ static inline __attribute__((always_inline)) void pass_list(uint32_t sec, int ke
 	iw_open(&vw, vtx_ea, n_vtx);
 	if (!key)
 		iw_open(&pw, par_ea, n_param);
+	if (!key && bld_offs)
+		iw_open(&ow, offs_ea, n_vtx);
 	const uint32_t ns = seg_all ? 1 : nseg[sec];
 	for (uint32_t g = 0; g < ns; g++)
 	{
@@ -1137,7 +1237,10 @@ static inline __attribute__((always_inline)) void pass_list(uint32_t sec, int ke
 						return;
 				}
 				else
-					draw_strip(&j, (const SpeParam*)iw_get(&pw, j.param, 1, PW_N, sizeof(SpeParam)), &w, list);
+				{
+					const SpeParam* p = (const SpeParam*)iw_get(&pw, j.param, 1, PW_N, sizeof(SpeParam));
+					draw_strip(&j, p, &w, list, 1);
+				}
 			}
 		}
 	}
@@ -1155,6 +1258,8 @@ static void build(const SpeVbBell* q)
 	n_strip = q->nstrip;
 	n_vtx = q->nvtx;
 	n_param = q->nparam;
+	offs_ea = out + offsetof(SpeOut, offs);
+	bld_offs = (q->flags & SPEVB_OFFS) != 0;
 	vb_used = nruns = pub_vtx = vin = 0;
 	vb_cap = q->cap;
 	run.open = 0;
