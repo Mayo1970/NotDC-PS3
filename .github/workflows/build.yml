@@ -1,0 +1,33 @@
+name: Build package
+
+on: [ push, pull_request, workflow_dispatch ]
+
+jobs:
+  build_pkg:
+    runs-on: ubuntu-22.04
+    container: ps3dev-latest:latest
+    steps:
+
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apk add zip curl
+
+    - name: Get short SHA
+      id: slug
+      run: |
+        printf '%s\n' "sha8=$(printf '%s\n' ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
+
+    - name: Build Apollo App Package
+      run: |
+        make
+        make pkg
+
+    - name: Push package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: notdc-ps3-build_${{ steps.slug.outputs.sha8 }}
+        path: notdc_ps3.pkg
+        if-no-files-found: error
