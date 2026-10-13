@@ -5,7 +5,7 @@ on: [ push, pull_request, workflow_dispatch ]
 jobs:
   build_pkg:
     runs-on: ubuntu-22.04
-    container: ps3dev/ps3dev:latest
+    container: zeldin/ps3dev-docker:latest
     steps:
 
     - name: Checkout
