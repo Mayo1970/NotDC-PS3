@@ -209,14 +209,24 @@ int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and lengt
 int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table, not by a scan of its 4096 slots (P72, HW)
 int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
-// OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one; a row is off until it is
-// cleared on hardware. No row's value reaches dc_flash_wb.bin but the console ID.
-int g_broadcast_preset     = 0;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59)
-int g_bios_lang_preset     = 0;   // the flash's language: 0 = its own, 1-6 = Japanese, English, German, French, Spanish, Italian (P37)
-int g_flash_defaults_preset = 0;  // 1 = with no flash file one is built (USA, English, NTSC); a new syscfg block is English (P85)
-int g_console_id_preset    = 0;   // 1 = Flycast's console ID: a random one when blank, its checksum, machine version 0xFE (P85)
+// OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
+// (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
+int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)
+int g_bios_lang_preset     = 2;   // the flash's language: 0 = its own, 1-6 = Japanese, English, German, French, Spanish, Italian (P37, HW at 2 and 6)
+int g_flash_defaults_preset = 1;  // 1 = with no flash file one is built (USA, English, NTSC); a new syscfg block is English (P85)
+int g_console_id_preset    = 1;   // 1 = Flycast's console ID: a random one when blank, its checksum, machine version 0xFE (P85, HW)
 int g_exit_save_preset     = 0;   // 1 = the 3 s forced exit saves the flash first (P85)
-int g_rtc_local_preset     = 0;   // 1 = the RTC is UTC + the XMB's time zone and summer time, not UTC (P12)
+int g_rtc_local_preset     = 1;   // 1 = the RTC is UTC + the XMB's time zone and summer time, not UTC (P12, HW)
+// OPTIMIZATION_PLAN section 7, bundle 16 (maple bus and VMU): 0 is the old path in every one. Defaults since 2026-10-13
+// (Matt): ON for the rows of his HW runs, but Maple Bus Speed (REAL eats inputs in Sonic Adventure) and VMU Per Game (no run).
+int g_maple_delay_preset   = 1;   // 1 = a maple reply reaches RAM at the end interrupt, not at the DMA's start (P29, HW)
+int g_maple_speed_preset   = 0;   // 1 = a maple DMA lasts as at 2 Mb/s to the devices and 740 Kb/s back, not 2 Mb/s both ways (P29; HW: 1 eats inputs)
+int g_maple_cmds_preset    = 1;   // 1 = the pad and the VMU answer reset, kill and all-status; the LCD media-info byte is 2 (P29, P68, HW)
+int g_maple_ddt_preset     = 1;   // 1 = the vblank maple DMA runs with SB_MDST set, cleared at its end interrupt (P9, HW)
+int g_maple_guard_preset   = 1;   // 1 = a reply outside RAM is dropped with the overrun interrupt; a table outside RAM stops the DMA (P68, HW)
+int g_maple_frame_preset   = 1;   // 1 = SB_MMSEL 0 swaps the frame words; an address with no unit bit is the main unit (P68, HW)
+int g_vmu_per_game_preset  = 0;   // a VMU file per disc product ID: 1 = slot A1 only, as Flycast, 2 = every slot (P37)
+int g_vmu_screen_preset    = 1;   // 1 = the VMU screens at the TV's right edge (P37, HW)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -370,6 +380,14 @@ static const CfgItem s_items[] = {
 	{ "JitIdleRule",   &g_jit_idle_rule_preset },
 	{ "JitIdleHash",   &g_jit_idle_hash_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
+	{ "MapleDelay",    &g_maple_delay_preset },
+	{ "MapleSpeed",    &g_maple_speed_preset },
+	{ "MapleCmds",     &g_maple_cmds_preset },
+	{ "MapleDdt",      &g_maple_ddt_preset },
+	{ "MapleGuard",    &g_maple_guard_preset },
+	{ "MapleFrame",    &g_maple_frame_preset },
+	{ "VmuPerGame",    &g_vmu_per_game_preset },
+	{ "VmuScreen",     &g_vmu_screen_preset },
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
 	{ "RumblePack",    &g_rumble_pack_preset },
@@ -626,6 +644,19 @@ static const CfgItem s_flash_items[] = {
 };
 #define FLASH_ITEMS (sizeof(s_flash_items) / sizeof(s_flash_items[0]))
 
+// The bundle 16 rows (plan section 7), in the MAPLE / VMU page's order.
+static const CfgItem s_maple_items[] = {
+	{ "MapleDelay",    &g_maple_delay_preset },
+	{ "MapleSpeed",    &g_maple_speed_preset },
+	{ "MapleCmds",     &g_maple_cmds_preset },
+	{ "MapleDdt",      &g_maple_ddt_preset },
+	{ "MapleGuard",    &g_maple_guard_preset },
+	{ "MapleFrame",    &g_maple_frame_preset },
+	{ "VmuPerGame",    &g_vmu_per_game_preset },
+	{ "VmuScreen",     &g_vmu_screen_preset },
+};
+#define MAPLE_ITEMS (sizeof(s_maple_items) / sizeof(s_maple_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -722,6 +753,13 @@ void ps3_flashcfg_print(const char* when, bool always)
 	static int last[FLASH_ITEMS];
 	static bool printed;
 	cfg_print("flashcfg", s_flash_items, FLASH_ITEMS, last, &printed, when, always);
+}
+
+void ps3_maplecfg_print(const char* when, bool always)
+{
+	static int last[MAPLE_ITEMS];
+	static bool printed;
+	cfg_print("maplecfg", s_maple_items, MAPLE_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {

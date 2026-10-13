@@ -308,6 +308,7 @@ static char* BuildFilePath(const char* base_path, const char* filename)
 
 // P85: sh4_mem.cpp's forced-exit save writes the flash only while this is set.
 extern volatile bool g_flash_loaded;
+void maple_vmu_game(const char* id10);   // dc/maple/maple_devs.cpp (P37)
 
 // Cable forced for this boot only; -1 = the nullDC.cfg value. Read by bsc.cpp read_BSC_PDTRA.
 int g_cable_override = -1;
@@ -341,6 +342,8 @@ static void apply_disc_meta()
 		return;
 	}
 	dc_flash_set_region((const char*)&ip[0x30]);
+	// P37: the product number, for row "VMU Per Game".
+	maple_vmu_game((const char*)&ip[0x40]);
 	if (settings.dreamcast.cable <= 1 && ip[0x3D] != '1')
 	{
 		g_cable_override = 3;

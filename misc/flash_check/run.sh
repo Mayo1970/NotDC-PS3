@@ -81,13 +81,13 @@ pair $Z 1 'mem_SaveFlashForced();' 'printf("[ps3] SH4 did not stop in 3 s, forci
 pair $Z 1 'printf("[ps3] SH4 did not stop in 3 s, forcing process exit' 'sysProcessExit(0);'
 has $Z 1 'sysProcessExit(0);'
 P=ps3/ps3_presets.cpp
-# The defaults: every row at its old path until its HW run.
-has $P 1 'int g_broadcast_preset     = 0;'
-has $P 1 'int g_bios_lang_preset     = 0;'
-has $P 1 'int g_flash_defaults_preset = 0;'
-has $P 1 'int g_console_id_preset    = 0;'
+# The defaults since 2026-10-13 (Matt): DISC, ENGLISH, FLYCAST, FLYCAST, ON. Exit Flash Save stays OFF: no HW run.
+has $P 1 'int g_broadcast_preset     = 3;'
+has $P 1 'int g_bios_lang_preset     = 2;'
+has $P 1 'int g_flash_defaults_preset = 1;'
+has $P 1 'int g_console_id_preset    = 1;'
 has $P 1 'int g_exit_save_preset     = 0;'
-has $P 1 'int g_rtc_local_preset     = 0;'
+has $P 1 'int g_rtc_local_preset     = 1;'
 has $P 2 '{ "Broadcast",     &g_broadcast_preset },'
 has $P 2 '{ "BiosLanguage",  &g_bios_lang_preset },'
 has $P 2 '{ "FlashDefaults", &g_flash_defaults_preset },'

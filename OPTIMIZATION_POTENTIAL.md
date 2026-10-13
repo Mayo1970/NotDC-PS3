@@ -124,10 +124,10 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06, default ON; EMU_TERM still never runs |
 | P7 | SB_LMMODE0/1 ignored | bug | SQ and DMA texture uploads | ~40 lines | merged: plan 5.17 (with P55) |
 | P8 | Intensity colour clamp order | bug | brightness (Reicast: Red Dog) | small | new |
-| P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | GD-ROM DMA part merged: plan 5.34; TArender.MD TR4 covers the store stage only |
+| P9 | Hangs on rare input (5 fixes) | bug | robustness | 1-4 lines each | GD-ROM DMA part merged: plan 5.34; TArender.MD TR4 covers the store stage only; the maple item built 2026-10-13 as the row "Maple VBlank DMA", bundle 16, default OLD, no HW run |
 | P10 | PVR register and list rules (7) | bug | unknown games | small to medium | new |
 | P11 | TMU TCNT inside the timeslice | accuracy | Soul Calibur randomness (Flycast) | medium | merged: plan 6.4 |
-| P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new; built 2026-10-13, bundle 15, with the row "RTC Local Time" (the line never runs on the PS3) |
+| P12 | RTC DST adds 24 h | bug | clock under DST | 1 line | new; built 2026-10-13, bundle 15, with the row "RTC Local Time" (the line never runs on the PS3); HW SUCCESS 2026-10-13; default ON in source since 2026-10-13 (Matt) |
 | P13 | Puru Puru (rumble) pack | feature | rumble | ~120 lines | new |
 | P14 | Fog, offset colour and bump map shader reference | reference | 3a, 3b; 3j: Rayman 2 bump maps | - | merged: plan 3a (built 2026-10-12, "Fog" row, HW SUCCESS 2026-10-12, default TABLE in source), 3b (open), 3j (done) |
 | P15 | Freerunning (Minicast) | pacing option | - | medium | merged: plan 5.19; RESEARCH.MD says "not applicable" |
@@ -144,7 +144,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P26 | Framebuffer output: write watch, interlaced and 24-bit reads | bug | Ikaruga loading screens, 2D screens | ~40 lines | GOALS.md G6.4 magic word |
 | P27 | Modifier volumes in the TR list | bug | Xtreme Sports shadows | ~30 lines | merged: plan 3c |
 | P28 | SPG timing: field bit, HBlank modes | bug | interlaced games (unknown) | small | new |
-| P29 | Maple reply timing and commands | bug | Geist Force, Silent Scope | ~40 lines | corrects section 4 |
+| P29 | Maple reply timing and commands | bug | Geist Force, Silent Scope | ~40 lines | corrects section 4; built 2026-10-13 as the rows "Maple Reply Delay", "Maple Bus Speed" and "Maple Commands", bundle 16, default old path; HW 2026-10-13: Maple Bus Speed REAL eats inputs in Sonic Adventure and stays OLD, the other two ran with no fault |
 | P30 | P4 mirrors and operand-cache RAM banks | bug | NHL 2K2 | ~15 lines | new |
 | P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | CA clamp merged: plan 6.5; Mono and LFORE built 2026-10-11, bundle 5 (plan section 0), HW not run; rest: plan 2.2, 6.8 |
 | P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | mac.w merged: plan 5.3 `JitMac`; fneg: new |
@@ -152,8 +152,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P34 | Disc swap | feature | Shenmue, Skies of Arcadia, Grandia II, D2, RE Code Veronica | ~150 lines | corrects section 4 |
 | P35 | CUE/BIN and CHD readers | feature | more image formats | ~250 lines / 6-8K lines | new |
 | P36 | Cheat files and 16:9 output | feature | widescreen codes | ~250 lines | new |
-| P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13; the BIOS language built 2026-10-13 as the row "BIOS Language", bundle 15, default CONSOLE, no HW run |
-| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it) |
+| P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13; the BIOS language built 2026-10-13 as the row "BIOS Language", bundle 15; HW SUCCESS 2026-10-13; default ENGLISH in source since 2026-10-13 (Matt); the rest built 2026-10-13 as the rows "VMU Per Game" and "VMU Screen" (HW: works), bundle 16, default OFF; the keyboard and mouse rows removed the same day (Matt) |
+| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it); plan bundle 20 since 2026-10-13 (Matt) |
 | P39 | reios (HLE BIOS) | feature | boot without `dc_boot.bin` | ~2K lines | low value |
 | P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | merged: plan 6.8 |
 | P41 | FMV: interpreter fallbacks (addc, swap.b, xtrct) | speed | Sofdec FMVs: Sonic Adventure intro (SPEED 57-71%), Space Channel 5 (~94%) | no new code | = plan 5.2, HW 2026-10-06: Sonic FMV +23% VPS |
@@ -174,7 +174,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P56 | fmov, flds, fsts, fneg in the JIT when PR=1 | speed | PR=1 games (old logs: Space Channel 5 35-62 fmov/s, Quake3.cdi up to 3.5K/s, Rayman 2 1-3/s) | ~5 lines | built 2026-10-11 without fneg (bundle 8, "JIT PR MOVES" OFF), no HW run; merged: plan 5.39; fneg after P32 |
 | P57 | Small: GDI `\` paths, `verify(RM<2)`, Flycast TMU test | bug, test | GDI sets in subfolders; WinCE; P11 | 1 line each; test ~100 lines | RM verify built 2026-10-11 (bundle 8, "JIT RM 2/3" VERIFY), no HW run; merged: plan 3d; TMU test: plan 6.4; GDI paths: P23 |
 | P58 | MMUCR fields read the wrong bits on big endian | bug | Border Down (no picture); every game that uses the TLB for store queues | 2 lines; + JIT cache clear (~3) and V = 0 skip (1) | bundle 13 (2026-10-11); Border Down is an open item in plan section 0 |
-| P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | bundle 15 (2026-10-11); corrects plan 3i ("Broadcast is not touched, as in Flycast"); built 2026-10-13 as the row "Broadcast", default CONSOLE, no HW run; 10 games at 50 Hz in the old logs |
+| P59 | Flash broadcast byte: NTSC, as Flycast writes it | bug | Capcom vs. SNK 2, Border Down and Rayman 2 play at 50 Hz, not 60 | ~10 lines | bundle 15 (2026-10-11); corrects plan 3i ("Broadcast is not touched, as in Flycast"); built 2026-10-13 as the row "Broadcast"; default DISC in source since 2026-10-13 (Matt); HW SUCCESS 2026-10-13 (Rayman 2 and Capcom vs. SNK 2 at 60 Hz; Border Down open); 10 games at 50 Hz in the old logs |
 | P60 | Present only the renders the game shows | bug (image) | flashing screens and mirrors (South Park, NFL QB Club 2000, Vanishing Point, Metropolis Street Racer), FMV glitches; Quake III split screen | ~40-80 lines + ~30 | fits bundle 11; P2 has the swap rule as pacing only |
 | P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
 | P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
@@ -183,7 +183,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | bundle 13 (re-cut 2026-10-12; with P7) |
 | P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | 3 built 2026-10-11 in bundle 4 (volume cap, data gate, invalid types; HW run, default ON); RTT parts: bundle 11 (P54) |
 | P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | bundle 20 (re-cut 2026-10-12) |
-| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple parts: bundle 16; system parts: bundle 20 (re-cut 2026-10-12) |
+| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple parts: bundle 16, built 2026-10-13 as the rows "Maple Guards" and "Maple Frame Rules" (the VMU LCD byte in "Maple Commands"), default old path, no HW run; system parts: bundle 20 (re-cut 2026-10-12) |
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 12; VMU beep: bundle 18 (re-cut 2026-10-12) |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
 | P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
@@ -200,8 +200,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: bundle 19 (P61) |
 | P83 | G11 facts: a first stage with no V.42, the flash account, the traps | reference | G11 (modem) | stage 1 ~1,600 lines, not 4,176 | GOALS.md G11 (not bundled); extends P70 |
 | P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
-| P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save", default old path, no HW run |
-| P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 21 (parked for the end, Matt 2026-10-12); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
+| P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save"; default FLYCAST, FLYCAST and OFF in source since 2026-10-13 (Matt); Console ID ran on HW 2026-10-13, the other two are open for the last checks before the release (Matt) |
+| P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 22 (parked for the end, Matt 2026-10-12; bundle 21 until 2026-10-13); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -921,7 +921,7 @@ Adventure intro FMV, `[stall] dma`.
   Low.
 - Order: after P72, which takes the larger share.
 
-### P74 Store-queue flushes with AT = 1 take the old chain  `[ ]` not built with bundle 13 (2026-10-12): the plan takes it only if one of the four games is SH4-bound after P58; HW run 1 of bundle 13: that condition is met (Ikaruga 952K flushes/s at 336 ns, 15.2% of the SH4 thread; Rez 849K/s at 174 ns, 11.2%); for later (Matt 2026-10-13: "we will check the Ikaruga and Rez issues later on"), plan bundle 21 item 7
+### P74 Store-queue flushes with AT = 1 take the old chain  `[ ]` not built with bundle 13 (2026-10-12): the plan takes it only if one of the four games is SH4-bound after P58; HW run 1 of bundle 13: that condition is met (Ikaruga 952K flushes/s at 336 ns, 15.2% of the SH4 thread; Rez 849K/s at 174 ns, 11.2%); for later (Matt 2026-10-13: "we will check the Ikaruga and Rez issues later on"), plan bundle 22 item 7
 
 - After P58, a game with MMUCR.AT = 1 flushes through `do_sqw_mmu`
   (`dc/sh4/sh4_sqw.h:15-47`; from the JIT PREF, `ps3/ps3_driver.cpp:4343`
@@ -939,13 +939,13 @@ Adventure intro FMV, `[stall] dma`.
   queues), Rez, Ikaruga, Sonic Shuffle. Gain not measured. Build it only
   if one of them is SH4-bound after P58.
 
-### P86 The SH4 thread in heavy scenes: where the time goes, and the ways  `[ ]` bundle 21, parked for the end (Matt 2026-10-12)
+### P86 The SH4 thread in heavy scenes: where the time goes, and the ways  `[ ]` bundle 22 (bundle 21 until 2026-10-13), parked for the end (Matt 2026-10-12)
 
 - Matt 2026-10-12: "Why do the games I tried not run in full speed?", then
   "Any way to improve the SH4 Thread on this?". This item is the answer.
   It is our own work, not a take from a reference. Nothing is built by
   it. The issue behind it is parked (plan section 0, "OPEN ISSUE"; plan
-  section 7, bundle 8 point 11 and bundle 21): do not start a way before
+  section 7, bundle 8 point 11 and bundle 22): do not start a way before
   Matt picks one.
 - Evidence: a survey of the HW logs of 2026-10-11 and 2026-10-12, per
   boot (`ps3log_b5_run2.txt`, scratchpad of session 01bbad3e;
@@ -1127,7 +1127,7 @@ Adventure intro FMV, `[stall] dma`.
     double precision is not fully pipelined (Cell documentation; not
     measured here).
 
-### P9 Hangs on rare input  `[~]` GD-ROM DMA clamp ("GD DMA Fix") and 2340-byte sectors built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; the TA replay built 2026-10-11 as "TA Bad Records", bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the AICA item built 2026-10-11 as "G2 DMA Read", bundle 6 (plan section 0), default OFF, never used on HW (ChuChu Rocket sends no SB_ADDIR = 1 transfer); the maple item open
+### P9 Hangs on rare input  `[~]` GD-ROM DMA clamp ("GD DMA Fix") and 2340-byte sectors built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; the TA replay built 2026-10-11 as "TA Bad Records", bundle 4 (plan section 0), HW run 2026-10-11, default ON in source (Matt); the AICA item built 2026-10-11 as "G2 DMA Read", bundle 6 (plan section 0), default OFF, never used on HW (ChuChu Rocket sends no SB_ADDIR = 1 transfer); the maple item built 2026-10-13 as "Maple VBlank DMA", bundle 16 (plan section 0); HW 2026-10-13: ran at FIXED with no fault named (Sonic Adventure and Quake III Arena do not use that DMA); default FIXED in source since 2026-10-13 (Matt), not packaged
 
 None of these messages appears in the logs of past sessions (461 scratchpad
 text files checked). Each fix is 1-4 lines.
@@ -1215,7 +1215,7 @@ Games affected: unknown for each.
   handler cannot see the time inside the slice: the JIT would need to store it
   before a cold memory call. Medium, minor gain.
 
-### P12 RTC under DST  `[~]` the line fixed 2026-10-13, bundle 15 (plan section 0); it never runs on the PS3 (293 old boots: the clock is UTC, `tm_isdst` is 0), so row "RTC Local Time" (the XMB's time zone and summer time) built with it, default OFF, no HW run
+### P12 RTC under DST  `[~]` the line fixed 2026-10-13, bundle 15 (plan section 0); it never runs on the PS3 (293 old boots: the clock is UTC, `tm_isdst` is 0), so row "RTC Local Time" (the XMB's time zone and summer time) built with it; HW SUCCESS 2026-10-13 at ON (Matt, bundle 15), default ON in source since then (not packaged): the clock is UTC + 2 h in Italy; the XMB's summer-time value is a flag (1), not minutes
 
 - `GetRTC_now()` adds 24 * 3600 when `tm_isdst > 0`
   (`dc/aica/aica_if.cpp:66-67`); it should be 3600. Reicast uses the
@@ -1619,7 +1619,7 @@ Each one is small and needs no shader.
   the value is low.
 - Games affected: unknown.
 
-### P29 Maple reply timing and commands  `[ ]`
+### P29 Maple reply timing and commands  `[~]` built 2026-10-13 as "Maple Reply Delay", "Maple Bus Speed" and "Maple Commands", bundle 16 (plan section 0), defaults in source since 2026-10-13 (Matt): Maple Reply Delay ON, Maple Bus Speed OLD, Maple Commands FLYCAST (not packaged); HW 2026-10-13 (Sonic Adventure, Players 4): Maple Bus Speed REAL eats inputs, it stays OLD (Matt: "Maple Bus Speed fixes it."); Reply Delay ON and Commands FLYCAST ran with no fault; bundle 16 is a HW SUCCESS (Matt 2026-10-13)
 
 - Flycast:
   - `core/hw/maple/maple_if.cpp:255`, :315-341: replies are buffered and
@@ -1975,7 +1975,7 @@ Flycast's RTT games).
   UTLB entries, with no MMU-enabled line, and stop right after the BIOS
   logo; Sonic Shuffle's flushes land in boot ROM. Add them to the HW check.
 
-### P59 Flash broadcast byte: NTSC, as Flycast writes it  `[~]` "Broadcast" (CONSOLE / NTSC / PAL / DISC) built 2026-10-13, bundle 15 (plan section 0), default CONSOLE, no HW run; the old logs: 10 of 23 games stay at 50 Hz in every boot, not 3
+### P59 Flash broadcast byte: NTSC, as Flycast writes it  `[x]` HW SUCCESS 2026-10-13 (Matt, bundle 15; plan section 0): "Broadcast" (CONSOLE / NTSC / PAL / DISC), default DISC in source since 2026-10-13 (Matt; not packaged); at DISC Rayman 2 and Capcom vs. SNK 2 run at NTSC 59.95 Hz and SPEED 100% (the flash file's byte is PAL, verified); Border Down open for the last checks before the release; the old logs: 10 of 23 games stay at 50 Hz in every boot, not 3
 
 - Flycast `fixUpDCFlash()` (`core/hw/flashrom/nvmem.cpp:151-170`) runs at
   every boot, after the console flash loads (:255-257). It writes Region,
@@ -2262,7 +2262,7 @@ None of the named games is in Matt's set.
   and the next one (`tmu_regs_CR` is u16[3]: TCR0 << 16 | TCR1). About 30
   lines to make them size-safe. No game known (unverified).
 
-### P68 Small system fixes  `[ ]`
+### P68 Small system fixes  `[~]` the maple parts built 2026-10-13, bundle 16 (plan section 0): "Maple Guards" (the overrun interrupt, the SB_MDSTAR stop), "Maple Frame Rules" (SB_MMSEL, the recipient address) and the VMU LCD byte inside "Maple Commands"; HW 2026-10-13: ran ON with no fault named (no game is known to need them); default ON and FLYCAST in source since 2026-10-13 (Matt), not packaged; the system parts open (bundle 20); bundle 16 is a HW SUCCESS (Matt 2026-10-13)
 
 - Maple reply outside RAM: Flycast `8fdcea2e2` (Cheats 'N Codes Volume 1)
   drops the reply and raises holly_MAPLE_OVERRUN (error bit 9) at the end
@@ -2710,7 +2710,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   seen by the JIT (our only SMC guards are CCR.ICI clears and a list of known
   addresses).
 
-### P37 Front-end extras  `[~]` the BIOS language: "BIOS Language" built 2026-10-13, bundle 15 (plan section 0), default CONSOLE, no HW run; the rest open (bundle 16)
+### P37 Front-end extras  `[~]` the BIOS language: "BIOS Language" built 2026-10-13, bundle 15 (plan section 0), default ENGLISH in source since 2026-10-13 (Matt; not packaged); HW SUCCESS 2026-10-13 at ITALIAN (BIOS menus in Italian, Matt: "It works"); the rest built 2026-10-13, bundle 16 (plan section 0): "VMU Per Game" (OFF / SLOT A1 / ALL SLOTS, no HW run) and "VMU Screen" (HW 2026-10-13 at ON: works, Matt: "The VMU pictures are very cute!"); defaults in source since 2026-10-13 (Matt): VMU Screen ON, VMU Per Game OFF (not packaged); the keyboard and the mouse were built as two rows and REMOVED the same day after a Quake III Arena run (Matt: "frankly I'd just remove this feature altogether. Very few games use it anyway."); bundle 16 is a HW SUCCESS (Matt 2026-10-13)
 
 - One VMU file per game, named by the product ID from the disc header
   (Flycast `core/oslib/oslib.cpp:50-72`; `PerGameVmu` defaults to true,
@@ -2729,7 +2729,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   table (`38045d1`) is not needed. Its mouse bits: left = bit 2, right =
   bit 1, middle = bit 3, active low; the wheel is inverted.
 
-### P38 Windows CE (SH4 MMU)  `[ ]` merged: plan 3d
+### P38 Windows CE (SH4 MMU)  `[ ]` merged: plan 3d; in plan bundle 20 since 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot."), nothing built
 
 - Flycast: `core/hw/sh4/modules/mmu.cpp` 596 + `fastmmu.cpp` 337 + `mmu.h`
   169 lines; `wince.h` (409 lines) is mostly tracing.
@@ -3039,7 +3039,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   corners go above 128. G12 step 1 would copy this dead zone to the right
   stick. About 15 lines. The feel is not verified on HW.
 
-### P85 Flash defaults, and the flash save at exit  `[~]` "Flash Defaults", "Console ID" and "Exit Flash Save" built 2026-10-13, bundle 15 (plan section 0), default OLD, OLD and OFF, no HW run; the `SaveSettings()` call at an RTC write not touched; reference for GOALS.md G13 and G10
+### P85 Flash defaults, and the flash save at exit  `[~]` "Flash Defaults", "Console ID" and "Exit Flash Save" built 2026-10-13, bundle 15 (plan section 0), default FLYCAST, FLYCAST and OFF in source since 2026-10-13 (Matt; not packaged); HW 2026-10-13 (bundle 15 is a success, Matt): Console ID FLYCAST ran (the flash's ID kept, version FE; log only); Exit Flash Save and Flash Defaults with no flash file not run, open for the last checks before the release; the `SaveSettings()` call at an RTC write not touched; reference for GOALS.md G13 and G10
 
 - Language: a new syscfg block gets language 0 = Japanese
   (`dc_flash_set_time()`, `dc/flash_fix.cpp:113-118`; its comment says
@@ -3727,7 +3727,7 @@ P74. New bundle 14 (render-thread draw cost): P72, P73. New bundle 15
 (flash defaults): P59, P85. P83 stays with GOALS.md G11.
 
 Re-cut 2026-10-12 (Matt: "Yes, do it."): the open items sit in bundles 10
-to 21 of `OPTIMIZATION_PLAN.md` section 7. Bundles 1-9 are closed. This
+to 22 of `OPTIMIZATION_PLAN.md` section 7 (bundle 21 is the Capcom vs. SNK 2 fights since 2026-10-13, and the heavy scenes bundle is 22). Bundles 1-9 are closed. This
 map replaces the placement above; the item table of section 0 has the new
 number only where it says "re-cut".
 - 10 Controllers: P84 (the dead zone, the G12 edits), P13.
@@ -3746,7 +3746,7 @@ number only where it says "re-cut".
 - 19 Disc tail: P77, P34, P23 and P57 (HW tests), P82 (the lead-out
   stop).
 - 20 SH4 correctness tail: P46, P32, P64, P67, P78 (RFCR), P68 (the system
-  parts), P33, P56 (its verdict).
+  parts), P33, P56 (its verdict), P38 (added 2026-10-13, Matt).
 - 21 Frame rate in heavy scenes: the open list of P71, P11 (the TMU
   rows), P86 (added 2026-10-12).
-- No bundle: P1, P2, P15, P35, P38, P39, P42, P70, P83.
+- No bundle: P1, P2, P15, P35, P39, P42, P70, P83.

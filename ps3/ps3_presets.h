@@ -193,6 +193,15 @@ extern int g_flash_defaults_preset;
 extern int g_console_id_preset;
 extern int g_exit_save_preset;
 extern int g_rtc_local_preset;
+// Bundle 16 (plan section 7), the MAPLE / VMU page.
+extern int g_maple_delay_preset;
+extern int g_maple_speed_preset;
+extern int g_maple_cmds_preset;
+extern int g_maple_ddt_preset;
+extern int g_maple_guard_preset;
+extern int g_maple_frame_preset;
+extern int g_vmu_per_game_preset;
+extern int g_vmu_screen_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -219,3 +228,5 @@ void ps3_memcfg_print(const char* when, bool always);
 void ps3_costcfg_print(const char* when, bool always);
 // [flashcfg] line: the FLASH / CLOCK page's rows, the same way.
 void ps3_flashcfg_print(const char* when, bool always);
+// [maplecfg] line: the MAPLE / VMU page's rows, the same way.
+void ps3_maplecfg_print(const char* when, bool always);

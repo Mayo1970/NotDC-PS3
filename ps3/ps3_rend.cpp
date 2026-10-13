@@ -9,6 +9,7 @@
 #include "ps3_screen.h"
 #include "ps3_shot.h"
 #include "ps3_ui.h"
+#include "ps3_vmulcd.h"
 #include "ps3_depth.h"
 #include "ps3_spe.h"
 #include "ps3_spevb.h"
@@ -3381,6 +3382,9 @@ static void frame_extras()
 		shot_take(sh);
 	if (g_fps_overlay_preset)
 		osd_draw(sw, sh);
+	// P37: the VMU screens go over the frame as the FPS text does.
+	if (ps3_vmulcd_draw(sw, sh))
+		reset_param_cache();
 }
 
 static void draw_frame()
@@ -4672,6 +4676,7 @@ bool InitRenderer()
 		// P50: the menu freed its fonts at launch; the FPS text needs them before the render thread starts.
 		if (g_fps_overlay_preset)
 			ps3ui_init();
+		ps3_vmulcd_init();
 	}
 	if (!TileAccel.Init() || !TaStore.Init())
 		return false;

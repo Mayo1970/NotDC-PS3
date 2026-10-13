@@ -142,6 +142,7 @@ enum HollyInterruptID
 		// 4-5 TA (illegal param, FIFO overflow), 6-7 PVRIF, 8-11 MAPLE, 12-14 G1, 15-27 G2 (DMA address/overrun/timeouts).
 		holly_PRIM_NOMEM = holly_err | 0x02,	//bit 2 = TA : ISP/TSP Parameter Overflow
 		holly_MATR_NOMEM = holly_err | 0x03,	//bit 3 = TA : Object List Pointer Overflow
+		holly_MAPLE_OVERRUN = holly_err | 0x09,	//bit 9 = MAPLE : DMA over run (P68)
 };
 
 

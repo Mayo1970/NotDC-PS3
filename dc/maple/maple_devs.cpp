@@ -4,6 +4,7 @@
 #include "maple_devs.h"
 #include "maple_cfg.h"
 #include "maple_puru.h"
+#include "maple_vmu_name.h"
 #include <time.h>
 #include <sys/stat.h>
 
@@ -19,6 +20,14 @@ const char* maple_sega_dreameye_name_2 = "Dreamcast Camera Flash LDevic";
 const char* maple_sega_mic_name = "MicDevice for Dreameye";
 
 const char* maple_sega_brand = "Produced By or Under License From SEGA ENTERPRISES,LTD.";
+
+// Plan section 7, bundle 16 (ps3_presets.cpp): 0 is the old path in each one.
+extern int g_maple_cmds_preset, g_vmu_per_game_preset;
+// P29, Flycast's AllStatusReq texts of the pad and of the VMU: 80 bytes each, so a reply stays whole words.
+static const char maple_pad_extra[] = "Version 1.010,1998/09/28,315-6211-AB   ,Analog Module : The 4th Edition.5/8  +DF";
+static const char maple_vmu_extra[] = "Version 1.005,1999/04/15,315-6208-03,SEGA Visual Memory System BIOS Produced by ";
+// P37: the product number of the boot disc (IP.BIN 0x40) as a file name part; empty with no disc.
+static char s_vmu_game[11];
 
 
 enum MapleFunctionID
@@ -158,7 +167,11 @@ struct maple_sega_controller: maple_base
 	virtual u32 dma(u32 cmd)
 	{
 		//printf("maple_sega_controller::dma Called 0x%X;Command %d\n",device_instance->port,Command);
-		switch (cmd)
+		// P29: with the row, the pad answers the reset, kill and all-status commands as Flycast's does.
+		const bool all=g_maple_cmds_preset && cmd==MDC_AllStatusReq;
+		if (g_maple_cmds_preset && (cmd==MDC_DeviceReset || cmd==MDC_DeviceKill))
+			return MDRS_DeviceReply;
+		switch (all ? (u32)MDC_DeviceRequest : cmd)
 		{
 		case MDC_DeviceRequest:
 			//caps
@@ -189,6 +202,11 @@ struct maple_sega_controller: maple_base
 			//2
 			w16(0x01F4);
 
+			if (all)
+			{
+				wptr(maple_pad_extra,80);
+				return MDRS_DeviceStatusAll;
+			}
 			return MDRS_DeviceStatus;
 
 			//controller condition
@@ -228,7 +246,7 @@ struct maple_sega_controller: maple_base
 
 		default:
 			printf("UNKOWN MAPLE COMMAND %d\n",cmd);
-			return MDRE_UnknownFunction;
+			return g_maple_cmds_preset ? MDRE_UnknownCmd : MDRE_UnknownFunction;
 		}
 	}
 };
@@ -326,7 +344,10 @@ struct maple_sega_purupuru: maple_base
 };
 
 // Sega Dreamcast Visual Memory Unit: one raw 128 KB flash image per slot, Flycast's file format.
+// misc/maple_check sets its own folder.
+#ifndef VMU_DIR
 #define VMU_DIR "/dev_hdd0/savedata/vmu"
+#endif
 
 static void vmu_put16(u8* p, u32 v)
 {
@@ -361,14 +382,34 @@ struct maple_sega_vmu: maple_base
 	u8 flash_data[128*1024];
 	u8 lcd_data[192];
 	u8 lcd_data_decoded[48*32];
+	// P37: the name of the file in use.
+	char file_name[48];
 
 	virtual void OnSetup()
 	{
-		memset(flash_data,0,sizeof(flash_data));
+		file=0;
+		file_name[0]=0;
 		memset(lcd_data,0,sizeof(lcd_data));
-		char path[64];
+		open_card();
+	}
+	// P37: the boot disc is known after the devices are made; the card changes only when its file name does.
+	virtual void OnGame()
+	{
+		open_card();
+	}
+	void open_card()
+	{
+		char name[48];
+		vmu_file_name(name,sizeof(name),logical_port,s_vmu_game,g_vmu_per_game_preset);
+		if (file && !strcmp(name,file_name))
+			return;
+		if (file)
+			fclose(file);
+		strcpy(file_name,name);
+		memset(flash_data,0,sizeof(flash_data));
+		char path[96];
 		mkdir(VMU_DIR, 0777);
-		snprintf(path, sizeof(path), VMU_DIR "/vmu_save_%s.bin", logical_port);
+		snprintf(path, sizeof(path), VMU_DIR "/%s", name);
 		file=fopen(path,"rb+");
 		if (!file)
 			file=fopen(path,"wb+");
@@ -411,7 +452,11 @@ struct maple_sega_vmu: maple_base
 	virtual u32 dma(u32 cmd)
 	{
 		//printf("maple_sega_vmu::dma Called for port 0x%X, Command %d\n",device_instance->port,Command);
-		switch (cmd)
+		// P29: with the row, the VMU answers the reset, kill and all-status commands as Flycast's does.
+		const bool all=g_maple_cmds_preset && cmd==MDC_AllStatusReq;
+		if (g_maple_cmds_preset && (cmd==MDC_DeviceReset || cmd==MDC_DeviceKill))
+			return MDRS_DeviceReply;
+		switch (all ? (u32)MDC_DeviceRequest : cmd)
 		{
 		case MDC_DeviceRequest:
 			{
@@ -440,6 +485,11 @@ struct maple_sega_vmu: maple_base
 				//2
 				w16(0x0082); 
 
+				if (all)
+				{
+					wptr(maple_vmu_extra,80);
+					return MDRS_DeviceStatusAll;
+				}
 				return MDRS_DeviceStatus;
 			}
 
@@ -498,7 +548,7 @@ struct maple_sega_vmu: maple_base
 							w8(47);					//X dots -1
 							w8(31);					//Y dots -1
 							w8(((1)<<4) | (0));		//1 Color, 0 contrast levels
-							w8(0);					//Padding
+							w8(g_maple_cmds_preset ? 2 : 0);					//Padding; 2 as Flycast dc7f60846 (P68, WinCE)
 							
 							return MDRS_DataTransfer;
 						}
@@ -1072,4 +1122,15 @@ maple_device* maple_Create(MapleDeviceType type)
 	}
 
 	return rv;
+}
+
+// P37: dc.cpp names the boot disc (10 bytes of IP.BIN) once it is read; each VMU then takes its card.
+void maple_vmu_game(const char* id10)
+{
+	vmu_game_id(s_vmu_game, id10);
+	printf("[vmu] disc ID '%s', VMU Per Game %d\n", s_vmu_game, g_vmu_per_game_preset);
+	for (int bus = 0; bus < 4; bus++)
+		for (int port = 0; port < 6; port++)
+			if (MapleDevices[bus][port])
+				MapleDevices[bus][port]->OnGame();
 }

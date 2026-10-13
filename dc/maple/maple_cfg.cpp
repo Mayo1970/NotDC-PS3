@@ -23,6 +23,9 @@ extern "C" int get_controller_type();  // 0=standard 1=lightgun 2=maracas 3=keyb
 // P13: 1 = VMU slot 2 holds the Puru Puru pack; its motor is in ps3/ps3_input.cpp.
 extern int g_rumble_pack_preset;
 void UpdateVibration(u32 port, float power, float inclination, u32 duration_ms);
+// ps3/ps3_vmulcd.cpp: row "VMU Screen" (plan section 7, bundle 16).
+void ps3_vmulcd_push(u32 bus, u32 port, const u8* img);
+void ps3_vmulcd_reset(void);
 
 extern u16 kcode[4];
 extern u32 vks[4];
@@ -83,9 +86,11 @@ struct MapleConfigMap : IMapleConfigMap
 		pjs->trigger[PJTI_L] = lt[dev->bus_id];
 	}
 
-	void SetImage(void* /*img*/) override
+	void SetImage(void* img) override
 	{
-		// No VMU LCD output on PS3.
+		// P37: the picture goes to the TV when row "VMU Screen" is on.
+		if (dev)
+			ps3_vmulcd_push(dev->bus_id, dev->bus_port, (const u8*)img);
 	}
 
 	void SetVibration(float power, float inclination, u32 duration_ms) override
@@ -179,6 +184,7 @@ void mcfg_CreateDevices()
 
 void mcfg_DestroyDevices()
 {
+	ps3_vmulcd_reset();
 	for (int bus = 0; bus < 4; bus++)
 	{
 		for (int port = 0; port < 6; port++)

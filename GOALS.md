@@ -15,7 +15,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 Active goal: G14 (CHD disc images). Built 2026-10-13 (package of 09:35), the PC check passes; its HW test is open.
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
-as bundles 10-21 since the re-cut of 2026-10-12, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
+as bundles 10-22 since the re-cut of 2026-10-12 and the new bundle 21 of 2026-10-13, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
 
 ## G1 - `_PS3` build links and packages  `[x]` (HW 2026-09-18: boots, UDP log OK, clean XMB exit, ~194 MB free heap)
 1. Add a PSL1GHT `Makefile` in the project root. Build in Docker with `./build.sh [pkg|self|clean]`.
@@ -245,7 +245,8 @@ What is left of the plan 5.12 list (the YUV decode options) stays in the plan, n
    Reicast's INI form is 212 lines (`OPTIMIZATION_POTENTIAL.md` section 4, sixth review).
 4. XMB exit `[x]`: JIT EXIT (`OPTIMIZATION_POTENTIAL.md` P6 = plan 5.35, HW SUCCESS 2026-10-06, default ON) gives a
    clean exit. Left: the 3 s forced path skips the flash save (P85, plan bundle 15). Built 2026-10-13 as the row
-   "Exit Flash Save" (FLASH / CLOCK page), default OFF, no HW run yet (plan section 0).
+   "Exit Flash Save" (FLASH / CLOCK page), default OFF, no HW run of this row yet (plan section 0). Open for the last
+   checks before the release (Matt 2026-10-13; bundle 15 itself is a HW success).
 5. Stick dead zone: each axis is cut alone below 20, with no rescale. Flycast uses a radial dead zone with a rescale
    (P84, plan bundle 10).
 
@@ -264,7 +265,8 @@ No DreamPi box needed: the emulator replaces the phone line, the modem and the D
 Reference: Flycast `core/hw/modem/` and `core/network/`.
 Order (re-cut 2026-10-12): after plan bundle 15 (Flash and clock), which builds the flash block code for the dial-up
 account and the console ID.
-Bundle 15 built 2026-10-13, no HW run yet (plan section 0): the row "Console ID" (default OLD) writes the ID. Not built
+Bundle 15 built and HW SUCCESS 2026-10-13 (Matt; plan section 0): the row "Console ID" (default OLD) writes the ID;
+Matt's flash has an ID already. Not built
 there: Flycast's rule in `alloc_block` that takes a physical block again when a newer copy of its data exists. The
 dial-up blocks need it: Matt's flash has its settings block in physical block 224 to 241 of 254.
 1. Modem chip, into `plugs/nullExtDev/nullExtDev.cpp` (a stub today), in two stages (2026-10-11,
@@ -400,7 +402,9 @@ OFF their verdicts first (step 5).
 5. Settle the defaults first. Open on 2026-10-08: YUV Block Decode is OFF in the source; SPE Tex Decode and SPE FB
    Convert have one HW run. Also open on 2026-10-11 (P85, plan bundle 15): a new flash boots in Japanese (Flycast:
    English), and Players is 4 where Flycast plugs 1 controller. Since 2026-10-13 the six rows of the FLASH / CLOCK page
-   (bundle 15, all at their old path, no HW run yet) wait for a default too: Flash Defaults FLYCAST is the English one.
+   (bundle 15, HW SUCCESS 2026-10-13) have their defaults since 2026-10-13 (Matt: the values of his Rayman 2 run): DISC,
+   ENGLISH, FLYCAST, FLYCAST, Exit Flash Save OFF, RTC Local Time ON. So a new flash boots in English now. Open from bundle 15 for these last checks (Matt 2026-10-13: "We'll check out these items as "open"
+   for the latest stuff left before release."): Border Down at 60 Hz, Exit Flash Save, Flash Defaults with no flash file.
 6. Visible rows (recommended 2026-10-08, Matt confirms at goal start): SH4 Clock, Speed Limiter, Frame Drop, CD Audio,
    and CONTROLS > Players and Controller. G12 adds FULL (2 STICKS) to Controller; keep the G11 online row visible if
    G11 adds one. On 2026-10-08 the menu has 83 option rows on 4 pages and 2 on CONTROLS.

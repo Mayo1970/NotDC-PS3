@@ -347,6 +347,8 @@ static const char* k_firstpass[] = { "OLD", "SKIP", "+ GAME ORDER", NULL };
 // CONSOLE is the byte of the flash file. After it: the DC's own order (NTSC 0, PAL 1; Japanese 0 to Italian 5).
 static const char* k_broadcast[] = { "CONSOLE", "NTSC", "PAL", "DISC", NULL };
 static const char* k_bioslang[]  = { "CONSOLE", "JAPANESE", "ENGLISH", "GERMAN", "FRENCH", "SPANISH", "ITALIAN", NULL };
+static const char* k_busspeed[]  = { "OLD", "REAL", NULL };
+static const char* k_pergame[]   = { "OFF", "SLOT A1", "ALL SLOTS", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -764,6 +766,26 @@ static Option s_flash[] = {
 	  "The DC clock is the PS3's local time (XMB zone, summer time), not UTC (P12). Set before boot." },
 };
 
+// Plan section 7, bundle 16: one row per item; the first value is the old path.
+static Option s_maple[] = {
+	{ "Maple Reply Delay", &g_maple_delay_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A device's reply reaches RAM at the end interrupt, not before it (P29, Geist Force). Live." },
+	{ "Maple Bus Speed", &g_maple_speed_preset,   OPT_CHOICE, k_busspeed,  0, 0,0,0, NULL,
+	  "REAL: 2 Mb/s to the devices, 740 Kb/s back, so a reply takes longer (P29, Silent Scope). Live." },
+	{ "Maple Commands",  &g_maple_cmds_preset,    OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: the pad and the VMU answer reset, kill and all-status (P29, P68). Live." },
+	{ "Maple VBlank DMA", &g_maple_ddt_preset,    OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: a controller DMA that the vblank starts runs as busy and does not hang (P9). Live." },
+	{ "Maple Guards",    &g_maple_guard_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A reply or a command table outside RAM ends with an error, not a crash (P68). Live." },
+	{ "Maple Frame Rules", &g_maple_frame_preset, OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: SB_MMSEL 0 swaps frame bytes; an address with no unit is the main unit (P68). Live." },
+	{ "VMU Per Game",    &g_vmu_per_game_preset,  OPT_CHOICE, k_pergame,   0, 0,0,0, NULL,
+	  "One VMU file per disc ID; SLOT A1 as Flycast. A new file is blank (P37). Set before boot." },
+	{ "VMU Screen",      &g_vmu_screen_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The pictures that games send to the VMU screens, at the TV's right edge (P37). Live." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -814,6 +836,7 @@ static Page s_opt_pages[] = {
 	{ "MEMORY",        s_memory, (int)(sizeof(s_memory) / sizeof(s_memory[0])) },
 	{ "DRAW COST",     s_cost,  (int)(sizeof(s_cost) / sizeof(s_cost[0])) },
 	{ "FLASH / CLOCK", s_flash, (int)(sizeof(s_flash) / sizeof(s_flash[0])) },
+	{ "MAPLE / VMU",   s_maple, (int)(sizeof(s_maple) / sizeof(s_maple[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1283,6 +1306,8 @@ static int* const k_live_opts[] = {
 	&g_ch2_dma_fix_preset,
 	&g_tex_bind_table_preset, &g_gl_compare_preset, &g_tr_first_pass_preset,
 	&g_exit_save_preset,
+	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,
+	&g_maple_frame_preset, &g_vmu_screen_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
@@ -1473,6 +1498,7 @@ void ps3_menu_ingame(void)
 		ps3_memcfg_print("menu", false);
 		ps3_costcfg_print("menu", false);
 		ps3_flashcfg_print("menu", false);
+		ps3_maplecfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1569,5 +1595,6 @@ int ps3_menu_run(void)
 	ps3_memcfg_print("boot", true);
 	ps3_costcfg_print("boot", true);
 	ps3_flashcfg_print("boot", true);
+	ps3_maplecfg_print("boot", true);
 	return 1;
 }

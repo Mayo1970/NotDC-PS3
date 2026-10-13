@@ -29,8 +29,12 @@ struct maple_device
 	void Setup(u32 prt);
 
 	virtual void OnSetup(){};
+	// P37: the boot disc's ID is known (maple_vmu_game).
+	virtual void OnGame(){};
 	virtual ~maple_device();
 	virtual u32 Dma(u32 Command,u32* buffer_in,u32 buffer_in_len,u32* buffer_out,u32& buffer_out_len)=0;
 };
 
 maple_device* maple_Create(MapleDeviceType type);
+// P37: id10 = the 10 bytes at IP.BIN 0x40 of the boot disc; the VMUs open their per-game files.
+void maple_vmu_game(const char* id10);
