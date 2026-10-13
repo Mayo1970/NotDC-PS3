@@ -20,7 +20,7 @@ jobs:
       run: |
         printf '%s\n' "sha8=$(printf '%s\n' ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
 
-    - name: Build Apollo App Package
+    - name: Build NotDC-PS3 Emulator Package
       run: |
         make
         make pkg
@@ -29,5 +29,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: notdc-ps3-build_${{ steps.slug.outputs.sha8 }}
-        path: notdc_ps3.pkg
+        path: build/notdc_ps3.pkg
         if-no-files-found: error
