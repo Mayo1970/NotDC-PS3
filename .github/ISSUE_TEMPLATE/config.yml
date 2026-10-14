@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Compatibility reports
+    url: https://github.com/Mayo1970/NotDC-PS3/issues?q=label%3Acompatibility
+    about: See which games were already tested before you send a new report.
