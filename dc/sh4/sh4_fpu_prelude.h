@@ -7,6 +7,8 @@
 
 // The user's accuracy mode, defined in ps3_presets.cpp.
 extern "C" int get_accuracy_preset();
+// Interp Fixes (plan section 7, bundle 20): 1 = P32's fneg and mac fixes.
+extern int g_interp_fix_preset;
 
 // Helper macros to check current accuracy mode
 #define FAST() (get_accuracy_preset() == 0)

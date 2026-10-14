@@ -1,6 +1,5 @@
-// Plan section 7, bundle 2 PC check (WSL), one thread: dc/gdrom/gdromv3.cpp with a fake drive and no disc worker.
-// trace <seed> <ops>: random guest work, every reply hashed; with every option at 0 the file must give the hash of
-// the frozen ref_gdromv3.inc (built with GD_REF). model <group>: one option ON against the rule it ports.
+// Bundles 2 and 19 PC check (WSL): gdromv3.cpp, fake drive, no worker. trace <seed> <ops>: with every option at 0 the
+// replies hash as the frozen ref_gdromv3.inc (GD_REF). model <group>: one option ON against the rule it ports.
 #include <stdarg.h>
 #include "types.h"
 #include "ps3_timebase.h"
@@ -15,7 +14,7 @@
 uint64_t ps3_timebase_hz = 1000000000ull;
 
 // ---- the options ----
-static int o_status, o_position, o_scd_q, o_rules, o_speed, o_dma_fix, o_miss, o_cmd_fix, o_set_mode, o_swap;
+static int o_status, o_position, o_scd_q, o_rules, o_speed, o_dma_fix, o_miss, o_cmd_fix, o_set_mode, o_swap, o_holly;
 extern "C" {
 int g_jit_ccalls_preset = 0;
 int get_debug_loop() { return 0; }
@@ -31,6 +30,7 @@ int get_cdda_miss_preset() { return o_miss; }
 int get_gd_cmd_fix_preset() { return o_cmd_fix; }
 int get_gd_set_mode_preset() { return o_set_mode; }
 int get_disc_swap_preset() { return o_swap; }
+int get_holly_regs_preset() { return o_holly; }   // bundle 20's ATA soft reset values: model p68
 }
 bool g_stall_on;
 void stall_push_on(int) {}
@@ -63,7 +63,7 @@ int msgboxf(const char* text, unsigned int, ...)
 }
 
 // ---- the disc worker: off ----
-static u32 g_seeks, g_seek_fad;
+static u32 g_seeks, g_seek_fad, g_loop_start = GDA_NO_LOOP, g_loop_end;
 void gda_start() {}
 void gda_stop() {}
 void gda_lock() {}
@@ -76,6 +76,7 @@ bool gda_cdda(uint8_t*, uint32_t) { return false; }
 void gda_cdda_next(bool, uint32_t) {}
 bool gda_cdda_on() { return false; }
 void gda_cdda_seek(uint32_t fad) { g_seeks++; g_seek_fad = fad; }
+void gda_cdda_loop(uint32_t start, uint32_t end) { g_loop_start = start; g_loop_end = end; }
 void gda_cdda_reset() {}
 void gda_count(int, uint32_t, uint64_t) {}
 void gda_stats(double) {}
@@ -85,6 +86,7 @@ static u32 g_disc_type = GdRom, g_disc;
 static const struct { u32 fad, ctrl; } k_trk[5] = { {150, 4}, {600, 0}, {45150, 4}, {300000, 0}, {400000, 0} };
 #define SD_LEAD 1126u
 #define HD_LEAD 549300u
+static u32 g_lead = HD_LEAD;   // P82: where the disc ends
 // Every byte depends on the whole FAD, the sector size and the disc; bytes 4-7 hold the FAD + 1 for pull().
 static inline u8 pat(u32 fad, u32 secsz, u32 j)
 {
@@ -135,6 +137,7 @@ void FASTCALL libGDR_GetTrackAdrAndControl(u32 track, u8* adr, u8* ctrl)
 	*ctrl = (u8)k_trk[track - 1].ctrl;
 	*adr = *ctrl ? 0 : 1;
 }
+u32 FASTCALL libGDR_GetLeadOut() { return g_lead; }
 bool libGDR_SwapDisc(const char*)
 {
 	g_disc++;
@@ -1068,6 +1071,95 @@ static void m_miss()
 	cmd_play(7, 0, 0, 0);
 	eq("a resume calls it too", g_seeks, 2);
 	eq("with the place the play is at", g_seek_fad, 5001);
+
+	// + LOOP AHEAD: only a play that turns back names its loop, and only at level 3.
+	cmd_play(1, 5000, 6000, 3);
+	pull();
+	eq("PLAY AHEAD: no loop named", g_loop_start, GDA_NO_LOOP);
+	o_miss = 2;
+	pull();
+	eq("+ SILENCE: no loop named", g_loop_start, GDA_NO_LOOP);
+	o_miss = 3;
+	pull();
+	eq("the loop start", g_loop_start, 5000);
+	eq("the loop end", g_loop_end, 6000);
+	cmd_play(1, 7000, 7100, 0);
+	pull();
+	eq("no repeat: no loop", g_loop_start, GDA_NO_LOOP);
+	cmd_play(1, 7000, 7002, 1);
+	pull();
+	eq("one repeat: the loop", g_loop_start, 7000);
+	pull();
+	eq("the last pass: no loop", g_loop_start, GDA_NO_LOOP);
+	cmd_play(1, 7000, 7002, 15);
+	for (u32 i = 0; i < 7; i++)
+		pull();
+	eq("repeat 15 turns for ever", g_loop_start, 7000);
+	o_miss = 2;
+	pull();
+	eq("back to + SILENCE: the loop is dropped", g_loop_start, GDA_NO_LOOP);
+}
+
+// P82: a play that reaches the lead-out stops there, in PAUSE, its position on the last sector played.
+static void m_p82()
+{
+	boot();
+	g_lead = 5010;
+	o_rules = 1;
+	cmd_play(1, 5008, 5020, 0);
+	pull();
+	pull();
+	eq("ON: the play reads past the lead-out", pull(), 5011);
+	o_rules = 2;
+	cmd_play(1, 5008, 5020, 0);
+	eq("the sector before the last", pull(), 5009);
+	eq("the last sector", pull(), 5010);
+	eq("the lead-out stops the play", pull(), 0);
+	eq("then silence", pull(), 0);
+	eq("PAUSE", drive_status(), GD_PAUSE);
+	eq("the subcode says ended", audio_status(), 0x13);
+	// The old GET_SCD format 1 sends the FADs since the play's start: one, so the position is on the last sector.
+	u8 p[12] = {0}, b[100];
+	p[0] = SPI_GET_SCD;
+	p[1] = 1;
+	p[4] = 100;
+	spi_in(p, b, sizeof(b));
+	eq("the position stays on the last sector", (b[8] << 16) | (b[9] << 8) | b[10], 1);
+	cmd_play(1, 5004, 5007, 0);
+	pull();
+	pull();
+	pull();
+	eq("an end before the lead-out ends the play as before", pull(), 0);
+	cmd_play(1, 5006, 5030, 15);
+	for (u32 i = 0; i < 4; i++)
+		pull();
+	eq("a loop over the lead-out stops there", pull(), 0);
+	eq("PAUSE after the loop", drive_status(), GD_PAUSE);
+	cmd_play(1, 6000, 6100, 0);
+	eq("a start past the lead-out", pull(), 0);
+	g_lead = 0;
+	cmd_play(1, 5000, 5100, 0);
+	eq("no disc: lead-out 0", pull(), 0);
+	g_lead = HD_LEAD;
+}
+
+// Bundle 20 (P68, Flycast 959b6344b): Holly Regs FLYCAST leaves DC Checker's register values after an ATA soft reset.
+// The status read ORs in DSC unless GD Status is 2, so its other bits are tested.
+static void m_p68()
+{
+	boot();
+	ata(ATA_SOFT_RESET);
+	const u32 old_alt = alt() & ~0x10u, old_err = ReadMem_gdrom(GD_ERROR_Read, 1);
+	const u32 old_ir = ReadMem_gdrom(GD_IREASON_Read, 1), old_bc = bytecount();
+	o_holly = 1;
+	ata(ATA_SOFT_RESET);
+	eq("ON: status 0", alt() & ~0x10u, 0);
+	eq("ON: error 1", ReadMem_gdrom(GD_ERROR_Read, 1), 1);
+	eq("ON: PAUSE", drive_status(), GD_PAUSE);
+	eq("ON: interrupt reason 1", ReadMem_gdrom(GD_IREASON_Read, 1), 1);
+	eq("ON: byte count 0xEB14", bytecount(), 0xEB14);
+	eq("OFF leaves other values", old_alt != 0 || old_err != 1 || old_ir != 1 || old_bc != 0xEB14, 1);
+	o_holly = 0;
 }
 
 // P34: the sense a swap leaves, and a DMA the swap emptied.
@@ -1150,7 +1242,7 @@ int main(int argc, char** argv)
 	static const struct { const char* name; void (*fn)(); } k_models[] = {
 		{ "p21s1", m_p21s1 }, { "p21s2", m_p21s2 }, { "p47", m_p47 }, { "p62", m_p62 }, { "p61", m_p61 },
 		{ "cmd", m_cmd }, { "p48", m_p48 }, { "dma", m_dma }, { "speed", m_speed }, { "miss", m_miss },
-		{ "swap", m_swap },
+		{ "swap", m_swap }, { "p82", m_p82 }, { "p68", m_p68 },
 	};
 	if (!strcmp(mode, "model") && argc > 2)
 		for (u32 i = 0; i < sizeof(k_models) / sizeof(k_models[0]); i++)

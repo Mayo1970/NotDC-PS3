@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Plan section 7, bundle 2 (WSL): plants one bug at a time in a copy of gdromv3.cpp; run.sh must FAIL on each.
-# Args: seeds and ops for run.sh (default 6 and 4000).
+# Args: seeds and ops for run.sh (default 6 and 4000), then a text the names hold (only those mutants run).
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -101,9 +101,32 @@ MUTANTS = [
     ('no read-ahead call at CD_PLAY', '\t\t\t\tif (next==GD_PLAY && get_cdda_miss_preset())\n\t\t\t\t\tgda_cdda_seek(cdda.CurrAddr.FAD);\n', ''),
     ('read-ahead call with the miss option off', 'if (next==GD_PLAY && get_cdda_miss_preset())', 'if (next==GD_PLAY)'),
     ('read-ahead from the start of the play', 'gda_cdda_seek(cdda.CurrAddr.FAD);', 'gda_cdda_seek(cdda.StartAddr.FAD);'),
+    # Bundle 19: CD-DA Miss + LOOP AHEAD
+    ('LOOP AHEAD: the loop is never named',
+     '\t\tgda_cdda_loop(get_cdda_miss_preset()>=3 && cdda.playing && cdda.repeats ? cdda.StartAddr.FAD : GDA_NO_LOOP,\n'
+     '\t\t              cdda.EndAddr.FAD);\n', ''),
+    ('LOOP AHEAD: named at + SILENCE', 'get_cdda_miss_preset()>=3 && cdda.playing', 'get_cdda_miss_preset()>=2 && cdda.playing'),
+    ('LOOP AHEAD: named with no repeat', 'cdda.playing && cdda.repeats ?', 'cdda.playing ?'),
+    ('LOOP AHEAD: the end is the start', 'GDA_NO_LOOP,\n\t\t              cdda.EndAddr.FAD);',
+     'GDA_NO_LOOP,\n\t\t              cdda.StartAddr.FAD);'),
+    # Bundle 19: P82, the lead-out stop
+    ('P82: no stop at the lead-out', 'if (get_cdda_rules_preset()>=2 && cdda.CurrAddr.FAD>=libGDR_GetLeadOut())',
+     'if (false)'),
+    ('P82: the stop at level 1', 'get_cdda_rules_preset()>=2 && cdda.CurrAddr.FAD>=libGDR_GetLeadOut()',
+     'get_cdda_rules_preset()>=1 && cdda.CurrAddr.FAD>=libGDR_GetLeadOut()'),
+    ('P82: the stop one sector late', 'cdda.CurrAddr.FAD>=libGDR_GetLeadOut()', 'cdda.CurrAddr.FAD>libGDR_GetLeadOut()'),
+    ('P82: the position moves on', '\t\t\tcdda.CurrAddr.FAD--;\n', ''),
+    ('P82: CD-DA goes on', '\t\t\tcdda_set(CDDA_TERMINATED);\n\t\t\tSecNumber.Status=GD_PAUSE;\n\t\t\tcdda_held=0;',
+     '\t\t\tSecNumber.Status=GD_PAUSE;\n\t\t\tcdda_held=0;'),
+    ('P82: the status stays PLAY', '\t\t\tSecNumber.Status=GD_PAUSE;\n\t\t\tcdda_held=0;', '\t\t\tcdda_held=0;'),
     # P34
     ('swap: sense key 3', '\tsns_key=2;\n\tsns_asc=4;', '\tsns_key=3;\n\tsns_asc=4;'),
     ('swap: no unit attention', '\t\tsns_key=6;\n', '\t\tsns_key=0;\n'),
+    # bundle 20, P68
+    ('soft reset: values without the row', '\t\t\tif (get_holly_regs_preset())\n\t\t\t{\n\t\t\t\tGDStatus.full = 0;',
+     '\t\t\tif (true)\n\t\t\t{\n\t\t\t\tGDStatus.full = 0;'),
+    ('soft reset: byte count high 0xEC', '\t\t\t\tByteCount.hi = 0xEB;', '\t\t\t\tByteCount.hi = 0xEC;'),
+    ('soft reset: no interrupt reason', '\t\t\t\tIntReason.full = 1;\n', ''),
     ('swap: ASC 0x28 with no disc', '? 0x29 : 0x28', '? 0x28 : 0x28'),
     ('swap: busy for half a second', 'gd_swap_cycles=(s64)SH4_CLOCK_EFF;', 'gd_swap_cycles=(s64)SH4_CLOCK_EFF/2;'),
     ('swap: status not BUSY', '\tgd_swap_cycles=(s64)SH4_CLOCK_EFF;\n\tSecNumber.Status=GD_BUSY;', '\tgd_swap_cycles=(s64)SH4_CLOCK_EFF;'),
@@ -135,8 +158,9 @@ def main():
     ops = sys.argv[2] if len(sys.argv) > 2 else '4000'
     os.makedirs('/tmp/gd2mut', exist_ok=True)
     orig = open(os.path.join(ROOT, SRC), encoding='utf-8').read()
+    todo = [m for m in MUTANTS if len(sys.argv) < 4 or sys.argv[3] in m[0]]
     caught = 0
-    for name, find, repl in MUTANTS:
+    for name, find, repl in todo:
         if orig.count(find) != 1:
             print(f'BAD MUTANT (pattern found {orig.count(find)} times): {name}')
             sys.exit(2)
@@ -147,7 +171,7 @@ def main():
         ok = r.returncode != 0
         caught += ok
         print(f"{'caught' if ok else 'MISSED'}: {name}: {(out[0] if out else '')[:100]}", flush=True)
-    print(f'{caught} of {len(MUTANTS)} mutants fail run.sh')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught} of {len(todo)} mutants fail run.sh')
+    sys.exit(0 if caught == len(todo) else 1)
 
 main()

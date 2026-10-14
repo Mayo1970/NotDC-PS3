@@ -17,7 +17,8 @@ HASH = 'dc/sh4/rec_v2/idle_hash.h'
 
 IDX = 'ppc_rlwinmx(i, pc, 1, 15, 28, 0);'
 BNE = 'ppc_bcx(BO_FALSE, BI_CR0_EQ, 4, 0, 0);'
-LIST = '(lo>=6 && lo<=0xC) || (op&0xEF)==0x0D;'
+LIST = '(lo>=6 && lo<=0xC) || (op&0xEF)==0x0D || (g_interp_fix_preset && (op&0xFF)==0x4D);'
+FNEG = ' || (g_interp_fix_preset && (op&0xFF)==0x4D)'
 GATE = 'if (!get_jit_pr_moves_preset() || !dec_is_pr_free(op))'
 L1 = 'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'
 SELF = 'if (block.BranchBlock==block.start && idle_rule<2)'
@@ -63,12 +64,13 @@ MUTANTS = [
     (BMC, 'mirror puts the code in addr', 'bm_bcache[idx].addr = b->addr;', 'bm_bcache[idx].addr = (u32)(uintptr_t)b->code;'),
     (BMC, 'mirror drops the code', 'bm_bcache[idx].code = (u32)(uintptr_t)b->code;', 'bm_bcache[idx].code = 0;'),
 
-    (DEC, 'PR list has fneg', LIST, LIST[:-1] + ' || (op&0xFF)==0x4D;'),
-    (DEC, 'PR list has fmac', LIST, '(lo>=6 && lo<=0xE) || (op&0xEF)==0x0D;'),
-    (DEC, 'PR list has fcmp/gt', LIST, '(lo>=5 && lo<=0xC) || (op&0xEF)==0x0D;'),
-    (DEC, 'PR list without fmov reg-reg', LIST, '(lo>=6 && lo<=0xB) || (op&0xEF)==0x0D;'),
-    (DEC, 'PR list without flds', LIST, '(lo>=6 && lo<=0xC) || (op&0xFF)==0x0D;'),
-    (DEC, 'PR list has fabs and fneg', LIST, '(lo>=6 && lo<=0xC) || (op&0xAF)==0x0D;'),
+    (DEC, 'PR list has fneg', LIST, LIST.replace(FNEG, ' || (op&0xFF)==0x4D')),
+    (DEC, 'PR list without fneg under Interp Fixes', LIST, LIST.replace(FNEG, '')),
+    (DEC, 'PR list has fmac', LIST, LIST.replace('lo<=0xC', 'lo<=0xE')),
+    (DEC, 'PR list has fcmp/gt', LIST, LIST.replace('lo>=6', 'lo>=5')),
+    (DEC, 'PR list without fmov reg-reg', LIST, LIST.replace('lo<=0xC', 'lo<=0xB')),
+    (DEC, 'PR list without flds', LIST, LIST.replace('(op&0xEF)', '(op&0xFF)')),
+    (DEC, 'PR list has fabs and fneg', LIST, LIST.replace('(op&0xEF)', '(op&0xAF)')),
     (DEC, 'PR gate without the row', GATE, 'if (!dec_is_pr_free(op))'),
     (DEC, 'PR gate without the list', GATE, 'if (!get_jit_pr_moves_preset())'),
     (DEC, 'PR gate with the row inverted', GATE, 'if (get_jit_pr_moves_preset() || !dec_is_pr_free(op))'),

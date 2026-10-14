@@ -8,17 +8,12 @@
 #include "dc/gdrom/gdrom_if.h"
 #include "dc/maple/maple_if.h"
 #include "dc/aica/aica_if.h"
+#include "ps3/ps3_presets.h"
 
-Array<RegisterStruct> sb_regs(0x540);	
+Array<RegisterStruct> sb_regs(0x540);
 
-//(addr>= 0x005F6800) && (addr<=0x005F7CFF) -> 0x1500 bytes -> 0x540 possible registers , 125 actualy exist olny
-//	System Control Reg.		//0x100 bytes
-//	Maple i/f Control Reg.	//0x100 bytes
-//	GD-ROM					//0x100 bytes
-//	G1 i/f Control Reg.		//0x100 bytes
-//	G2 i/f Control Reg.		//0x100 bytes
-//	PVR i/f Control Reg.	//0x100 bytes
-//	much empty space
+// 0x005F6800-0x005F7CFF: 0x540 slots, 125 registers in blocks of 0x100 bytes: system control, maple, GD-ROM, G1,
+// G2 and PVR i/f; the rest is empty.
 
 
 //0x005F6800	SB_C2DSTAT	RW	ch2-DMA destination address 
@@ -332,8 +327,27 @@ u32 SB_SDDIV;
 //0x005F7CF8	SB_PDLEND	R	PVR-DMA transfer counter 
  u32 SB_PDLEND;
 
+// Reg Access Size FIXED (P67): a byte or halfword access takes the register's low bits, as on the little-endian SH4;
+// OLD casts the u32's pointer, so on big endian it hits bits 31:24 or 31:16 (a byte write of 1 to SB_ADEN sets bit 24).
+static u32 sb_read_sized(const RegisterStruct& rs, u32 sz)
+{
+	const u32 v = (rs.flags & REG_32BIT_READWRITE) ? *rs.data32 : (rs.flags & REG_16BIT_READWRITE) ? *rs.data16 : *rs.data8;
+	return sz == 4 ? v : sz == 2 ? (v & 0xFFFF) : (v & 0xFF);
+}
+
+static void sb_write_sized(const RegisterStruct& rs, u32 data, u32 sz)
+{
+	const u32 keep = sz == 4 ? 0 : sz == 2 ? 0xFFFF0000u : 0xFFFFFF00u;
+	if (rs.flags & REG_32BIT_READWRITE)
+		*rs.data32 = (*rs.data32 & keep) | (data & ~keep);
+	else if (rs.flags & REG_16BIT_READWRITE)
+		*rs.data16 = (u16)((*rs.data16 & keep) | (data & ~keep));
+	else
+		*rs.data8 = (u8)data;
+}
+
 u32 sb_ReadMem(u32 addr,u32 sz)
-{	
+{
 	u32 offset = addr-SB_BASE;
 #ifdef TRACE
 	// All SB registers are 32-bit aligned; warn on unaligned access
@@ -353,6 +367,8 @@ u32 sb_ReadMem(u32 addr,u32 sz)
 #endif
 		if (sb_regs[offset].flags & REG_READ_DATA )
 		{
+			if (g_reg_size_preset)
+				return sb_read_sized(sb_regs[offset], sz);
 			if (sz==4)
 				return  *sb_regs[offset].data32;
 			else if (sz==2)
@@ -414,7 +430,9 @@ offset>>=2;
 #endif
 		if (sb_regs[offset].flags & REG_WRITE_DATA)
 		{
-			if (sz==4)
+			if (g_reg_size_preset)
+				sb_write_sized(sb_regs[offset], data, sz);
+			else if (sz==4)
 				*sb_regs[offset].data32=data;
 			else if (sz==2)
 				*sb_regs[offset].data16=(u16)data;
@@ -485,49 +503,49 @@ void SB_SFRES_write32(u32 data)
 {
 	SB_SFRES = data;
 
-	// Holly soft-reset: triggered by writing the magic value 0x7611. This
-	// runs synchronously from inside the SH4's own execution (the CPU is
-	// the one issuing the write), so it must NOT stop/reset the SH4 or wipe
-	// RAM -- see HollySoftReset()'s comment in dc.cpp for why SoftReset_DC()
-	// (which does both) can't be reused here.
+	// Holly soft reset (0x7611): the SH4 issued the write, so it must not stop or reset the SH4 or wipe RAM, as
+	// SoftReset_DC() would (HollySoftReset() in dc.cpp).
 	if ((u16)data == 0x7611)
 	{
 		printf("SB/HOLLY : System reset requested\n");
 		HollySoftReset();
 	}
 }
+// Holly Regs FLYCAST (P68, Flycast 79be46432): a G2 DMA address register keeps 32-byte units, so a DMA starts at the
+// boundary below the written address. Block Writes FIXED (P67): SB_PDLEN keeps 32-byte units (Flycast's sb.cpp mask).
+template<u32* reg, u32 mask> static void sb_write_masked(u32 data) { *reg = data & mask; }
+
+static void sb_set_masked(u32 addr, RegWriteFP* fn)
+{
+	RegisterStruct& rs = sb_regs[(addr - SB_BASE) >> 2];
+	rs.flags = REG_32BIT_READWRITE | REG_READ_DATA;
+	rs.writeFunction = fn;
+}
+
+// After the table and the modules' own entries, which it replaces only for its rows.
+static void sb_bundle20_init()
+{
+	if (g_holly_regs_preset)
+	{
+		sb_set_masked(SB_ADSTAG_addr, sb_write_masked<&SB_ADSTAG, 0x1FFFFFE0u>);
+		sb_set_masked(SB_ADSTAR_addr, sb_write_masked<&SB_ADSTAR, 0x1FFFFFE0u>);
+		sb_set_masked(SB_E1STAG_addr, sb_write_masked<&SB_E1STAG, 0x1FFFFFE0u>);
+		sb_set_masked(SB_E1STAR_addr, sb_write_masked<&SB_E1STAR, 0x1FFFFFE0u>);
+		sb_set_masked(SB_E2STAG_addr, sb_write_masked<&SB_E2STAG, 0x1FFFFFE0u>);
+		sb_set_masked(SB_E2STAR_addr, sb_write_masked<&SB_E2STAR, 0x1FFFFFE0u>);
+		sb_set_masked(SB_DDSTAG_addr, sb_write_masked<&SB_DDSTAG, 0x1FFFFFE0u>);
+		sb_set_masked(SB_DDSTAR_addr, sb_write_masked<&SB_DDSTAR, 0x1FFFFFE0u>);
+	}
+	if (g_block_write_preset)
+		sb_set_masked(SB_PDLEN_addr, sb_write_masked<&SB_PDLEN, 0x00FFFFE0u>);
+	// Holly Regs FLYCAST (P67, Flycast e5b18cd8a): the TA FIFO has 8 x 32 bytes free, so a FIFO poll ends.
+	SB_TFREM = g_holly_regs_preset ? 8 : 0;
+}
+
 void sb_Init()
 {
-//RegEx
-//{		  addr\2			 name\3			  RW/R/W\4		   Desc\5
-//find="^{{0x........}[  \t]+{[^  \t]+}[  \t]+{[^  \t]+}[  \t]+{[^]*$}}"
-//replace="//\1 \n#define \3_addr \2"
-//replace2="//\1 \nextern u32 \3;"
-//}
-
-//\4="RW"
-//\1
-//sb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA;
-//sb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;
-//Line="//\1\nsb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_READ_DATA | REG_WRITE_DATA;\nsb_regs[((\3_addr-SB_BASE))>>2].NextCange=0;\nsb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;\n\n"
-
-//\4="R"
-//\1
-//sb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_READ_DATA;
-//sb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;
-//Line="//\1\nsb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_READ_DATA ;\nsb_regs[((\3_addr-SB_BASE))>>2].NextCange=0;\nsb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;\n\n"
-
-//\4="W"
-//sb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_WRITE_DATA;
-//sb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;
-//sb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;
-//Line="//\1\nsb_regs[((\3_addr-SB_BASE))>>2].flags=REG_32BIT_READWRITE | REG_WRITE_DATA ;\nsb_regs[((\3_addr-SB_BASE))>>2].NextCange=0;\nsb_regs[((\3_addr-SB_BASE))>>2].readFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].writeFunction=0;\nsb_regs[((\3_addr-SB_BASE))>>2].data32=&\3;\n\n"
-	
+	// The table below came from the register list by regex (nullDC): an RW register reads and writes its u32, R reads
+	// it, W writes it.
 	sb_regs.Zero();
 
 	for (u32 i=0;i<sb_regs.Size;i++)
@@ -1514,6 +1532,7 @@ void sb_Init()
 	pvr_sb_Init();
 	maple_Init();
 	aica_sb_Init();
+	sb_bundle20_init();
 }
 
 void sb_Reset(bool Manual)

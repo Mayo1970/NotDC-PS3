@@ -28,6 +28,361 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**NEXT SESSION (Matt 2026-10-14, after HW run 4: "Check option 3. Save
+it. I'll start a new session."): the JIT form of the SH4 MMU (P38, the
+last item of bundle 20). Not started. Start from here:**
+- What exists: the interpreter form (`dc/sh4/sh4_mmu_int.cpp`, row SH4
+  MMU OFF / AUTO / ON, chosen at each reset by `sh4_fullmmu_select()`),
+  its PC check `misc/fullmmu_check` (55 programs, op tests at AT 0 and 1,
+  61 planted bugs), the `[fullmmu]` stats and diagnostic lines. Package
+  of 17:30 = commit 542229b + bundles 19 and 20, NOT committed.
+- HW facts (the bundle 20 block below): Sega Rally 2 (US),
+  `Run2/Sega Rally 2 (U).cdi`, is detected by AUTO and boots Windows CE;
+  the game then runs on a black screen at SPEED 11.5% (7 renders a
+  second), with no wait loop and no stuck interrupt: most likely only
+  slow. Per second: 4.3K TLB misses, 0.9K API calls (address errors), 21
+  FPU-disable traps, 310 store-queue flushes. A non-Windows CE disc with
+  AUTO keeps the JIT (Crazy Taxi, SPEED 99.5%).
+- The design to follow is the gate of P38 in bundle 20's section
+  (section 7): the flag is set before the first block compiles; the
+  emitter tests it when it compiles a block (no test in the generated
+  code); with the flag: blocks keyed by the virtual address, an exception
+  exit, no fastmem, no inline store-queue stores, no constprop, no
+  DYN_IC. It needs JIT RM 2/3 at ACCEPT (Windows CE sets RM 2 or 3) and
+  Maple VBlank DMA FIXED.
+- Traps learned in bundle 20: `_vmem` holds handler ids 0-7 only (an
+  eighth froze every P4 access; `misc/sys20_check` counts them); the
+  build has -fno-exceptions (the interpreter leaves an op by
+  `__builtin_longjmp`); `sh4_cpu.ResetCache` is a no-op under the MMU
+  engine; `.got` is 0xF3D8 of 0x10000 (about 3 KB left: new big files
+  may need `-mminimal-toc`, as `sh4_selftest.o`).
+- Not chosen: a 10-15 minute run on the black screen (it would prove
+  "only slow"), and a bigger translation cache in the interpreter (the
+  460K full UTLB scans a second; estimate 15-25% faster).
+
+**Bundle 20 (SH4 correctness tail) built 2026-10-14 (Matt: "Let's work
+on bundle 20"). Package of 16:40 (`build/notdc_ps3.pkg`, 1735792 bytes) =
+commit 542229b + bundles 19 and 20, with the fix of HW run 1 below. HW
+run 1 the same day (Matt: "Boot 1: crash", then "It still freezes" with
+SH4 Op Tests OFF): Crazy Taxi froze after its disc boot, at pc AC09E0BC
+with the vblank count stopped at 51. Cause, mine: the Memory Map row
+registered a third area 0 handler; `_vmem` keeps a handler id * 4 in the
+low 5 bits of a page entry, so it holds ids 0-7 only, and the P4
+handler became id 8: every P4 access through the page table went to a
+wrong host address. Fixed: no new handler, the area 0 handlers test
+address bit 25 for the mirror. `misc/sys20_check` counts the handlers of
+the tree now (7 of 7). The self-test line of that run was as expected (12
+of 19461 failed with the rows OLD, the integer group clean).
+HW run 2 (package of 16:40), same day:
+- Boot 1, Crazy Taxi, SH4 Op Tests ON, rows OLD: boots and runs (Matt:
+  "Perfect. It booted!"); `[sh4test]` 12 of 19461 failed, as predicted.
+- Boot 2, Crazy Taxi, the eight rows new (SH4 MMU and ELF Loader not):
+  `[sh4test]` 0 of 19515 failed; a race at median SPEED 100.0%, lowest
+  86.5%, 12 s below 95%. Matt saw frame dips: the same as before the
+  bundle (bundle 17's run: lowest 85.6%, 16 s below 95%; bundle 13's:
+  83.5%), in the heaviest scenes (17-20K vertices a frame): the heavy
+  scenes of bundle 22. No `[area0]` line: Crazy Taxi does not use the
+  0x02000000 mirror.
+- Boot 3, Quake3.cdi, JIT PR MOVES ON: its first sites on hardware
+  (`prmoves=20`), no fault; SPEED as in bundles 15-16 (median 99.9%).
+- Boot 4, Sega Rally 2 (US), SH4 MMU AUTO: `[disc] Windows CE: yes (byte
+  0x3E '0', boot file 0WINCEOS.BIN)`, the MMU interpreter runs. Windows
+  CE boots: TLB misses with ldtlb (15K in 113 s), its API calls as
+  instruction address errors (17K), FPU-disable traps (6), no FATAL; user
+  code runs (pc 01B85C28) and the game drew on the VMU LCD. Speed: SPEED
+  19% for the first 30 s, then 6-7% (4 frames per emulated second; Matt:
+  "It's just at 7 FPS"). No picture in the 113 s. In the slow part the
+  guest flushes the I-cache 12-74 times a second: each CCR write runs
+  the JIT's cache clear (`recSh4_ClearCache`, `bm_Reset`) although the
+  JIT does not run, and prints 2 lines; MMUCR.TI prints a line each time.
+  Later in the same boot the game draws (7 frames a second, SPEED 11-22%)
+  and the clears fall to 1-2 a second.
+- Boot 5, Crazy Taxi, SH4 MMU AUTO: `Windows CE: no`, the JIT runs, SPEED
+  99.5% (Matt: "Crazy Taxi boots as intended!").
+- Fix asked by Matt ("Do the small fix and package. If it yields positive
+  results, we will begin the JIT form in another session."): package of
+  17:05 (1735856 bytes). With the MMU engine, `sh4_cpu.ResetCache` does
+  nothing (no compiled code to drop), and ccn.cpp prints its AT edge, TLB
+  invalidate and I-cache lines 16 times, then stops. `misc/fullmmu_check`
+  tests both (61 of 61 planted bugs). HW run 3: Sega Rally 2 again, the
+  same rows; compare the time to the first picture and the in-game SPEED.
+  HW run 3 (package of 17:05), Sega Rally 2, 330 s: no JIT cache clear
+  (0; run 2 had 273 and 255 in two 10 s spans), SPEED 32-33% for the
+  first 40 s (run 2: 22% and 14% there), the first frames at 10-30 s
+  (19 a second, 400 vertices). Then the same state as run 2: 7 frames a
+  second of about 30 vertices, SPEED 11.9%, for more than 150 s; Matt:
+  "Black screen". The disc: PIO reads up to 100 s, then only a status
+  poll every 4 s. Not known yet: whether the game waits for something
+  the emulator does not give, or only runs 8 times too slow.
+  Diagnostic package of 17:30 (Matt: "Go with the diagnostic package."),
+  1737008 bytes, `.got` 0xF3D8. Once a second while the MMU engine runs:
+  `[fullmmu] top pc of N slices: PC n% (rd ADDR=VALUE) ...` (the op that
+  ends each slice, with the last data read), `[fullmmu] irq: SR ... |
+  vpend vmask srimask | holly nrm ext err | iml6 iml4 iml2`, and the code
+  around a new hottest op (`[fullmmu] code at PC:`, then one line per op
+  with its name), 24 times at most. `misc/fullmmu_check`: a polling loop
+  is named with its read (55 programs, 3 new planted bugs caught).
+  HW run 4 (package of 17:30), Sega Rally 2 on the black screen: no wait
+  loop. No op ends more than 1% of the slices; the most frequent is the
+  Windows CE TLB-miss handler at 8C012510 (it reads TEA). No interrupt
+  waits: vpend 0, the Holly status bits come and go, the masks normal.
+  Per second: 4.3K TLB misses (ldtlb 4.3K), 0.9K API calls (address
+  errors), 21 FPU-disable traps, 310 store-queue flushes, 7 renders of
+  about 30 vertices, no disc read; SPEED 11.5%. So the game works all the
+  time and is most likely only slow (60 s of the PS3 = 7 s of the
+  Dreamcast); not proven. The interpreter's own cost: 460K full scans of
+  the 64 UTLB entries a second (the one-entry cache per access kind
+  misses on 37% of the data accesses; 45K ITLB fills a second). The 24
+  code dumps were all used in the first 40 s (BIOS and boot): too few. A new page, SH4 / SYSTEM (after MAPLE /
+VMU), holds 10 rows. Each row is at its old path by default and acts at
+the next boot. `[syscfg]` line at the menu and at boot, as the other
+pages. `.got` 0xF2F0 of 0x10000 (the boot self-test builds with
+`-mminimal-toc`: its constants are in `.toc1`, 0x300 bytes), 0 `r2off`.
+Not committed.**
+- Rows (key in `nullDC.cfg` [ps3]; values OLD first):
+  - SH4 Op Tests (`Sh4OpTests`, OFF / ON; P46): Flycast's 13 SH4 op test
+    groups and 3 of this bundle run on the interpreter at boot, before
+    the first reset. Log: `[sh4test] Flycast SH4 op tests (P46) and
+    bundle 20's cases: N checks in 16 groups, F failed | Interp Fixes X,
+    FPSCR Cause Y`, one `[sh4test] FAIL ...` line per failed check (the
+    first 8) and one line per failed group.
+  - Interp Fixes (`InterpFix`, OLD / FIXED; P32): fneg with PR=1 flips
+    FR(n) (OLD: FR(n & 0xE)); mac.w and mac.l with S=1 saturate as the
+    manual (OLD skipped mac.w and hung in mac.l's verify); addv, subv and
+    mul.l with no signed overflow (C undefined behaviour: on the PC, g++
+    -O2 drops the OLD addv/subv T). JIT PR MOVES takes fneg only with
+    FIXED.
+  - FPSCR Cause (`FpscrCause`, OLD / CLEAR; P64): a guest FPSCR write
+    clears the cause bits 17-12.
+  - Memory Map (`MemMap`, OLD / FLYCAST; P67, P68): the area 7 registers
+    only at P4 (in P0-P3 area 7 reads 0 and drops writes); the 0x02000000
+    mirror of area 0 has no BIOS and no flash (reads 0, writes dropped;
+    the first 8 accesses print `[area0] read32 at 0x02...: BIOS/flash
+    mirror, reads 0 (Memory Map FLYCAST)`); the mirror mapping is the
+    old one, the handlers test address bit 25.
+  - Block Writes (`BlockWrites`, OLD / FIXED; P67): a block write of any
+    size (words, then a halfword and a byte); OLD hangs in a verify.
+    SB_PDLEN keeps 32-byte units.
+  - On-chip Regs (`OnchipRegs`, OLD / FLYCAST; P67, P78): the 7 SCI
+    registers exist (reset: SCBRR1 0xFF, SCTDR1 0xFF, SCSSR1 0x84; the
+    write masks); RFCR is read-only and reads 17 after a reset.
+  - Holly Regs (`HollyRegs`, OLD / FLYCAST; P67, P68): SB_TFREM reads 8
+    (P67 names it for the Windows CE games); an 8-bit VRAM read gives the
+    byte; the 8 G2 DMA address registers keep 32-byte units (`&
+    0x1FFFFFE0`); an ATA soft reset leaves GDStatus 0, Error 1, PAUSE,
+    IntReason 1, ByteCount 0xEB14 (DC Checker reads them).
+  - Reg Access Size (`RegSize`, OLD / FIXED; P67): a byte or halfword
+    access to an on-chip or SB register takes its low bits. On big endian
+    OLD hit bits 31:24 or 31:16 (a byte write of 1 to SB_ADEN set bit 24).
+  - ELF Loader (`ElfLoader`, OLD / SEGMENTS; P33, P68): an .elf loads its
+    PT_LOAD segments byte-exact with their zero tails, then the ALLOC
+    sections outside them; at the entry the AICA gets SCIEB 0x48, SCILV0-2
+    0x18 0x50 0x08 (`[ELF] AICA SCIEB=0x48 ...`).
+  - SH4 MMU (`FullMmu`, OFF / AUTO / ON; P38, the interpreter form): the
+    SH4 interpreter with the full MMU: UTLB and ITLB lookups (Flycast's
+    full form, not FAST_MMU), TLB miss, protection, initial page write,
+    address error, FPU disable (SR.FD) and illegal op as SH4 exceptions.
+    AUTO = the disc's IP.BIN names Windows CE (byte 0x3E '1' or the boot
+    file `0WINCEOS.BIN`); ON = any disc. The choice is made at each reset,
+    after the IP.BIN read. Logs: `[disc] Windows CE: yes/no ...`,
+    `[fullmmu] SH4 MMU AUTO, Windows CE disc yes: the MMU interpreter runs
+    this boot`, `[fullmmu] tables: N op handlers paired, 0 opcodes
+    without an MMU copy`, the first 16 `[fullmmu] exception NNN at PC,
+    TEA, SR, MMUCR` lines, one stats line per second when it changes
+    (`[fullmmu] AT=1 | TLB miss r w i, prot, first write, addr err, multi,
+    FPU off, illegal | ldtlb, UTLB scans, data hits, ITLB fills, fetch
+    hits, SQ`), `[fullmmu] FATAL: exception ... with SR.BL set` (the SH4
+    stops; the hardware resets there), `[fullmmu] WARNING: MMUCR Bits is
+    OLD ...` (the TLB flushes need FIXED). The JIT form is not built: it
+    comes only after a Windows CE game boots on this one.
+- My choices (not Matt's words): the undefined-behaviour fixes of addv,
+  subv and mul.l are in Interp Fixes; illegal ops raise the SH4 exception
+  only in the MMU engine; a TLB multi-hit takes the general vector with
+  0x140 (the SH4 resets there; no game is known to do it); the boot
+  self-test builds with `-mminimal-toc` (the TOC has 2264 bytes left).
+- Code: new `dc/sh4/sh4_optest.h`, `sh4_selftest.cpp`, `sh4_mmu_int.cpp`,
+  `sh4_fullmmu.h`; changed `dc/sh4/sh4_fpu_ops.h`, `sh4_cpu_misc.h`,
+  `sh4_cpu_movs.h` (stores to @-Rn write first, then move Rn: an
+  exception leaves Rn as it was), `sh4_cpu_prelude.h`, `sh4_fpu_prelude.h`,
+  `sh4_registers.cpp`, `rec_v2/decoder.cpp`, `sci.cpp`, `sci.h`, `bsc.cpp`;
+  `dc/mem/sh4_internal_reg.cpp`, `sh4_area0.cpp`, `sh4_mem.cpp`, `sb.cpp`,
+  `mmu.cpp`; `dc/pvr/pvr_if.cpp`; `dc/gdrom/gdromv3.cpp`;
+  `plugs/ImgReader/elf_loader.cpp`; `dc/dc.cpp`; `ps3/ps3_presets.cpp`,
+  `ps3_presets.h`, `ps3_menu.cpp` (`MAX_INGAME_OPTS` 256); `Makefile`.
+- PC checks (WSL), all PASS:
+  - `misc/interp_check` (new): the interpreter's op bodies against the
+    16 groups, each row combination: 78060 checks; 19515 more with every
+    UBSan check (both rows new). With the rows OLD the PC fails as
+    predicted: fneg (2 checks), the mac S=1 group, the cause group (2),
+    and ArithmeticTest 4 (the OLD addv/subv). The boot self-test with its
+    own Io (`sh4_selftest.cpp` on the PC): 0 failed, the SH4 context comes
+    back. 16 source lines. `mutate.py`: 20 of 20 planted bugs fail.
+  - `misc/fullmmu_check` (new): `sh4_mmu_int.cpp` on the PC. The op tests
+    through it with AT 0 and 1: 39030 checks, no stray access, no
+    exception. 54 hand-assembled SH4 programs against worked results: TLB
+    miss on a read and a write, ldtlb and rte, the retry; mov.l and
+    sts.l to @-Rn and mac.l retried (Rn moves once); faults in bra and jsr
+    delay slots (SPC = the branch); FPU disable (0x800, slot 0x820, lds
+    FPUL, AT 0); read, write and fetch protection; initial page write;
+    address errors (misaligned, user mode in P1, a user jmp to P1, SQMD);
+    multi-hit; the SR.BL stop; URC with URB 0 and 8; ITLB replacement by
+    LRUI (a 5-page ring, a single fetch, a write of LRUI); pref to the
+    store queues (the UTLB target, a miss, the TA area, AT 0); page sizes
+    1K to 1M with the VPN/PPN masks; P4 through the TLB; ASID and SV;
+    cached translations after ldtlb and MMUCR.TI; illegal op (0x180, slot
+    0x1A0); trapa; the engine choice (row x disc). Every opcode has its
+    MMU copy. 10 source lines. `mutate.py`: 60 of 60.
+  - `misc/sys20_check` (new): the system rows on their real sources
+    (`sh4_internal_reg.cpp`, `sb.cpp`, `sh4_area0.cpp`, `sci.cpp`,
+    `elf_loader.cpp` whole, the block writes of `sh4_mem.cpp` cut between
+    two marks): 6167 checks, 27 source lines (RFCR's 3 lines in
+    `bsc.cpp`). `mutate.py`: 39 of 39.
+  - `misc/gd2_check`: new model `p68` (the ATA soft reset values); 3 of
+    3 new planted bugs fail (`mutate.py` takes a name part now).
+  - `misc/vram_check`: the 8-bit VRAM read, 12800 reads; 43 of 43.
+  - `misc/jit8_check`: the PR list with fneg under Interp Fixes; 6 stale
+    texts of `mutate.py` repaired, 7 of 7 PR list mutants fail.
+  - `misc/mmu_check`: two stubs for the new names in `UTLB_Sync`; PASS.
+  - The other run.sh that read a changed file: carry, div32, fschg,
+    flash, maple, gdasync (with `run_b19.sh`, `run_b2.sh`), glpath, pad,
+    rtt, screen, timebase, chd, clock, g2dma, aicactl, sysgate: all PASS.
+    The scan of every `mutate.py`: 1870 texts, 1 stale (timebase_check's
+    known one).
+- The JIT rows of bundle 8 that are OFF (their verdict is Matt's):
+  - JIT PR MOVES: a test game exists. PR=1 FPU ops in the old `[IFB]`
+    logs: Space Channel 5 (fmov forms 35-62/s), Quake3.cdi (up to
+    3.5K/s), Rayman 2 (1-3/s). No old log has a `prmoves` site above 0.
+  - JIT MAC: no game in any old log runs mac.w or mac.l (checked
+    2026-10-11): no HW test.
+  - JIT RM 2/3: no old log has `rm23` above 0. The Windows CE games set
+    RM 2 or 3, but they run on the MMU interpreter now: no HW test until
+    the JIT form of the SH4 MMU.
+- HW steps (package of 16:40; the install keeps `nullDC.cfg`; SH4 Clock
+  200):
+  1. UDP listener on port 18194, only when Matt says so.
+  2. Boot 1: Crazy Taxi, SH4 Op Tests ON, the other rows OLD. Log:
+     `[syscfg] boot: Sh4OpTests=1 InterpFix=0 ...`, then `[sh4test] ...
+     F failed | Interp Fixes OLD, FPSCR Cause OLD`. Expected failed
+     groups: DoubleFloatingPointTest (2: fneg), MacSaturationTest (the
+     S=1 cases; mac.l not run), FpscrCauseTest (2); ArithmeticTest 0 or
+     4 (the PPU compiler and the OLD addv/subv). The game as before.
+  3. Boot 2: Crazy Taxi, Interp Fixes FIXED, FPSCR Cause CLEAR, Memory
+     Map FLYCAST, Block Writes FIXED, On-chip Regs FLYCAST, Holly Regs
+     FLYCAST, Reg Access Size FIXED. Log: `[sh4test] ... 0 failed |
+     Interp Fixes FIXED, FPSCR Cause CLEAR`. The attract and a race as
+     before; note any `[area0]` line.
+  4. Boot 3: Space Channel 5 (or Quake3.cdi), JIT SPEED page: JIT PR
+     MOVES ON, with Interp Fixes FIXED. Log: `[jit8] sites: ...
+     prmoves=N` with N above 0. A dance scene as before.
+  5. Boot 4: Sega Rally 2 (`Run2/Sega Rally 2 (U).cdi`, a Windows CE
+     disc: the old logs show its kernel set AT and load TLB entries).
+     SH4 MMU AUTO, Interp Fixes FIXED, Holly Regs FLYCAST; MMUCR Bits
+     FIXED (MEMORY page) and Maple VBlank DMA FIXED (MAPLE / VMU page),
+     the defaults of the source. Log: `[disc] Windows CE: yes`,
+     `[fullmmu] ... the MMU interpreter runs this boot`, then the
+     `[fullmmu]` lines. SPEED far below 100% is expected (estimate 25-50%,
+     not measured). Note how far it boots (BIOS logo, Sega logo, title,
+     a race), a FATAL line, or the last `[fullmmu]` lines of a hang.
+  6. Boot 5: Crazy Taxi with SH4 MMU AUTO. Log: `[disc] Windows CE: no`,
+     `... the engine of the menu runs`. The game as before.
+  7. Optional: a homebrew .elf with ELF Loader SEGMENTS: it boots and
+     prints `[ELF] AICA SCIEB=0x48 ...`.
+  8. On a fault: that row back to its old value (next boot); note the
+     game and the scene.
+
+**Bundle 19 (Disc tail) PARKED 2026-10-14 with no HW run (Matt: "Park
+this goal, we will test it later! It's good that we have it ready
+though."). The HW steps below are for that later test.**
+
+**Bundle 19 (Disc tail) built 2026-10-14 (Matt: "I'm not far enough in
+the games to be able to test the disc swap, but we can implement the
+other things and test them, in case."). Package of 10:21
+(`build/notdc_ps3.pkg`, 1700784 bytes) = commit 542229b + the bundle. NO
+HW run yet: Matt names the moment for the listener and the test. Not
+built, at his word: P77 (the Disc Swap fix); it waits for a game at its
+swap prompt. Each new level is off by default (the old path): CD-DA
+Rules stays ON and CD-DA Miss stays + SILENCE. No new row, no new key.
+`.got` 0xEE30 of 0x10000, 0 `r2off`. Not committed.**
+- CD-DA Rules has a third level, + LEAD-OUT (P82; GD-ROM page, set
+  before boot). A CD-DA play that reaches the lead-out of the disc stops
+  there, as in Flycast: the position stays on the last sector it played,
+  the CD-DA state is "ended" (GET_SCD 0x13) and the drive is in PAUSE.
+  Before, the play went on with silence up to its end FAD. The lead-out
+  is the last area's (`libGDR_GetLeadOut()`): the end of the last track
+  on a CDI, 549300 on a GDI (Flycast has the same two values). Log:
+  `[cdda] play stopped at the lead-out, FAD N`, one line per stop. No
+  game is known to need it.
+- CD-DA Miss has a fourth level, + LOOP AHEAD (the parked CD-DA miss
+  stall of 5.34; live). The stall itself ended in bundle 2: with +
+  SILENCE, no HW log since 2026-10-10 has an SH4 CD-DA read. What is left,
+  from every `[gdr]` line of the old logs (`scan_miss.awk`, scratchpad
+  of session c6bed904):
+  - 1 to 7 silent sectors at a song start (the first disc read; the song
+    starts 13 to 93 ms later, as a drive's seek). Not changed.
+  - 1 to 3 silent sectors at a loop turn (a play with a repeat count goes
+    back to its start): a gap of 13 to 40 ms in the music. Every such
+    miss in the logs is in a Looney Tunes - Space Race race (14K to 31K
+    vertices), 158 to 171 s after the race's `SPI_CD_PLAY` (6 logs). The
+    ring holds one run, so it cannot hold the loop start before the
+    turn.
+  - The level: after the window, the worker reads the first 32 sectors
+    of the loop into a second small ring (the loop head, 75 KB). A turn
+    takes them from there and starts a new run. A loop of 64 sectors or
+    less stays whole in the ring: with a turn ahead, the run stops at the
+    loop end. The `[gdr]` line has a new count at its end: `lh N`, the
+    sectors the loop head gave in that second.
+- GDI Parser and GDI Backslash: no code change. The HW test file
+  `misc/gdi_check/hw/GDI test Rayman 2.gdi` names Matt's Rayman 2 tracks
+  (from the logs: `track01.bin` at FAD 0, `track02.raw` at 721,
+  `track03.bin` at 45000) from the discs folder: one name in quotes, one
+  with `\`, one with both. On the PC with the real reader (`gditest/hwgdi.cpp`,
+  same scratchpad): both rows ON open the three tracks; GDI Parser
+  OFF loses tracks 1 and 3; GDI Backslash OFF loses tracks 2 and 3. A
+  track name with a space needs a renamed file: only the PC check has it
+  (`misc/gdi_check`, set d).
+- Code: `dc/gdrom/gdromv3.cpp` (`gdrom_get_cdda`), `ps3/ps3_gdasync.cpp`
+  (`lh_batch`, `ra_put`, `ra_get`, `gda_cdda_loop`, the window stop),
+  `plugs/ImgReader/common.cpp` (`GetDriveLeadOut`), `ImgReader.cpp`,
+  `plugins/plugin_manager.h`, `ps3/ps3_menu.cpp` (the two value lists and
+  their help lines), `ps3/ps3_presets.cpp` (comments).
+- PC checks (WSL), all PASS:
+  - `misc/gd2_check/run.sh`: the trace with every option at 0 equals the
+    frozen old file in 40 of 40 seeds; 12 models, new: `p82` (the stop,
+    the position, PAUSE and 0x13, a loop over the lead-out, a start past
+    it, no disc) and `miss` at level 3 (a loop is named only with a
+    repeat count, only at level 3, not on the last pass). `mutate.py`:
+    99 of 99 planted bugs fail (10 new).
+  - `misc/gdasync_check/run.sh`: 28 runs (3 new at level 3, one under
+    ThreadSanitizer), no report. New phase `loop ahead`: 5 looping plays
+    of 20 to 300 sectors, 38 turns. Level 3: 0 silent pulls at the turns,
+    0 reads of the loops that fit the ring, 0 SH4 reads. Level 2 (the
+    same phase): 186 to 202 silent pulls, 135 to 176 reads. The disc swap
+    phase at level 3 also tests the loop head of the old disc.
+    `mutate.py`: 40 of 40 planted bugs fail (6 new; they run the new
+    `run_b19.sh`).
+  - `misc/gdi_check`, `misc/chd_check` (they build `common.cpp`): PASS.
+    The 10 checks that read the menu and presets: 10 of 10 PASS.
+- HW steps (package of 10:21; the install keeps `nullDC.cfg`, so CD-DA
+  Rules comes up ON and CD-DA Miss + SILENCE; SH4 Clock 200):
+  1. Copy `misc/gdi_check/hw/GDI test Rayman 2.gdi` into
+     `/dev_hdd0/data/NotDC/discs/`, next to the `rayman2` folder (not
+     into it).
+  2. Main menu, GD-ROM page: CD-DA Rules + LEAD-OUT, CD-DA Miss + LOOP
+     AHEAD; GDI Parser and GDI Backslash ON.
+  3. UDP listener on port 18194, only when Matt says so.
+  4. Boot 1: Looney Tunes - Space Race, a race of 3 minutes or more: the
+     race music goes back to its start after about 2 min 40 s. Listen at
+     that point. Log: `[gdcfg] boot: ... CddaRules=2 ... CddaMiss=3`; at
+     the turn, a `[gdr]` line with `lh` above 0 and `miss 0` (+ SILENCE
+     had `miss 1` to `3` there).
+  5. Boot 2: `GDI test Rayman 2.gdi` from the discs folder. It must boot
+     and play as the Rayman 2 GDI does. Log: three `file ...` lines with
+     the paths of the test file, no `GDI : cannot open track file`.
+  6. Any boot: no `[cdda] play stopped at the lead-out` line is expected.
+     If one shows, note the game and the scene.
+  7. On a fault: CD-DA Miss back to + SILENCE (live), CD-DA Rules back to
+     ON (next boot); note the game and the scene.
+
 **Bundle 18 resumed 2026-10-14 (Matt: "Let's resume bundle 18 with the
 latest review and findings."). Asked with four options, he chose
 "Measure + ADPCM row": one package with two measures (log only) and one
@@ -13245,8 +13600,8 @@ built by the change.
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, mark it as a success.")**; built 2026-10-13 (Matt: "We will now work at bundle 16."; section 0): a new MAPLE / VMU page with eight rows, every default the old path at the build: Maple Reply Delay, Maple Bus Speed, Maple Commands, Maple VBlank DMA, Maple Guards, Maple Frame Rules, VMU Per Game (OFF / SLOT A1 / ALL SLOTS), VMU Screen; **defaults in source since 2026-10-13 (Matt: "Keep them up as default then. Except Maple Bus Speed."): the rows ON but Maple Bus Speed (OLD) and VMU Per Game (OFF, no run), not packaged**; **HW runs 1-3 2026-10-13: VMU Screen works (Matt: "The VMU pictures are very cute! It works."); Maple Bus Speed REAL eats inputs in Sonic Adventure at Players 4 and stays OLD (Matt: "Maple Bus Speed fixes it."); the other five Maple rows ran ON with no fault**; the USB Keyboard and USB Mouse rows were built and removed the same day (Matt: "frankly I'd just remove this feature altogether. Very few games use it anyway."); VMU Per Game not run; PC checks PASS (`misc/maple_check`, 99 of 99 mutants); package of 12:39 on 2026-10-13; not built: the VMU beep (bundle 18) |
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
 | 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance = the ADPCM stream wrap, row "ADPCM Stream" FIXED HW SUCCESS 2026-10-14 (Matt), default FIXED in source since 2026-10-14 (Matt), not packaged |
-| 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[ ]` |
-| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[ ]` nothing built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
+| 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[~]` built 2026-10-14 (Matt: "I'm not far enough in the games to be able to test the disc swap, but we can implement the other things and test them, in case."; section 0): CD-DA Rules level + LEAD-OUT (P82), CD-DA Miss level + LOOP AHEAD (the gaps left at loop turns; the stall itself ended in bundle 2), the GDI HW test file `misc/gdi_check/hw/GDI test Rayman 2.gdi`; the defaults are not changed; PC checks PASS; package of 10:21; no HW run; not built: P77 and the Disc Swap HW test (Matt: no game of his at a swap prompt yet); PARKED 2026-10-14 (Matt: "Park this goal, we will test it later!") |
+| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[~]` built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
 | 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF |
 | 22 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12; bundle 21 until 2026-10-13) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
 
@@ -14492,8 +14847,15 @@ Main gains:
 - HW: Looney Tunes (the probe; it also uses G2 DMA); Bangai-O and Nomad
   Soul only if Matt has them.
 
-### Bundle 19: Disc tail  `[ ]` new at the re-cut of 2026-10-12 (the tail of bundle 2)
+### Bundle 19: Disc tail  `[~]` built 2026-10-14 but P77, no HW run, PARKED 2026-10-14 by Matt for a later test (section 0); new at the re-cut of 2026-10-12 (the tail of bundle 2)
 
+- Built 2026-10-14 (Matt: "I'm not far enough in the games to be able to
+  test the disc swap, but we can implement the other things and test
+  them, in case."): CD-DA Rules + LEAD-OUT (P82), CD-DA Miss + LOOP AHEAD,
+  the GDI HW test file. P77 waits for a two-disc game at its swap prompt.
+  The CD-DA miss stall had ended in bundle 2 (+ SILENCE, default); what
+  was left are the 13-40 ms gaps at loop turns (Looney Tunes races);
+  + LOOP AHEAD has none in the PC check. The HW steps are in section 0.
 - Items: P77 (Disc Swap: drop the clears of the command in flight, then
   the open-lid phase), with the first HW test of the Disc Swap row (P34);
   the first HW test of GDI Parser and GDI Backslash (P23, P57); P82's
@@ -14509,7 +14871,7 @@ Main gains:
 - HW: a two-disc game at its swap prompt; a GDI set with spaces in its
   file names; ChuChu Rocket CD-DA.
 
-### Bundle 20: SH4 correctness tail  `[ ]` new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
+### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, no HW run (section 0); new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
 
 - Items: P46 (Flycast's SH4 op tests as `misc/interp_check` and a boot
   self-test), P32 (fneg with PR=1, mac.w with S=1), P64 (the FPSCR cause
@@ -14580,6 +14942,12 @@ Main gains:
   - HW: a Windows CE game of 3d's list (4x4 Evo, Armada, Caesar's
     Palace, ...). Matt has at least one (2026-10-13: "I'll test a
     Windows CE game").
+- Built 2026-10-14 (Matt: "Let's work on bundle 20"): every item above as
+  a row of the new SH4 / SYSTEM page, P38 as its interpreter form (row
+  SH4 MMU, OFF / AUTO / ON). The rows, the PC checks and the HW steps are
+  in the bundle 20 block of section 0. Sega Rally 2 (US) is the Windows CE
+  disc of Matt's library in the old logs. Not built: P38's JIT form (its
+  gate above stays).
 
 ### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 

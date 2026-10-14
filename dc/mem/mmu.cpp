@@ -3,9 +3,13 @@
 #include "dc/sh4/ccn.h"
 #include "dc/sh4/intc.h"
 #include "dc/sh4/sh4_registers.h"
+#include "dc/sh4/sh4_fullmmu.h"
 #include "plugins/plugin_manager.h"
 
 #include "_vmem.h"
+
+// Row "SH4 MMU" (P38): Windows CE rewrites TLB entries all the time, so only the first remap lines are printed then.
+static u32 s_remap_logs;
 
 // mmu_check: begin mmu
 // Store queue remap table: the physical base of each 1 MB region of 0xE0000000-0xE3FFFFFF, by address bits 25-20.
@@ -62,10 +66,9 @@ void UTLB_Sync(u32 entry)
 		       UTLB[entry].Address.VPN << 10,
 		       UTLB[entry].Data.PPN << 10, (u32)UTLB[entry].Data.V);
 	}
-	else
+	else if (!g_fullmmu_active || s_remap_logs++ < 16)
 	{
-		// Normal virtual memory mapping.
-		// TODO: invalidate any JIT-compiled blocks covering this virtual range.
+		// Normal virtual memory mapping. TODO: invalidate any JIT-compiled blocks covering this virtual range.
 		printf("MEM remap [%u] : virt=0x%08X -> phys=0x%08X\n",
 		       entry,
 		       UTLB[entry].Address.VPN << 10,
@@ -84,6 +87,8 @@ void ITLB_Sync(u32 entry)
 		return;
 	}
 
+	if (g_fullmmu_active && s_remap_logs++ >= 16)
+		return;
 	printf("ITLB remap [%u] : virt=0x%08X -> phys=0x%08X\n",
 	       entry,
 	       ITLB[entry].Address.VPN << 10,

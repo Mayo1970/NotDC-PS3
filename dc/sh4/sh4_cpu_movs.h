@@ -1,8 +1,6 @@
 // SH4 Move Instructions - Fixed to work with existing memory macros
 
-//=============================================================================
-// CONTROL REGISTER MOVES (stc/sts family)
-//=============================================================================
+// ---- CONTROL REGISTER MOVES (stc/sts family) ----
 
 // stc GBR,<REG_N>
 sh4op(i0000_nnnn_0001_0010)
@@ -82,9 +80,7 @@ sh4op(i0000_nnnn_1mmm_0010)
 	r[n] = r_bank[m];
 }
 
-//=============================================================================
-// INDEXED ADDRESSING (R0 + Rm)
-//=============================================================================
+// ---- INDEXED ADDRESSING (R0 + Rm) ----
 
 // mov.b @(R0,<REG_M>),<REG_N>
 sh4op(i0000_nnnn_mmmm_1100)
@@ -134,9 +130,7 @@ sh4op(i0000_nnnn_mmmm_0110)
 	WriteMemBOU32(r[0], r[n], r[m]);
 }
 
-//=============================================================================
-// DISPLACEMENT ADDRESSING
-//=============================================================================
+// ---- DISPLACEMENT ADDRESSING ----
 
 // mov.l <REG_M>,@(<disp>,<REG_N>)
 sh4op(i0001_nnnn_mmmm_iiii)
@@ -156,9 +150,7 @@ sh4op(i0101_nnnn_mmmm_iiii)
 	ReadMemBOU32(r[n], r[m], disp);
 }
 
-//=============================================================================
-// REGISTER INDIRECT (Simple)
-//=============================================================================
+// ---- REGISTER INDIRECT (Simple) ----
 
 // mov.b <REG_M>,@<REG_N>
 sh4op(i0010_nnnn_mmmm_0000)
@@ -216,9 +208,7 @@ sh4op(i0110_nnnn_mmmm_0011)
 	r[n] = r[m];
 }
 
-//=============================================================================
-// PRE-DECREMENT STORE
-//=============================================================================
+// ---- PRE-DECREMENT STORE ----
 
 // mov.b <REG_M>,@-<REG_N>
 sh4op(i0010_nnnn_mmmm_0100)
@@ -233,8 +223,8 @@ sh4op(i0010_nnnn_mmmm_0100)
 	}
 	else
 	{
+		WriteMemU8(r[n] - 1, r[m]);
 		r[n]--;
-		WriteMemU8(r[n], r[m]);
 	}
 }
 
@@ -251,8 +241,8 @@ sh4op(i0010_nnnn_mmmm_0101)
 	}
 	else
 	{
+		WriteMemU16(r[n] - 2, r[m]);
 		r[n] -= 2;
-		WriteMemU16(r[n], r[m]);
 	}
 }
 
@@ -269,14 +259,12 @@ sh4op(i0010_nnnn_mmmm_0110)
 	}
 	else
 	{
+		WriteMemU32(r[n] - 4, r[m]);
 		r[n] -= 4;
-		WriteMemU32(r[n], r[m]);
 	}
 }
 
-//=============================================================================
-// POST-INCREMENT LOAD
-//=============================================================================
+// ---- POST-INCREMENT LOAD ----
 
 // mov.b @<REG_M>+,<REG_N>
 sh4op(i0110_nnnn_mmmm_0100)
@@ -308,9 +296,7 @@ sh4op(i0110_nnnn_mmmm_0110)
 		r[m] += 4;
 }
 
-//=============================================================================
-// GBR-BASED ADDRESSING
-//=============================================================================
+// ---- GBR-BASED ADDRESSING ----
 
 // mov.b R0,@(<disp>,GBR)
 sh4op(i1100_0000_iiii_iiii)
@@ -354,9 +340,7 @@ sh4op(i1100_0110_iiii_iiii)
 	ReadMemBOU32(r[0], gbr, disp);
 }
 
-//=============================================================================
-// PC-RELATIVE LOADS
-//=============================================================================
+// ---- PC-RELATIVE LOADS ----
 
 // mov.w @(<disp>,PC),<REG_N>
 sh4op(i1001_nnnn_iiii_iiii)
@@ -375,9 +359,7 @@ sh4op(i1101_nnnn_iiii_iiii)
 	ReadMemU32(r[n], addr);
 }
 
-//=============================================================================
-// IMMEDIATE MOVES
-//=============================================================================
+// ---- IMMEDIATE MOVES ----
 
 // mov #<imm>,<REG_N>
 sh4op(i1110_nnnn_iiii_iiii)
@@ -393,9 +375,7 @@ sh4op(i1100_0111_iiii_iiii)
 	r[0] = ((next_pc + 2) & 0xFFFFFFFC) + disp;
 }
 
-//=============================================================================
-// SYSTEM REGISTER LOADS (ldc/lds family)
-//=============================================================================
+// ---- SYSTEM REGISTER LOADS (ldc/lds family) ----
 
 // lds <REG_N>,MACH
 sh4op(i0100_nnnn_0000_1010)
@@ -475,88 +455,86 @@ sh4op(i0100_nnnn_1mmm_1110)
 	r_bank[m] = r[n];
 }
 
-//=============================================================================
-// STACK OPERATIONS (System Register Push)
-//=============================================================================
+// ---- STACK OPERATIONS (System Register Push) ----
 
 // sts.l FPUL,@-<REG_N>
 sh4op(i0100_nnnn_0101_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, fpul);
 	r[n] -= 4;
-	WriteMemU32(r[n], fpul);
 }
 
 // sts.l MACH,@-<REG_N>
 sh4op(i0100_nnnn_0000_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, mach);
 	r[n] -= 4;
-	WriteMemU32(r[n], mach);
 }
 
 // sts.l MACL,@-<REG_N>
 sh4op(i0100_nnnn_0001_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, macl);
 	r[n] -= 4;
-	WriteMemU32(r[n], macl);
 }
 
 // sts.l PR,@-<REG_N>
 sh4op(i0100_nnnn_0010_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, pr);
 	r[n] -= 4;
-	WriteMemU32(r[n], pr);
 }
 
 // sts.l DBR,@-<REG_N>
 sh4op(i0100_nnnn_1111_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, dbr);
 	r[n] -= 4;
-	WriteMemU32(r[n], dbr);
 }
 
 // stc.l GBR,@-<REG_N>
 sh4op(i0100_nnnn_0001_0011)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, gbr);
 	r[n] -= 4;
-	WriteMemU32(r[n], gbr);
 }
 
 // stc.l VBR,@-<REG_N>
 sh4op(i0100_nnnn_0010_0011)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, vbr);
 	r[n] -= 4;
-	WriteMemU32(r[n], vbr);
 }
 
 // stc.l SSR,@-<REG_N>
 sh4op(i0100_nnnn_0011_0011)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, ssr);
 	r[n] -= 4;
-	WriteMemU32(r[n], ssr);
 }
 
 // stc.l SGR,@-<REG_N>
 sh4op(i0100_nnnn_0011_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, sgr);
 	r[n] -= 4;
-	WriteMemU32(r[n], sgr);
 }
 
 // stc.l SPC,@-<REG_N>
 sh4op(i0100_nnnn_0100_0011)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, spc);
 	r[n] -= 4;
-	WriteMemU32(r[n], spc);
 }
 
 // stc.l RM_BANK,@-<REG_N>
@@ -564,13 +542,11 @@ sh4op(i0100_nnnn_1mmm_0011)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op) & 0x7;
+	WriteMemU32(r[n] - 4, r_bank[m]);
 	r[n] -= 4;
-	WriteMemU32(r[n], r_bank[m]);
 }
 
-//=============================================================================
-// STACK OPERATIONS (System Register Pop)
-//=============================================================================
+// ---- STACK OPERATIONS (System Register Pop) ----
 
 // lds.l @<REG_N>+,MACH
 sh4op(i0100_nnnn_0000_0110)
@@ -661,9 +637,7 @@ sh4op(i0100_nnnn_1mmm_0111)
 	r[n] += 4;
 }
 
-//=============================================================================
-// DISPLACEMENT ADDRESSING WITH R0
-//=============================================================================
+// ---- DISPLACEMENT ADDRESSING WITH R0 ----
 
 // mov.b R0,@(<disp>,<REG_M>)
 sh4op(i1000_0000_mmmm_iiii)
@@ -697,9 +671,7 @@ sh4op(i1000_0101_mmmm_iiii)
 	ReadMemBOS16(r[0], r[m], disp);
 }
 
-//=============================================================================
-// SPECIAL INSTRUCTIONS
-//=============================================================================
+// ---- SPECIAL INSTRUCTIONS ----
 
 // movca.l R0,@<REG_N>
 sh4op(i0000_nnnn_1100_0011)

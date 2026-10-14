@@ -3,9 +3,7 @@
 // sh4op() defined as a label instead of a function.
 
 
-// ============================================================================
-// FPU OPERATIONS
-// ============================================================================
+// ---- FPU operations ----
 
 // fadd <FREG_M>,<FREG_N>
 sh4op(i1111_nnnn_mmmm_0000)
@@ -114,9 +112,7 @@ sh4op(i1111_nnnn_mmmm_0101)
   }
 }
 
-// ============================================================================
-// MEMORY OPERATIONS
-// ============================================================================
+// ---- Memory operations ----
 
 // fmov.s @(R0,<REG_M>),<FREG_N>
 sh4op(i1111_nnnn_mmmm_0110)
@@ -305,9 +301,7 @@ sh4op(i1111_nnnn_mmmm_1100)
   }
 }
 
-// ============================================================================
-// SINGLE OPERAND OPERATIONS
-// ============================================================================
+// ---- Single operand operations ----
 
 // fabs <FREG_N>
 sh4op(i1111_nnnn_0101_1101)
@@ -471,12 +465,12 @@ sh4op(i1111_nnnn_0010_1101)
   }
 }
 
-// fneg <FREG_N>
+// fneg <FREG_N>. Interp Fixes FIXED (P32, Flycast 11fcadf37): FR(n) whatever PR is; OLD took FR(n & 0xE) with PR=1.
 sh4op(i1111_nnnn_0100_1101)
 {
   u32 n = GetN(op);
 
-  if (fpscr.PR == 0)
+  if (fpscr.PR == 0 || g_interp_fix_preset)
     fr_hex[n] ^= 0x80000000;
   else
     fr_hex[n & 0xE] ^= 0x80000000;
@@ -593,12 +587,7 @@ sh4op(i1111_nnnn_mmmm_1110)
 // ftrv xmtrx,<FV_N>
 sh4op(i1111_nn01_1111_1101)
 {
-  /*
-  XF[0] XF[4] XF[8] XF[12]    FR[n]      FR[n]
-  XF[1] XF[5] XF[9] XF[13]  * FR[n+1] -> FR[n+1]
-  XF[2] XF[6] XF[10] XF[14]   FR[n+2]    FR[n+2]
-  XF[3] XF[7] XF[11] XF[15]   FR[n+3]    FR[n+3]
-  */
+  // FV_N = XMTRX * FV_N, the matrix by columns: FR[n+i] = sum over j of XF[i + 4j] * FR[n+j].
 
   u32 n = GetN(op) & 0xC;
 

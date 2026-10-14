@@ -54,6 +54,9 @@ MUTANTS = [
     ('16-bit watch on the word', 'fb_watch_word(addr & ~1u);', 'fb_watch_word(addr & ~3u);'),
     ('32-bit handler no watch', '    fb_watch_word(addr & ~3u);\n    addr = vramlock_ConvOffset32toOffset64(addr);\n    *(u32*)', '    addr = vramlock_ConvOffset32toOffset64(addr);\n    *(u32*)'),
     ('watch start unmasked', 'g_fb_watch_lo = start & VRAM_MASK;', 'g_fb_watch_lo = start;'),
+    # bundle 20, Holly Regs
+    ('8-bit read without its row', '    if (g_holly_regs_preset)\n        return *host_ptr_xor', '    if (true)\n        return *host_ptr_xor'),
+    ('8-bit read at the linear offset', 'return *host_ptr_xor((u8*)&vram[vramlock_ConvOffset32toOffset64(addr)]);', 'return *host_ptr_xor((u8*)&vram[addr & VRAM_MASK]);'),
 ]
 
 def main():

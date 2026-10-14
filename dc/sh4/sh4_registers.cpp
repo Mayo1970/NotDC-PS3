@@ -94,10 +94,16 @@ void SetFloatStatusReg()
 #endif
 	}
 }
+// FPSCR Cause (plan section 7, bundle 20): 1 = a guest write clears the cause field (P64).
+extern int g_fpscr_cause_preset;
+
 //called when fpscr is changed and we must check for reg banks ect..
 void UpdateFPSCR()
 {
 	CCALL(CC_SYNC_FPSCR);
+	// P64 (Flycast bbdef06a0): no FPU op here sets the cause bits 17-12, so on hardware the next op would clear them.
+	if (g_fpscr_cause_preset)
+		fpscr.full &= ~0x0003F000u;
 	if (fpscr.FR !=old_fpscr.FR)
 		ChangeFP();//fpu bank change
 	old_fpscr=fpscr;

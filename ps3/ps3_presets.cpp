@@ -127,11 +127,11 @@ int g_gd_async_preset      = 2;   // disc reads on a worker thread: 1 data, 2 al
 int g_gd_status_preset     = 2;   // 1 = a data read stops CD-DA (P21 step 1), 2 = also Flycast dev's status timing (step 2, HW)
 int g_gd_position_preset   = 2;   // 1 = REQ_STAT sends the FAD, track and control/ADR from the TOC, 2 = GET_SCD format 0 too (P47, HW)
 int g_gd_scd_q_preset      = 1;   // 1 = GET_SCD format 1 is 14 bytes of Q data, replies stop at the asked length (P62, HW)
-int g_cdda_rules_preset    = 1;   // 1 = Flycast's CD-DA end, resume and repeat rules (P61, HW)
+int g_cdda_rules_preset    = 1;   // 1 = Flycast's CD-DA end, resume and repeat rules (P61, HW), 2 = also the lead-out stop (P82)
 int g_toc_fields_preset    = 1;   // 1 = TOC entries with ADR 1, a data lead-out, the GD low-density lead-out after track 2 (P23, HW)
 int g_gd_speed_preset      = 1;   // 1 = GD-DMA paced at 1.8 MB/s, a last small chunk at 25 MB/s (P22, HW)
 int g_gd_dma_fix_preset    = 1;   // 1 = SB_GDLEN 0 is 32 MB, a DMA longer than its read stops at the read's end (P22, P9, HW)
-int g_cdda_miss_preset     = 2;   // 1 = the CD-DA read-ahead starts at CD_PLAY, 2 = a ring miss also plays silence (5.34, HW)
+int g_cdda_miss_preset     = 2;   // 1 = read-ahead from CD_PLAY, 2 = a ring miss plays silence (5.34, HW), 3 = also the loop head
 int g_gd_cmd_fix_preset    = 1;   // 1 = unknown ATA, EXEC_DIAG, slave drive, CD_READ2 length and length clamps as Flycast (P22, HW)
 int g_gd_set_mode_preset   = 1;   // 1 = SET_MODE writes at its byte offset, not at twice it (P48, HW)
 int g_sector_2340_preset   = 1;   // 1 = a 2340-byte read gets the raw sector from byte 12, not zeros (P9, HW)
@@ -237,6 +237,18 @@ int g_maple_guard_preset   = 1;   // 1 = a reply outside RAM is dropped with the
 int g_maple_frame_preset   = 1;   // 1 = SB_MMSEL 0 swaps the frame words; an address with no unit bit is the main unit (P68, HW)
 int g_vmu_per_game_preset  = 0;   // a VMU file per disc product ID: 1 = slot A1 only, as Flycast, 2 = every slot (P37)
 int g_vmu_screen_preset    = 1;   // 1 = the VMU screens at the TV's right edge (P37, HW)
+// OPTIMIZATION_PLAN section 7, bundle 20 (SH4 correctness tail): 0 is the old path in every one; a row is off until it
+// is cleared on hardware. All are set before boot.
+int g_sh4_optest_preset    = 0;   // 1 = Flycast's SH4 op tests and bundle 20's cases run on the interpreter at boot (P46)
+int g_interp_fix_preset    = 0;   // 1 = fneg with PR=1 flips FR(n); mac.w/mac.l with S=1 saturate; addv, subv, mul.l without int overflow (P32)
+int g_fpscr_cause_preset   = 0;   // 1 = a guest FPSCR write clears the cause bits 17-12 (P64)
+int g_mem_map_preset       = 0;   // 1 = area 7 registers only at P4; no BIOS or flash in the 0x02000000 mirror (P67, P68)
+int g_block_write_preset   = 0;   // 1 = block writes of any size; SB_PDLEN in 32-byte units (P67)
+int g_onchip_regs_preset   = 0;   // 1 = the SCI registers exist; RFCR reads 17 (P67, P78)
+int g_holly_regs_preset    = 0;   // 1 = SB_TFREM 8, 8-bit VRAM reads, G2 DMA addresses in 32-byte units, ATA soft reset values (P67, P68)
+int g_reg_size_preset      = 0;   // 1 = a byte or halfword access to a register takes its low bits (P67)
+int g_elf_loader_preset    = 0;   // 1 = an .elf loads its segments, then the sections outside them; AICA interrupt levels set (P33, P68)
+int g_full_mmu_preset      = 0;   // the SH4 interpreter with the full MMU: 1 = for a Windows CE disc, 2 = always (P38)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -393,6 +405,16 @@ static const CfgItem s_items[] = {
 	{ "SpgFieldBit",   &g_spg_field_bit_preset },
 	{ "HblankIrq",     &g_hblank_irq_preset },
 	{ "VblankIntReset", &g_vblank_int_reset_preset },
+	{ "Sh4OpTests",    &g_sh4_optest_preset },
+	{ "InterpFix",     &g_interp_fix_preset },
+	{ "FpscrCause",    &g_fpscr_cause_preset },
+	{ "MemMap",        &g_mem_map_preset },
+	{ "BlockWrites",   &g_block_write_preset },
+	{ "OnchipRegs",    &g_onchip_regs_preset },
+	{ "HollyRegs",     &g_holly_regs_preset },
+	{ "RegSize",       &g_reg_size_preset },
+	{ "ElfLoader",     &g_elf_loader_preset },
+	{ "FullMmu",       &g_full_mmu_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -685,6 +707,22 @@ static const CfgItem s_maple_items[] = {
 };
 #define MAPLE_ITEMS (sizeof(s_maple_items) / sizeof(s_maple_items[0]))
 
+// The bundle 20 rows (plan section 7), in the SH4 / SYSTEM page's order. [memcfg] and [maplecfg] have the rows the
+// SH4 MMU needs with it (MMUCR Bits, Maple VBlank DMA).
+static const CfgItem s_sys_items[] = {
+	{ "Sh4OpTests",    &g_sh4_optest_preset },
+	{ "InterpFix",     &g_interp_fix_preset },
+	{ "FpscrCause",    &g_fpscr_cause_preset },
+	{ "MemMap",        &g_mem_map_preset },
+	{ "BlockWrites",   &g_block_write_preset },
+	{ "OnchipRegs",    &g_onchip_regs_preset },
+	{ "HollyRegs",     &g_holly_regs_preset },
+	{ "RegSize",       &g_reg_size_preset },
+	{ "ElfLoader",     &g_elf_loader_preset },
+	{ "FullMmu",       &g_full_mmu_preset },
+};
+#define SYS_ITEMS (sizeof(s_sys_items) / sizeof(s_sys_items[0]))
+
 // One "[tag] when: key=value ..." line; without always, only when a value differs from the last line's.
 static void cfg_print(const char* tag, const CfgItem* items, u32 count, int* last, bool* printed, const char* when,
                       bool always)
@@ -788,6 +826,13 @@ void ps3_maplecfg_print(const char* when, bool always)
 	static int last[MAPLE_ITEMS];
 	static bool printed;
 	cfg_print("maplecfg", s_maple_items, MAPLE_ITEMS, last, &printed, when, always);
+}
+
+void ps3_syscfg_print(const char* when, bool always)
+{
+	static int last[SYS_ITEMS];
+	static bool printed;
+	cfg_print("syscfg", s_sys_items, SYS_ITEMS, last, &printed, when, always);
 }
 
 extern "C" {
@@ -916,6 +961,8 @@ int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
 int get_flash_defaults_preset() { return g_flash_defaults_preset; }
 int get_rtc_local_preset()     { return g_rtc_local_preset; }
+// OPTIMIZATION_PLAN section 7, bundle 20: dc/gdrom/gdromv3.cpp reads it at an ATA soft reset.
+int get_holly_regs_preset()    { return g_holly_regs_preset; }
 
 // JIT backend presets; the fixed 0 ones wait for OPTIMIZATION_PLAN 5. PPC-MMU FASTMEM stays off: it
 // needs a resumable DSI handler, which GameOS does not provide (Dynarec.MD 3.4).

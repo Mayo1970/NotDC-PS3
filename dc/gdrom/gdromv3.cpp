@@ -37,13 +37,14 @@ extern "C" {
 int get_gd_status_preset();     // P21: 1 = a data read stops CD-DA, 2 = also Flycast dev's status timing
 int get_gd_position_preset();   // P47: 1 = REQ_STAT position bytes, 2 = GET_SCD format 0 too
 int get_gd_scd_q_preset();      // P62: GET_SCD format 1 layout, replies cut at the asked length
-int get_cdda_rules_preset();    // P61: CD-DA end, resume and repeat rules
+int get_cdda_rules_preset();    // P61: CD-DA end, resume and repeat rules; 2 = also the stop at the lead-out (P82)
 int get_gd_speed_preset();      // P22: 1 = DMA paced as the drive
 int get_gd_dma_fix_preset();    // P22 SB_GDLEN 0, P9 DMA clamp
-int get_cdda_miss_preset();     // 5.34: 1 = read-ahead from CD_PLAY, 2 = a ring miss also plays silence
+int get_cdda_miss_preset();     // 5.34: 1 = read-ahead from CD_PLAY, 2 = a miss plays silence, 3 = loop start read ahead
 int get_gd_cmd_fix_preset();    // P22: ATA and SPI command hangs
 int get_gd_set_mode_preset();   // P48
 int get_disc_swap_preset();     // P34
+int get_holly_regs_preset();    // bundle 20, P68: the ATA soft reset's register values
 }
 
 enum gd_states
@@ -236,6 +237,18 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 	//silence ! :p
 	if (cdda.playing)
 	{
+		// P82 (Flycast): the play ends at the lead-out, in PAUSE, with the position on the last sector it played.
+		if (get_cdda_rules_preset()>=2 && cdda.CurrAddr.FAD>=libGDR_GetLeadOut())
+		{
+			printf("[cdda] play stopped at the lead-out, FAD %u\n",cdda.CurrAddr.FAD);
+			cdda.CurrAddr.FAD--;
+			cdda_set(CDDA_TERMINATED);
+			SecNumber.Status=GD_PAUSE;
+			cdda_held=0;
+			gda_cdda_next(false,0);
+			memset(sector,0,2352);
+			return;
+		}
 		// P3 + CD-DA: the worker's read-ahead has the sector most of the time.
 		if (!gda_cdda((u8*)sector,cdda.CurrAddr.FAD))
 		{
@@ -269,6 +282,9 @@ void FASTCALL gdrom_get_cdda(s16* sector)
 				cdda.CurrAddr.FAD=cdda.StartAddr.FAD;
 			}
 		}
+		// CD-DA Miss + LOOP AHEAD: a play that turns back gets its loop start read before the turn.
+		gda_cdda_loop(get_cdda_miss_preset()>=3 && cdda.playing && cdda.repeats ? cdda.StartAddr.FAD : GDA_NO_LOOP,
+		              cdda.EndAddr.FAD);
 		gda_cdda_next(cdda.playing,cdda.CurrAddr.FAD);
 	}
 	else
@@ -553,6 +569,16 @@ void gd_process_ata_cmd()
 			//DRV -> preserved -> wtf is it anyway ?
 			gd_reset();
 			sns_key=0;
+			// Holly Regs FLYCAST (P68, Flycast 959b6344b): the values DC Checker reads after a soft reset.
+			if (get_holly_regs_preset())
+			{
+				GDStatus.full = 0;
+				Error.full = 1;
+				SecNumber.Status = GD_PAUSE;
+				IntReason.full = 1;
+				ByteCount.low = 0x14;
+				ByteCount.hi = 0xEB;
+			}
 		}
 		break;
 

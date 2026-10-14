@@ -7,6 +7,7 @@
 
 #include "plugins/plugin_manager.h"
 #include "ps3/ps3_sndthr.h"
+#include "ps3/ps3_presets.h"
 
 // Area 0: 0-1FFFFF boot ROM, 200000 flash, 5F6800 sysctrl, 5F6C00 Maple, 5F7000 GD-ROM, 5F7400 G1,
 // 5F7800 G2, 5F7C00 PVR i/f, 5F8000 TA/PVR, 600000 modem, 700000 AICA, 710000 RTC, 800000 wave RAM.
@@ -36,14 +37,31 @@ static inline void WriteMemArr(u8* arr, u32 offset, T data)
 	}
 }
 
+// Memory Map FLYCAST (P68, Flycast 6af509159): the 0x02 mirror (address bit 25) has no BIOS and no flash. No own
+// handler: _vmem's page table holds handler ids 0-7 only, and P4's is 7.
+static u32 s_mirror_notes;
+static void area0_mirror_note(u32 addr, u32 sz, bool write)
+{
+	if (s_mirror_notes++ < 8)
+		printf("[area0] %s%u at 0x%08X: BIOS/flash mirror, %s (Memory Map FLYCAST)\n", write ? "write" : "read", sz * 8,
+		       addr | 0x02000000, write ? "dropped" : "reads 0");
+}
+
 // Unified read handler (templated on access size)
 template<u32 sz, class T, u32 b_start, u32 b_end>
 T FASTCALL ReadMem_area0(u32 addr)
 {
+	const bool no_rom = g_mem_map_preset && (addr & 0x02000000);
 	addr &= 0x01FFFFFF;  // Strip unused upper bits
 
 	// base is the 64KB page index (addr >> 16)
 	const u32 base = addr >> 16;
+
+	if (no_rom && base <= 0x21)
+	{
+		area0_mirror_note(addr, sz, false);
+		return (T)0;
+	}
 
 	// --- Boot ROM: 0x000000 - 0x1FFFFF (pages 0x00-0x1F) ---
 	if (base <= 0x1F)
@@ -144,11 +162,18 @@ T FASTCALL ReadMem_area0(u32 addr)
 template<u32 sz, class T, u32 b_start, u32 b_end>
 void FASTCALL WriteMem_area0(u32 addr, T data)
 {
+	const bool no_rom = g_mem_map_preset && (addr & 0x02000000);
 	addr &= 0x01FFFFFF;  // Strip unused upper bits
 
 	const u32 base = addr >> 16;
 
-	// --- Boot ROM: read-only, writes are an error ---	
+	if (no_rom && base <= 0x21)
+	{
+		area0_mirror_note(addr, sz, true);
+		return;
+	}
+
+	// --- Boot ROM: read-only, writes are an error ---
 	if (base <= 0x1F)
 	{
     // EMUERROR4("Write to Boot ROM (read-only), addr=%x, data=%x, sz=%d", addr, data, sz);
@@ -293,6 +318,6 @@ void map_area0(u32 base)
 	// Pages 0x100-0x1FF (External Device)
 	_vmem_map_handler(area0_handler_0100_01FF, 0x01 | base, 0x01 | base);
 
-	// 0x02|base mirrors 0x00|base (excludes Flash and Boot ROM per HW spec)
+	// 0x02|base mirrors 0x00|base; the handlers leave out the BIOS and the flash there with Memory Map FLYCAST.
 	_vmem_mirror_mapping(0x02 | base, 0x00 | base, 0x02);
 }

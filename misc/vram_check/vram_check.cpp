@@ -33,7 +33,7 @@ static u32 conv64(u32 o)   // dc/pvr/pvrLock.cpp vramlock_ConvOffset32toOffset64
 #define INSTANCE_STUBS \
 	VArray2 vram; \
 	u32 SB_LMMODE0, SB_LMMODE1; \
-	int g_yuv_conv_fast_preset, g_vram_direct_preset, g_lmmode_preset, g_fb_watch_preset; \
+	int g_yuv_conv_fast_preset, g_vram_direct_preset, g_lmmode_preset, g_fb_watch_preset, g_holly_regs_preset; \
 	u32 regs[0x800]; \
 	u32 irqs, ta_dma_bytes, ta_sq_blocks; \
 	u32 libPvr_ReadReg(u32 addr, u32) { return regs[(addr & 0x1FFF) >> 2]; } \
@@ -122,6 +122,7 @@ static u32 rnd()
 }
 
 static int s_fails;
+static u32 s_byte_reads;
 static const char* s_where = "";
 #define CHECK(cond, ...) do { if (!(cond)) { if (s_fails++ < 12) { fprintf(stderr, "FAIL %s: ", s_where); \
 	fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } } } while (0)
@@ -458,6 +459,17 @@ static void vram_case(int ops)
 	}
 	vram_cmp(Wa, M.v.data(), "the model");
 	vram_cmp(Wb, M.v.data(), "the model");
+	// Holly Regs (bundle 20): an 8-bit read is the byte at the 32-bit path's address; OLD reads 0.
+	B::g_holly_regs_preset = 1;
+	for (int i = 0; i < 64; i++)
+	{
+		const u32 addr = rnd() & VRAM_MASK;
+		CHECK(B::pvr_read_area1_8(addr) == M.v[conv64(addr)] && A::pvr_read_area1_8(addr) == 0,
+		      "8-bit read at %06X: FLYCAST %02X OLD %02X, model %02X", addr, B::pvr_read_area1_8(addr),
+		      A::pvr_read_area1_8(addr), M.v[conv64(addr)]);
+		s_byte_reads++;
+	}
+	B::g_holly_regs_preset = 0;
 	if (use_c)
 		vram_cmp(Wc, M.v.data(), "the model");
 	char line[400];
@@ -485,6 +497,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 	printf("vram_check PASS: %d+%d cases, %u yuv ops (B words path: %u blocks in place, %u copied), %u vram ops "
-	       "(%u with the dirty mark set)\n", cases, cases, s_yuv_ops, s_inplace, s_copied, s_vram_ops, s_dirty_hits);
+	       "(%u with the dirty mark set), %u byte reads\n", cases, cases, s_yuv_ops, s_inplace, s_copied, s_vram_ops,
+	       s_dirty_hits, s_byte_reads);
 	return 0;
 }

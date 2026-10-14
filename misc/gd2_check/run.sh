@@ -1,7 +1,6 @@
 #!/bin/sh
-# Plan section 7, bundle 2 PC check (WSL) for dc/gdrom/gdromv3.cpp. Trace: with every option at 0 the file gives the
-# replies of the frozen ref_gdromv3.inc. Model: each option ON against its rule. GD_SRC: a mutated copy (mutate.py).
-# Args: seeds (default 40), ops per seed (default 20000).
+# Bundles 2 and 19 PC check (WSL) for gdromv3.cpp: options at 0 against ref_gdromv3.inc, then each option's model.
+# GD_SRC: a mutated copy (mutate.py). Args: seeds (default 40), ops per seed (default 20000).
 set -e
 cd "$(dirname "$0")/../.."
 G="${GD_SRC:-dc/gdrom/gdromv3.cpp}"
@@ -22,7 +21,7 @@ while [ $s -le "$SEEDS" ]; do
 	s=$((s + 1))
 done
 echo "trace: $same of $SEEDS seeds equal ($OPS ops each)"
-for m in p21s1 p21s2 p47 p62 p61 cmd p48 dma speed miss swap; do
+for m in p21s1 p21s2 p47 p62 p61 cmd p48 dma speed miss swap p82 p68; do
 	[ -n "$QUICK" ] && [ $fail -ne 0 ] && break
 	/tmp/gd2_new model $m > /tmp/gd2.out 2>&1 || fail=1
 	grep -E "^(PASS|FAIL|ERROR)" /tmp/gd2.out | head -8 || true

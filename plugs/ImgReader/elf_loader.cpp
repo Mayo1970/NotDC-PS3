@@ -5,6 +5,8 @@
 #include "dc/sh4/sh4_registers.h"   // Sh4cntx, next_pc, r[], sr macros
 #include "dc/mem/sh4_mem.h"          // mem_b, RAM_MASK
 #include "plugs/ImgReader/Elf.h"     // Elf32_Ehdr, Elf32_Phdr, Elf32_Shdr, constants
+#include "plugins/plugin_manager.h"  // libAICA_WriteMem_aica_reg
+#include "ps3/ps3_presets.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -32,6 +34,81 @@ static void elf_copy_to_ram(u32 dst_phys, const u8* src, u32 size)
         memcpy(&last, src + (size & ~3u), rem);
         dst32[words] = elf_wordswap32(last);
     }
+}
+
+// ELF Loader SEGMENTS: byte-exact at any start, SH4 byte A at mem_b A ^ 3, words in the middle; src NULL writes zeros.
+static void elf_copy_bytes(u32 dst, const u8* src, u32 size)
+{
+    u8* ram = mem_b.data;
+    u32 i = 0;
+    for (; i < size && ((dst + i) & 3); i++)
+        ram[(dst + i) ^ 3] = src ? src[i] : 0;
+    for (; i + 4 <= size; i += 4)
+    {
+        u32 w = 0;
+        if (src)
+            memcpy(&w, src + i, 4);
+        *(u32*)&ram[dst + i] = elf_wordswap32(w);
+    }
+    for (; i < size; i++)
+        ram[(dst + i) ^ 3] = src ? src[i] : 0;
+}
+
+static bool elf_in_ram(u32 addr, u32 size)
+{
+    return (addr & 0x0F000000) == 0x0C000000 && (addr & RAM_MASK) + size <= mem_b.size;
+}
+
+// ELF Loader SEGMENTS (P33, Flycast dev 643374c91): the PT_LOAD segments with their zero-filled tails, then each ALLOC
+// section no segment holds (objcopy --add-section). OLD loads PROGBITS sections only: no .init_array, no tails.
+static int elf_load_segments(const u8* buf, u32 flen, const Elf32_Phdr* ph0, u16 phnum, u16 phsize, const u8* sh0,
+                             u16 shnum, u16 shsize)
+{
+    #define LE32(x) __builtin_bswap32((u32)(x))
+    int loaded = 0;
+    for (u16 i = 0; i < phnum; i++)
+    {
+        const Elf32_Phdr* ph = (const Elf32_Phdr*)((const u8*)ph0 + (u32)phsize * i);
+        const u32 vaddr = LE32(ph->p_vaddr), off = LE32(ph->p_offset);
+        const u32 filesz = LE32(ph->p_filesz), memsz = LE32(ph->p_memsz);
+        if (LE32(ph->p_type) != PT_LOAD || memsz == 0)
+            continue;
+        if (memsz < filesz || off + filesz > flen || !elf_in_ram(vaddr, memsz))
+        {
+            printf("[ELF] Seg %u: 0x%08X file=0x%X mem=0x%X not loadable, skipped\n", i, vaddr, filesz, memsz);
+            continue;
+        }
+        printf("[ELF] Seg %u: 0x%08X  file=0x%X  mem=0x%X\n", i, vaddr, filesz, memsz);
+        elf_copy_bytes(vaddr & RAM_MASK, buf + off, filesz);
+        elf_copy_bytes((vaddr & RAM_MASK) + filesz, NULL, memsz - filesz);
+        loaded++;
+    }
+    for (u16 i = 0; i < shnum; i++)
+    {
+        const Elf32_Shdr* sh = (const Elf32_Shdr*)(sh0 + (u32)shsize * i);
+        const u32 addr = LE32(sh->sh_addr), size = LE32(sh->sh_size), off = LE32(sh->sh_offset);
+        if (!(LE32(sh->sh_flags) & SHF_ALLOC) || LE32(sh->sh_type) == SHT_NOBITS || addr == 0 || size == 0)
+            continue;
+        bool held = false;
+        for (u16 j = 0; j < phnum && !held; j++)
+        {
+            const Elf32_Phdr* ph = (const Elf32_Phdr*)((const u8*)ph0 + (u32)phsize * j);
+            const u32 start = LE32(ph->p_vaddr);
+            held = LE32(ph->p_type) == PT_LOAD && addr >= start && (u64)addr + size <= (u64)start + LE32(ph->p_filesz);
+        }
+        if (held)
+            continue;
+        if (off + size > flen || !elf_in_ram(addr, size))
+        {
+            printf("[ELF] Section %u: 0x%08X (%u bytes) not loadable, skipped\n", i, addr, size);
+            continue;
+        }
+        printf("[ELF] Section %u: 0x%08X <- file+0x%X  (%u bytes), outside the segments\n", i, addr, off, size);
+        elf_copy_bytes(addr & RAM_MASK, buf + off, size);
+        loaded++;
+    }
+    #undef LE32
+    return loaded;
 }
 // ---- elf_load: parse the ELF, copy the PT_LOAD / SHT_PROGBITS sections into mem_b ----
 bool elf_load(const char* path, u32* out_entry)
@@ -119,9 +196,12 @@ bool elf_load(const char* path, u32* out_entry)
 
     int loaded = 0;
 
+    if (g_elf_loader_preset)
+        loaded = elf_load_segments(buf, flen, (const Elf32_Phdr*)(buf + e_phoff), e_phnum, e_phentsize, buf + e_shoff,
+                                   e_shoff ? e_shnum : 0, e_shentsize);
     // Pass 1: section headers (SHT_PROGBITS + SHF_ALLOC), as the original Elf.cpp: each allocatable section
     // lands at its exact sh_addr.
-    if (e_shnum > 0 && e_shoff > 0)
+    else if (e_shnum > 0 && e_shoff > 0)
     {
         for (u16 i = 0; i < e_shnum; i++)
         {
@@ -167,7 +247,7 @@ bool elf_load(const char* path, u32* out_entry)
     }
 
     // Pass 2: program headers (PT_LOAD) when no section was loaded (stripped ELFs may have no section table)
-    if (loaded == 0 && e_phnum > 0)
+    if (!g_elf_loader_preset && loaded == 0 && e_phnum > 0)
     {
         printf("[ELF] No sections loaded, trying program headers\n");
         for (u16 i = 0; i < e_phnum; i++)
@@ -243,4 +323,15 @@ void elf_apply_entry(u32 entry)
     sr.SetFull(0x00000000u); // user mode, interrupts enabled
 
     printf("[ELF] SH4 context patched: PC=0x%08X  SP=0x%08X\n", next_pc, r[15]);
+
+    // ELF Loader SEGMENTS (P68, Flycast 333b21fac): the AICA interrupt masks and levels the BIOS would leave, through
+    // the plugin, so nullAICA and SPE ARM7 both get them.
+    if (g_elf_loader_preset)
+    {
+        libAICA_WriteMem_aica_reg(0x0070289C, 0x48, 2);   // SCIEB
+        libAICA_WriteMem_aica_reg(0x007028A8, 0x18, 1);   // SCILV0
+        libAICA_WriteMem_aica_reg(0x007028AC, 0x50, 1);   // SCILV1
+        libAICA_WriteMem_aica_reg(0x007028B0, 0x08, 1);   // SCILV2
+        printf("[ELF] AICA SCIEB=0x48 SCILV0=0x18 SCILV1=0x50 SCILV2=0x08\n");
+    }
 }

@@ -212,6 +212,17 @@ extern int g_maple_guard_preset;
 extern int g_maple_frame_preset;
 extern int g_vmu_per_game_preset;
 extern int g_vmu_screen_preset;
+// Bundle 20 (plan section 7), the SH4 / SYSTEM page.
+extern int g_sh4_optest_preset;
+extern int g_interp_fix_preset;
+extern int g_fpscr_cause_preset;
+extern int g_mem_map_preset;
+extern int g_block_write_preset;
+extern int g_onchip_regs_preset;
+extern int g_holly_regs_preset;
+extern int g_reg_size_preset;
+extern int g_elf_loader_preset;
+extern int g_full_mmu_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
@@ -240,3 +251,5 @@ void ps3_costcfg_print(const char* when, bool always);
 void ps3_flashcfg_print(const char* when, bool always);
 // [maplecfg] line: the MAPLE / VMU page's rows, the same way.
 void ps3_maplecfg_print(const char* when, bool always);
+// [syscfg] line: the SH4 / SYSTEM page's rows, the same way.
+void ps3_syscfg_print(const char* when, bool always);

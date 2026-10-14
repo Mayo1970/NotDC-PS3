@@ -15,6 +15,8 @@ extern "C" int get_gd_async_preset();
 void libGDR_ReadSectorLocked(u8* buff, u32 StartSector, u32 SectorCount, u32 secsz);   // plugs/ImgReader
 
 #define RA_SLOTS 64            // ~0.85 s of CD-DA, slot = FAD & (RA_SLOTS - 1)
+#define LH_SLOTS 32            // CD-DA Miss + LOOP AHEAD: the loop head, slot = RA_SLOTS + (FAD & (LH_SLOTS - 1))
+#define RA_ALL   (RA_SLOTS + LH_SLOTS)
 #define RA_BATCH 16            // sectors per read-ahead read
 #define RA_LOW   32            // the SH4 thread asks for more below this many sectors ahead
 #define RA_NONE  0xFFFFFFFFu
@@ -37,9 +39,9 @@ static u32 s_quit;
 static u8* s_dst;
 static u32 s_fad, s_count, s_secsz, s_busy;
 
-// CD-DA ring. A slot is valid while its tag is the FAD it holds; the worker clears the tag before it writes.
-static u64 s_ra[RA_SLOTS][SECT / 8];
-static u32 s_ra_tag[RA_SLOTS];
+// CD-DA ring, then the loop head. A slot is valid while its tag is the FAD it holds; the worker clears the tag first.
+static u64 s_ra[RA_ALL][SECT / 8];
+static u32 s_ra_tag[RA_ALL];
 static u8 s_ra_stage[RA_BATCH * SECT];
 static u32 s_ra_want = RA_NONE;   // SH4: the next FAD to play
 static u32 s_ra_req;              // SH4: fill the window
@@ -47,11 +49,13 @@ static u32 s_ra_ready;            // worker: the ring holds the run up to here
 static u32 s_ra_run, s_ra_next;   // worker only: the run [s_ra_run, s_ra_next)
 static bool s_ra_missed;          // SH4 only
 static u32 s_ra_flush;            // SH4: a disc swap; the worker drops the ring and clears it
+static u64 s_ra_loop = ~0ull;     // SH4: a play's loop start (high word) and end FAD; all ones for none
+static u32 s_lh_start = RA_NONE, s_lh_next;   // worker only: the loop head read so far, [s_lh_start, s_lh_next)
 
 // [gdr] counters. The worker's only grow and the dump prints deltas; the SH4 thread's are cleared per dump.
 struct Count { u32 n, sec; u64 ticks, max; };
 static Count st_sh4[GDR_N], st_wait;
-static u32 st_hit, st_miss;
+static u32 st_hit, st_miss, st_lh;
 static Count w_fill, w_ra, s_fill_seen, s_ra_seen;
 
 static void add(Count& c, u32 sec, u64 t)
@@ -80,6 +84,34 @@ static void do_fill()
 	REL(s_busy, 0u);
 }
 
+static void ra_put(u32 slot, u32 fad, const u8* src)
+{
+	STORE(s_ra_tag[slot], RA_NONE);
+	// The cleared tag before the new bytes: a reader that sees one of them then sees the tag change.
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	for (u32 w = 0; w < SECT / 8; w++)
+	{
+		u64 v;
+		memcpy(&v, src + w * 8, 8);
+		STORE(s_ra[slot][w], v);
+	}
+	REL(s_ra_tag[slot], fad);
+}
+
+static bool ra_get(uint8_t* dst, u32 slot, u32 fad)
+{
+	if (ACQ(s_ra_tag[slot]) != fad)
+		return false;
+	for (u32 w = 0; w < SECT / 8; w++)
+	{
+		const u64 v = LOAD(s_ra[slot][w]);
+		memcpy(dst + w * 8, &v, 8);
+	}
+	// The copy before the second look at the tag: a rewrite during the copy is a miss.
+	__atomic_thread_fence(__ATOMIC_ACQUIRE);
+	return LOAD(s_ra_tag[slot]) == fad;
+}
+
 // One batch of the window [want, want + RA_SLOTS); false when it has nothing to read.
 static bool ra_batch()
 {
@@ -90,28 +122,45 @@ static bool ra_batch()
 	if (want < s_ra_run || want > s_ra_next || s_ra_next - want > RA_SLOTS)
 		s_ra_run = s_ra_next = want;
 	const u32 end = want + RA_SLOTS;
-	if (s_ra_next >= end)
+	// + LOOP AHEAD: a play that turns back is read to its end only, so a short loop stays whole in the ring.
+	const u64 lp = ACQ(s_ra_loop);
+	const u32 stop = lp != ~0ull && want < (u32)lp && (u32)lp < end ? (u32)lp : end;
+	if (s_ra_next >= stop)
 		return false;
-	const u32 n = end - s_ra_next < RA_BATCH ? end - s_ra_next : RA_BATCH;
+	const u32 n = stop - s_ra_next < RA_BATCH ? stop - s_ra_next : RA_BATCH;
 	const u64 t0 = gettime();
 	libGDR_ReadSectorLocked(s_ra_stage, s_ra_next, n, SECT);
 	for (u32 k = 0; k < n; k++)
 	{
 		const u32 fad = s_ra_next + k, slot = fad & (RA_SLOTS - 1);
-		STORE(s_ra_tag[slot], RA_NONE);
-		// The cleared tag before the new bytes: a reader that sees one of them then sees the tag change.
-		__atomic_thread_fence(__ATOMIC_RELEASE);
-		const u8* src = s_ra_stage + k * SECT;
-		for (u32 w = 0; w < SECT / 8; w++)
-		{
-			u64 v;
-			memcpy(&v, src + w * 8, 8);
-			STORE(s_ra[slot][w], v);
-		}
-		REL(s_ra_tag[slot], fad);
+		ra_put(slot, fad, s_ra_stage + k * SECT);
 	}
 	s_ra_next += n;
 	REL(s_ra_ready, s_ra_next);
+	w_add(w_ra, n, gettime() - t0);
+	return true;
+}
+
+// + LOOP AHEAD: one batch of the loop's first LH_SLOTS sectors, after the window; a loop turn takes them from here.
+static bool lh_batch()
+{
+	const u64 lp = ACQ(s_ra_loop);
+	if (lp == ~0ull || ACQ(s_ra_want) == RA_NONE)
+		return false;
+	const u32 start = (u32)(lp >> 32), end = (u32)lp;
+	if (start >= end)
+		return false;
+	if (start != s_lh_start)
+		s_lh_start = s_lh_next = start;
+	const u32 stop = start + (end - start < LH_SLOTS ? end - start : LH_SLOTS);
+	if (s_lh_next >= stop)
+		return false;
+	const u32 n = stop - s_lh_next < RA_BATCH ? stop - s_lh_next : RA_BATCH;
+	const u64 t0 = gettime();
+	libGDR_ReadSectorLocked(s_ra_stage, s_lh_next, n, SECT);
+	for (u32 k = 0; k < n; k++)
+		ra_put(RA_SLOTS + ((s_lh_next + k) & (LH_SLOTS - 1)), s_lh_next + k, s_ra_stage + k * SECT);
+	s_lh_next += n;
 	w_add(w_ra, n, gettime() - t0);
 	return true;
 }
@@ -123,9 +172,10 @@ static void worker(void*)
 		// P34: the ring held the old disc. No reader runs now: the SH4 thread waits in gda_cdda_reset.
 		if (ACQ(s_ra_flush))
 		{
-			for (u32 i = 0; i < RA_SLOTS; i++)
+			for (u32 i = 0; i < RA_ALL; i++)
 				STORE(s_ra_tag[i], RA_NONE);
 			s_ra_run = s_ra_next = 0;
+			s_lh_start = RA_NONE;
 			REL(s_ra_ready, 0u);
 			REL(s_ra_flush, 0u);
 			continue;
@@ -137,8 +187,8 @@ static void worker(void*)
 		}
 		if (s_level >= 2 && __atomic_exchange_n(&s_ra_req, 0u, __ATOMIC_ACQ_REL))
 		{
-			// A data fill goes first; the next request finishes the window.
-			while (!ACQ(s_busy) && !ACQ(s_quit) && !ACQ(s_ra_flush) && ra_batch())
+			// A data fill goes first; the next request finishes the window, then the loop head.
+			while (!ACQ(s_busy) && !ACQ(s_quit) && !ACQ(s_ra_flush) && (ra_batch() || lh_batch()))
 				;
 			continue;
 		}
@@ -161,7 +211,7 @@ void gda_start()
 	if (s_level > 2)
 		s_level = 2;
 
-	for (u32 i = 0; i < RA_SLOTS; i++)
+	for (u32 i = 0; i < RA_ALL; i++)
 		s_ra_tag[i] = RA_NONE;
 	sys_mutex_attr_t ma;
 	sysMutexAttrInitialize(ma);
@@ -259,27 +309,20 @@ bool gda_cdda(uint8_t* dst, uint32_t fad)
 {
 	if (s_level < 2)
 		return false;
-	const u32 slot = fad & (RA_SLOTS - 1);
-	bool hit = ACQ(s_ra_tag[slot]) == fad;
-	if (hit)
+	if (ra_get(dst, fad & (RA_SLOTS - 1), fad))
 	{
-		for (u32 w = 0; w < SECT / 8; w++)
-		{
-			const u64 v = LOAD(s_ra[slot][w]);
-			memcpy(dst + w * 8, &v, 8);
-		}
-		// The copy before the second look at the tag: a rewrite during the copy is a miss.
-		__atomic_thread_fence(__ATOMIC_ACQUIRE);
-		hit = LOAD(s_ra_tag[slot]) == fad;
-	}
-	if (hit)
 		st_hit++;
-	else
-	{
-		st_miss++;
-		s_ra_missed = true;
+		return true;
 	}
-	return hit;
+	// Not in the run: the next request starts a new one, also when the loop head has the sector.
+	s_ra_missed = true;
+	if (ra_get(dst, RA_SLOTS + (fad & (LH_SLOTS - 1)), fad))
+	{
+		st_lh++;
+		return true;
+	}
+	st_miss++;
+	return false;
 }
 
 void gda_cdda_next(bool playing, uint32_t fad)
@@ -309,9 +352,20 @@ void gda_cdda_seek(uint32_t fad)
 {
 	if (s_level < 2)
 		return;
+	REL(s_ra_loop, ~0ull);   // the new play names its own loop at its first pull
 	REL(s_ra_want, fad);
 	REL(s_ra_req, 1u);
 	sysSemPost(s_sem, 1);
+}
+
+// CD-DA Miss + LOOP AHEAD: the play turns back to start when it reaches end; GDA_NO_LOOP for one that does not.
+void gda_cdda_loop(uint32_t start, uint32_t end)
+{
+	if (s_level < 2)
+		return;
+	const u64 v = start == GDA_NO_LOOP ? ~0ull : ((u64)start << 32) | end;
+	if (LOAD(s_ra_loop) != v)
+		REL(s_ra_loop, v);
 }
 
 // P34: before the next image opens. Returns when the worker has dropped its run and every ring tag.
@@ -319,6 +373,7 @@ void gda_cdda_reset()
 {
 	if (s_level < 2)
 		return;
+	REL(s_ra_loop, ~0ull);
 	REL(s_ra_want, RA_NONE);
 	REL(s_ra_flush, 1u);
 	sysSemPost(s_sem, 1);
@@ -357,23 +412,23 @@ static Count take(Count& w, Count& seen)
 void gda_stats(double secs)
 {
 	const Count f = take(w_fill, s_fill_seen), r = take(w_ra, s_ra_seen);
-	bool any = f.n || r.n || st_wait.n || st_hit || st_miss;
+	bool any = f.n || r.n || st_wait.n || st_hit || st_miss || st_lh;
 	for (int k = 0; k < GDR_N; k++)
 		any = any || st_sh4[k].n;
 	if (any)
 	{
-		// Per window: reads/sectors total ms(longest ms).
+		// Per window: reads/sectors total ms(longest ms). lh: sectors the loop head gave (+ LOOP AHEAD).
 		const Count* s = st_sh4;
 		printf("[gdr] %.2f s async=%d sh4: dma %u/%u %.1f(%.1f) pio %u/%u %.1f(%.1f) cdda %u/%u %.1f(%.1f)"
-		       " wait %u %.1f(%.1f) | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u\n",
+		       " wait %u %.1f(%.1f) | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u lh %u\n",
 		       secs, s_level,
 		       s[GDR_DMA].n, s[GDR_DMA].sec, ms(s[GDR_DMA].ticks), ms(s[GDR_DMA].max),
 		       s[GDR_PIO].n, s[GDR_PIO].sec, ms(s[GDR_PIO].ticks), ms(s[GDR_PIO].max),
 		       s[GDR_CDDA].n, s[GDR_CDDA].sec, ms(s[GDR_CDDA].ticks), ms(s[GDR_CDDA].max),
 		       st_wait.n, ms(st_wait.ticks), ms(st_wait.max),
-		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss);
+		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss, st_lh);
 	}
 	memset(st_sh4, 0, sizeof(st_sh4));
 	memset(&st_wait, 0, sizeof(st_wait));
-	st_hit = st_miss = 0;
+	st_hit = st_miss = st_lh = 0;
 }

@@ -23,6 +23,7 @@ static struct
 } state;
 
 static int g_pr_moves, g_rm_any, g_idle_rule, g_verify_fails;
+int g_interp_fix_preset;   // bundle 20: fneg joins the PR-free list with Interp Fixes FIXED
 static bool g_pure;
 extern "C" int get_jit_pr_moves_preset() { return g_pr_moves; }
 extern "C" int get_jit_rm_any_preset() { return g_rm_any; }
@@ -78,11 +79,12 @@ static void check(bool ok, const char* what, u32 a, u32 b, u32 c)
 	}
 }
 
-// The op names of dc/sh4/sh4_opcode_list.cpp: every fmov form, fsts and flds; and Flycast's list without fneg.
+// The op names of dc/sh4/sh4_opcode_list.cpp: every fmov form, fsts and flds; fneg (0xFn4D) with Interp Fixes FIXED.
 static bool want_pr_free(u32 op)
 {
 	const u32 nm = op & 0xF00F;
-	return (nm >= 0xF006 && nm <= 0xF00C) || (op & 0xF0FF) == 0xF00D || (op & 0xF0FF) == 0xF01D;
+	return (nm >= 0xF006 && nm <= 0xF00C) || (op & 0xF0FF) == 0xF00D || (op & 0xF0FF) == 0xF01D ||
+	       (g_interp_fix_preset && (op & 0xF0FF) == 0xF04D);
 }
 static bool flycast_native(u32 op)
 {
@@ -91,10 +93,13 @@ static bool flycast_native(u32 op)
 
 static void test_pr()
 {
+	for (g_interp_fix_preset = 0; g_interp_fix_preset < 2; g_interp_fix_preset++)
 	for (u32 op = 0xF000; op <= 0xFFFF; op++)
 	{
 		check(dec_is_pr_free(op) == want_pr_free(op), "pr_free list", op, dec_is_pr_free(op), 0);
-		check(dec_is_pr_free(op) == (flycast_native(op) && (op & 0xFF) != 0x4D), "pr_free against Flycast", op, 0, 0);
+		// Flycast's list, less fneg while Interp Fixes is OLD.
+		const bool fly = flycast_native(op) && (g_interp_fix_preset || (op & 0xFF) != 0x4D);
+		check(dec_is_pr_free(op) == fly, "pr_free against Flycast", op, (u32)g_interp_fix_preset, 0);
 		for (int pr = 0; pr < 2; pr++)
 			for (g_pr_moves = 0; g_pr_moves < 2; g_pr_moves++)
 			{
@@ -106,6 +111,7 @@ static void test_pr()
 				check(native == want && g_dec_pr_moves - n0 == (u32)(pr && want), "pr gate", op, (u32)pr, (u32)g_pr_moves);
 			}
 	}
+	g_interp_fix_preset = 0;
 }
 
 // Reicast's rule (libswirl/hw/sh4/dyna/decoder.cpp), on the same block.

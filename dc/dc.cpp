@@ -13,9 +13,12 @@
 #include "config/config.h"
 #include "plugins/plugin_manager.h"
 #include "ps3/ps3_sndthr.h"
+#include "sh4/sh4_fullmmu.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+int sh4_RunSelfTests();   // dc/sh4/sh4_selftest.cpp, row "SH4 Op Tests"
 
 // ARM7 (vbaARM) forward declarations only: vbaARM.h redefines ReadMemArrRet/WriteMemArrRet.
 // arm_Init() runs in libARM_Init() (plugin_manager.cpp); here only Reset and Term are needed.
@@ -182,6 +185,10 @@ bool Init_DC()
 		return false;
 	}
 
+	// Row "SH4 Op Tests" (P46): the opcode table and the memory map exist; the first reset clears what it used.
+	if (g_sh4_optest_preset)
+		sh4_RunSelfTests();
+
 	dc_inited = true;
 	printf("Dreamcast emulator initialized successfully\n");
 	return true;
@@ -204,6 +211,10 @@ static void ResetDC(bool manual)
 	// ELF boot: the ELF entry replaces the BIOS reset vector. After sh4_cpu.Reset(), so our PC
 	// wins over 0xA0000000.
 	dc_elf_pre_run_hook();
+
+	// Row "SH4 MMU" (P38): after mem_Reset() read the disc's IP.BIN, before the CPU runs.
+	if (!manual)
+		sh4_fullmmu_select();
 }
 
 // Soft reset; safe while the CPU runs.
@@ -318,6 +329,7 @@ int g_cable_override = -1;
 static void apply_disc_meta()
 {
 	g_cable_override = -1;
+	g_disc_wince = false;
 	u32 type = libGDR_GetDiscType();
 	if (type == NoDisk || type == Open || type == Busy || type == CdDA)
 		return;
@@ -344,6 +356,10 @@ static void apply_disc_meta()
 	dc_flash_set_region((const char*)&ip[0x30]);
 	// P37: the product number, for row "VMU Per Game".
 	maple_vmu_game((const char*)&ip[0x40]);
+	// P38 SH4 MMU AUTO (Flycast isWindowsCE()): byte 0x3E is '1', or the boot file is 0WINCEOS.BIN.
+	g_disc_wince = ip[0x3E] == '1' || memcmp(&ip[0x60], "0WINCEOS.BIN", 12) == 0;
+	printf("[disc] Windows CE: %s (byte 0x3E '%c', boot file %.12s)\n", g_disc_wince ? "yes" : "no",
+	       ip[0x3E] >= 0x20 && ip[0x3E] < 0x7F ? ip[0x3E] : '?', (const char*)&ip[0x60]);
 	if (settings.dreamcast.cable <= 1 && ip[0x3D] != '1')
 	{
 		g_cable_override = 3;

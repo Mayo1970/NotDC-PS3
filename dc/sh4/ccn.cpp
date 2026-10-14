@@ -10,6 +10,7 @@
 #include "plugins/plugin_manager.h"
 #include "ccn.h"
 #include "sh4_registers.h"
+#include "sh4_fullmmu.h"
 
 // ---- Register storage ----
 CCN_PTEH_type  CCN_PTEH;
@@ -32,6 +33,10 @@ CCN_QACR_type  CCN_QACR1;
 #define MMUCR_LOG_MAX 64
 static u32 s_mmucr_writes;
 
+// SH4 MMU (bundle 20): Windows CE flushes the TLB and the I-cache dozens of times a second; the first lines print.
+static u32 s_mmu_quiet;
+static bool ccn_log_ok() { return !g_fullmmu_active || s_mmu_quiet++ < 16; }
+
 // ---- MMUCR write handler: logs the write and the MMU enable/disable edges, clears the self-clearing TI bit ----
 static void CCN_MMUCR_write(u32 value)
 {
@@ -48,7 +53,7 @@ static void CCN_MMUCR_write(u32 value)
                " (pc=%08X)\n", value, CCN_MMUCR.reg_data, MMUCR_AT(value), MMUCR_TI(value), MMUCR_SV(value),
                MMUCR_SQMD(value), MMUCR_URC(value), MMUCR_URB(value), MMUCR_LRUI(value), at, ti, curr_pc);
 
-    if (at_edge)
+    if (at_edge && ccn_log_ok())
     {
         printf("CCN: MMU address translation %s (pc=%08X)\n",
                at ? "ENABLED - only SQ remaps supported" : "disabled",
@@ -58,7 +63,8 @@ static void CCN_MMUCR_write(u32 value)
     // TI = self-clearing write-only TLB invalidate; mmu_InvalidateTLB says what it drops.
     if (ti)
     {
-        printf("CCN: TLB invalidate (pc=%08X)\n", curr_pc);
+        if (ccn_log_ok())
+            printf("CCN: TLB invalidate (pc=%08X)\n", curr_pc);
         mmu_InvalidateTLB();
         if (fixed)
             temp.reg_data &= ~MMUCR_TI_BIT;
@@ -96,7 +102,7 @@ static void CCN_CCR_write(u32 value)
     // Magic address suppresses a noisy but harmless BIOS invalidation.
     if (temp.ICI)
     {
-        if (curr_pc != 0xAC13DBF8)
+        if (curr_pc != 0xAC13DBF8 && ccn_log_ok())
             printf("CCN: I-cache invalidation requested (pc=%08X)\n", curr_pc);
         sh4_cpu.ResetCache();
         temp.ICI = 0;

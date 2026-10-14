@@ -71,6 +71,8 @@ CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti
 
 # libFLAC's bit reader takes the host byte order from WORDS_BIGENDIAN: without it the PPU decodes noise.
 $(BUILD)/deps/%.o: CFLAGS += -w $(CHD_DEFS) -DWORDS_BIGENDIAN=1 -Ideps/flac/include -Ideps/flac/src/libFLAC/include -Ideps/flac/compat
+# The boot self-test's ~100 float constants would take ~800 bytes of the 64 KB TOC; it runs once, so one entry.
+$(BUILD)/dc/sh4/sh4_selftest.o: CXXFLAGS += -mminimal-toc
 
 # --no-multi-toc: a split TOC emits r2off stubs that hang the PS3 at boot.
 # --wrap: stdout has no console; ps3/ps3_main.cpp sends it to the UDP log.

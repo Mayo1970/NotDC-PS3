@@ -19,6 +19,8 @@ CCN_PTEH_type CCN_PTEH;
 CCN_MMUCR_type CCN_MMUCR;
 CCN_CCR_type CCN_CCR;
 void ITLB_Sync(u32) { g_itlb_syncs++; }
+bool g_fullmmu_active;   // bundle 20's row SH4 MMU: OFF here, so UTLB_Sync logs as before
+static u32 s_remap_logs;
 static u8 OnChipRAM[OnChipRAM_SIZE + 8];   // slack: a word access at the last byte, as the real array allows
 template<u32 sz> static inline u32 host_to_le(u32 v) { return v; }
 
@@ -67,6 +69,7 @@ static void sh4_sched_request(int id, int cycles) { ev(g_ev, 5, (u32)id, (u32)cy
 #undef printf
 
 // ---- the model ----
+
 // The OLD paths are the old code as it compiles on this little-endian PC: there the 28-bit bitfield has AT at bit 0
 // and TI at bit 2. bitfield_ppu.sh shows the bits of the PS3 build.
 struct Tlb { u32 a, d, asst; };

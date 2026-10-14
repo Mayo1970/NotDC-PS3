@@ -72,6 +72,11 @@ void FASTCALL libGDR_GetTrackAdrAndControl(u32 track,u8* adr,u8* ctrl)
 	GetDriveTrackAdrAndControl(track,adr,ctrl);
 }
 
+u32 FASTCALL libGDR_GetLeadOut()
+{
+	return GetDriveLeadOut();
+}
+
 // P34, SH4 thread: the worker's fill lands and its CD-DA ring empties, then the next image opens under the lock.
 bool libGDR_SwapDisc(const char* path)
 {

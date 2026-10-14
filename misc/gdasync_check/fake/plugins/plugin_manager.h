@@ -11,5 +11,6 @@ u32 FASTCALL libGDR_GetDiscType();
 void FASTCALL libGDR_GetSessionInfo(u8* out, u8 ses);
 u32 FASTCALL libGDR_GetTrackNumber(u32 fad, u32* elapsed);
 void FASTCALL libGDR_GetTrackAdrAndControl(u32 track, u8* adr, u8* ctrl);
+u32 FASTCALL libGDR_GetLeadOut();
 bool libGDR_SwapDisc(const char* path);
 #define SH4_CLOCK_EFF ((u32)(200 * 1000000))

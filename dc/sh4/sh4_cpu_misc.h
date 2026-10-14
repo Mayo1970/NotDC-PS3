@@ -214,61 +214,76 @@ sh4op(i0011_nnnn_mmmm_1101)
 	mach = (u32)(result >> 32);
 }
 
-// mul.l <REG_M>,<REG_N> - Multiply long
+// mul.l <REG_M>,<REG_N> - Multiply long. Interp Fixes FIXED: the same low word, with no signed overflow (C UB).
 sh4op(i0000_nnnn_mmmm_0111)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op);
-	macl = (u32)(((s32)r[n]) * ((s32)r[m]));
+	if (g_interp_fix_preset)
+		macl = r[n] * r[m];
+	else
+		macl = (u32)(((s32)r[n]) * ((s32)r[m]));
 }
 
-// mac.w @<REG_M>+,@<REG_N>+ - Multiply-accumulate word
+// mac.w @<REG_M>+,@<REG_N>+. Both reads come before the increments, so a TLB miss leaves the registers as they were.
+// Interp Fixes FIXED (P32): S=1 saturates MACL as the manual (shil.cpp); OLD skipped the op, increments included.
 sh4op(i0100_nnnn_mmmm_1111)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op);
-	
-	if (sr.S != 0)
+
+	if (sr.S != 0 && !g_interp_fix_preset)
 	{
 		printf("mac.w @<REG_M>+,@<REG_N>+ : S=%d (saturation mode)\n", !!sr.S);
 	}
 	else
 	{
 		const s32 rn = (s32)(s16)ReadMem16(r[n]);
+		const s32 rm = (s32)(s16)ReadMem16(r[m] + (n == m ? 2 : 0));
 		r[n] += 2;
-		
-		const s32 rm = (s32)(s16)ReadMem16(r[m]);
 		r[m] += 2;
-		
-		const s32 mul = rm * rn;
-		s64 mac = macl | ((u64)mach << 32);
-		mac += mul;
-		
-		macl = (u32)mac;
-		mach = (u32)(mac >> 32);
+
+		if (sr.S != 0)
+			sh4_mac_w((u32)rm, (u32)rn, macl, mach, sr.status);
+		else
+		{
+			const s32 mul = rm * rn;
+			s64 mac = macl | ((u64)mach << 32);
+			mac += mul;
+
+			macl = (u32)mac;
+			mach = (u32)(mac >> 32);
+		}
 	}
 }
 
-// mac.l @<REG_M>+,@<REG_N>+ - Multiply-accumulate long
+// mac.l @<REG_M>+,@<REG_N>+, reads before increments as mac.w. Interp Fixes FIXED (P32): S=1 saturates to 48 bits
+// as the manual (shil.cpp); OLD hangs in the verify.
 sh4op(i0000_nnnn_mmmm_1111)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op);
-	
-	verify(sr.S == 0);  // Saturation not supported
-	
+
+	if (!g_interp_fix_preset)
+		verify(sr.S == 0);
+
 	s32 rm, rn;
 	ReadMemS32(rm, r[m]);
+	ReadMemS32(rn, r[n] + (n == m ? 4 : 0));
 	r[m] += 4;
-	ReadMemS32(rn, r[n]);
 	r[n] += 4;
-	
-	const s64 mul = (s64)rm * (s64)rn;
-	s64 mac = macl | ((u64)mach << 32);
-	const s64 result = mac + mul;
-	
-	macl = (u32)result;
-	mach = (u32)(result >> 32);
+
+	if (sr.S != 0)
+		sh4_mac_l((u32)rm, (u32)rn, macl, mach, sr.status);
+	else
+	{
+		const s64 mul = (s64)rm * (s64)rn;
+		s64 mac = macl | ((u64)mach << 32);
+		const s64 result = mac + mul;
+
+		macl = (u32)result;
+		mach = (u32)(result >> 32);
+	}
 }
 
 // DIVISION OPERATIONS
@@ -337,22 +352,32 @@ sh4op(i0011_nnnn_mmmm_1110)
 	sr.T = ((tmp0 > tmp1) || (tmp1 > r[n])) ? 1 : 0;
 }
 
-// addv <REG_M>,<REG_N> - Add with overflow check
+// addv <REG_M>,<REG_N> - Add with overflow check. The OLD form overflows an int, which C leaves undefined: the
+// compiler may drop the test. Interp Fixes FIXED adds unsigned and takes T from the sign bits.
 sh4op(i0011_nnnn_mmmm_1111)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op);
-	const s32 dest = (s32)r[n];
-	const s32 src = (s32)r[m];
-	const s32 ans = dest + src;
-	
-	r[n] = (u32)ans;
-	
-	// Overflow if sign of operands same but result differs
-	if ((dest >= 0 && src >= 0 && ans < 0) || (dest < 0 && src < 0 && ans >= 0))
-		sr.T = 1;
+	if (g_interp_fix_preset)
+	{
+		const u32 ans = r[n] + r[m];
+		sr.T = ((r[n] ^ ans) & (r[m] ^ ans)) >> 31;
+		r[n] = ans;
+	}
 	else
-		sr.T = 0;
+	{
+		const s32 dest = (s32)r[n];
+		const s32 src = (s32)r[m];
+		const s32 ans = dest + src;
+
+		r[n] = (u32)ans;
+
+		// Overflow if sign of operands same but result differs
+		if ((dest >= 0 && src >= 0 && ans < 0) || (dest < 0 && src < 0 && ans >= 0))
+			sr.T = 1;
+		else
+			sr.T = 0;
+	}
 }
 
 // subc <REG_M>,<REG_N> - Subtract with carry
@@ -368,22 +393,31 @@ sh4op(i0011_nnnn_mmmm_1010)
 	sr.T = ((tmp0 < tmp1) || (tmp1 < r[n])) ? 1 : 0;
 }
 
-// subv <REG_M>,<REG_N> - Subtract with overflow check
+// subv <REG_M>,<REG_N> - Subtract with overflow check; Interp Fixes FIXED as addv.
 sh4op(i0011_nnnn_mmmm_1011)
 {
 	const u32 n = GetN(op);
 	const u32 m = GetM(op);
-	const s32 dest = (s32)r[n];
-	const s32 src = (s32)r[m];
-	const s32 ans = dest - src;
-	
-	r[n] = (u32)ans;
-	
-	// Overflow if signs differ and result sign matches source
-	if ((dest >= 0 && src < 0 && ans < 0) || (dest < 0 && src >= 0 && ans >= 0))
-		sr.T = 1;
+	if (g_interp_fix_preset)
+	{
+		const u32 ans = r[n] - r[m];
+		sr.T = ((r[n] ^ r[m]) & (r[n] ^ ans)) >> 31;
+		r[n] = ans;
+	}
 	else
-		sr.T = 0;
+	{
+		const s32 dest = (s32)r[n];
+		const s32 src = (s32)r[m];
+		const s32 ans = dest - src;
+
+		r[n] = (u32)ans;
+
+		// Overflow if signs differ and result sign matches source
+		if ((dest >= 0 && src < 0 && ans < 0) || (dest < 0 && src >= 0 && ans >= 0))
+			sr.T = 1;
+		else
+			sr.T = 0;
+	}
 }
 
 // dt <REG_N> - Decrement and test
@@ -654,20 +688,20 @@ sh4op(i0000_nnnn_0110_1010)
 	UpdateFPSCR();
 }
 
-// sts.l FPSCR,@-<REG_N>
+// sts.l FPSCR,@-<REG_N>: the store before the decrement, so a TLB miss leaves Rn as it was (as every @-Rn store).
 sh4op(i0100_nnnn_0110_0010)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, fpscr.full);
 	r[n] -= 4;
-	WriteMemU32(r[n], fpscr.full);
 }
 
 // stc.l SR,@-<REG_N>
 sh4op(i0100_nnnn_0000_0011)
 {
 	const u32 n = GetN(op);
+	WriteMemU32(r[n] - 4, sr.GetFull());
 	r[n] -= 4;
-	WriteMemU32(r[n], sr.GetFull());
 }
 
 // lds.l @<REG_N>+,FPSCR

@@ -1,7 +1,5 @@
-// OPTIMIZATION_POTENTIAL P3 PC check (WSL): the real dc/gdrom/gdromv3.cpp and ps3/ps3_gdasync.cpp, pthreads for lv2,
-// a fake drive. Reads, aborts and CD-DA must give the bytes, interrupts and status of a plain model at every level.
-// Bundle 2: also CD-DA Miss (argument 4: 0, 1 PLAY AHEAD, 2 + SILENCE), GD-ROM Speed REAL (argument 5) and the P34
-// disc swap.
+// P3 PC check (WSL): the real gdromv3.cpp and ps3_gdasync.cpp on pthreads and a fake drive, against a plain model.
+// Args: level, iterations, seed, CD-DA Miss (0-3, bundles 2 and 19), GD-ROM Speed; the P34 disc swap at every level.
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
@@ -149,6 +147,7 @@ int get_gd_dma_fix_preset() { return g_dma_fix; }
 int get_gd_cmd_fix_preset() { return 0; }
 int get_gd_set_mode_preset() { return 0; }
 int get_disc_swap_preset() { return 1; }
+int get_holly_regs_preset() { return 0; }
 }
 
 // ---- errors ----
@@ -186,6 +185,7 @@ static u32 rnd_t()
 }
 static std::atomic<u32> g_disc{0};      // P34: the disc in the drive; each one has its own bytes
 static std::atomic<u32> g_cdda_reads{0};   // disc reads the SH4 thread did inside a CD-DA pull
+static std::atomic<u32> g_worker_reads{0};
 static bool g_in_pull;
 static inline u8 pat(u32 fad, u32 secsz, u32 j)
 {
@@ -198,6 +198,8 @@ void libGDR_ReadSectorLocked(u8* buff, u32 fad, u32 n, u32 secsz)
 {
 	while (!on_main() && g_block_worker.load())
 		usleep(100);
+	if (!on_main())
+		g_worker_reads++;
 	gda_lock();
 	if (g_in_drive.fetch_add(1) != 0)
 		err("two threads in the drive", fad, n);
@@ -230,6 +232,7 @@ u32 FASTCALL libGDR_GetDiscType() { return GdRom; }
 void FASTCALL libGDR_GetSessionInfo(u8* out, u8) { memset(out, 0, 6); }
 u32 FASTCALL libGDR_GetTrackNumber(u32, u32* elapsed) { *elapsed = 0; return 1; }
 void FASTCALL libGDR_GetTrackAdrAndControl(u32, u8* adr, u8* ctrl) { *adr = 1; *ctrl = 4; }
+u32 FASTCALL libGDR_GetLeadOut() { return 0xFFFFFFFFu; }   // P82 is in misc/gd2_check
 
 // The steps of plugs/ImgReader/ImgReader.cpp (run.sh checks that file's lines): the image changes under the lock,
 // after the worker's fill landed and its ring emptied.
@@ -607,6 +610,45 @@ static void phase_play_ahead()
 		err("misses at the start of a play with PLAY AHEAD", miss, plays);
 }
 
+// + LOOP AHEAD: turns take the loop head, then a new run; a loop that fits the ring is not read again. The first pass
+// may wait for the disc; the turns may not. CD-DA Miss 2 shows the gaps this level removes (6 or so a turn).
+static void phase_loop_ahead()
+{
+	g_delay_us = 100;
+	const u32 r0 = g_cdda_reads;
+	u32 turns = 0, held = 0, reread = 0;
+	struct { u32 start, len, pulls; } k[] = {
+		{ 50000, 300, 1500 },   // the head, then a new run
+		{ 60000, 100, 800 },
+		{ 70000, 70, 700 },
+		{ 80000, 40, 400 },     // fits the ring
+		{ 90000, 20, 200 },     // shorter than the head
+	};
+	for (u32 p = 0; p < sizeof(k) / sizeof(k[0]); p++)
+	{
+		cmd_play(k[p].start, k[p].start + k[p].len, 0xF);
+		u32 h0 = 0, w0 = 0;
+		for (u32 i = 0; i < k[p].pulls; i++)
+		{
+			if (i == k[p].len)
+				h0 = g_held;
+			if (i == 2 * k[p].len)
+				w0 = g_worker_reads;
+			pull_cdda();
+			usleep(200);
+		}
+		turns += k[p].pulls / k[p].len - 1;
+		held += g_held - h0;
+		if (k[p].len <= 64)
+			reread += g_worker_reads - w0;
+	}
+	cmd_seek(150);
+	printf("  loop ahead: %u held in %u loop turns, %u reads of loops that fit the ring, %u SH4 reads\n", held, turns,
+	       reread, g_cdda_reads - r0);
+	if (g_miss >= 3 && (held > turns / 4 || reread > 2 || g_cdda_reads != r0))
+		err("+ LOOP AHEAD: gaps or reads at loop turns", held, reread);
+}
+
 // + SILENCE with a worker that does not answer: after 150 silent pulls the SH4 thread reads the sector itself.
 static void phase_cap()
 {
@@ -691,7 +733,8 @@ static void phase_swap()
 	for (u32 n = 0; n < 24; n++)
 	{
 		const u32 s = 10000 + (n & 3) * 16;
-		cmd_play(s, s + 3000, 0);
+		// + LOOP AHEAD: a repeat count, so the loop head holds the old disc's first sectors at the swap.
+		cmd_play(s, s + 3000, g_miss >= 3 ? 1 : 0);
 		for (u32 i = 0; i < 100; i++)
 		{
 			pull_cdda();
@@ -750,6 +793,15 @@ static void phase_swap()
 			pull_cdda();
 			usleep(100);
 		}
+		// The loop head the old disc left: the same test on its sectors.
+		if (g_miss >= 3)
+		{
+			g_block_worker = 1;
+			cmd_play(s, s + 3000, 0);
+			for (u32 i = 0; i < 8; i++)
+				pull_cdda();
+			g_block_worker = 0;
+		}
 		test_read(150 + rnd() % 400000, pick_count(2048, 40), 2048, true);
 	}
 	printf("  swap: 24 disc swaps\n");
@@ -781,7 +833,10 @@ int main(int argc, char** argv)
 		if (g_miss >= 2 && g_cdda_reads != r0)
 			err("SH4 thread CD-DA reads with SILENCE", g_cdda_reads - r0, 0);
 		if (g_miss >= 2)
+		{
+			phase_loop_ahead();
 			phase_cap();
+		}
 	}
 	phase_len0();
 	phase_swap();

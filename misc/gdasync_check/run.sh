@@ -14,7 +14,7 @@ run()
 {
 	[ -n "$QUICK" ] && [ $fail -ne 0 ] && return 0
 	"$@" > /tmp/gdcheck.out 2>&1 && r=0 || r=$?
-	grep -E "^(PASS|FAIL|ERROR|  steady|  seeks|  loops|  play ahead|  cap|  len0|  swap)|ThreadSanitizer|SUMMARY" /tmp/gdcheck.out | head -16 || true
+	grep -E "^(PASS|FAIL|ERROR|  steady|  seeks|  loops|  play ahead|  loop ahead|  cap|  len0|  swap)|ThreadSanitizer|SUMMARY" /tmp/gdcheck.out | head -16 || true
 	[ $r -eq 0 ] || fail=1
 }
 for lvl in 0 1 2; do
@@ -33,6 +33,11 @@ for miss in 1 2; do
 	TSAN_OPTIONS="halt_on_error=1" run /tmp/gdcheck_tsan 2 $((N / 5)) 8 $miss
 done
 run /tmp/gdcheck_opt 1 $((N / 3)) 9 2
+# Bundle 19, CD-DA Miss + LOOP AHEAD.
+for s in 13 14; do
+	run /tmp/gdcheck_opt 2 $N $s 3
+done
+TSAN_OPTIONS="halt_on_error=1" run /tmp/gdcheck_tsan 2 $((N / 5)) 15 3
 # GD-ROM Speed REAL with the worker: paced chunks wait for a fill in flight, and nothing hangs.
 run /tmp/gdcheck_opt 2 $((N / 3)) 10 2 1
 run /tmp/gdcheck_opt 1 $((N / 3)) 11 0 1

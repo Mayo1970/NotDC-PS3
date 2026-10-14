@@ -78,6 +78,8 @@ void plugins_Term();
 	// P47: the track that holds a FAD (0xAA: none) and the FADs since its start; its ADR and control.
 	u32 FASTCALL libGDR_GetTrackNumber(u32 fad,u32* elapsed);
 	void FASTCALL libGDR_GetTrackAdrAndControl(u32 track,u8* adr,u8* ctrl);
+	// P82: the FAD where the disc ends (its last lead-out); 0 with no disc.
+	u32 FASTCALL libGDR_GetLeadOut();
 	// P34: closes the image and opens the next one; false leaves the drive with no disc.
 	bool libGDR_SwapDisc(const char* path);
 

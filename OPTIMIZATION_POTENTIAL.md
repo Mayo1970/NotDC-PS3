@@ -118,7 +118,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 |---|---|---|---|---|---|
 | P1 | Texture path: palette snapshot, block decoders, 16-bit upload | speed, race | Soul Calibur (render-bound) | step 0 small, steps 1-3 medium | merged: plan section 0, parked Soul Calibur faults; also 5.12 SPE list #4, TArender.MD TR5 item 3 |
 | P2 | Frame Drop = DROP A/B, then one pending slot | speed | Soul Calibur SH4 wait (22-28%) | A/B: no code; slot: medium | merged: plan section 0, parked Soul Calibur faults; TArender.MD TR5 item 1: "the A/B was not run" |
-| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06, default + CD-DA; CD-DA miss stalls known, parked |
+| P3 | Async GD-ROM reads + CD-DA read-ahead | hitches | loading, CD-DA games | measure: small; build: ~150 lines | = plan 5.34, HW SUCCESS 2026-10-06, default + CD-DA; the CD-DA miss stalls: row "CD-DA Miss" + SILENCE (bundle 2, default); the gaps left at loop turns: its level + LOOP AHEAD, built 2026-10-14 (bundle 19), no HW run |
 | P4 | FPSCR.DN -> PPC NI bit | speed (unverified) | unknown | 1 line + option | CLOSED 2026-10-11 (Matt), no effect: NI does nothing on the PPE (`[ni]` probe, HW); "FPU DN" row removed 2026-10-12 (Matt); merged: plan 5.40; extends RESEARCH.MD 3e |
 | P5 | Small speed items | speed | <= 1% each | small to medium | merged: plan 5.36; bind scan is 5.10 (not chosen) |
 | P6 | JIT loop never stops | bug | every XMB exit, flash writeback | ~25 lines | = plan 5.35, HW SUCCESS 2026-10-06, default ON; EMU_TERM still never runs |
@@ -147,13 +147,13 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P29 | Maple reply timing and commands | bug | Geist Force, Silent Scope | ~40 lines | corrects section 4; built 2026-10-13 as the rows "Maple Reply Delay", "Maple Bus Speed" and "Maple Commands", bundle 16, default old path; HW 2026-10-13: Maple Bus Speed REAL eats inputs in Sonic Adventure and stays OLD, the other two ran with no fault |
 | P30 | P4 mirrors and operand-cache RAM banks | bug | NHL 2K2 | ~15 lines | new |
 | P31 | AICA register details | bug | VC 2K sports games; nullAICA-only fixes | 1-10 lines each | CA clamp merged: plan 6.5; Mono and LFORE built 2026-10-11, bundle 5 (plan section 0), HW not run; rest: plan 2.2, 6.8 |
-| P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | mac.w merged: plan 5.3 `JitMac`; fneg: new |
-| P33 | ELF loader: segments first | bug | homebrew .elf | ~30 lines | new |
+| P32 | SH4 interpreter: fneg with PR=1, mac.w with S=1 | bug | rare | 1-10 lines | mac.w merged: plan 5.3 `JitMac`; built 2026-10-14 in bundle 20 (plan section 0) as the row Interp Fixes, default OLD, no HW run |
+| P33 | ELF loader: segments first | bug | homebrew .elf | ~30 lines | built 2026-10-14 in bundle 20 (plan section 0) as the row ELF Loader, default OLD, no HW run |
 | P34 | Disc swap | feature | Shenmue, Skies of Arcadia, Grandia II, D2, RE Code Veronica | ~150 lines | corrects section 4 |
 | P35 | CUE/BIN and CHD readers | feature | more image formats | ~250 lines / 6-8K lines | new |
 | P36 | Cheat files and 16:9 output | feature | widescreen codes | ~250 lines | new |
 | P37 | Front-end extras: per-game VMU, VMU LCD, BIOS language, keyboard/mouse | feature | - | small each | P13; the BIOS language built 2026-10-13 as the row "BIOS Language", bundle 15; HW SUCCESS 2026-10-13; default ENGLISH in source since 2026-10-13 (Matt); the rest built 2026-10-13 as the rows "VMU Per Game" and "VMU Screen" (HW: works), bundle 16, default OFF; the keyboard and mouse rows removed the same day (Matt) |
-| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it); plan bundle 20 since 2026-10-13 (Matt) |
+| P38 | Windows CE (SH4 MMU) | feature | WinCE games | ~1.5K lines (interpreter) | merged: plan 3d (those games need it); plan bundle 20 since 2026-10-13 (Matt); the interpreter form built 2026-10-14 in bundle 20 (plan section 0) as the row SH4 MMU (OFF / AUTO / ON), default OFF, no HW run; the JIT form not built |
 | P39 | reios (HLE BIOS) | feature | boot without `dc_boot.bin` | ~2K lines | low value |
 | P40 | Flycast ARM7 tests as self-tests | test | rules out ARM7 engine bugs for F1 | medium | merged: plan 6.8 |
 | P41 | FMV: interpreter fallbacks (addc, swap.b, xtrct) | speed | Sofdec FMVs: Sonic Adventure intro (SPEED 57-71%), Space Channel 5 (~94%) | no new code | = plan 5.2, HW 2026-10-06: Sonic FMV +23% VPS |
@@ -161,7 +161,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P43 | FMV: YUV converter on the SH4 thread | speed | Sofdec FMVs (~1-3% of the SH4 thread, estimate) | ~40 lines | merged: plan 5.12 (the converter stays on the PPU) |
 | P44 | ARM7 resets in System mode, not SVC | bug | sound drivers that select SVC after reset; F1 and F3 unverified | 2 lines + a log probe | merged: plan 6.8 |
 | P45 | Mipmaps: upload the whole mip chain | bug (image) | distant textures alias; about half the texture fills in Crazy Taxi and Sonic Adventure | ~70 lines | gives P25's trilinear weights a meaning |
-| P46 | Flycast SH4 op tests as a PC check and a boot self-test | test | the interpreter runs every PR=1 FPU op | ~400 lines | merged: plan 5.3 `JitMac` (its check); P32 |
+| P46 | Flycast SH4 op tests as a PC check and a boot self-test | test | the interpreter runs every PR=1 FPU op | ~400 lines | merged: plan 5.3 `JitMac` (its check); P32; built 2026-10-14 in bundle 20 (plan section 0): `misc/interp_check` and the row SH4 Op Tests, no HW run |
 | P47 | GD-ROM REQ_STAT position bytes | bug | software that reads the CD-DA position (unknown) | ~8 lines | merged: plan 3h |
 | P48 | GD-ROM SET_MODE writes at twice the offset | bug | SET_MODE with an offset (unknown) | 1 line | extends P22 |
 | P49 | ARM7 PC reads: Rn = PC with a register shift, STR PC | bug | rare encodings (none in the hot-code dumps) | log census, then 2-3 lines per engine | merged: plan 6.8 |
@@ -179,11 +179,11 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P61 | CD-DA play limits and resume rules | bug | CD-DA that never stops, plays a data track, or stops looping after a resume | ~20 lines | fits bundle 2 (3h, P21 step 2) |
 | P62 | GET_SCD format 1: Q data layout and length | bug | software that reads the CD-DA position (unknown) | 3-4 lines | extends P47 (plan 3h) |
 | P63 | Face colours reset once per frame | bug | NHL 2K, NHL 2K2 (black players, black ice) | 1-2 lines per decoder | built 2026-10-11 in bundle 4 ("Face Reset", HW run, default ON) |
-| P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | bundle 20 (re-cut 2026-10-12) |
+| P64 | FPSCR cause bits cleared on a write | bug | code that reads FPSCR.cause after an FPU op (Kita He, WinCE) | 1 line | bundle 20 (re-cut 2026-10-12); built 2026-10-14 in bundle 20 (plan section 0) as the row FPSCR Cause, default OLD, no HW run |
 | P65 | Ch2 DMA: length, 0x12 mirror, DMAOR mask | bug (hang) | games that wait for a ch2 end IRQ (unknown) | ~6 lines | bundle 13 (re-cut 2026-10-12; with P7) |
 | P66 | Small TA and renderer fixes (8) | bug | Jet Grind Radio, DOA2 LE, Ooga Booga, Vigilante 8, Virtua Tennis, Skies of Arcadia (PAL) | 1-8 lines each | 3 built 2026-10-11 in bundle 4 (volume cap, data gate, invalid types; HW run, default ON); RTT parts: bundle 11 (P54) |
-| P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | bundle 20 (re-cut 2026-10-12) |
-| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple parts: bundle 16, built 2026-10-13 as the rows "Maple Guards" and "Maple Frame Rules" (the VMU LCD byte in "Maple Commands"), default old path, no HW run; system parts: bundle 20 (re-cut 2026-10-12) |
+| P67 | Small SH4 and memory fixes (6) | bug | Resident Evil Code Veronica X; robustness | 1-30 lines each | bundle 20 (re-cut 2026-10-12); built 2026-10-14 in bundle 20 (plan section 0) as the rows Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, default old path, no HW run |
+| P68 | Small system fixes (8) | bug | Cheats 'N Codes; robustness | 1-15 lines each | maple parts: bundle 16, built 2026-10-13 as the rows "Maple Guards" and "Maple Frame Rules" (the VMU LCD byte in "Maple Commands"), default old path, no HW run; system parts: built 2026-10-14 in bundle 20 (plan section 0) in the rows Memory Map, Holly Regs and ELF Loader, default old path, no HW run |
 | P69 | Stretch to fill, VMU beep | feature | 16:9 with no geometry change; VMU alarms | ~10 / ~70 lines | stretch: bundle 12; VMU beep: bundle 18 (re-cut 2026-10-12) |
 | P70 | G11 facts from the new Flycast commits | reference | modem answer mode, Capcom Direct, DCNet | - | GOALS.md G11 |
 | P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
@@ -193,11 +193,11 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P75 | RTT read-back never returns (PSL1GHT `rsxSetTransferData`) | bug (hang) | the Crazy Taxi pause freeze; every render to texture | 3 + 2 lines | bundle 11, first; the open item of plan section 0; then P66's RTT scaler |
 | P76 | Small RTT and present fixes (5) | bug | RTT games; static 2D screens | 1-8 lines each | bundle 11; new facts for P54 and P10; corrects section 4 (`9dbca9632`) |
 | P77 | Disc Swap: the command in flight, the lid-open phase | bug (hang) | every disc swap (Disc Swap is not HW tested yet) | 8 lines less, then ~12 | bundle 19 (re-cut 2026-10-12); corrects P34 (the Reicast `c050ee8f` clears) |
-| P78 | Small MMU and BSC register fixes (3) | bug | WinCE (P38); robustness | 1-2 lines each | bundle 13 (with P58); RFCR: bundle 20 |
+| P78 | Small MMU and BSC register fixes (3) | bug | WinCE (P38); robustness | 1-2 lines each | bundle 13 (with P58); RFCR: built 2026-10-14 in bundle 20 (plan section 0) in the row On-chip Regs, no HW run |
 | P79 | Punch-through alpha is 1 after the alpha test | bug (image), speed | Langrisser Millennium (Flycast); Jet Grind Radio draws with no blend | ~6 lines | built 2026-10-13 as PT Blend's level "+ ALPHA 1", bundle 17 (plan section 0); the default stays ON; no HW run; corrects P25 ("PT Blend") |
 | P80 | Sprite fourth corner from the plane | bug (image) | trapezoid sprites (no game named) | ~15 lines PPU, ~30 SPU | built 2026-10-13 as the row "Sprite Corner" (OLD / PLANE), bundle 17 (plan section 0), default OLD, no HW run |
 | P81 | Sound output levels: the budget, and a probe | investigation | the Looney Tunes balance; the SPU clipping | 2 tests with no code; probe ~45 lines | bundle 18 (re-cut 2026-10-12); extends P20 ("Output stage"); corrects plan section 0 and 6.6 |
-| P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: bundle 19 (P61) |
+| P82 | Small sound fixes (4) | bug | CD level meters (unverified); nullAICA only | 1-10 lines each | EXTS read-back and the nullAICA parts: bundle 18 (P20 G4); lead-out: built 2026-10-14 as CD-DA Rules' level "+ LEAD-OUT", bundle 19 (P61), no HW run |
 | P83 | G11 facts: a first stage with no V.42, the flash account, the traps | reference | G11 (modem) | stage 1 ~1,600 lines, not 4,176 | GOALS.md G11 (not bundled); extends P70 |
 | P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
 | P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save"; default FLYCAST, FLYCAST and OFF in source since 2026-10-13 (Matt); Console ID ran on HW 2026-10-13, the other two are open for the last checks before the release (Matt) |
@@ -1470,7 +1470,7 @@ More hangs on rare input (P9 has the first five). Flycast
   loads as slow as on a Dreamcast.
 - About 30-40 lines. No byte-order issue. Low risk.
 
-### P23 TOC fields and the GDI parser  `[~]` "TOC Fields" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; "GDI Parser" default ON, no HW test yet
+### P23 TOC fields and the GDI parser  `[~]` "TOC Fields" built 2026-10-10, bundle 2 (plan section 0), HW SUCCESS 2026-10-10, default ON in source; "GDI Parser" default ON, no HW test yet; HW test file `misc/gdi_check/hw/GDI test Rayman 2.gdi` since 2026-10-14 (bundle 19)
 
 - GDI parser (`plugs/ImgReader/iso9660.cpp`):
   - :174 reads each line with `fscanf("%d %d %d %d %s %d")`. A quoted file
@@ -1684,7 +1684,7 @@ nullAICA only (SPE AICA Sound OFF):
   Byte-order trap: in the AICA_PS3 branch, split `rez_28_0` MSB-first into
   `rez:1, VOFF:1, LPOFF:1`. About 10 lines.
 
-### P32 SH4 interpreter fixes  `[ ]` mac.w merged: plan 5.3 (JitMac)
+### P32 SH4 interpreter fixes  `[~]` mac.w merged: plan 5.3 (JitMac); built 2026-10-14 in bundle 20 (plan section 0): the row Interp Fixes (OLD / FIXED), with addv, subv and mul.l without signed overflow; no HW run
 
 - fneg with PR=1 on an odd register. Flycast `11fcadf37` (issue #2139) flips
   FR(n) whatever PR is. Ours (`dc/sh4/sh4_fpu_ops.h:474-483`) flips
@@ -1696,7 +1696,7 @@ nullAICA only (SPE AICA Sound OFF):
   Flycast's interpreter dies there. It matters when the op runs in the
   interpreter (JitMac OFF).
 
-### P33 ELF loader: segments first  `[ ]`
+### P33 ELF loader: segments first  `[~]` built 2026-10-14 in bundle 20 (plan section 0): the row ELF Loader (OLD / SEGMENTS), with P68's AICA registers; no HW run
 
 - Flycast dev `643374c91` (`origin/dev core/reios/reios_elf.cpp:60-120`): it
   loads the PT_LOAD segments first (with the zero-filled memsz tail), then
@@ -1900,7 +1900,7 @@ Flycast's RTT games).
 - About 15 lines, plus the two missing modes. Endian-neutral: the pack
   works on host words.
 
-### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet; RM verify built 2026-10-11, bundle 8 (plan section 0): row "JIT RM 2/3", default VERIFY, no HW run; TMU test: built 2026-10-11 in `misc/timebase_check`, bundle 7 (plan section 0)
+### P57 Small fixes: GDI paths with `\`, the RM verify, a TMU test  `[~]` GDI paths ("GDI Backslash") built 2026-10-10, bundle 2 (plan section 0), default ON in source (Matt), no HW test yet (test file of bundle 19: `misc/gdi_check/hw/GDI test Rayman 2.gdi`); RM verify built 2026-10-11, bundle 8 (plan section 0): row "JIT RM 2/3", default VERIFY, no HW run; TMU test: built 2026-10-11 in `misc/timebase_check`, bundle 7 (plan section 0)
 
 - GDI track paths with a backslash. Flycast's fixture
   `tests/files/test_gdis/a/cs.gdi` names `tracks\cs01.bin`. Ours
@@ -2134,7 +2134,7 @@ Flycast's RTT games).
   colour the same way.
 - Byte order: none. Neither NHL game is in Matt's set. Bundle 4.
 
-### P64 FPSCR cause bits stay set after a guest write  `[ ]`
+### P64 FPSCR cause bits stay set after a guest write  `[~]` built 2026-10-14 in bundle 20 (plan section 0): the row FPSCR Cause (OLD / CLEAR); no HW run
 
 - Flycast `bbdef06a0` (master, 2026-10-07, issue #1058): `UpdateFPSCR()`
   clears the cause field (bits 12-17: `fpscr.full &= ~0x3f000`) on every
@@ -2224,7 +2224,7 @@ None of the named games is in Matt's set.
   (`core/hw/pvr/pvr_regs.cpp:182-185`); ours keeps the low 3 bits
   (`YUV_init()`, `dc/pvr/pvr_if.cpp:165`). 1 line.
 
-### P67 Small SH4 and memory fixes  `[ ]`
+### P67 Small SH4 and memory fixes  `[~]` built 2026-10-14 in bundle 20 (plan section 0): the rows Memory Map (area 7), Block Writes, On-chip Regs (SCI), Holly Regs (SB_TFREM, 8-bit VRAM reads), Reg Access Size; no HW run
 
 - Area 7 registers outside P4: Flycast `b3de6a166` (Resident Evil Code
   Veronica X, Chris, floor 1F crash; Dolphin Blue) maps the on-chip
@@ -2265,7 +2265,7 @@ None of the named games is in Matt's set.
   and the next one (`tmu_regs_CR` is u16[3]: TCR0 << 16 | TCR1). About 30
   lines to make them size-safe. No game known (unverified).
 
-### P68 Small system fixes  `[~]` the maple parts built 2026-10-13, bundle 16 (plan section 0): "Maple Guards" (the overrun interrupt, the SB_MDSTAR stop), "Maple Frame Rules" (SB_MMSEL, the recipient address) and the VMU LCD byte inside "Maple Commands"; HW 2026-10-13: ran ON with no fault named (no game is known to need them); default ON and FLYCAST in source since 2026-10-13 (Matt), not packaged; the system parts open (bundle 20); bundle 16 is a HW SUCCESS (Matt 2026-10-13)
+### P68 Small system fixes  `[~]` the maple parts built 2026-10-13, bundle 16 (plan section 0): "Maple Guards" (the overrun interrupt, the SB_MDSTAR stop), "Maple Frame Rules" (SB_MMSEL, the recipient address) and the VMU LCD byte inside "Maple Commands"; HW 2026-10-13: ran ON with no fault named (no game is known to need them); default ON and FLYCAST in source since 2026-10-13 (Matt), not packaged; the system parts built 2026-10-14 in bundle 20 (plan section 0) (Memory Map: the 0x02000000 mirror; Holly Regs: the ATA soft reset, the G2 DMA address masks; ELF Loader: the AICA registers), no HW run; bundle 16 is a HW SUCCESS (Matt 2026-10-13)
 
 - Maple reply outside RAM: Flycast `8fdcea2e2` (Cheats 'N Codes Volume 1)
   drops the reply and raises holly_MAPLE_OVERRUN (error bit 9) at the end
@@ -2446,7 +2446,7 @@ None of the named games is in Matt's set.
 - HW (Disc Swap has no HW test yet, bundle 2): a 2-disc game at its swap
   prompt.
 
-### P78 Small MMU and BSC register fixes  `[~]` the MMUCR write mask and the data array 2 writes built 2026-10-12 inside "MMUCR Bits", bundle 13 (plan section 0), default OLD, no HW run; RFCR not built (bundle 20)
+### P78 Small MMU and BSC register fixes  `[~]` the MMUCR write mask and the data array 2 writes built 2026-10-12 inside "MMUCR Bits", bundle 13 (plan section 0), default OLD, no HW run; RFCR built 2026-10-14 in bundle 20 (plan section 0) in the row On-chip Regs (read-only, 17 after a reset), no HW run
 
 - MMUCR write mask: Flycast masks the written value with 0xfcfcff05
   (`core/hw/sh4/modules/ccn.cpp:41`); ours stores it raw
@@ -2570,7 +2570,7 @@ None of the named games is in Matt's set.
 - No fix is known. Not known: the values Looney Tunes writes; the
   console's law for the five stages caique did not measure, and for EXTS.
 
-### P82 Small sound fixes  `[ ]`
+### P82 Small sound fixes  `[~]` the lead-out stop built 2026-10-14 as CD-DA Rules' level "+ LEAD-OUT", bundle 19 (plan section 0), default ON (not the level), no HW run; the other three open (bundle 18)
 
 - EXTS read-back: Flycast stores the CD-DA sample in EXTS at each sample
   (`core/hw/aica/sgc_if.cpp:1580-1581`), and 0x45C0/0x45C4 read it. Ours
@@ -2735,7 +2735,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   table (`38045d1`) is not needed. Its mouse bits: left = bit 2, right =
   bit 1, middle = bit 3, active low; the wheel is inverted.
 
-### P38 Windows CE (SH4 MMU)  `[ ]` merged: plan 3d; in plan bundle 20 since 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot."), nothing built
+### P38 Windows CE (SH4 MMU)  `[~]` merged: plan 3d; in plan bundle 20 since 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot."); the interpreter form built 2026-10-14 in bundle 20 (plan section 0): the row SH4 MMU (OFF / AUTO / ON), `dc/sh4/sh4_mmu_int.cpp`, `misc/fullmmu_check`; no HW run (test disc: Sega Rally 2); the JIT form not built
 
 - Flycast: `core/hw/sh4/modules/mmu.cpp` 596 + `fastmmu.cpp` 337 + `mmu.h`
   169 lines; `wince.h` (409 lines) is mostly tracing.
@@ -2788,7 +2788,7 @@ Bump maps (added 2026-10-08, plan 3j; evidence and parts are there):
   Rm = PC with a register shift (`AicaArmTest.cpp:522`, :765) and STM {pc}
   (:1016), but never Rn = PC with a register shift or STR of PC.
 
-### P46 Flycast SH4 op tests as a PC check and a boot self-test  `[ ]` merged: plan 5.3 (JitMac check)
+### P46 Flycast SH4 op tests as a PC check and a boot self-test  `[~]` merged: plan 5.3 (JitMac check); built 2026-10-14 in bundle 20 (plan section 0): `misc/interp_check` (PASS; only P32's fneg failed, as read) and the row SH4 Op Tests; no HW run
 
 - Flycast `tests/src/sh4_ops.h` (1473 lines, 300 asserts) with
   `tests/src/Sh4InterpreterTest.cpp` (13 test groups; commits `e70a0dcf3`

@@ -3,6 +3,7 @@
 
 #include "types.h"
 #include "dc/mem/sh4_internal_reg.h"
+#include "ps3/ps3_presets.h"
 #include "bsc.h"
 
 // -- Register instances (definitions – declarations are in bsc.h via extern) ---
@@ -119,6 +120,12 @@ u32 read_BSC_PDTRB()
     return 0;
 }
 
+// On-chip Regs FLYCAST (P78, Flycast bsc.cpp): RFCR is a fixed 17 that drops writes, so a wait on a refresh count
+// ends; OLD keeps a plain register.
+static void write_BSC_RFCR_dropped(u32)
+{
+}
+
 // bsc_Init helper: one register-table entry for a plain data-backed register.
 #define BSC_REG_INIT_DATA(addr, bits, dataptr)                                  \
     do {                                                                         \
@@ -166,6 +173,11 @@ void bsc_Init()
 
     // RFCR  0xFF800028  16-bit  reset=0x0000
     BSC_REG_INIT_DATA(BSC_RFCR_addr, 16, &BSC_RFCR.full);
+    if (g_onchip_regs_preset)
+    {
+        BSC[(BSC_RFCR_addr & 0xFF) >> 2].flags         = REG_16BIT_READWRITE | REG_READ_DATA;
+        BSC[(BSC_RFCR_addr & 0xFF) >> 2].writeFunction = write_BSC_RFCR_dropped;
+    }
 
     // PCTRB 0xFF800040  32-bit  reset=0x00000000
     BSC_REG_INIT_DATA(BSC_PCTRB_addr, 32, &BSC_PCTRB.full);
@@ -220,7 +232,7 @@ void bsc_Reset(bool /*Manual*/)
     BSC_RTCSR.full = 0x0000;
     BSC_RTCNT.full = 0x0000;
     BSC_RTCOR.full = 0x0000;
-    BSC_RFCR.full  = 0x0000;
+    BSC_RFCR.full  = g_onchip_regs_preset ? 17 : 0x0000;
 
     BSC_PCTRA.full = 0x00000000;
     // BSC_PDTRA – undefined after reset; do not assign

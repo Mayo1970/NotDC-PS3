@@ -60,6 +60,7 @@ bool InitDrive(u32 fileflags=0);
 bool InitDrive_(char* fn);
 void TermDrive();
 u32 GetDriveTrackNumber(u32 fad,u32* elapsed);
+u32 GetDriveLeadOut();
 void GetDriveTrackAdrAndControl(u32 track,u8* adr,u8* ctrl);
 
 void PatchRegion_0(u8* sector,int size);

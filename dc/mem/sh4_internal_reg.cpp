@@ -42,6 +42,27 @@ Array<RegisterStruct> SCIF(10, true);  // SCIF : 10 registers (serial comm FIFO)
 // Register read/write helpers: 'size' is the access size in bytes (1, 2, 4), 'offset' the byte
 // offset in the module's register block.
 
+// Reg Access Size FIXED (P67): the register's own width from its flags, then the access size's low bits, as on the
+// little-endian SH4; OLD casts the data pointer, so on big endian a narrow access hits a wide register's high bytes.
+template <u32 size>
+static INLINE u32 reg_read_sized(const RegisterStruct& rs)
+{
+	const u32 v = (rs.flags & REG_32BIT_READWRITE) ? *rs.data32 : (rs.flags & REG_16BIT_READWRITE) ? *rs.data16 : *rs.data8;
+	return size == 4 ? v : size == 2 ? (v & 0xFFFF) : (v & 0xFF);
+}
+
+template <u32 size>
+static INLINE void reg_write_sized(const RegisterStruct& rs, u32 data)
+{
+	if (rs.flags & REG_32BIT_READWRITE)
+		*rs.data32 = size == 4 ? data : size == 2 ? (*rs.data32 & 0xFFFF0000u) | (data & 0xFFFF)
+		                                          : (*rs.data32 & 0xFFFFFF00u) | (data & 0xFF);
+	else if (rs.flags & REG_16BIT_READWRITE)
+		*rs.data16 = size == 1 ? (u16)((*rs.data16 & 0xFF00) | (data & 0xFF)) : (u16)data;
+	else
+		*rs.data8 = (u8)data;
+}
+
 template <u32 size>
 INLINE u32 RegSRead(Array<RegisterStruct>& reg, u32 offset)
 {
@@ -63,6 +84,8 @@ INLINE u32 RegSRead(Array<RegisterStruct>& reg, u32 offset)
 #endif
 		if (reg[offset].flags & REG_READ_DATA)
 		{
+			if (g_reg_size_preset)
+				return reg_read_sized<size>(reg[offset]);
 			if (size == 4)      return *reg[offset].data32;
 			else if (size == 2) return *reg[offset].data16;
 			else                return *reg[offset].data8;
@@ -121,7 +144,9 @@ INLINE void RegSWrite(Array<RegisterStruct>& reg, u32 offset, u32 data)
 #endif
 		if (reg[offset].flags & REG_WRITE_DATA)
 		{
-			if (size == 4)      *reg[offset].data32 = data;
+			if (g_reg_size_preset)
+				reg_write_sized<size>(reg[offset], data);
+			else if (size == 4) *reg[offset].data32 = data;
 			else if (size == 2) *reg[offset].data16 = (u16)data;
 			else                *reg[offset].data8  = (u8)data;
 			return;
@@ -169,8 +194,7 @@ INLINE void RegSWrite(Array<RegisterStruct>& reg, u32 offset, u32 data)
 
 
 // mmu_check: begin p4
-// P4 (0xE0000000-0xFFFFFFFF): store queues, cache/TLB arrays and area7 on-chip registers.
-// TLB page-size masks by SZ field: 0=1KB, 1=4KB, 2=64KB, 3=1MB.
+// P4 (E0-FF): store queues, cache/TLB arrays, area 7 registers. TLB page masks by SZ: 1 KB, 4 KB, 64 KB, 1 MB.
 static const u32 mmu_mask_2[4] =
 {
 	((0xFFFFFFFF) >> 10) << 0,   // 1 KB page
@@ -403,9 +427,8 @@ void FASTCALL WriteMem_sq(u32 addr, T data)
 }
 
 
-// Area 7 (0x1Fxxxxxx): on-chip peripheral register dispatch,
-// grouped by module and hashed by address bits [23:16].
-// Special-case address seen in Shenmue; harmless read
+// Area 7 (0x1Fxxxxxx): on-chip peripheral register dispatch, grouped by module and hashed by address bits [23:16].
+// Special-case address seen in Shenmue; harmless read.
 static const u32 SHENMUE_UNKNOWN_ADDR = 0x1F100008;
 
 template <u32 sz, class T>
@@ -681,8 +704,7 @@ void FASTCALL WriteMem_area7(u32 addr, T data)
 
 
 // mmu_check: begin ocr
-// P30 (Flycast 156aafe95): the operand-cache RAM is two 4 KB banks; the bank is address bit 13, or bit 25 with
-// CCR.OIX. Cache RAM Banks OLD takes the low 13 address bits: 0x7C000000 and 0x7C002000 are then the same bytes.
+// P30 (Flycast 156aafe95): two 4 KB banks by address bit 13, or bit 25 with CCR.OIX; OLD takes the low 13 bits.
 #define OCR_LOG_MAX 8
 static u32 s_ocr_diff;
 
@@ -804,11 +826,13 @@ void map_area7_init()
 	area7_orc_handler = _vmem_register_handler_Template(ReadMem_area7_OCR_T, WriteMem_area7_OCR_T);
 }
 
+// Memory Map FLYCAST (P67, Flycast b3de6a166): the registers only at P4 (0xFF). In P0-P3 area 7 reads 0 and drops
+// writes, so a stray pointer there no longer writes TMU, INTC or DMAC registers; the on-chip RAM stays at 7C-7F.
 void map_area7(u32 base)
 {
 	if (base == 0x60)
 		_vmem_map_handler(area7_orc_handler, 0x1C | base, 0x1F | base);
-	else
+	else if (base == 0xE0 || !g_mem_map_preset)
 		_vmem_map_handler(area7_handler, 0x1F | base, 0x1F | base);
 }
 

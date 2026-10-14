@@ -19,7 +19,9 @@ bool gda_cdda(uint8_t* dst, uint32_t fad);             // a sector from the read
 void gda_cdda_next(bool playing, uint32_t fad);        // where CD-DA plays next
 bool gda_cdda_on();                                    // the read-ahead runs (level 2)
 void gda_cdda_seek(uint32_t fad);                      // CD-DA Miss: play starts here, read its window now
+void gda_cdda_loop(uint32_t start, uint32_t end);      // + LOOP AHEAD: at end the play turns back to start
 void gda_cdda_reset();                                 // P34: a disc swap empties the read-ahead ring
+#define GDA_NO_LOOP 0xFFFFFFFFu                        // gda_cdda_loop: the play does not turn back
 
 void gda_count(int who, uint32_t sectors, uint64_t ticks);   // a read the SH4 thread did itself
 void gda_stats(double secs);                                  // [gdr] line, once a second

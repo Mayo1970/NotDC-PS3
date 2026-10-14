@@ -197,13 +197,14 @@ static bool dec_is_macop(u32 op)
 	return (op&0xF00F)==0x000F || (op&0xF00F)==0x400F;
 }
 
-// Plan 5.39 (Flycast 62085539a): FPU ops that do not read PR, so a PR=1 block keeps them native. Flycast's list
-// also has fneg; ours waits for the interpreter's fneg fix (P32).
+// Plan 5.39 (Flycast 62085539a): FPU ops that do not read PR, so a PR=1 block keeps them native. fneg is in Flycast's
+// list; ours takes it with Interp Fixes FIXED (P32), when the fallback also flips FR(n).
+extern int g_interp_fix_preset;
 static bool dec_is_pr_free(u32 op)
 {
 	const u32 lo=op&0xF;
 	//fmov forms 0xFnm6-0xFnmC / fsts FPUL,<FREG_N> 0xFn0D, flds <FREG_N>,FPUL 0xFn1D
-	return (lo>=6 && lo<=0xC) || (op&0xEF)==0x0D;
+	return (lo>=6 && lo<=0xC) || (op&0xEF)==0x0D || (g_interp_fix_preset && (op&0xFF)==0x4D);
 }
 
 #if 1

@@ -312,7 +312,8 @@ static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
 static const char* k_gdstatus[]  = { "OLD", "READ STOPS CD-DA", "+ TIMING", NULL };
 static const char* k_gdpos[]     = { "OLD", "REQ_STAT", "+ GET_SCD", NULL };
 static const char* k_gdspeed[]   = { "FAST", "REAL", NULL };
-static const char* k_cddamiss[]  = { "OFF", "PLAY AHEAD", "+ SILENCE", NULL };
+static const char* k_cddamiss[]  = { "OFF", "PLAY AHEAD", "+ SILENCE", "+ LOOP AHEAD", NULL };
+static const char* k_cddarules[] = { "OFF", "ON", "+ LEAD-OUT", NULL };
 static const char* k_div32[]     = { "OLD", "FIXED", NULL };
 static const char* k_aniso[]     = { "1x", "2x", "4x", "8x", "16x", NULL };
 static const char* k_texfilter[] = { "GAME", "NEAREST", "LINEAR", NULL };
@@ -354,6 +355,9 @@ static const char* k_broadcast[] = { "CONSOLE", "NTSC", "PAL", "DISC", NULL };
 static const char* k_bioslang[]  = { "CONSOLE", "JAPANESE", "ENGLISH", "GERMAN", "FRENCH", "SPANISH", "ITALIAN", NULL };
 static const char* k_busspeed[]  = { "OLD", "REAL", NULL };
 static const char* k_pergame[]   = { "OFF", "SLOT A1", "ALL SLOTS", NULL };
+static const char* k_clear[]     = { "OLD", "CLEAR", NULL };
+static const char* k_elfload[]   = { "OLD", "SEGMENTS", NULL };
+static const char* k_fullmmu[]   = { "OFF", "AUTO", "ON", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -608,8 +612,8 @@ static Option s_jit[] = {
 static Option s_gdrom[] = {
 	{ "GD Status",       &g_gd_status_preset,     OPT_CHOICE, k_gdstatus,  0, 0,0,0, NULL,
 	  "A data read stops CD-DA; + TIMING: Flycast's status delays (P21). Set before boot." },
-	{ "CD-DA Rules",     &g_cdda_rules_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Flycast's CD-DA end, resume and repeat rules (P61). Set before boot." },
+	{ "CD-DA Rules",     &g_cdda_rules_preset,    OPT_CHOICE, k_cddarules, 0, 0,0,0, NULL,
+	  "CD-DA end, resume, repeat rules (P61); + LEAD-OUT stops at the disc end (P82). Set before boot." },
 	{ "GD Position",     &g_gd_position_preset,   OPT_CHOICE, k_gdpos,     0, 0,0,0, NULL,
 	  "REQ_STAT sends the FAD, track and control from the TOC (P47). Live." },
 	{ "GET_SCD Q Data",  &g_gd_scd_q_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -617,7 +621,7 @@ static Option s_gdrom[] = {
 	{ "TOC Fields",      &g_toc_fields_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "TOC: ADR 1, a data lead-out, the real low-density end (P23). Set before boot." },
 	{ "CD-DA Miss",      &g_cdda_miss_preset,     OPT_CHOICE, k_cddamiss,  0, 0,0,0, NULL,
-	  "Read-ahead starts at CD_PLAY; + SILENCE: a miss waits in silence, no stall. Live." },
+	  "Read-ahead at CD_PLAY; + SILENCE: no stall at a miss; + LOOP AHEAD: no gap at a loop. Live." },
 	{ "GD-ROM Speed",    &g_gd_speed_preset,      OPT_CHOICE, k_gdspeed,   0, 0,0,0, NULL,
 	  "REAL paces disc DMA at 1.8 MB/s as a Dreamcast; loads take longer (P22). Live." },
 	{ "GD DMA Fix",      &g_gd_dma_fix_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -809,6 +813,30 @@ static Option s_maple[] = {
 	  "The pictures that games send to the VMU screens, at the TV's right edge (P37). Live." },
 };
 
+// Plan section 7, bundle 20: one row per item; the first value is the old path. All are set before boot.
+static Option s_sys[] = {
+	{ "SH4 Op Tests",    &g_sh4_optest_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Flycast's SH4 op tests on the interpreter at boot, [sh4test] log lines (P46). Set before boot." },
+	{ "Interp Fixes",    &g_interp_fix_preset,    OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "fneg with PR=1, mac.w and mac.l with S=1, addv/subv overflow as on hw (P32). Set before boot." },
+	{ "FPSCR Cause",     &g_fpscr_cause_preset,   OPT_CHOICE, k_clear,     0, 0,0,0, NULL,
+	  "CLEAR: a write to FPSCR does not keep the exception cause bits (P64). Set before boot." },
+	{ "Memory Map",      &g_mem_map_preset,       OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: SH4 registers only at 0xFF, no BIOS/flash mirror at 0x02 (P67, P68). Set before boot." },
+	{ "Block Writes",    &g_block_write_preset,   OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: a DMA of any size writes its last bytes; OLD hangs there (P67). Set before boot." },
+	{ "On-chip Regs",    &g_onchip_regs_preset,   OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: the SCI registers exist, the refresh count reads 17 (P67, P78). Set before boot." },
+	{ "Holly Regs",      &g_holly_regs_preset,    OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: TA FIFO space, VRAM byte reads, G2 DMA masks, GD reset (P67, P68). Set before boot." },
+	{ "Reg Access Size", &g_reg_size_preset,      OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: a byte or halfword register access takes the low bits (P67). Set before boot." },
+	{ "ELF Loader",      &g_elf_loader_preset,    OPT_CHOICE, k_elfload,   0, 0,0,0, NULL,
+	  "SEGMENTS: an .elf loads as Flycast's, constructors and zeroed data too (P33). Set before boot." },
+	{ "SH4 MMU",         &g_full_mmu_preset,      OPT_CHOICE, k_fullmmu,   0, 0,0,0, NULL,
+	  "AUTO: a Windows CE disc runs on the interpreter with the full MMU. Slow (P38). Set before boot." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -860,6 +888,7 @@ static Page s_opt_pages[] = {
 	{ "DRAW COST",     s_cost,  (int)(sizeof(s_cost) / sizeof(s_cost[0])) },
 	{ "FLASH / CLOCK", s_flash, (int)(sizeof(s_flash) / sizeof(s_flash[0])) },
 	{ "MAPLE / VMU",   s_maple, (int)(sizeof(s_maple) / sizeof(s_maple[0])) },
+	{ "SH4 / SYSTEM",  s_sys,   (int)(sizeof(s_sys) / sizeof(s_sys[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
@@ -1337,7 +1366,7 @@ static int* const k_live_opts[] = {
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 
-#define MAX_INGAME_OPTS 192
+#define MAX_INGAME_OPTS 256
 static int s_run_val[MAX_INGAME_OPTS];    // the running emulator's values while the menu is open
 static int s_boot_val[MAX_INGAME_OPTS];   // boot-only options as saved for the next boot
 static bool s_boot_val_set;
@@ -1525,6 +1554,7 @@ void ps3_menu_ingame(void)
 		ps3_costcfg_print("menu", false);
 		ps3_flashcfg_print("menu", false);
 		ps3_maplecfg_print("menu", false);
+		ps3_syscfg_print("menu", false);
 		// P34: after the boot-only rows have their running values back, which the GDI reader takes.
 		if (s_swap_path[0])
 			gdrom_disc_swap(s_swap_path);
@@ -1622,5 +1652,6 @@ int ps3_menu_run(void)
 	ps3_costcfg_print("boot", true);
 	ps3_flashcfg_print("boot", true);
 	ps3_maplecfg_print("boot", true);
+	ps3_syscfg_print("boot", true);
 	return 1;
 }

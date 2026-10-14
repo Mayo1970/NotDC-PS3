@@ -2,13 +2,8 @@
 
 #include "types.h"
 
-/**
- * SCI - Serial Communication Interface (SH4)
- *
- * NOTE: The SCI peripheral was not used by the Dreamcast.
- * These stubs exist to satisfy the emulator's standard
- * Init/Reset/Term lifecycle without performing any action.
- */
+// SCI, the SH4's serial port without FIFO; the Dreamcast does not use it. Its registers exist only with the row
+// On-chip Regs FLYCAST (sci.cpp).
 
 void sci_Init();
 void sci_Reset(bool Manual);

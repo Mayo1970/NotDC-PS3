@@ -255,11 +255,47 @@ static void blockcopy_announce()
 // memmove, not memcpy: guest-to-guest transfers whose source can point into the RAM image
 // (pvr_sb_regs.cpp passes GetMemPtr(src, len)), so the ranges may overlap.
 
+// sys20_check: begin block
+
+// Block Writes FIXED (P67, Flycast 82e0fc7f6): a size that is not a multiple of 4 ends with a halfword and a byte;
+// OLD hangs in the verify. The host source holds SH4 words, so on big endian byte i is at i ^ 3.
+static inline u8 block_src8(const u32* src, u32 i)
+{
+#if HOST_ENDIAN == ENDIAN_BIG
+	return ((const u8*)src)[i ^ 3];
+#else
+	return ((const u8*)src)[i];
+#endif
+}
+
+static inline u16 block_src16(const u32* src, u32 i)
+{
+#if HOST_ENDIAN == ENDIAN_BIG
+	return ((const u16*)src)[(i ^ 2) >> 1];
+#else
+	return ((const u16*)src)[i >> 1];
+#endif
+}
+
 void MEMCALL WriteMemBlock_nommu_dma(u32 dst, u32 src, u32 size)
 {
 	// Bulk writes are how games land new code in RAM; drop any cached SH4
 	// blocks over the range (no-op unless the cached interpreter is running).
 	sh4_cached_invalidate_range(dst, size);
+	if ((size & 3) && g_block_write_preset)
+	{
+		u32 i = 0;
+		for (; i + 4 <= size; i += 4)
+			WriteMem32_nommu(dst + i, ReadMem32_nommu(src + i));
+		if (size - i >= 2)
+		{
+			WriteMem16_nommu(dst + i, ReadMem16_nommu(src + i));
+			i += 2;
+		}
+		if (i < size)
+			WriteMem8_nommu(dst + i, ReadMem8_nommu(src + i));
+		return;
+	}
 	// Word-at-a-time DMA copy through the normal memory accessors
 	verify((size & 3) == 0);   // must be 4-byte aligned
 	if (g_blockcopy_preset)
@@ -282,6 +318,20 @@ void MEMCALL WriteMemBlock_nommu_ptr(u32 dst, u32* src, u32 size)
 	// Bulk writes are how games land new code in RAM; drop any cached SH4
 	// blocks over the range (no-op unless the cached interpreter is running).
 	sh4_cached_invalidate_range(dst, size);
+	if ((size & 3) && g_block_write_preset)
+	{
+		u32 i = 0;
+		for (; i + 4 <= size; i += 4)
+			WriteMem32_nommu(dst + i, src[i >> 2]);
+		if (size - i >= 2)
+		{
+			WriteMem16_nommu(dst + i, block_src16(src, i));
+			i += 2;
+		}
+		if (i < size)
+			WriteMem8_nommu(dst + i, block_src8(src, i));
+		return;
+	}
 	verify((size & 3) == 0);
 	if (g_blockcopy_preset)
 	{
@@ -302,6 +352,20 @@ void MEMCALL WriteMemBlock_ptr(u32 addr, u32* data, u32 size)
 	// Bulk writes are how games land new code in RAM; drop any cached SH4
 	// blocks over the range (no-op unless the cached interpreter is running).
 	sh4_cached_invalidate_range(addr, size);
+	if ((size & 3) && g_block_write_preset)
+	{
+		u32 i = 0;
+		for (; i + 4 <= size; i += 4)
+			WriteMem32(addr + i, data[i >> 2]);
+		if (size - i >= 2)
+		{
+			WriteMem16(addr + i, block_src16(data, i));
+			i += 2;
+		}
+		if (i < size)
+			WriteMem8(addr + i, block_src8(data, i));
+		return;
+	}
 	verify((size & 3) == 0);
 	if (g_blockcopy_preset)
 	{
@@ -316,6 +380,7 @@ void MEMCALL WriteMemBlock_ptr(u32 addr, u32* data, u32 size)
 	for (u32 i = 0; i < size; i += 4)
 		WriteMem32(addr + i, data[i >> 2]);
 }
+// sys20_check: end block
 
 // -- Debugger / dynarec helpers ----------------------------------------------
 

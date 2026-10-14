@@ -41,6 +41,11 @@
 void cpu_iNimp(u32 op, const char* info);
 void cpu_iWarn(u32 op, const char* info);
 
+// Interp Fixes (plan section 7, bundle 20): 1 = mac.w and mac.l with S=1 saturate through shil.cpp's copy.
+extern int g_interp_fix_preset;
+extern "C" void sh4_mac_l(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs);
+extern "C" void sh4_mac_w(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs);
+
 // Branch displacement helpers (were file-scope in sh4_cpu_branch.h; moved here so
 // that header holds opcode bodies only and can be re-included as label bodies).
 static INLINE u32 branch_target_s8(u32 op)

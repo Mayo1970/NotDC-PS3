@@ -189,6 +189,12 @@ u32 GetDriveTrackNumber(u32 fad,u32* elapsed)
 	return track;
 }
 
+// P82: the last area's lead-out, where the disc ends; 0 with no disc.
+u32 GetDriveLeadOut()
+{
+	return s_trk_n ? s_trk_lead[s_trk_areas-1] : 0;
+}
+
 void GetDriveTrackAdrAndControl(u32 track,u8* adr,u8* ctrl)
 {
 	*adr=*ctrl=0;

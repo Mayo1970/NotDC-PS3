@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# OPTIMIZATION_POTENTIAL P3 (WSL): plants one bug at a time in copies of gdromv3.cpp and ps3_gdasync.cpp; run.sh must
-# FAIL on each. Arg: iterations for run.sh (default 600). The bundle 2 mutants (after B2) run run_b2.sh: the last
-# runs of run.sh alone.
+# P3 (WSL): one planted bug at a time in gdromv3.cpp or ps3_gdasync.cpp; run.sh must FAIL on each. Arg: iterations
+# (default 600). After the marks B2 and B19 the mutants run only their bundle's runs (run_b2.sh, run_b19.sh).
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -68,7 +67,7 @@ MUTANTS = [
      [('\t\t\t\tcdda_held++;\n\t\t\t\tmemset(sector,0,2352);', '\t\t\t\tcdda_held++;')]),
     # Bundle 2: P34 and the DMA fix with the worker
     ('swap: the ring keeps the old disc', 'a',
-     [('\t\t\tfor (u32 i = 0; i < RA_SLOTS; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);\n\t\t\ts_ra_run = s_ra_next = 0;',
+     [('\t\t\tfor (u32 i = 0; i < RA_ALL; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);\n\t\t\ts_ra_run = s_ra_next = 0;',
        '\t\t\ts_ra_run = s_ra_next = 0;')]),
     ('swap: the ring is not emptied', 'a',
      [('\tREL(s_ra_want, RA_NONE);\n\tREL(s_ra_flush, 1u);\n\tsysSemPost(s_sem, 1);\n\twhile (ACQ(s_ra_flush))\n\t\tsysUsleep(50);',
@@ -78,6 +77,22 @@ MUTANTS = [
     ('swap: CD-DA goes on', 'g', [('\tmemset(&cdda,0,sizeof(cdda));\n\tcdda_held=0;', '\tcdda_held=0;')]),
     ('swap: the sense is not set', 'g', [('\tsns_key=2;\n\tsns_asc=4;\n\tsns_ascq=1;\n', '')]),
     ('length 0: the DMA ends with nothing moved', 'g', [('(moved || !fix)', '(true)')]),
+    'B19',
+    # Bundle 19: CD-DA Miss + LOOP AHEAD
+    ('LOOP AHEAD: the head is never read', 'a', [('(ra_batch() || lh_batch())', 'ra_batch()')]),
+    ('LOOP AHEAD: the head is not looked up', 'a',
+     [('\tif (ra_get(dst, RA_SLOTS + (fad & (LH_SLOTS - 1)), fad))\n\t{\n\t\tst_lh++;\n\t\treturn true;\n\t}\n', '')]),
+    ('LOOP AHEAD: a head hit keeps the old run', 'a',
+     [('\ts_ra_missed = true;\n\tif (ra_get(dst, RA_SLOTS', '\tif (ra_get(dst, RA_SLOTS'),
+      ('\tst_miss++;\n\treturn false;', '\tst_miss++;\n\ts_ra_missed = true;\n\treturn false;')]),
+    ('LOOP AHEAD: the run reads past the loop end', 'a',
+     [('const u32 stop = lp != ~0ull && want < (u32)lp && (u32)lp < end ? (u32)lp : end;', 'const u32 stop = end;')]),
+    ('LOOP AHEAD: head slots one on', 'a',
+     [('ra_put(RA_SLOTS + ((s_lh_next + k) & (LH_SLOTS - 1)), s_lh_next + k,',
+       'ra_put(RA_SLOTS + ((s_lh_next + k + 1) & (LH_SLOTS - 1)), s_lh_next + k,')]),
+    ('LOOP AHEAD: a swap keeps the head', 'a',
+     [('\t\t\tfor (u32 i = 0; i < RA_ALL; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);',
+       '\t\t\tfor (u32 i = 0; i < RA_SLOTS; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);')]),
 ]
 
 def main():
@@ -89,6 +104,9 @@ def main():
     for m in MUTANTS:
         if m == 'B2':
             script, iters = 'misc/gdasync_check/run_b2.sh', '300'
+            continue
+        if m == 'B19':
+            script, iters = 'misc/gdasync_check/run_b19.sh', '300'
             continue
         name, key, edits = m
         total += 1

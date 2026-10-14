@@ -382,8 +382,11 @@ void pvr_writereg_TA(u32 addr, u32 data, u32 sz)
 }
 
 // VRAM Access Functions (32-bit to 64-bit address conversion)
+// Holly Regs FLYCAST (P67, Flycast c5a42a57b): the byte at the 32-bit path's address; on big endian it is at ^ 3.
 u8 FASTCALL pvr_read_area1_8(u32 addr)
 {
+    if (g_holly_regs_preset)
+        return *host_ptr_xor((u8*)&vram[vramlock_ConvOffset32toOffset64(addr)]);
     printf("Warning: 8-bit VRAM reads are not supported by hardware\n");
     return 0;
 }
