@@ -63,6 +63,21 @@ CCN_PTEH_type CCN_PTEH;
 CCN_MMUCR_type CCN_MMUCR;
 int g_mmu_bits_preset = 1;
 bool g_dec_fpu_disabled;
+bool g_mmu_fast;
+uint64_t ps3_timebase_hz = 79800000, g_fake_tb, g_fake_step = 100;
+// MMU Model FAST's write hook (sh4_mmu_int.cpp): recorded; TI or a TLB array flushes, as there.
+struct Faw { u32 pa, v; };
+static std::vector<Faw> g_faw;
+static int g_fast_flushes;
+void jx_fast_after_write(u32 pa, u32 v)
+{
+	g_faw.push_back({ pa, v });
+	if (((pa >> 24) & 0xFA) == 0xF2 || ((pa & 0x1FFFFFFF) == 0x1F000010 && (v & MMUCR_TI_BIT)))
+	{
+		g_fast_flushes++;
+		jmmu_fast_changed();
+	}
+}
 VArray2 mem_b;
 void* _vmem_MemInfo_ptr[0x100];
 static u8* g_ram;   // main RAM below 4 GB, as the JTC keeps 32-bit host addresses
@@ -187,6 +202,10 @@ static void world(const char* name)
 	sh4_cpu.ResetCache = other_reset_cache;
 	bm_reset_all();
 	g_log.clear();
+	g_mmu_fast = false;
+	g_jmmu_bcache = g_jmmu_sq = false;
+	g_faw.clear();
+	g_fast_flushes = 0;
 	jmmu_select(true);
 	g_acc.clear();
 	g_takes.clear();
@@ -546,6 +565,154 @@ static void t_bm()
 	bm_reset_all();
 }
 
+// ---- row MMU Model FAST, the JIT side: owner 64, its table's changes, MMUCR and the TLB arrays ----
+static void t_fast()
+{
+	world("FAST: a slot of the table is owner 64's; ldtlb keeps it, a change of the table drops it");
+	g_mmu_fast = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	read_from(0x8C005000, 0x8C005000, -1);
+	const u32 drops = s_js.drops;
+	jmmu_utlb_changed(5);
+	// No UTLB entry owns a slot: the [jmmu] line's drops would count a drop of nothing.
+	CHECK(owned_kept() && p1_kept() && s_js.drops == drops, "ldtlb dropped a FAST slot, or counted a drop");
+	u32 g = g_jdgen;
+	jmmu_fast_changed();
+	CHECK(!owned_kept() && p1_kept() && g_jdgen == g + 1, "the change: owned %d P1 %d gen +%u", owned_kept(), p1_kept(),
+	      g_jdgen - g);
+
+	world("FAST: a new ASID drops owner 64's slots");
+	g_mmu_fast = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	g_xl = { 0, 0xFF000000, -1 };
+	jmmu_wr32(0xFF000000, 0x77);
+	CHECK(!owned_kept(), "the slot stayed");
+
+	world("FAST: MMUCR keeps the slots but for TI (a flush) and a new SV");
+	g_mmu_fast = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	g_xl = { 0, 0xFF000010, -1 };
+	g = g_jdgen;
+	jmmu_wr32(0xFF000010, 1 | 5 << 10);
+	CHECK(owned_kept() && g_jdgen == g && g_faw.size() == 1 && g_faw[0].pa == 0x1F000010 && g_faw[0].v == (1 | 5 << 10),
+	      "URC only: owned %d gen +%u, %u hook calls", owned_kept(), g_jdgen - g, (u32)g_faw.size());
+	jmmu_wr32(0xFF000010, 1 | MMUCR_TI_BIT);
+	CHECK(!owned_kept() && g_fast_flushes == 1 && g_jdgen == g + 1, "TI: owned %d, %d flushes, gen +%u", owned_kept(),
+	      g_fast_flushes, g_jdgen - g);
+	read_from(0x00401000, 0x0C401000, 64);
+	g = g_jdgen;
+	g_xl = { 0, 0xFF000010, -1 };
+	jmmu_wr32(0xFF000010, 1 | 0x100);
+	CHECK(!owned_kept() && g_jdgen == g + 1 && g_fast_flushes == 1, "SV: owned %d gen +%u", owned_kept(), g_jdgen - g);
+	read_from(0x00401000, 0x0C401000, 64);
+	g_xl = { 0, 0xFF000010, -1 };
+	jmmu_wr32(0xFF000010, 1 | 0x100 | 9 << 10);
+	CHECK(owned_kept(), "the same SV dropped");
+
+	world("FAST: a TLB array write goes to the table's hook with the value 0");
+	g_mmu_fast = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	g_xl = { 0, 0xF7800300, -1 };
+	jmmu_wr16(0xF7800300, 0x1234);
+	CHECK(!owned_kept() && g_fast_flushes == 1 && g_faw.size() == 1 && g_faw[0].pa == 0xF7800300 && g_faw[0].v == 0,
+	      "owned %d, %d flushes, %u hook calls", owned_kept(), g_fast_flushes, (u32)g_faw.size());
+
+	world("FULL: no table hook; MMUCR drops every translated slot");
+	read_from(0x00401000, 0x0C401000, 5);
+	g_xl = { 0, 0xFF000010, -1 };
+	jmmu_wr32(0xFF000010, 1 | 5 << 10);
+	CHECK(!owned_kept() && g_faw.empty(), "owned %d, %u hook calls", owned_kept(), (u32)g_faw.size());
+}
+
+// ---- row MMU Block Cache: the fills, their key and the generation's moves ----
+static const JDisp& jd(u32 pc) { return g_jdisp[jdisp_index(pc)]; }
+
+static void t_bcache()
+{
+	world("block cache: a lookup with AT off fills pc, key (mode, ASID), generation and code");
+	g_jmmu_bcache = true;
+	CCN_MMUCR.reg_data = 0;
+	jmmu_select(true);
+	set_md(true);
+	Sh4cntx.fpscr.full = 1 << 19 | 1;
+	CCN_PTEH.reg_data = 0x00400042;
+	void* a = jmmu_lookup(0x8C010020);
+	CHECK(a && jd(0x8C010020).pc == 0x8C010020 && jd(0x8C010020).key == (1u | 4 | 16 | 0x42 << 8) &&
+	      jd(0x8C010020).gen == g_jdgen && jd(0x8C010020).code == (u32)(uintptr_t)a, "entry %08X %08X %u %08X",
+	      jd(0x8C010020).pc, jd(0x8C010020).key, jd(0x8C010020).gen, jd(0x8C010020).code);
+	CHECK(jmmu_dkey() == jd(0x8C010020).key, "jmmu_dkey %08X", jmmu_dkey());
+	CHECK(jmmu_lookup(0x8C010020) == a && jd(0x8C010020).code == (u32)(uintptr_t)a, "the found block's fill");
+	CHECK(jdisp_index(0x8C010020) == ((0x8C010020u ^ (0x8C010020u >> 12)) >> 1) % JDISP_N, "the index");
+
+	world("block cache: AT on fills only with MMU Model FAST");
+	g_jmmu_bcache = true;
+	jmmu_lookup(0x8C010020);
+	CHECK(jd(0x8C010020).pc == 0, "FULL with AT on filled");
+	g_mmu_fast = true;
+	a = jmmu_lookup(0x8C010020);
+	CHECK(jd(0x8C010020).pc == 0x8C010020 && jd(0x8C010020).code == (u32)(uintptr_t)a, "FAST did not fill");
+
+	world("block cache: the generation moves at each change of a translation or of the code");
+	g_jmmu_bcache = true;
+	g_mmu_fast = true;
+	u32 g = g_jdgen;
+	sh4_cpu.ResetCache();
+	CHECK(g_jdgen == g + 1, "an I-cache flush: +%u", g_jdgen - g);
+	g_xl = { 0, 0xF0001000, -1 };
+	jmmu_wr32(0xF0001000, 0);
+	CHECK(g_jdgen == g + 2, "an I-cache array write: +%u", g_jdgen - g);
+	jmmu_code_cleared();
+	jmmu_fast_changed();
+	CHECK(g_jdgen == g + 4, "a code clear and a table change: +%u", g_jdgen - g);
+	CCN_MMUCR.reg_data = 0;
+	jmmu_lookup(0x8C010000);
+	CHECK(g_jdgen == g + 5, "an AT edge: +%u", g_jdgen - g);
+	g_xl = { 0, 0xFF000010, -1 };
+	jmmu_wr32(0xFF000010, 0x100);
+	CHECK(g_jdgen == g + 6, "a new SV: +%u", g_jdgen - g);
+	g_xl = { 0, 0xFF000000, -1 };
+	jmmu_wr32(0xFF000000, 0x55);
+	CHECK(g_jdgen == g + 6, "a new ASID moved it (the key has the ASID): +%u", g_jdgen - g);
+
+	world("block cache: OFF fills nothing; the choice empties the table");
+	CCN_MMUCR.reg_data = 0;
+	jmmu_select(true);
+	jmmu_lookup(0x8C010020);
+	CHECK(jd(0x8C010020).pc == 0, "OFF filled");
+	g_jmmu_bcache = true;
+	jmmu_lookup(0x8C010020);
+	jmmu_select(true);
+	CHECK(jd(0x8C010020).pc == 0 && jd(0x8C010020).gen == 0 && g_jdgen == 1, "the table after the choice");
+}
+
+static void t_time()
+{
+	world("the ms line: a sampled call counts 16 times; a compile is not in its lookup");
+	g_fake_step = 79800;	// 1 ms a read
+	s_tick = 0;
+	for (int i = 0; i < 16; i++)
+		jmmu_lookup(0x8C010000);
+	s_tick = 15;
+	jmmu_rd32(0x8C005000);
+	jmmu_stats(1.0);
+	CHECK(logged("[jmmu] ms/s: lookup 16.0, compile 1.0, slow r 16.0 w 0.0, ifb 0.0, exc 0.0 | block cache OFF"),
+	      "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
+	g_log.clear();
+	s_tick = 15;
+	jmmu_wr32(0x8C005000, 1);
+	s_tick = 15;
+	jmmu_raise(0x8C010000);
+	jmmu_stats(1.0);
+	CHECK(logged("slow r 0.0 w 16.0, ifb 0.0, exc 16.0"), "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
+	// A sampled lookup that compiles: four reads, the compile's two take one step out.
+	g_log.clear();
+	s_tick = 15;
+	jmmu_lookup(0x8C020000);
+	jmmu_stats(1.0);
+	CHECK(logged("[jmmu] ms/s: lookup 32.0, compile 1.0,"), "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
+	g_fake_step = 100;
+}
+
 int main()
 {
 	g_ram = (u8*)mmap(0, RAM_SIZE + 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
@@ -565,6 +732,9 @@ int main()
 	t_select();
 	t_stats();
 	t_bm();
+	t_fast();
+	t_bcache();
+	t_time();
 	printf("%s: %d runtime checks, %d failed\n", g_fails ? "FAIL" : "PASS", g_checks, g_fails);
 	return g_fails ? 1 : 0;
 }

@@ -104,6 +104,18 @@ static void test_words()
 	emit_jmmu_cold_write_pair(c, 14, 15, fnp(FN_WR64));
 	emit_jmmu_fd_test(30, 0xF0)->MarkLabel();
 	emit_jmmu_fd_exit(c);
+	emit_jmmu_dispatch(0x10298000, 0x102B8AB0, 0x102BCDE0, 30, 0x114, 0x11C);
+	const bool sq_md[4] = { false, true, true, false }, sq_pair[4] = { false, true, false, true };
+	const bool sq_fpr[4] = { false, true, true, false };
+	const u32 sq_a[4] = { 20, 3, 3, 3 }, sq_d0[4] = { 22, 14, 16, 5 }, sq_d1[4] = { 0, 15, 0, 6 };
+	for (int k = 0; k < 4; k++)
+	{
+		const JmmuSqOther o = emit_jmmu_sq_store(sq_a[k], sq_pair[k], sq_fpr[k], sq_d0[k], sq_d1[k], 0x102C8040, sq_md[k],
+		                                         0x102D9F10, &g_code[0]);
+		o.area->MarkLabel();
+		if (o.sqmd)
+			o.sqmd->MarkLabel();
+	}
 	const u32 want = (u32)(sizeof(k_ref) / sizeof(k_ref[0]));
 	char d[96];
 	snprintf(d, sizeof(d), "%u words, ppu-as %u", g_n, want);
@@ -115,9 +127,10 @@ static void test_words()
 	}
 }
 
-// ---- the PPC64 model ----
-// Memory: the JTC tables, the fault word and the context at 0x10200000 (2 MB); host pages at 0x20000000 (64 KB).
+// ---- the PPC64 model: JTC tables, fault word and context at 0x10200000 (2 MB), host pages at 0x20000000 (64 KB) ----
+// The code a bctr reaches has 32-bit addresses, as the PS3's code cache: word i of g_code is at CODE32 + 4 * i.
 static const u64 LO_BASE = 0x10200000, LO_SIZE = 0x200000, HOST_BASE = 0x20000000, HOST_SIZE = 0x10000;
+static const u64 CODE32 = 0x00800000;
 static u8 g_lo[LO_SIZE], g_host[HOST_SIZE];
 
 struct Cpu
@@ -155,6 +168,7 @@ static void stm(Cpu& c, u64 a, u32 n, u64 v)
 }
 static u64 host_ld(u64 a, u32 n) { Cpu c = {}; return ldm(c, a, n); }
 static void host_st(u64 a, u32 n, u64 v) { Cpu c = {}; stm(c, a, n, v); }
+static const u8* at_host(u64 a) { Cpu c = {}; return at(c, a, 64); }
 
 static u64 rotl64(u64 x, u32 n) { n &= 63; return n ? (x << n) | (x >> (64 - n)) : x; }
 static u64 mask64(u32 mb, u32 me)
@@ -253,9 +267,10 @@ static int run(Cpu& c, u32 stop_a, u32 stop_b)
 			}
 			pc = (u32)((s64)cur + (((s32)(x << 6) >> 6) >> 2));
 			break;
-		case 19:	// bctr
-			if (x != 0x4E800420u) { c.bad("op 19"); return -1; }
-			pc = (u32)((c.ctr - (u64)(uintptr_t)g_code) >> 2);
+		case 19:	// bctr, to a word of g_code at the 32-bit address CODE32 + 4 * index
+			if ((x & 0xFFE0FFFFu) != 0x4E800420u) { c.bad("op 19"); return -1; }	// BO 20: any BI
+			if (c.ctr < CODE32 || c.ctr >= CODE32 + 4 * CODE_WORDS || (c.ctr & 3)) { c.bad("bctr outside the code"); return -1; }
+			pc = (u32)((c.ctr - CODE32) >> 2);
 			break;
 		case 21:	// rlwinm
 		{
@@ -289,6 +304,13 @@ static int run(Cpu& c, u32 stop_a, u32 stop_b)
 			case 32:  if ((x >> 21) & 1) set_cru(c, c.r[ra], c.r[rb]); else set_cru(c, (u32)c.r[ra], (u32)c.r[rb]); break;
 			case 266: c.r[rd] = c.r[ra] + c.r[rb]; break;			// add
 			case 444: c.r[ra] = c.r[rd] | c.r[rb]; break;			// or
+			case 316: c.r[ra] = c.r[rd] ^ c.r[rb]; break;			// xor
+			case 26:	// cntlzw: the low word's leading zeros
+			{
+				const u32 w = (u32)c.r[rd];
+				c.r[ra] = w ? (u64)__builtin_clz(w) : 32;
+				break;
+			}
 			case 87:  c.r[rd] = ldm(c, idx, 1); break;			// lbzx
 			case 343: c.r[rd] = (u64)(s64)(s16)ldm(c, idx, 2); break;	// lhax
 			case 23:  c.r[rd] = ldm(c, idx, 4); break;			// lwzx
@@ -601,6 +623,147 @@ static void test_fd()
 	}
 }
 
+// ---- row MMU Block Cache: the dispatch against the index and key of sh4_mmu_jit.cpp, written apart here ----
+static const u32 DTBL = 0x10298000, DGEN = 0x102B8AB0, DPTEH = 0x102BCDE0, SR_OFS = 0x114, FPSCR_OFS = 0x11C;
+
+static u32 ref_index(u32 pc) { return ((pc ^ (pc >> 12)) >> 1) & 4095; }
+static u32 ref_key(u32 sr, u32 fpscr, u32 pteh)
+{
+	return ((sr >> 30) & 1) | (((fpscr >> 19) & 1) << 2) | (((fpscr >> 20) & 1) << 3) | ((fpscr & 3) == 1 ? 16 : 0) |
+	       (pteh & 0xFF) << 8;
+}
+
+static void test_dispatch(int cases)
+{
+	char d[160];
+	int kinds[4] = {};
+	for (int n = 0; n < cases; n++)
+	{
+		const u32 pc = (u32)rnd(), sr = (u32)rnd(), pteh = (u32)rnd(), gen = (u32)rnd();
+		// FPSCR's RM 1 in a quarter of the cases, so the key's bit 4 is seen set.
+		const u32 fpscr = (rnd() & 3) ? (u32)rnd() : (((u32)rnd() & ~3u) | 1);
+		const int kind = (int)(rnd() % 4);	// a hit, then a wrong pc, key, generation
+		u32 epc = pc, ekey = ref_key(sr, fpscr, pteh), egen = gen;
+		if (kind == 1)
+			epc ^= 1u << (rnd() % 32);
+		else if (kind == 2)
+			ekey ^= 1u << (rnd() % 32);
+		else if (kind == 3)
+			egen ^= 1u << (rnd() % 32);
+		const u32 e = DTBL + ref_index(pc) * 16;
+		host_st(e, 4, epc);
+		host_st(e + 4, 4, ekey);
+		host_st(e + 8, 4, egen);
+		host_st(e + 12, 4, CODE32 + 4 * DONE);
+		host_st(DGEN, 4, gen);
+		host_st(DPTEH, 4, pteh);
+		host_st(CTX + SR_OFS, 4, sr);
+		host_st(CTX + FPSCR_OFS, 4, fpscr);
+		g_n = 0;
+		emit_jmmu_dispatch(DTBL, DGEN, DPTEH, 30, SR_OFS, FPSCR_OFS);
+		ppc_bx(&g_code[MISS], 0);
+		Cpu c = {};
+		for (int k = 0; k < 32; k++)
+			c.r[k] = rnd();
+		c.r[30] = CTX;
+		c.r[3] = (rnd() << 32) | pc;	// a poisoned upper half, as `li` of a P1 pc leaves
+		const Cpu before = c;
+		const int end = run(c, DONE, MISS);
+		snprintf(d, sizeof(d), "kind %d pc %08X sr %08X fpscr %08X pteh %08X: %s", kind, pc, sr, fpscr, pteh,
+		         c.why ? c.why : "");
+		if (end < 0)
+		{
+			check(false, "dispatch run", d);
+			continue;
+		}
+		kinds[kind]++;
+		check(end == (int)(kind ? MISS : DONE), kind ? "a wrong entry was entered" : "a hit took the miss", d);
+		bool kept = true;
+		for (int k = 1; k < 32; k++)
+			if (k != 10 && k != 11 && k != 12 && c.r[k] != before.r[k])
+				kept = false;
+		check(kept, "a register other than r0 and r10-r12 changed", d);
+	}
+	char line[64];
+	snprintf(line, sizeof(line), "%d %d %d %d", kinds[0], kinds[1], kinds[2], kinds[3]);
+	check(kinds[0] > cases / 8 && kinds[1] > cases / 8 && kinds[2] > cases / 8 && kinds[3] > cases / 8, "too few cases",
+	      line);
+}
+
+// ---- row MMU SQ Stores: the store against the rule of xlat_data (sh4_mmu_int.cpp) for the store queue area ----
+static const u32 SQB = 0x102C8040, MMUCR_A = 0x102D9F10;
+
+static void test_sq(int cases)
+{
+	char d[160];
+	int stored = 0, passed = 0;
+	for (int n = 0; n < cases; n++)
+	{
+		const bool pair = rnd() & 1, fpr = rnd() & 1, md = rnd() & 1, sqmd = rnd() & 1;
+		const u32 areg = pair ? 3 : (rnd() & 1) ? 20 : 3;
+		const u32 d0 = fpr ? (pair ? 14 : 16) : pair ? 5 : (rnd() & 1) ? 22 : 4, d1 = fpr ? 15 : 6;
+		u32 va = (u32)rnd();
+		const u32 kind = (u32)(rnd() % 4);
+		if (kind < 3)
+			va = 0xE0000000 | (va & 0x03FFFFFF);	// the store queue area
+		if (kind == 0)
+			va &= pair ? ~7u : ~3u;
+		const bool aligned = (va & (pair ? 7 : 3)) == 0;
+		const bool want = (va >> 26) == 0x38 && aligned && (md || !sqmd);
+		host_st(MMUCR_A, 4, ((u32)rnd() & ~0x200u) | (sqmd ? 0x200u : 0));
+		for (u32 i = 0; i < 64; i += 4)
+			host_st(SQB + i, 4, (u32)rnd());
+		u8 before_sq[64];
+		memcpy(before_sq, at_host(SQB), 64);
+		g_n = 0;
+		const JmmuSqOther o = emit_jmmu_sq_store(areg, pair, fpr, d0, d1, SQB, md, MMUCR_A, &g_code[DONE]);
+		o.area->MarkLabel();
+		if (o.sqmd)
+			o.sqmd->MarkLabel();
+		ppc_bx(&g_code[MISS], 0);
+		Cpu c = {};
+		for (int k = 0; k < 32; k++)
+			c.r[k] = rnd();
+		for (int k = 0; k < 32; k++)
+			c.f[k] = (u32)rnd();
+		c.r[areg] = (rnd() << 32) | va;
+		const Cpu before = c;
+		const int end = run(c, DONE, MISS);
+		snprintf(d, sizeof(d), "va %08X %s%s md %d sqmd %d: %s", va, pair ? "pair" : "scalar", fpr ? " fpr" : "", (int)md,
+		         (int)sqmd, c.why ? c.why : "");
+		if (end < 0)
+		{
+			check(false, "sq run", d);
+			continue;
+		}
+		check(end == (int)(want ? DONE : MISS), want ? "a store queue store went to C" : "a store took the store queue", d);
+		u8 want_sq[64];
+		memcpy(want_sq, before_sq, 64);
+		if (want)
+		{
+			stored++;
+			const u32 off = va & (pair ? 0x38 : 0x3C);
+			const u32 w0 = fpr ? before.f[d0] : (u32)before.r[d0], w1 = fpr ? before.f[d1] : (u32)before.r[d1];
+			for (u32 i = 0; i < 4; i++)
+				want_sq[off + i] = (u8)(w0 >> (24 - 8 * i));
+			if (pair)
+				for (u32 i = 0; i < 4; i++)
+					want_sq[off + 4 + i] = (u8)(w1 >> (24 - 8 * i));
+		}
+		else
+			passed++;
+		check(!memcmp(want_sq, at_host(SQB), 64), "the store queue bytes", d);
+		bool kept = true;
+		for (int k = 1; k < 32; k++)
+			if (k != 11 && k != 12 && c.r[k] != before.r[k])
+				kept = false;
+		check(kept, "a register other than r0, r11 and r12 changed", d);
+	}
+	char line[64];
+	snprintf(line, sizeof(line), "%d stored, %d to C", stored, passed);
+	check(stored > cases / 8 && passed > cases / 8, "too few cases of a kind", line);
+}
+
 int main(int argc, char** argv)
 {
 	const int cases = argc > 1 ? atoi(argv[1]) : 20000;
@@ -610,6 +773,8 @@ int main(int argc, char** argv)
 	test_fast(cases);
 	test_cold(cases);
 	test_fd();
+	test_dispatch(cases);
+	test_sq(cases);
 	printf("%s: %d checks, %d failed (%d fast and cold cases each)\n", g_fail ? "FAIL" : "PASS", g_checks, g_fail, cases);
 	return g_fail ? 1 : 0;
 }

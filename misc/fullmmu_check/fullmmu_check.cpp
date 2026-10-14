@@ -48,13 +48,15 @@ void Sh4_ApplyAccuracyPreset() {}
 s32 sh4_GetCpuTimeslice() { return 1; }
 s32 sh4_GetCpuRatio() { return 1; }
 // The JIT form's side (sh4_mmu_jit.cpp): what the engine calls, recorded.
-int g_mmu_jit_preset;
+int g_mmu_jit_preset, g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset;
+bool g_jmmu_bcache, g_jmmu_sq;
 static bool g_can_jit;
 static int g_jit_selects, g_jit_selected;
-static u32 g_utlb_hooks, g_utlb_hook_last;
+static u32 g_utlb_hooks, g_utlb_hook_last, g_fast_changes;
 bool jmmu_can_run() { return g_can_jit; }
 void jmmu_select(bool on) { g_jit_selects++; g_jit_selected = on; }
 void jmmu_utlb_changed(u32 e) { g_utlb_hooks++; g_utlb_hook_last = e; }
+void jmmu_fast_changed() { g_fast_changes++; }
 // One op per slice: the run stops after g_stop_at ops.
 int FASTCALL UpdateSystem()
 {
@@ -135,6 +137,21 @@ template<typename T> static void mem_wr(u32 a, T v)
 {
 	if ((a >> 26) == 0x38)
 		memcpy(&sq_both[a & 0x3F], &v, sizeof(T));
+	else if ((a >> 24) == 0xF6 && sizeof(T) == 4)
+	{
+		// The UTLB address array (the manual): VPN, D, V and ASID of the entry in bits 13-8.
+		TLB_Entry& e = UTLB[(a >> 8) & 63];
+		e.Address.reg_data = (u32)v & 0xFFFFFCFF;
+		e.Data.D = ((u32)v >> 9) & 1;
+		e.Data.V = ((u32)v >> 8) & 1;
+	}
+	else if ((a >> 24) == 0xF7 && sizeof(T) == 4)
+	{
+		if (a & 0x00800000)
+			UTLB[(a >> 8) & 63].Assistance.reg_data = (u32)v;
+		else
+			UTLB[(a >> 8) & 63].Data.reg_data = (u32)v;
+	}
 	else if ((a >> 24) == 0xFF)
 	{
 		u32* p = p4_reg(a);
@@ -1112,6 +1129,223 @@ static void t_jit_take()
 	      "the FPU op table");
 }
 
+// ---- row MMU Model FAST: Flycast's FAST_MMU table in place of the 64-entry UTLB ----
+// A fresh machine with MMU Model FAST on the interpreter: the choice empties the table; entries come by ldtlb only.
+static void fast_fresh(const char* name, u32 mmucr)
+{
+	fresh(name, mmucr);
+	g_full_mmu_preset = 2;
+	g_mmu_fast_preset = 1;
+	g_mmu_jit_preset = 0;
+	sh4_fullmmu_select();
+	g_fast_changes = 0;
+}
+
+// ldtlb at UTLB slot i, as a TLB miss handler loads an entry (jx_ifb runs the engine's op).
+static void load(int i, u32 va, u32 pa, int sz, u32 prot, bool d = true, bool sh = true, u32 asid = 0)
+{
+	const u32 old = Sh4cntx.sr.GetFull();
+	set_sr(SR_PRIV);
+	CCN_PTEH.reg_data = (va & 0xFFFFFC00) | asid;
+	CCN_PTEL.reg_data = ptel(pa, sz, prot, d, sh);
+	CCN_PTEA.reg_data = 0;
+	CCN_MMUCR.reg_data = (CCN_MMUCR.reg_data & ~(63u << 10)) | (u32)i << 10;
+	jx_ifb(LDTLB(), P1_CODE, 0);
+	set_sr(old);
+}
+
+static void t_fast()
+{
+	fast_fresh("FAST: a page stays after its UTLB slot is loaded again", AT);
+	CHECK(g_mmu_fast && logged("[fullmmu] MMU Model FAST:"), "FAST off, or no line");
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	load(5, 0x00500000, 0x0C500000, SZ_4K, 3);
+	set32(0x0C400010, 0x11111111);
+	set32(0x0C500020, 0x22222222);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 8)).op(MOVL_LD(2, 9)).spin();
+	Sh4cntx.r[1] = 0x00400010;
+	Sh4cntx.r[2] = 0x00500020;
+	CCN_PTEH.reg_data = 0;
+	run(P1_CODE, SR_PRIV, 10);
+	exc_is(0, 0, 0, 0);
+	CHECK(Sh4cntx.r[8] == 0x11111111 && Sh4cntx.r[9] == 0x22222222 && utlb_with(0x00400000) == 0, "r8 %08X r9 %08X",
+	      Sh4cntx.r[8], Sh4cntx.r[9]);
+
+	fast_fresh("FAST: a miss runs the handler; its ldtlb loads the page", AT);
+	handler_miss(ptel(0x0C410000, SZ_4K, 3, true));
+	set32(0x0C410010, 0xCAFEBABE);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 0)).op(MOVL_LD(1, 7)).spin();
+	Sh4cntx.r[1] = 0x00410010;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(1, P1_CODE, 0x040, 0x400);
+	CHECK(Sh4cntx.r[0] == 0xCAFEBABE && Sh4cntx.r[7] == 0xCAFEBABE, "r0 %08X r7 %08X", Sh4cntx.r[0], Sh4cntx.r[7]);
+
+	fast_fresh("FAST: MMUCR.TI empties the table", AT);
+	load(7, 0x00410000, 0x0C410000, SZ_4K, 3);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 0)).op(MOVL_ST(2, 3)).op(MOVL_LD(1, 9)).spin();
+	Sh4cntx.r[1] = 0x00410000;
+	Sh4cntx.r[2] = AT | MMUCR_TI_BIT;
+	Sh4cntx.r[3] = MMUCR_A;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(1, P1_CODE + 4, 0x040, 0x400);
+	CHECK(g_fast_changes == 1, "%u table changes", g_fast_changes);
+
+	fast_fresh("FAST: a UTLB array write leaves what the UTLB holds", AT);
+	load(5, 0x00410000, 0x0C410000, SZ_4K, 3);
+	load(6, 0x00420000, 0x0C420000, SZ_4K, 3);
+	set32(0x0C410000, 0x41414141);
+	Prog(P1_CODE, P1_CODE).op(MOVL_ST(2, 3)).op(MOVL_LD(1, 8)).op(MOVL_LD(4, 9)).spin();
+	Sh4cntx.r[2] = 0x00420000;	// entry 6, V 0
+	Sh4cntx.r[3] = 0xF6000600;
+	Sh4cntx.r[1] = 0x00410000;
+	Sh4cntx.r[4] = 0x00420000;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(1, P1_CODE + 4, 0x040, 0x400);
+	CHECK(Sh4cntx.r[8] == 0x41414141 && !UTLB[6].Data.V, "r8 %08X, entry 6 V %u", Sh4cntx.r[8], (u32)UTLB[6].Data.V);
+
+	fast_fresh("FAST: no protection or first-write checks", AT);
+	load(63, CODE_VA, CODE_PA, SZ_4K, 2);
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 0, false);
+	Prog(CODE_VA, CODE_PA).op(MOVL_ST(1, 2)).op(MOVI(7, 1)).spin();
+	Sh4cntx.r[1] = 0x12345678;
+	Sh4cntx.r[2] = 0x00400040;
+	run(CODE_VA, SR_USER, 10);
+	exc_is(0, 0, 0, 0);
+	CHECK(ram32(0x0C400040) == 0x12345678 && Sh4cntx.r[7] == 1, "RAM %08X r7 %u", ram32(0x0C400040), Sh4cntx.r[7]);
+
+	fast_fresh("FAST: a private page needs PTEH.ASID", AT);
+	load(40, 0x00410000, 0x0C410000, SZ_4K, 3, true, false, 5);
+	set32(0x0C410000, 0x5A5A5A5A);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 8)).op(MOVL_ST(2, 3)).op(MOVL_LD(1, 9)).spin();
+	Sh4cntx.r[1] = 0x00410000;
+	Sh4cntx.r[2] = 6;
+	Sh4cntx.r[3] = PTEH_A;
+	Sh4cntx.r[9] = 0x99;
+	CCN_PTEH.reg_data = 5;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(1, P1_CODE + 4, 0x040, 0x400);
+	CHECK(Sh4cntx.r[8] == 0x5A5A5A5A && Sh4cntx.r[9] == 0x99, "r8 %08X r9 %08X", Sh4cntx.r[8], Sh4cntx.r[9]);
+
+	fast_fresh("FAST: MMUCR.SV with SR.MD 1 matches any ASID, not in user mode", AT | 0x100);
+	load(40, 0x00410000, 0x0C410000, SZ_4K, 3, true, false, 5);
+	load(63, CODE_VA, CODE_PA, SZ_4K, 2);
+	set32(0x0C410000, 0x5A5A5A5A);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 8)).spin();
+	Sh4cntx.r[1] = 0x00410000;
+	CCN_PTEH.reg_data = 6;
+	run(P1_CODE, SR_PRIV, 10);
+	exc_is(0, 0, 0, 0);
+	CHECK(Sh4cntx.r[8] == 0x5A5A5A5A, "r8 %08X", Sh4cntx.r[8]);
+	g_exc.clear();
+	Prog(CODE_VA, CODE_PA).op(MOVL_LD(1, 8)).spin();
+	run(CODE_VA, SR_USER, 10);
+	exc_is(1, CODE_VA, 0x040, 0x400);
+
+	fast_fresh("FAST: ldtlb of the same page and ASID with a new frame replaces it", AT);
+	load(5, 0x00410000, 0x0C410000, SZ_4K, 3);
+	set32(0x0C410000, 0x11110000);
+	set32(0x0C420000, 0x22220000);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 0)).op(MOVL_ST(2, 3)).op(MOVL_ST(4, 5)).op(MOVL_ST(6, 8)).op(LDTLB())
+		.op(MOVL_LD(1, 9)).spin();
+	Sh4cntx.r[1] = 0x00410000;
+	Sh4cntx.r[2] = AT | 9 << 10;
+	Sh4cntx.r[3] = MMUCR_A;
+	Sh4cntx.r[4] = 0x00410000;
+	Sh4cntx.r[5] = PTEH_A;
+	Sh4cntx.r[6] = ptel(0x0C420000, SZ_4K, 3, true);
+	Sh4cntx.r[8] = PTEL_A;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(0, 0, 0, 0);
+	CHECK(Sh4cntx.r[0] == 0x11110000 && Sh4cntx.r[9] == 0x22220000 && g_fast_changes == 1, "before %08X after %08X, %u"
+	      " changes", Sh4cntx.r[0], Sh4cntx.r[9], g_fast_changes);
+
+	fast_fresh("FAST: page sizes, P4 through the table, the VPN/PPN masks", AT);
+	load(30, 0x00700400, 0x0C700800, SZ_1K, 3);
+	load(31, 0x00711000, 0x0C713000, SZ_4K, 3);
+	load(32, 0x00725400, 0x0C755C00, SZ_64K, 3);
+	load(33, 0x00800000, 0x0CA00000, SZ_1M, 3);
+	load(34, 0x00600000, 0x1F000000, SZ_4K, 3);
+	set32(0x0C700BFC, 0x10001000);
+	set32(0x0C713FFC, 0x40004000);
+	set32(0x0C75ABCC, 0x64646464);
+	set32(0x0C755BCC, 0xBAD0BAD0);
+	set32(0x0CAABCD0, 0x01010101);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 8)).op(MOVL_LD(2, 9)).op(MOVL_LD(3, 10)).op(MOVL_LD(4, 11)).op(MOVL_LD(5, 12))
+		.spin();
+	Sh4cntx.r[1] = 0x007007FC;
+	Sh4cntx.r[2] = 0x00711FFC;
+	Sh4cntx.r[3] = 0x0072ABCC;
+	Sh4cntx.r[4] = 0x008ABCD0;
+	Sh4cntx.r[5] = 0x00600010;
+	CCN_PTEH.reg_data = 0;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(0, 0, 0, 0);
+	CHECK(Sh4cntx.r[8] == 0x10001000 && Sh4cntx.r[9] == 0x40004000 && Sh4cntx.r[10] == 0x64646464 &&
+	      Sh4cntx.r[11] == 0x01010101 && Sh4cntx.r[12] == CCN_MMUCR.reg_data, "1K %08X 4K %08X 64K %08X 1M %08X P4 %08X",
+	      Sh4cntx.r[8], Sh4cntx.r[9], Sh4cntx.r[10], Sh4cntx.r[11], Sh4cntx.r[12]);
+
+	fast_fresh("FAST: a shared entry and a private one of the same page both stay", AT);
+	load(5, 0x00410000, 0x0C410000, SZ_4K, 3, true, false, 5);
+	load(6, 0x00410000, 0x0C420000, SZ_4K, 3, true, true, 0);
+	set32(0x0C420000, 0x2A2A2A2A);
+	Prog(P1_CODE, P1_CODE).op(MOVL_LD(1, 8)).spin();
+	Sh4cntx.r[1] = 0x00410000;
+	CCN_PTEH.reg_data = 6;
+	run(P1_CODE, SR_PRIV, 10);
+	exc_is(0, 0, 0, 0);
+	CHECK(Sh4cntx.r[8] == 0x2A2A2A2A, "ASID 6: r8 %08X", Sh4cntx.r[8]);
+
+	fast_fresh("FAST: pref through the table, not the UTLB; a page it lacks misses", AT);
+	load(20, 0xE0000000, 0x0C600000, SZ_1M, 3);
+	load(20, 0x00900000, 0x0C900000, SZ_4K, 3);	// the UTLB slot holds another page now
+	Prog(P1_CODE, P1_CODE).op(MOVL_ST(0, 1)).op(PREF(1)).op(PREF(2)).spin();
+	Sh4cntx.r[0] = 0x11111111;
+	Sh4cntx.r[1] = 0xE000000C;
+	Sh4cntx.r[2] = 0xE0100000;
+	CCN_PTEH.reg_data = 0;
+	run(P1_CODE, SR_PRIV, 20);
+	exc_is(1, P1_CODE + 4, 0x040, 0x400);
+	CHECK(ram32(0x0C60000C) == 0x11111111 && CCN_TEA == 0xE0100000, "RAM %08X TEA %08X", ram32(0x0C60000C), CCN_TEA);
+
+	u32 pa;
+	int ent;
+	fast_fresh("FAST: the JIT's entries: data as entry 64, fetches through the table", AT);
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	load(63, CODE_VA, CODE_PA, SZ_4K, 2);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_USER);
+	CHECK(jx_data_xlat(0x00400010, 4, 1, &pa, &ent) == 0 && pa == 0x0C400010 && ent == 64, "pa %08X entry %d", pa, ent);
+	CHECK(jx_data_xlat(0x00500000, 4, 0, &pa, &ent) == 0x040, "an absent page");
+	CHECK(jx_fetch(CODE_VA + 4, &pa) == 0 && pa == CODE_PA + 4, "fetch pa %08X", pa);
+	CHECK(jx_fetch(CODE_VA + 8, &pa) == 0 && pa == CODE_PA + 8, "cached fetch pa %08X", pa);
+	jx_fast_after_write(0xFF000010, MMUCR_TI_BIT);
+	CHECK(jx_fetch(CODE_VA + 8, &pa) == 0x040, "a fetch after TI");
+	CHECK(g_exc.empty(), "an exception was taken");
+
+	fast_fresh("FAST: a full table starts again", AT);
+	for (u32 i = 0; i <= 32768; i++)
+		load((int)(i & 63), i << 12, 0x0C000000 + ((i << 12) & 0xFFF000), SZ_4K, 3);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_PRIV);
+	CHECK(jx_data_xlat(32768u << 12, 4, 0, &pa, &ent) == 0 && pa == 0x0C000000, "the last: pa %08X", pa);
+	CHECK(jx_data_xlat(0x00000000, 4, 0, &pa, &ent) == 0x040, "the first page stayed");
+	jx_stats_print();
+	CHECK(logged("[fullmmu] FAST table: entries 1 ") && logged(" full 1"), "the stats line");
+
+	fast_fresh("FAST: the choice empties the table; no FAST without the full MMU", AT);
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	sh4_fullmmu_select();
+	set_sr(SR_PRIV);
+	CHECK(jx_data_xlat(0x00400000, 4, 0, &pa, &ent) == 0x040, "the table kept a page");
+	g_full_mmu_preset = 0;
+	sh4_fullmmu_select();
+	CHECK(!g_mmu_fast, "FAST with the MMU off");
+	g_full_mmu_preset = 2;
+	g_mmu_fast_preset = 0;
+	sh4_fullmmu_select();
+	CHECK(!g_mmu_fast, "FAST with the row FULL");
+}
+
 int main(int argc, char** argv)
 {
 	FILE* f = fopen(argc > 1 ? argv[1] : "misc/fsca-table.bin", "rb");
@@ -1150,6 +1384,7 @@ int main(int argc, char** argv)
 	t_jit_ifb();
 	t_jit_take();
 	t_select();
+	t_fast();
 	CHECK(g_plain_slots == 0, "the plain delay slot ran %u times", g_plain_slots);
 	ok = ok && g_fails == 0;
 	printf("%s: %u op test checks with AT 0 and 1, %u MMU programs, %d failed\n", ok ? "PASS" : "FAIL", checks, g_tests,

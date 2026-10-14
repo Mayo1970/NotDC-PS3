@@ -359,6 +359,8 @@ static const char* k_clear[]     = { "OLD", "CLEAR", NULL };
 static const char* k_elfload[]   = { "OLD", "SEGMENTS", NULL };
 static const char* k_fullmmu[]   = { "OFF", "AUTO", "ON", NULL };
 static const char* k_mmujit[]    = { "INTERP", "JIT", NULL };
+static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
+static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -835,9 +837,15 @@ static Option s_sys[] = {
 	{ "ELF Loader",      &g_elf_loader_preset,    OPT_CHOICE, k_elfload,   0, 0,0,0, NULL,
 	  "SEGMENTS: an .elf loads as Flycast's, constructors and zeroed data too (P33). Set before boot." },
 	{ "SH4 MMU",         &g_full_mmu_preset,      OPT_CHOICE, k_fullmmu,   0, 0,0,0, NULL,
-	  "AUTO: a Windows CE disc runs on the interpreter with the full MMU. Slow (P38). Set before boot." },
+	  "AUTO: a Windows CE disc runs with the full MMU, on the SH4 MMU Engine below (P38). Set before boot." },
 	{ "SH4 MMU Engine",  &g_mmu_jit_preset,       OPT_CHOICE, k_mmujit,    0, 0,0,0, NULL,
 	  "JIT: the boot that SH4 MMU picks runs on the JIT, with TLB lookups (P38). Set before boot." },
+	{ "MMU Model",       &g_mmu_fast_preset,      OPT_CHOICE, k_mmufast,   0, 0,0,0, NULL,
+	  "FAST: each TLB entry loaded stays, no ITLB or protection checks (Flycast FAST_MMU). Set before boot." },
+	{ "MMU Block Cache", &g_mmu_bcache_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The MMU JIT finds the next block in a cache, not in C (with AT on: MMU Model FAST). Set before boot." },
+	{ "MMU SQ Stores",   &g_mmu_sq_preset,        OPT_CHOICE, k_sqstore,   0, 0,0,0, NULL,
+	  "INLINE: an MMU JIT block writes the store queues itself, not through C. Set before boot." },
 };
 
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.

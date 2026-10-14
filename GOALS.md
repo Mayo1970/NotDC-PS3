@@ -12,7 +12,8 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
-Active goal: G14 (CHD disc images). Built 2026-10-13 (package of 09:35), the PC check passes; its HW test is open.
+Active goal: none. G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well."). The open goals
+are G10, G11 and G13 (last).
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
 as bundles 10-22 since the re-cut of 2026-10-12 and the new bundle 21 of 2026-10-13, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
@@ -322,7 +323,7 @@ FULL: `joy2=` lines in the log; Crazy Taxi and Looney Tunes with STANDARD PAD as
 "FULL (2 STICKS)" (`[ps3] Controller` = 1, `get_controller_type()` = 5, `MDT_FullController`); STANDARD PAD is the
 default. The right stick is read only for the full controller.
 
-## G14 - CHD disc images  `[~]` (added 2026-10-13 at Matt's request; built 2026-10-13, package of 09:35; HW test open)
+## G14 - CHD disc images  `[x]` (added 2026-10-13 at Matt's request; built 2026-10-13, package of 09:35; HW 2026-10-14, Matt: "The CHD images run well.")
 A `.chd` file holds a GD-ROM or CD image compressed in hunks (8 sectors of 2,448 bytes each). No reader takes it today:
 `plugs/ImgReader` has CDI, NRG/MDS and GDI. This goal lifts the "Do not take" row of `OPTIMIZATION_PLAN.md` section 4
 for CHD; CUE/BIN stays there. Notes: `OPTIMIZATION_POTENTIAL.md` P35. Memory: about 1-1.5 MB.

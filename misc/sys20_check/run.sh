@@ -31,12 +31,12 @@ has() {
 }
 P=ps3/ps3_presets.cpp
 for k in MemMap BlockWrites OnchipRegs HollyRegs RegSize ElfLoader; do has $P 2 "{ \"$k\","; done
-has $P 1 'int g_mem_map_preset       = 0;'
-has $P 1 'int g_block_write_preset   = 0;'
-has $P 1 'int g_onchip_regs_preset   = 0;'
-has $P 1 'int g_holly_regs_preset    = 0;'
-has $P 1 'int g_reg_size_preset      = 0;'
-has $P 1 'int g_elf_loader_preset    = 0;'
+has $P 1 'int g_mem_map_preset       = 1;'
+has $P 1 'int g_block_write_preset   = 1;'
+has $P 1 'int g_onchip_regs_preset   = 1;'
+has $P 1 'int g_holly_regs_preset    = 1;'
+has $P 1 'int g_reg_size_preset      = 1;'
+has $P 1 'int g_elf_loader_preset    = 1;'
 has $P 1 'int get_holly_regs_preset()    { return g_holly_regs_preset; }'
 U=ps3/ps3_menu.cpp
 for k in g_mem_map_preset g_block_write_preset g_onchip_regs_preset g_holly_regs_preset g_reg_size_preset g_elf_loader_preset

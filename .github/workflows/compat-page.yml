@@ -1,0 +1,84 @@
+name: Compatibility page
+
+on:
+  issues:
+    types: [ opened, edited, deleted, closed, reopened, labeled, unlabeled ]
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # A body edit by someone without write access removes "approved", so it needs a new review.
+  guard:
+    if: github.event_name == 'issues' && github.event.action == 'edited'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+    - name: Remove approval after an outside edit
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issue = context.payload.issue;
+          const labels = issue.labels.map(l => l.name);
+          if (!context.payload.changes?.body) return;
+          if (!labels.includes('compatibility') || !labels.includes('approved')) return;
+
+          const login = context.payload.sender.login;
+          let permission = 'none';
+          try {
+            const r = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner, repo: context.repo.repo, username: login });
+            permission = r.data.permission;
+          } catch (e) {}
+          if (['admin', 'write'].includes(permission)) return;
+
+          await github.rest.issues.removeLabel({
+            owner: context.repo.owner, repo: context.repo.repo,
+            issue_number: issue.number, name: 'approved' });
+          core.notice(`#${issue.number}: "approved" removed, body edited by ${login}`);
+
+  # Label changes made by the guard start no new run, so the page builds after it here.
+  deploy:
+    needs: guard
+    if: >-
+      !cancelled() &&
+      (needs.guard.result == 'success' || needs.guard.result == 'skipped') &&
+      (github.event_name != 'issues' ||
+       contains(github.event.issue.labels.*.name, 'compatibility') ||
+       github.event.label.name == 'compatibility')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: compat-pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Build page
+      env:
+        GH_REPO: ${{ github.repository }}
+        GH_TOKEN: ${{ github.token }}
+      run: python3 .github/compat-page/build.py site
+
+    - name: Configure Pages
+      uses: actions/configure-pages@v5
+
+    - name: Upload page
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: site
+
+    - name: Deploy page
+      id: deployment
+      uses: actions/deploy-pages@v4

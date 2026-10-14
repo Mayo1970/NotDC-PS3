@@ -40,7 +40,7 @@ M=dc/mem/mmu.cpp
 has $M 1 '	else if (!g_fullmmu_active || s_remap_logs++ < 16)'
 has $M 1 '	if (g_fullmmu_active && s_remap_logs++ >= 16)'
 P=ps3/ps3_presets.cpp
-has $P 1 'int g_full_mmu_preset      = 0;'
+has $P 1 'int g_full_mmu_preset      = 1;'
 has $P 2 '{ "FullMmu",       &g_full_mmu_preset },'
 U=ps3/ps3_menu.cpp
 has $U 1 '{ "SH4 MMU",'

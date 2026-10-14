@@ -36,6 +36,16 @@ u32 jmmu_raise(u32 epc);
 // The [jmmu] line, once a second (ps3_driver.cpp hotblocks_dump).
 void jmmu_stats(double seconds);
 
+// Row MMU Block Cache: the main loop's cache of the next block (ps3_jit_mmu.h emit_jmmu_dispatch has the hash). An
+// entry holds while g_jdgen holds; jmmu_lookup fills it. key = jmmu_dkey(): jmmu_cfg() | PTEH.ASID << 8.
+#define JDISP_N 4096
+struct JDisp { u32 pc, key, gen, code; };
+extern JDisp g_jdisp[JDISP_N];
+extern u32 g_jdgen;
+u32 jmmu_dkey();
+// ps3_driver.cpp ngen_ResetBlocks: the code cache was cleared.
+void jmmu_code_cleared();
+
 // ps3_driver.cpp: the main loop's lookup goes to the MMU one (the first word of loop_no_update), or back.
 void ngen_mmu_dispatch(bool on);
 // driver.cpp: compile pc read at pa, as the block of key (pc, pa, cfg) with the page's generation; 0 = no block

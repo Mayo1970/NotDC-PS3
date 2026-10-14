@@ -28,6 +28,112 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**MMU JIT speed 1 (the MMU JIT's first speed package) built 2026-10-14
+(Matt: "Yes." to speed work on the MMU JIT). Package of 21:45
+(`build/notdc_ps3.pkg`, 1750384 bytes) = commit 0be5997 + this. HW run
+1 2026-10-14 with the three rows ON (Matt: "Much better!"): results
+below the HW steps. The three rows default ON in source (Matt: "Yes, I
+want them."), and SH4 MMU default AUTO (Matt: "I want AUTO."), not
+packaged. Not committed. `.got` 0xF778 of 0x10000 (2.1 KB left), 0
+`r2off`.**
+- Why: HW run 2 of the MMU JIT (block below), the 3D scene of Sega Rally 2
+  at SPEED ~35% (~11 fps), per second: 1.0M block lookups in C, ~425K
+  store queue writes through C, ~38K TLB misses (Windows CE refills its
+  64-entry UTLB in software: ~41K ldtlb), 107K ITLB fills, 266K UTLB
+  scans, ~294 "SQ remap" log lines.
+- Rows (SH4 / SYSTEM page, after SH4 MMU Engine; set before boot; the
+  first value is the old path; default ON since HW run 1; in `[syscfg]`):
+  - MMU Model FULL / FAST (`MmuFast`): Flycast's FAST_MMU (Flycast's
+    default). Each entry that ldtlb loads stays in a table (32768 entries,
+    8192 buckets) until MMUCR.TI or a TLB array write; a TLB array write
+    leaves the table with what the UTLB holds after it. No ITLB, no
+    protection, first-write or multi-hit checks, no URC count per access.
+    An ldtlb of the same page, size and ASID (or both shared) with a new
+    frame is a remap. Both engines.
+  - MMU Block Cache OFF / ON (`MmuBlockCache`): the main loop looks up the
+    next block in a 4096-entry table in PPC code (`emit_jmmu_dispatch`:
+    pc, key = SR.MD, FPSCR PR, SZ, RM 1 and PTEH.ASID, generation, code)
+    before the C lookup, which fills it. The generation moves at each
+    change of a translation (a FAST remap or flush, MMUCR.SV), an I-cache
+    flush, an AT edge and a code cache clear. With AT on it fills only
+    with MMU Model FAST.
+  - MMU SQ Stores C / INLINE (`MmuSqStores`): a JTC miss of a 32-bit or
+    pair store into the store queues (the area bits, 4 or 8-byte aligned,
+    in user mode only with MMUCR.SQMD 0) is written by the block; any
+    other store goes to C as before.
+- Also: SH4 MMU Engine default JIT (Matt); the "SQ remap" lines stop
+  after 16 with an MMU engine (`dc/mem/mmu.cpp`); MMUCR writes in FAST
+  drop the JTC only for TI or a new SV.
+- Logs: `[fullmmu] MMU Model FAST: ...`, `[fullmmu] MMU JIT rows: block
+  cache ON (4096 entries), SQ stores INLINE`, after the `[fullmmu] AT=1`
+  stats line `[fullmmu] FAST table: entries N (4K, 64K, 1M, 1K) | finds,
+  misses, inserts, remaps, flushes, full`, and after each `[jmmu]` counts
+  line `[jmmu] ms/s: lookup, compile, slow r w, ifb, exc | block cache
+  ON: fills N, gen +N` (1 C call in 16 timed by mftb and counted 16
+  times; a compile always, and not in its lookup).
+- Code: `dc/sh4/sh4_mmu_int.cpp` (the FAST table, xlat_data, xlat_inst,
+  pref, ldtlb, the write hook, the JIT's entries), `sh4_mmu_jit.cpp`
+  (owner 64, the MMUCR rule, the block cache's fill and generation, the
+  timing), `sh4_mmu_jit.h`, `sh4_fullmmu.h`, `ps3/ps3_jit_mmu.h`
+  (`emit_jmmu_dispatch`, `emit_jmmu_sq_store`), `ps3_driver.cpp`
+  (`loop_mmu_bc`, the cold store, `ngen_ResetBlocks`), `dc/mem/mmu.cpp`,
+  `ps3_presets.cpp`, `ps3_presets.h`, `ps3_menu.cpp`.
+- PC checks (WSL), all PASS:
+  - `misc/jmmu_check`: 255 ppu-as words (70 new: the dispatch and four
+    SQ store forms). On the PPC64 model: the dispatch against its index
+    and key written apart (hits, a wrong pc, key or generation), the SQ
+    store against xlat_data's rule for the store queue area (the area,
+    the alignment, MD and SQMD, the bytes): 195646 checks. `jmmu_rt.cpp`
+    100 checks (owner 64, ldtlb, MMUCR with TI and SV, the TLB arrays;
+    the block cache's fills, key and generation; the ms line).
+    `mutate.py`: 130 of 130 planted bugs fail (62 in the header, 63 in
+    `sh4_mmu_jit.cpp`, 5 in the block functions).
+  - `misc/fullmmu_check`: 80 MMU programs (14 new for FAST: a page that
+    stays, a miss and its handler, TI, a UTLB array write, no protection,
+    ASID, SV, a remap, a shared and a private entry, page sizes, pref,
+    the JIT's entries, a full table, the choice); `mutate.py` 105 of 105.
+  - The other run.sh that read a changed file: fschg, interp, jit8,
+    constprop, div32, clock, exit, mmu, sqstore, sysgate, tcopy, timebase,
+    flash, glpath, maple, pad, rtt, screen, sys20, chd, greuse, dynic,
+    link, sqla, carry, idle, hot, ppe, fv, frpref, vram: all PASS.
+  - Not on the PC: the dispatch and the cold store inside the main loop
+    and the blocks, and the patch of `loop_no_update` to `loop_mmu_bc`.
+- HW steps (package of 21:45; the install keeps `nullDC.cfg`; SH4 Clock
+  200):
+  1. UDP listener on port 18194, only when Matt says so.
+  2. SH4 / SYSTEM: SH4 MMU AUTO, SH4 MMU Engine JIT, MMU Model FAST, MMU
+     Block Cache ON, MMU SQ Stores INLINE. VIDEO / DEBUG: LMMODE ON.
+  3. Boot 1: Sega Rally 2 to the 3D scene of HW run 2 (SPEED ~35%,
+     ~11 fps). Log: the lines above; note SPEED and fps.
+  4. On a fault (a hang, wrong graphics, a crash): one row back to its
+     old value a boot, in this order: SQ Stores C, Block Cache OFF,
+     Model FULL.
+  5. Boot 2: Crazy Taxi, the same rows. The MMU JIT does not run: the game
+     and SPEED as before.
+- HW run 1, 2026-10-14 (package of 21:45, Sega Rally 2, the three rows
+  ON, LMMODE ON, JIT IDLE RULE X30): no fault. Logos and menus SPEED
+  100% (MMU JIT before: ~45%). The race, 46 s: SPEED 87% (83-92%), 27.2
+  renders a second, 0.52 renders a vblank, so about 30 frames a second
+  in game time (before: 35%, ~11). `[pace] slept=0`: host-bound.
+  - FAST table: ~800 entries (4K pages, 4 of 1M); TLB misses ~7 a
+    second (38K before), ldtlb 8-15 (41K), no remap. The JTC flushes
+    ~160 times a second (a new ASID drops owner 64, whose list
+    overflows), then ~95K fills a second.
+  - `[jmmu] ms/s` in the race, mean of 46 lines: lookup 74.9 (114-272K C
+    lookups a second; the block cache fills 105-222K), compile 1.5, slow
+    r 59.6 (108-162K), w 20.9, ifb 95.9 (pref through the MMU
+    interpreter, ~200K a second), exc 7.2 (8-50K API address errors):
+    260 ms a second.
+  - `[idle]`: a loop at 01E3E9C0 checked 91-97K times a second, never
+    skipped; JIT IDLE RULE X30 bills 13.7K blocks.
+  - Matt asked if X30 is right for the game; my answer from this log:
+    yes (no frame drop in game time, a poll loop that X30 bills). Matt
+    then booted it at X3 BACKWARD: SPEED 52.1% after the logos (87% at
+    X30), 0.62 renders a vblank, `[jmmu] ms/s` slow r 130-137 (the poll
+    loop's register reads). X30 stays.
+  - Crazy Taxi, the same rows (Matt: "Absolutely ZERO problems."): the
+    engine of the menu runs, SPEED 100% with the known dips.
+
 **MMU JIT (P38's JIT form, the last item of bundle 20) built 2026-10-14
 (Matt: "Let's work on the MMU JIT."). Package of 19:22
 (`build/notdc_ps3.pkg`, 1745008 bytes) = commit 1da9af8 + the JIT form.
@@ -37,7 +143,8 @@ before. Results below the HW steps. LMMODE default ON in source
 (Matt: "Keep it as up by default."), not packaged. Not committed. `.got`
 0xF600 of 0x10000 (2.5 KB left), 0 `r2off`.**
 - Row SH4 MMU Engine (`MmuJit`, INTERP / JIT; SH4 / SYSTEM page, after
-  SH4 MMU; default INTERP, the old path; set before boot; in `[syscfg]`).
+  SH4 MMU; default JIT in source since 2026-10-14 (Matt: "Yes."), INTERP
+  before; set before boot; in `[syscfg]`).
   JIT: the boot that SH4 MMU picks (AUTO: a Windows CE disc) runs on the
   JIT with MMU blocks; any other boot gets the blocks of today. With the
   interpreter as the menu's engine the MMU interpreter runs, as before.
@@ -147,7 +254,8 @@ before. Results below the HW steps. LMMODE default ON in source
     SQ texture writes; every other game sends ch2 DMA to 0x11 with
     LMMODE0 0, the same 64-bit path with the row OFF or ON; no DMA to
     0x13. Matt: LMMODE default ON in source (`ps3_presets.cpp`).
-  - SH4 MMU Engine: default INTERP, no verdict yet.
+  - SH4 MMU Engine: default JIT in source (Matt: "Yes."), not packaged
+    alone (the speed package of 21:45 has it).
 
 **NEXT SESSION (Matt 2026-10-14, after HW run 4: "Check option 3. Save
 it. I'll start a new session."): the JIT form of the SH4 MMU (P38, the
@@ -300,7 +408,8 @@ Not committed.**
     PT_LOAD segments byte-exact with their zero tails, then the ALLOC
     sections outside them; at the entry the AICA gets SCIEB 0x48, SCILV0-2
     0x18 0x50 0x08 (`[ELF] AICA SCIEB=0x48 ...`).
-  - SH4 MMU (`FullMmu`, OFF / AUTO / ON; P38, the interpreter form): the
+  - SH4 MMU (`FullMmu`, OFF / AUTO / ON; P38, the interpreter form;
+    default AUTO in source since 2026-10-14, Matt: "I want AUTO."): the
     SH4 interpreter with the full MMU: UTLB and ITLB lookups (Flycast's
     full form, not FAST_MMU), TLB miss, protection, initial page write,
     address error, FPU disable (SR.FD) and illegal op as SH4 exceptions.
@@ -15077,6 +15186,11 @@ Main gains:
   are in the MMU JIT block of section 0. HW SUCCESS 2026-10-14: Sega
   Rally 2 boots with row LMMODE ON (SPEED ~45% menus, ~35% 3D); LMMODE
   default ON in source (Matt).
+- Built 2026-10-14 (Matt: "Yes." to speed work on the MMU JIT): MMU JIT
+  speed 1, rows MMU Model FULL / FAST, MMU Block Cache, MMU SQ Stores;
+  SH4 MMU Engine default JIT. Block "MMU JIT speed 1" of section 0. HW
+  run 1: the Sega Rally 2 race SPEED 35% -> 87%, menus 100%; Crazy Taxi
+  as before. The three rows default ON in source (Matt).
 
 ### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 

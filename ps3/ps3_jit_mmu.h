@@ -243,3 +243,88 @@ static inline void emit_jmmu_fd_exit(const JmmuCold& c)
 	ppc_ori(ppc_r3, ppc_r3, c.epc & 0xFFFF);
 	ppc_bx(c.stub, 0);
 }
+
+// Row MMU Block Cache: the next block from g_jdisp (sh4_mmu_jit.h), for the pc in r3 (junk above its low word allowed).
+// A hit enters it by bctr; a miss goes on after the code emitted here. Scratch r0, r10-r12; tbl, gen, pteh below 2 GB.
+static inline void emit_jmmu_dispatch(u32 tbl, u32 gen, u32 pteh, u32 ctx, u32 sr_ofs, u32 fpscr_ofs)
+{
+	const s32 lo = (s16)(tbl & 0xFFFF), glo = (s16)(gen & 0xFFFF), plo = (s16)(pteh & 0xFFFF);
+	ppc_rlwinmx(ppc_r11, ppc_r3, 20, 12, 31, 0);		// pc >> 12
+	ppc_xorx(ppc_r11, ppc_r11, ppc_r3, 0);
+	ppc_rlwinmx(ppc_r11, ppc_r11, 3, 16, 27, 0);		// (((pc ^ pc >> 12) >> 1) & 4095) * 16
+	ppc_addis(ppc_r11, ppc_r11, (tbl - (u32)lo) >> 16);
+	ppc_lwz(ppc_r12, ppc_r11, (u32)lo);			// the entry's pc
+	ppc_cmpl(ppc_cr0, ppc_r12, ppc_r3, 0);
+	ppc_label* miss_pc = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	// The key, as jmmu_dkey(): SR.MD 1, FPSCR.PR 4, SZ 8, RM 1 16, PTEH.ASID << 8.
+	ppc_lwz(ppc_r12, ctx, sr_ofs);
+	ppc_lwz(ppc_r0, ctx, fpscr_ofs);
+	ppc_rlwinmx(ppc_r12, ppc_r12, 2, 31, 31, 0);
+	ppc_rlwinmx(ppc_r10, ppc_r0, 15, 28, 29, 0);
+	ppc_orx(ppc_r12, ppc_r12, ppc_r10, 0);
+	ppc_andi(ppc_r10, ppc_r0, 3);
+	ppc_xori(ppc_r10, ppc_r10, 1);
+	ppc_cntlzwx(ppc_r10, ppc_r10, 0);			// 32 only for RM 1
+	ppc_rlwinmx(ppc_r10, ppc_r10, 31, 27, 27, 0);
+	ppc_orx(ppc_r12, ppc_r12, ppc_r10, 0);
+	ppc_addis(ppc_r10, 0, (pteh - (u32)plo) >> 16);
+	ppc_lwz(ppc_r10, ppc_r10, (u32)plo);
+	ppc_rlwinmx(ppc_r10, ppc_r10, 8, 16, 23, 0);
+	ppc_orx(ppc_r12, ppc_r12, ppc_r10, 0);
+	ppc_lwz(ppc_r0, ppc_r11, (u32)(lo + 4));		// the entry's key
+	ppc_cmpl(ppc_cr0, ppc_r0, ppc_r12, 0);
+	ppc_label* miss_key = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	ppc_lwz(ppc_r12, ppc_r11, (u32)(lo + 8));		// the entry's generation
+	ppc_addis(ppc_r10, 0, (gen - (u32)glo) >> 16);
+	ppc_lwz(ppc_r10, ppc_r10, (u32)glo);
+	ppc_cmpl(ppc_cr0, ppc_r12, ppc_r10, 0);
+	ppc_label* miss_gen = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	ppc_lwz(ppc_r12, ppc_r11, (u32)(lo + 12));		// the block's code
+	ppc_mtctr(ppc_r12);
+	ppc_bcctrx(BO_ALWAYS, BI_CR0_EQ, 0);
+	miss_pc->MarkLabel();
+	miss_key->MarkLabel();
+	miss_gen->MarkLabel();
+}
+
+// Row MMU SQ Stores: a JTC miss of a 32-bit or pair store into the store queues, written to sq_base here: the area's
+// top bits, 4-byte aligned (8 for a pair), and with md 0 (user mode) MMUCR.SQMD 0. Scratch r0, r11, r12.
+struct JmmuSqOther { ppc_label* area; ppc_label* sqmd; };
+static inline JmmuSqOther emit_jmmu_sq_store(u32 areg, bool pair, bool fpr, u32 d0, u32 d1, u32 sq_base, bool md,
+                                             u32 mmucr, void* done)
+{
+	JmmuSqOther o = { 0, 0 };
+	ppc_rlwinmx(ppc_r0, areg, 6, pair ? 23 : 24, 31, 0);	// the top 6 bits, under them the alignment bits
+	ppc_cmpli(ppc_cr0, ppc_r0, 0x38, 0);
+	o.area = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	if (!md)
+	{
+		const s32 mlo = (s16)(mmucr & 0xFFFF);
+		ppc_addis(ppc_r11, 0, (mmucr - (u32)mlo) >> 16);
+		ppc_lwz(ppc_r0, ppc_r11, (u32)mlo);
+		ppc_andi(ppc_r0, ppc_r0, 0x200);
+		o.sqmd = ppc_CreateLabel();
+		ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	}
+	const s32 lo = (s16)(sq_base & 0xFFFF);
+	ppc_rlwinmx(ppc_r12, areg, 0, 26, pair ? 28 : 29, 0);
+	ppc_addis(ppc_r12, ppc_r12, (sq_base - (u32)lo) >> 16);
+	if (fpr)
+	{
+		ppc_stfs(d0, ppc_r12, (u32)lo);
+		if (pair)
+			ppc_stfs(d1, ppc_r12, (u32)(lo + 4));
+	}
+	else
+	{
+		ppc_stw(d0, ppc_r12, (u32)lo);
+		if (pair)
+			ppc_stw(d1, ppc_r12, (u32)(lo + 4));
+	}
+	ppc_bx(done, 0);
+	return o;
+}

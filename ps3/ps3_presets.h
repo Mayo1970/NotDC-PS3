@@ -224,6 +224,7 @@ extern int g_reg_size_preset;
 extern int g_elf_loader_preset;
 extern int g_full_mmu_preset;
 extern int g_mmu_jit_preset;
+extern int g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

@@ -55,16 +55,17 @@ void UTLB_Sync(u32 entry)
 		// P58 (Flycast's UTLB_Sync): an entry that is not valid maps nothing; its slot keeps its address.
 		if (g_mmu_bits_preset && !UTLB[entry].Data.V)
 		{
-			printf("SQ remap [%u] slot=%u : virt=0x%08X not valid, slot stays 0x%08X\n",
-			       entry, sq_index, UTLB[entry].Address.VPN << 10, sq_remap[sq_index]);
+			if (!g_fullmmu_active || s_remap_logs++ < 16)
+				printf("SQ remap [%u] slot=%u : virt=0x%08X not valid, slot stays 0x%08X\n",
+				       entry, sq_index, UTLB[entry].Address.VPN << 10, sq_remap[sq_index]);
 			return;
 		}
 		sq_remap[sq_index] = UTLB[entry].Data.PPN << 10;
 
-		printf("SQ remap [%u] slot=%u : virt=0x%08X -> phys=0x%08X V=%u\n",
-		       entry, sq_index,
-		       UTLB[entry].Address.VPN << 10,
-		       UTLB[entry].Data.PPN << 10, (u32)UTLB[entry].Data.V);
+		// Windows CE loads store queue entries all the time (about 300 a second): no line after the 16th.
+		if (!g_fullmmu_active || s_remap_logs++ < 16)
+			printf("SQ remap [%u] slot=%u : virt=0x%08X -> phys=0x%08X V=%u\n", entry, sq_index,
+			       UTLB[entry].Address.VPN << 10, UTLB[entry].Data.PPN << 10, (u32)UTLB[entry].Data.V);
 	}
 	else if (!g_fullmmu_active || s_remap_logs++ < 16)
 	{

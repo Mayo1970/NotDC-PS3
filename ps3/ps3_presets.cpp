@@ -237,19 +237,22 @@ int g_maple_guard_preset   = 1;   // 1 = a reply outside RAM is dropped with the
 int g_maple_frame_preset   = 1;   // 1 = SB_MMSEL 0 swaps the frame words; an address with no unit bit is the main unit (P68, HW)
 int g_vmu_per_game_preset  = 0;   // a VMU file per disc product ID: 1 = slot A1 only, as Flycast, 2 = every slot (P37)
 int g_vmu_screen_preset    = 1;   // 1 = the VMU screens at the TV's right edge (P37, HW)
-// OPTIMIZATION_PLAN section 7, bundle 20 (SH4 correctness tail): 0 is the old path in every one; a row is off until it
-// is cleared on hardware. All are set before boot.
-int g_sh4_optest_preset    = 0;   // 1 = Flycast's SH4 op tests and bundle 20's cases run on the interpreter at boot (P46)
-int g_interp_fix_preset    = 0;   // 1 = fneg with PR=1 flips FR(n); mac.w/mac.l with S=1 saturate; addv, subv, mul.l without int overflow (P32)
-int g_fpscr_cause_preset   = 0;   // 1 = a guest FPSCR write clears the cause bits 17-12 (P64)
-int g_mem_map_preset       = 0;   // 1 = area 7 registers only at P4; no BIOS or flash in the 0x02000000 mirror (P67, P68)
-int g_block_write_preset   = 0;   // 1 = block writes of any size; SB_PDLEN in 32-byte units (P67)
-int g_onchip_regs_preset   = 0;   // 1 = the SCI registers exist; RFCR reads 17 (P67, P78)
-int g_holly_regs_preset    = 0;   // 1 = SB_TFREM 8, 8-bit VRAM reads, G2 DMA addresses in 32-byte units, ATA soft reset values (P67, P68)
-int g_reg_size_preset      = 0;   // 1 = a byte or halfword access to a register takes its low bits (P67)
-int g_elf_loader_preset    = 0;   // 1 = an .elf loads its segments, then the sections outside them; AICA interrupt levels set (P33, P68)
-int g_full_mmu_preset      = 0;   // the SH4 interpreter with the full MMU: 1 = for a Windows CE disc, 2 = always (P38)
-int g_mmu_jit_preset       = 0;   // the full MMU's engine: 0 the interpreter, 1 the JIT (P38, the JIT form)
+// OPTIMIZATION_PLAN section 7, bundle 20 (SH4 correctness tail): 0 is the old path. Since 2026-10-14 every row is on
+// its new path by default (Matt), SH4 MMU at AUTO. All are set before boot.
+int g_sh4_optest_preset    = 1;   // 1 = Flycast's SH4 op tests and bundle 20's cases run on the interpreter at boot (P46)
+int g_interp_fix_preset    = 1;   // 1 = fneg with PR=1 flips FR(n); mac.w/mac.l with S=1 saturate; addv, subv, mul.l without int overflow (P32)
+int g_fpscr_cause_preset   = 1;   // 1 = a guest FPSCR write clears the cause bits 17-12 (P64)
+int g_mem_map_preset       = 1;   // 1 = area 7 registers only at P4; no BIOS or flash in the 0x02000000 mirror (P67, P68)
+int g_block_write_preset   = 1;   // 1 = block writes of any size; SB_PDLEN in 32-byte units (P67)
+int g_onchip_regs_preset   = 1;   // 1 = the SCI registers exist; RFCR reads 17 (P67, P78)
+int g_holly_regs_preset    = 1;   // 1 = SB_TFREM 8, 8-bit VRAM reads, G2 DMA addresses in 32-byte units, ATA soft reset values (P67, P68)
+int g_reg_size_preset      = 1;   // 1 = a byte or halfword access to a register takes its low bits (P67)
+int g_elf_loader_preset    = 1;   // 1 = an .elf loads its segments, then the sections outside them; AICA interrupt levels set (P33, P68)
+int g_full_mmu_preset      = 1;   // the full SH4 MMU, on g_mmu_jit_preset's engine: 1 = for a Windows CE disc, 2 = always (P38, HW)
+int g_mmu_jit_preset       = 1;   // the full MMU's engine: 0 the interpreter, 1 the JIT (P38, the JIT form, HW)
+int g_mmu_fast_preset      = 1;   // 1 = each TLB entry loaded stays; no ITLB, protection or first-write checks (FAST_MMU, HW)
+int g_mmu_bcache_preset    = 1;   // 1 = the MMU JIT finds the next block in a cache before its C lookup (HW)
+int g_mmu_sq_preset        = 1;   // 1 = an MMU block writes the store queues itself, not through C (HW)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -417,6 +420,9 @@ static const CfgItem s_items[] = {
 	{ "ElfLoader",     &g_elf_loader_preset },
 	{ "FullMmu",       &g_full_mmu_preset },
 	{ "MmuJit",        &g_mmu_jit_preset },
+	{ "MmuFast",       &g_mmu_fast_preset },
+	{ "MmuBlockCache", &g_mmu_bcache_preset },
+	{ "MmuSqStores",   &g_mmu_sq_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -723,6 +729,9 @@ static const CfgItem s_sys_items[] = {
 	{ "ElfLoader",     &g_elf_loader_preset },
 	{ "FullMmu",       &g_full_mmu_preset },
 	{ "MmuJit",        &g_mmu_jit_preset },
+	{ "MmuFast",       &g_mmu_fast_preset },
+	{ "MmuBlockCache", &g_mmu_bcache_preset },
+	{ "MmuSqStores",   &g_mmu_sq_preset },
 };
 #define SYS_ITEMS (sizeof(s_sys_items) / sizeof(s_sys_items[0]))
 

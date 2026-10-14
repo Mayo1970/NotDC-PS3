@@ -158,6 +158,146 @@ static inline void xc_fill(XCache& c, const TLB_Entry* tlb, u32 idx, u32 va)
 	c.valid = true;
 }
 
+// ---- row MMU Model FAST (Flycast FAST_MMU): each entry ldtlb loads stays until MMUCR.TI or a TLB array write; no ITLB,
+// protection, first-write, multi-hit or URC count per access. A full table starts again empty.
+bool g_mmu_fast;
+#define FAST_N 32768u
+#define FAST_B 8192u
+struct FEnt { u32 base, ppn; u16 next; u8 sz, asid, sh, pad[3]; };
+static FEnt s_fe[FAST_N];
+static u16 s_fb[FAST_B];       // bucket heads, 0xFFFF = none
+static u32 s_fn, s_fsz[4];     // entries in use, and per page size
+static u32 s_fgen = 1;         // moves at a remap and a flush: the FCache entries of before go
+static struct { u32 finds, misses, inserts, remaps, flushes, full; } s_fs;
+
+static inline u32 fast_bucket(u32 base, u32 sz) { return ((base >> 10) ^ (base >> 20) ^ (sz << 11)) & (FAST_B - 1); }
+
+static void fast_clear()
+{
+	memset(s_fb, 0xFF, sizeof(s_fb));
+	s_fn = 0;
+	memset(s_fsz, 0, sizeof(s_fsz));
+	s_fgen++;
+}
+
+static void fast_flush()
+{
+	fast_clear();
+	s_fs.flushes++;
+	jmmu_fast_changed();
+}
+
+// The entry of va for this ASID, MD and SV, or -1. 4 KB first: Windows CE maps its pages at that size.
+static int fast_find(u32 va)
+{
+	static const u8 k_order[4] = { 1, 3, 2, 0 };
+	const bool any = sr.MD && MMUCR_SV(CCN_MMUCR.reg_data);
+	const u32 asid = CCN_PTEH.ASID;
+	s_fs.finds++;
+	for (u32 k = 0; k < 4; k++)
+	{
+		const u32 sz = k_order[k];
+		if (!s_fsz[sz])
+			continue;
+		const u32 base = va & k_page_mask[sz];
+		for (u32 i = s_fb[fast_bucket(base, sz)]; i != 0xFFFF; i = s_fe[i].next)
+		{
+			const FEnt& e = s_fe[i];
+			if (e.base == base && e.sz == sz && (e.sh || any || e.asid == asid))
+				return (int)i;
+		}
+	}
+	s_fs.misses++;
+	return -1;
+}
+
+// ldtlb's entry joins the table. One of the same page, size and ASID (or both shared) takes the new frame: a remap.
+static void fast_insert(const TLB_Entry& t)
+{
+	if (!t.Data.V)
+		return;
+	const u32 sz = t.Data.SZ1 * 2 + t.Data.SZ0, mask = k_page_mask[sz];
+	const u32 base = (t.Address.VPN << 10) & mask, ppn = (t.Data.PPN << 10) & mask;
+	const u32 asid = t.Address.ASID, sh = t.Data.SH;
+	const u32 b = fast_bucket(base, sz);
+	s_fs.inserts++;
+	for (u32 i = s_fb[b]; i != 0xFFFF; i = s_fe[i].next)
+	{
+		FEnt& e = s_fe[i];
+		if (e.base == base && e.sz == sz && e.sh == sh && (sh || e.asid == asid))
+		{
+			if (e.ppn != ppn)
+			{
+				e.ppn = ppn;
+				s_fgen++;
+				s_fs.remaps++;
+				jmmu_fast_changed();
+			}
+			return;
+		}
+	}
+	if (s_fn == FAST_N)
+	{
+		s_fs.full++;
+		fast_flush();
+	}
+	FEnt& e = s_fe[s_fn];
+	e.base = base;
+	e.ppn = ppn;
+	e.sz = (u8)sz;
+	e.asid = (u8)asid;
+	e.sh = (u8)sh;
+	e.next = s_fb[b];
+	s_fb[b] = (u16)s_fn;
+	s_fn++;
+	s_fsz[sz]++;
+}
+
+// The last page each access kind used (read, write, fetch, pref), while the table, ASID, MD and SV are the same.
+enum { AC_SQ = 3 };
+struct FCache { u32 vpage, mask, ppage, gen, asid; u8 md, sv, valid; };
+static FCache s_fc[4];
+
+static inline bool fc_hit(const FCache& c, u32 va)
+{
+	return c.valid && (va & c.mask) == c.vpage && c.gen == s_fgen && c.asid == CCN_PTEH.ASID && c.md == sr.MD &&
+	       c.sv == MMUCR_SV(CCN_MMUCR.reg_data);
+}
+
+static u32 fast_xlat(u32 va, u32 acc)
+{
+	FCache& c = s_fc[acc];
+	if (!fc_hit(c, va))
+	{
+		const int i = fast_find(va);
+		if (i < 0)
+			mmu_fault(MX_MISS, va, acc == AC_SQ ? (u32)AC_R : acc);
+		const FEnt& e = s_fe[i];
+		c.mask = k_page_mask[e.sz];
+		c.vpage = va & c.mask;
+		c.ppage = e.ppn;
+		c.gen = s_fgen;
+		c.asid = CCN_PTEH.ASID;
+		c.md = sr.MD;
+		c.sv = MMUCR_SV(CCN_MMUCR.reg_data);
+		c.valid = 1;
+	}
+	return c.ppage | (va & ~c.mask);
+}
+
+// A TLB array write leaves the table with what the UTLB holds after it: an entry the write added or took away.
+void jx_fast_after_write(u32 pa, u32 v)
+{
+	if ((pa & 0x1FFFFFFF) == 0x1F000010 && (v & MMUCR_TI_BIT))
+		fast_flush();
+	else if (((pa >> 24) & 0xFA) == 0xF2)
+	{
+		fast_flush();
+		for (u32 i = 0; i < 64; i++)
+			fast_insert(UTLB[i]);
+	}
+}
+
 // A data access with MMUCR.AT on: the physical address, or an exception.
 template<u32 acc>
 static u32 xlat_data(u32 va, u32 size)
@@ -175,6 +315,11 @@ static u32 xlat_data(u32 va, u32 size)
 	// The on-chip RAM (7C-7F), P1, P2 and P4 are not translated; P0/U0 and P3 are.
 	if ((va & 0xFC000000) == 0x7C000000 || region == 4 || region == 5 || region == 7)
 		return va;
+	if (g_mmu_fast)
+	{
+		const u32 fpa = fast_xlat(va, acc);
+		return (fpa & 0x1C000000) == 0x1C000000 ? fpa | 0xF0000000 : fpa;
+	}
 	XCache& c = s_xc[acc];
 	u32 pa;
 	if (xc_hit(c, UTLB, va))
@@ -241,6 +386,8 @@ static u32 xlat_inst(u32 va)
 	const u32 region = va >> 29;
 	if (region == 4 || region == 5)
 		return va;
+	if (g_mmu_fast)
+		return fast_xlat(va, AC_I);
 	XCache& c = s_xc[AC_I];
 	if (xc_hit(c, ITLB, va))
 	{
@@ -287,10 +434,12 @@ static u8  mmu_rd8(u32 a)  { s_rd_va = a; const u8 v = _vmem_ReadMem8(at_on() ? 
 static u16 mmu_rd16(u32 a) { s_rd_va = a; const u16 v = _vmem_ReadMem16(at_on() ? xlat_data<AC_R>(a, 2) : a); s_rd_val = v; return v; }
 static u32 mmu_rd32(u32 a) { s_rd_va = a; const u32 v = _vmem_ReadMem32(at_on() ? xlat_data<AC_R>(a, 4) : a); s_rd_val = v; return v; }
 static u64 mmu_rd64(u32 a) { return _vmem_ReadMem64(at_on() ? xlat_data<AC_R>(a, 8) : a); }
-static void mmu_wr8(u32 a, u8 v)   { _vmem_WriteMem8(at_on() ? xlat_data<AC_W>(a, 1) : a, v); }
-static void mmu_wr16(u32 a, u16 v) { _vmem_WriteMem16(at_on() ? xlat_data<AC_W>(a, 2) : a, v); }
-static void mmu_wr32(u32 a, u32 v) { _vmem_WriteMem32(at_on() ? xlat_data<AC_W>(a, 4) : a, v); }
-static void mmu_wr64(u32 a, u64 v) { _vmem_WriteMem64(at_on() ? xlat_data<AC_W>(a, 8) : a, v); }
+// MMU Model FAST: a write that flushes the table. MMUCR and the TLB arrays are reached untranslated, so va serves.
+static inline void mmu_wrote(u32 a, u32 v) { if (g_mmu_fast) jx_fast_after_write(a, v); }
+static void mmu_wr8(u32 a, u8 v)   { _vmem_WriteMem8(at_on() ? xlat_data<AC_W>(a, 1) : a, v); mmu_wrote(a, 0); }
+static void mmu_wr16(u32 a, u16 v) { _vmem_WriteMem16(at_on() ? xlat_data<AC_W>(a, 2) : a, v); mmu_wrote(a, 0); }
+static void mmu_wr32(u32 a, u32 v) { _vmem_WriteMem32(at_on() ? xlat_data<AC_W>(a, 4) : a, v); mmu_wrote(a, v); }
+static void mmu_wr64(u32 a, u64 v) { _vmem_WriteMem64(at_on() ? xlat_data<AC_W>(a, 8) : a, v); mmu_wrote(a, 0); }
 
 #undef ReadMem8
 #undef ReadMem16
@@ -386,9 +535,21 @@ static void FASTCALL mmu_op_ldtlb(u32 op)
 	UTLB[urc].Address = CCN_PTEH;
 	UTLB[urc].Assistance = CCN_PTEA;
 	s_st.ldtlb++;
+	if (g_mmu_fast)
+		fast_insert(UTLB[urc]);
 	if ((UTLB[urc].Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
 		UTLB_Sync(urc);
 	jmmu_utlb_changed(urc);
+}
+
+static void pref_flush(u32 addr, u32 dest)
+{
+	u32* sq = (u32*)&sq_both[dest & 0x20];
+	s_st.sq++;
+	if (((addr >> 26) & 7) == 4)
+		TAWriteSQ(addr, sq);
+	else
+		WriteMemBlock_nommu_ptr(addr, sq, 32);
 }
 
 // pref to the store queues: with AT on, the UTLB gives the target (Flycast mmu_full_SQ, a read's checks).
@@ -404,18 +565,18 @@ static void FASTCALL mmu_op_pref(u32 op)
 	}
 	if ((dest & 3) || (!sr.MD && MMUCR_SQMD(CCN_MMUCR.reg_data)))
 		mmu_fault(MX_BADADDR, dest, AC_R);
+	if (g_mmu_fast)
+	{
+		pref_flush(fast_xlat(dest, AC_SQ) & ~31u, dest);
+		return;
+	}
 	const int i = utlb_lookup(dest);
 	if (i < 0)
 		mmu_fault(i == -1 ? MX_MISS : MX_MHIT, dest, AC_R);
 	if (!(UTLB[i].Data.PR & 2) && !sr.MD)
 		mmu_fault(MX_PROT, dest, AC_R);
 	const u32 addr = tlb_phys(UTLB[i], dest) & ~31u;
-	u32* sq = (u32*)&sq_both[dest & 0x20];
-	s_st.sq++;
-	if (((addr >> 26) & 7) == 4)
-		TAWriteSQ(addr, sq);
-	else
-		WriteMemBlock_nommu_ptr(addr, sq, 32);
+	pref_flush(addr, dest);
 }
 
 static u32 s_illegal_logs;
@@ -611,6 +772,10 @@ static void stats_line()
 	       "illegal %u | ldtlb %u, UTLB scans %u, data hits %u, ITLB fills %u, fetch hits %u, SQ %u\n",
 	       (u32)at_on(), s_st.miss_r, s_st.miss_w, s_st.miss_i, s_st.prot, s_st.firstw, s_st.addr, s_st.mhit, s_st.fpu,
 	       s_st.illegal, s_st.ldtlb, s_st.scans, s_st.hits, s_st.ifills, s_st.ihits, s_st.sq);
+	if (g_mmu_fast)
+		printf("[fullmmu] FAST table: entries %u (4K %u, 64K %u, 1M %u, 1K %u) | finds %u, misses %u, inserts %u, remaps %u,"
+		       " flushes %u, full %u\n", s_fn, s_fsz[1], s_fsz[2], s_fsz[3], s_fsz[0], s_fs.finds, s_fs.misses, s_fs.inserts,
+		       s_fs.remaps, s_fs.flushes, s_fs.full);
 	s_st_last = s_st;
 }
 
@@ -680,6 +845,14 @@ void sh4_fullmmu_select()
 	}
 	if (jit)
 		mmu_tables_init();
+	g_mmu_fast = g_fullmmu_active && g_mmu_fast_preset;
+	fast_clear();
+	memset(&s_fs, 0, sizeof(s_fs));
+	if (g_mmu_fast)
+		printf("[fullmmu] MMU Model FAST: each TLB entry loaded stays (%u at most) until MMUCR.TI or a TLB array write;"
+		       " no ITLB, protection or first-write checks\n", FAST_N);
+	g_jmmu_bcache = jit && g_mmu_bcache_preset;
+	g_jmmu_sq = jit && g_mmu_sq_preset;
 	jmmu_select(jit);
 	if (g_fullmmu_active && !g_mmu_bits_preset)
 		printf("[fullmmu] WARNING: MMUCR Bits is OLD, so MMUCR.TI flushes are lost: set it to FIXED\n");
@@ -697,8 +870,8 @@ static inline bool jx_translated(u32 va)
 	return !((va & 0xFC000000) == 0x7C000000 || region == 4 || region == 5 || region == 7);
 }
 
-// A data access: 0 and the physical address, or the exception code (TEA and PTEH set). *ent: the UTLB entry used,
-// or -1 for an address the TLB does not translate.
+// A data access: 0 and the physical address, or the exception code (TEA and PTEH set). *ent: the UTLB entry used
+// (64 for MMU Model FAST's table), or -1 for an address the TLB does not translate.
 u32 __attribute__((noinline)) jx_data_xlat(u32 va, u32 size, u32 write, u32* pa, int* ent)
 {
 	if (__builtin_setjmp(s_jb))
@@ -711,12 +884,13 @@ u32 __attribute__((noinline)) jx_data_xlat(u32 va, u32 size, u32 write, u32* pa,
 	}
 	*pa = write ? xlat_data<AC_W>(va, size) : xlat_data<AC_R>(va, size);
 	if (jx_translated(va))
-		*ent = (int)s_xc[write ? AC_W : AC_R].idx;
+		*ent = g_mmu_fast ? 64 : (int)s_xc[write ? AC_W : AC_R].idx;
 	return 0;
 }
 
-// The dispatcher's code translations: s_xc[AC_I]'s check, one per 1 KB page, LRUI as a fetch.
+// The dispatcher's code translations: s_xc[AC_I]'s check, one per 1 KB page, LRUI as a fetch; FAST: s_fc[AC_I]'s.
 static XCache s_jx_ctc[64];
+static FCache s_jx_fctc[64];
 
 static u32 __attribute__((noinline)) jx_fetch_slow(u32 va, u32* pa)
 {
@@ -734,6 +908,20 @@ u32 jx_fetch(u32 va, u32* pa)
 	{
 		*pa = va;
 		return 0;
+	}
+	if (g_mmu_fast)
+	{
+		FCache& f = s_jx_fctc[(va >> 10) & 63];
+		if (!(va & 1) && region != 7 && (sr.MD || !(va & 0x80000000)) && fc_hit(f, va))
+		{
+			s_st.ihits++;
+			*pa = f.ppage | (va & ~f.mask);
+			return 0;
+		}
+		const u32 fcode = jx_fetch_slow(va, pa);
+		if (!fcode && region != 4 && region != 5)
+			f = s_fc[AC_I];
+		return fcode;
 	}
 	XCache& c = s_jx_ctc[(va >> 10) & 63];
 	if (!(va & 1) && region != 7 && (sr.MD || !(va & 0x80000000)) && xc_hit(c, ITLB, va))

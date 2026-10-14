@@ -185,4 +185,74 @@ static const u32 k_ref[] = {
 	0x3C608C01u,	// lis     r3,-29695
 	0x60632345u,	// ori     r3,r3,9029
 	0x4BFFFD20u,	// b       0 <start>
+	0x546BA33Eu,	// rlwinm  r11,r3,20,12,31
+	0x7D6B1A78u,	// xor     r11,r11,r3
+	0x556B1C36u,	// rlwinm  r11,r11,3,16,27
+	0x3D6B102Au,	// addis   r11,r11,4138
+	0x818B8000u,	// lwz     r12,-32768(r11)
+	0x7C0C1840u,	// cmplw   r12,r3
+	0x40820068u,	// bne-    364 <start+0x364>
+	0x819E0114u,	// lwz     r12,276(r30)
+	0x801E011Cu,	// lwz     r0,284(r30)
+	0x558C17FEu,	// rlwinm  r12,r12,2,31,31
+	0x540A7F3Au,	// rlwinm  r10,r0,15,28,29
+	0x7D8C5378u,	// or      r12,r12,r10
+	0x700A0003u,	// andi.   r10,r0,3
+	0x694A0001u,	// xori    r10,r10,1
+	0x7D4A0034u,	// cntlzw  r10,r10
+	0x554AFEF6u,	// rlwinm  r10,r10,31,27,27
+	0x7D8C5378u,	// or      r12,r12,r10
+	0x3D40102Cu,	// lis     r10,4140
+	0x814ACDE0u,	// lwz     r10,-12832(r10)
+	0x554A442Eu,	// rlwinm  r10,r10,8,16,23
+	0x7D8C5378u,	// or      r12,r12,r10
+	0x800B8004u,	// lwz     r0,-32764(r11)
+	0x7C006040u,	// cmplw   r0,r12
+	0x40820024u,	// bne-    364 <start+0x364>
+	0x818B8008u,	// lwz     r12,-32760(r11)
+	0x3D40102Cu,	// lis     r10,4140
+	0x814A8AB0u,	// lwz     r10,-30032(r10)
+	0x7C0C5040u,	// cmplw   r12,r10
+	0x40820010u,	// bne-    364 <start+0x364>
+	0x818B800Cu,	// lwz     r12,-32756(r11)
+	0x7D8903A6u,	// mtctr   r12
+	0x4E820420u,	// bcctr-  20,eq
+	0x5680363Eu,	// rlwinm  r0,r20,6,24,31
+	0x28000038u,	// cmplwi  r0,56
+	0x40820024u,	// bne-    390 <start+0x390>
+	0x3D60102Eu,	// lis     r11,4142
+	0x800B9F10u,	// lwz     r0,-24816(r11)
+	0x70000200u,	// andi.   r0,r0,512
+	0x40820014u,	// bne-    390 <start+0x390>
+	0x568C06BAu,	// rlwinm  r12,r20,0,26,29
+	0x3D8C102Du,	// addis   r12,r12,4141
+	0x92CC8040u,	// stw     r22,-32704(r12)
+	0x4BFFFC74u,	// b       0 <start>
+	0x546035FEu,	// rlwinm  r0,r3,6,23,31
+	0x28000038u,	// cmplwi  r0,56
+	0x40820018u,	// bne-    3b0 <start+0x3b0>
+	0x546C06B8u,	// rlwinm  r12,r3,0,26,28
+	0x3D8C102Du,	// addis   r12,r12,4141
+	0xD1CC8040u,	// stfs    f14,-32704(r12)
+	0xD1EC8044u,	// stfs    f15,-32700(r12)
+	0x4BFFFC54u,	// b       0 <start>
+	0x5460363Eu,	// rlwinm  r0,r3,6,24,31
+	0x28000038u,	// cmplwi  r0,56
+	0x40820014u,	// bne-    3cc <start+0x3cc>
+	0x546C06BAu,	// rlwinm  r12,r3,0,26,29
+	0x3D8C102Du,	// addis   r12,r12,4141
+	0xD20C8040u,	// stfs    f16,-32704(r12)
+	0x4BFFFC38u,	// b       0 <start>
+	0x546035FEu,	// rlwinm  r0,r3,6,23,31
+	0x28000038u,	// cmplwi  r0,56
+	0x40820028u,	// bne-    3fc <start+0x3fc>
+	0x3D60102Eu,	// lis     r11,4142
+	0x800B9F10u,	// lwz     r0,-24816(r11)
+	0x70000200u,	// andi.   r0,r0,512
+	0x40820018u,	// bne-    3fc <start+0x3fc>
+	0x546C06B8u,	// rlwinm  r12,r3,0,26,28
+	0x3D8C102Du,	// addis   r12,r12,4141
+	0x90AC8040u,	// stw     r5,-32704(r12)
+	0x90CC8044u,	// stw     r6,-32700(r12)
+	0x4BFFFC08u,	// b       0 <start>
 };

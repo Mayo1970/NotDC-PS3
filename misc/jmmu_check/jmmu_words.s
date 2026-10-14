@@ -212,3 +212,83 @@ start:
 	addis 3,0,0x8C01
 	ori 3,3,0x2345
 	b start
+# emit_jmmu_dispatch(0x10298000, 0x102B8AB0, 0x102BCDE0, r30, 0x114, 0x11C): three lows that are negative
+	rlwinm 11,3,20,12,31
+	xor 11,11,3
+	rlwinm 11,11,3,16,27
+	addis 11,11,0x102A
+	lwz 12,-0x8000(11)
+	cmplw 0,12,3
+	bne 0,1f
+	lwz 12,0x114(30)
+	lwz 0,0x11C(30)
+	rlwinm 12,12,2,31,31
+	rlwinm 10,0,15,28,29
+	or 12,12,10
+	andi. 10,0,3
+	xori 10,10,1
+	cntlzw 10,10
+	rlwinm 10,10,31,27,27
+	or 12,12,10
+	addis 10,0,0x102C
+	lwz 10,-0x3220(10)
+	rlwinm 10,10,8,16,23
+	or 12,12,10
+	lwz 0,-0x7FFC(11)
+	cmplw 0,0,12
+	bne 0,1f
+	lwz 12,-0x7FF8(11)
+	addis 10,0,0x102C
+	lwz 10,-0x7550(10)
+	cmplw 0,12,10
+	bne 0,1f
+	lwz 12,-0x7FF4(11)
+	mtctr 12
+	bcctr 20,2
+1:
+# emit_jmmu_sq_store, sq 0x102C8040, MMUCR 0x102D9F10, done = start: user scalar r22 at r20
+	rlwinm 0,20,6,24,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	addis 11,0,0x102E
+	lwz 0,-0x60F0(11)
+	andi. 0,0,0x200
+	bne 0,1f
+	rlwinm 12,20,0,26,29
+	addis 12,12,0x102D
+	stw 22,-0x7FC0(12)
+	b start
+1:
+# privileged pair f14:f15 at r3
+	rlwinm 0,3,6,23,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	rlwinm 12,3,0,26,28
+	addis 12,12,0x102D
+	stfs 14,-0x7FC0(12)
+	stfs 15,-0x7FBC(12)
+	b start
+1:
+# privileged scalar f16 at r3
+	rlwinm 0,3,6,24,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	rlwinm 12,3,0,26,29
+	addis 12,12,0x102D
+	stfs 16,-0x7FC0(12)
+	b start
+1:
+# user pair r5:r6 at r3
+	rlwinm 0,3,6,23,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	addis 11,0,0x102E
+	lwz 0,-0x60F0(11)
+	andi. 0,0,0x200
+	bne 0,1f
+	rlwinm 12,3,0,26,28
+	addis 12,12,0x102D
+	stw 5,-0x7FC0(12)
+	stw 6,-0x7FBC(12)
+	b start
+1:

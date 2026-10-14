@@ -231,12 +231,13 @@ void (*ngen_FailedToFindBlock)();
 // MMU JIT (P38): the main loop's MMU lookup, its exception entry (SPC = next_pc) and the exit of a block's exception
 // (SPC in r3); s_lnu_word: the first word of loop_no_update, which ngen_mmu_dispatch swaps for a `b loop_mmu`.
 void* loop_mmu;
+void* loop_mmu_bc;	// row MMU Block Cache: its lookup, then loop_mmu
 void* loop_mmu_exc;
 void* jmmu_exc_stub;
 static u32 s_lnu_word;
 // The block being compiled: an MMU block, compiled with AT on (its accesses through the JTC), static links allowed;
-// its JTC tables for reads and writes.
-static bool s_jm, s_jm_at, s_jm_link;
+// its JTC tables for reads and writes; row MMU SQ Stores INLINE and the block's SR.MD for its cold stores.
+static bool s_jm, s_jm_at, s_jm_link, s_jm_sq, s_jm_md;
 static u32 s_jm_tbl_r, s_jm_tbl_w;
 
 // Emits the addis half of an absolute address into rD and returns the low 16-bit displacement.
@@ -2383,6 +2384,18 @@ static void flush_mmu_cold(const ColdFrag& c)
 	j.stub=jmmu_exc_stub;
 	j.done=c.done;
 	const u32 f=c.fdreg, f1=c.fdreg==0xFF ? 0xFF : c.fdreg+1;
+	// Row MMU SQ Stores: a 32-bit or pair store into the store queues is written here; any other goes on to C.
+	if (s_jm_sq && ((c.kind==6 && c.sz==4) || c.kind==7))
+	{
+		const bool pair=c.kind==7, fpr=f!=0xFF;
+		const u32 d0=fpr ? f : pair ? (u32)ppc_rarg2 : (u32)c.datareg, d1=fpr ? f1 : (u32)ppc_rarg3;
+		verify(((uintptr_t)sq_both&63)==0 && (uintptr_t)sq_both<0x7FFF0000u && (uintptr_t)&CCN_MMUCR<0x7FFF0000u);
+		const JmmuSqOther o=emit_jmmu_sq_store(pair ? (u32)ppc_rarg0 : (u32)c.areg,pair,fpr,d0,d1,
+		                                       (u32)(uintptr_t)sq_both,s_jm_md,(u32)(uintptr_t)&CCN_MMUCR,c.done);
+		o.area->MarkLabel();
+		if (o.sqmd)
+			o.sqmd->MarkLabel();
+	}
 	switch (c.kind)
 	{
 	case 4:
@@ -3165,6 +3178,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	verify((uintptr_t)&g_jtc[4][0] < 0x7FFF8000u);
 	s_jm_tbl_r=(u32)(uintptr_t)&g_jtc[sr.MD ? 2 : 0][0];
 	s_jm_tbl_w=(u32)(uintptr_t)&g_jtc[sr.MD ? 3 : 1][0];
+	s_jm_sq=s_jm_at && g_jmmu_sq;
+	s_jm_md=sr.MD!=0;
 
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
 	ngen_Begin(block,force_checks);
@@ -4802,6 +4817,7 @@ void ngen_ResetBlocks()
 {
 	// Block-cache clear: patched fastmem sites died with their blocks, so drop their trampolines too.
 	rec_fastmem_reset_pool();
+	jmmu_code_cleared();	// row MMU Block Cache: its entries name the blocks that went
 }
 
 // The `bl` word DoStatic() emitted in slot 2 of a static site, recomputed for a
@@ -4893,7 +4909,7 @@ void ngen_mmu_dispatch(bool on)
 		return;
 	emit_ptr=(u32*)loop_no_update;
 	if (on)
-		ppc_jump(loop_mmu);
+		ppc_jump(g_jmmu_bcache ? loop_mmu_bc : loop_mmu);
 	else
 		ppc_emit(s_lnu_word);
 	emit_ptr=0;
@@ -5181,8 +5197,13 @@ void ngen_mainloop()
 			ppc_call_and_jump_c(&rdv_BlockCheckFail);
 		}
 
-		// MMU JIT (P38): every block end of an MMU boot comes here, by the first word of loop_no_update. A pending
-		// exception (a fetch, FPU disabled at a compile) is taken with the GPRs in Sh4cntx, then its vector looked up.
+		// MMU JIT (P38): each block end of an MMU boot, by loop_no_update's first word; row MMU Block Cache enters at
+		// loop_mmu_bc (its cache, then this C lookup). A pending exception is taken, then its vector looked up.
+		verify((uintptr_t)&g_jdisp[JDISP_N] < 0x7FFF8000u && (uintptr_t)&g_jdgen < 0x7FFF8000u &&
+		       (uintptr_t)&CCN_PTEH < 0x7FFF8000u && (uintptr_t)CodeCache + CODE_SIZE <= 0xFFFFFFFFu);
+		loop_mmu_bc=emit_GetCCPtr();
+		emit_jmmu_dispatch((u32)(uintptr_t)&g_jdisp[0],(u32)(uintptr_t)&g_jdgen,(u32)(uintptr_t)&CCN_PTEH,ppc_contex,
+		                   Sh4cntx.offset(reg_sr_status),Sh4cntx.offset(reg_fpscr));
 		loop_mmu=emit_GetCCPtr();
 		{
 			ppc_clrldi32(ppc_rarg0,ppc_rarg0);

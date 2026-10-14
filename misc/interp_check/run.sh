@@ -28,9 +28,9 @@ has() {
 	fi
 }
 P=ps3/ps3_presets.cpp
-has $P 1 'int g_sh4_optest_preset    = 0;'
-has $P 1 'int g_interp_fix_preset    = 0;'
-has $P 1 'int g_fpscr_cause_preset   = 0;'
+has $P 1 'int g_sh4_optest_preset    = 1;'
+has $P 1 'int g_interp_fix_preset    = 1;'
+has $P 1 'int g_fpscr_cause_preset   = 1;'
 has $P 2 '{ "Sh4OpTests",    &g_sh4_optest_preset },'
 has $P 2 '{ "InterpFix",     &g_interp_fix_preset },'
 has $P 2 '{ "FpscrCause",    &g_fpscr_cause_preset },'
