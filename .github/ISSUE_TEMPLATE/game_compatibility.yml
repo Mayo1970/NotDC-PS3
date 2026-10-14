@@ -1,0 +1,167 @@
+name: Game compatibility report
+description: Tell us how a Dreamcast game runs on NotDC-PS3, whether it works perfectly or fails to boot.
+title: "[Compat] <Game title> (<Region>): <Status>"
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing! One report per game, please. Search the [existing reports](https://github.com/Mayo1970/NotDC-PS3/issues?q=label%3Acompatibility) first and add a comment there if the game already has one.
+
+        Reports that say a game runs **well** help too, so please send those as well.
+
+  - type: input
+    id: game
+    attributes:
+      label: Game title
+      description: The full name as shown on the box or disc.
+      placeholder: "Crazy Taxi"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: region
+    attributes:
+      label: Region
+      options:
+        - NTSC-U (USA)
+        - PAL (Europe)
+        - NTSC-J (Japan)
+        - Other / Unknown
+    validations:
+      required: true
+
+  - type: input
+    id: serial
+    attributes:
+      label: Product number (serial)
+      description: Optional. Printed on the disc or box, for example `MK-51035` or `T-36803N`. It tells different releases of the same game apart.
+      placeholder: "MK-51035"
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Compatibility status
+      description: Pick the best match for how far the game gets.
+      options:
+        - "Perfect: no issues found, plays like a real Dreamcast"
+        - "Playable: can be finished, with minor glitches (graphics, audio, slowdowns)"
+        - "In-game: gets into gameplay, but major problems stop you from finishing it"
+        - "Menus / Intro: reaches the title screen, menus or intro, but not gameplay"
+        - "Boots: shows something (logo, black screen with sound) and then stops"
+        - "Nothing: does not boot, black screen, or crashes at once"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: problems
+    attributes:
+      label: Problems seen
+      description: Tick all that apply. Leave all empty if the game runs perfectly.
+      options:
+        - label: Graphics (missing or wrong textures, flicker, wrong colors, missing effects)
+        - label: Audio (crackling, missing music or sound effects, CD audio problems)
+        - label: Slow speed or stutter
+        - label: Controls (buttons, analog sticks, triggers)
+        - label: Freezes or hangs
+        - label: Crash or return to the XMB
+        - label: Save problems (VMU or game save)
+        - label: Video mode or aspect ratio (wrong size, 50/60 Hz, interlace)
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happens?
+      description: |
+        Describe what works and what does not. Where does the problem show up (a level, a menu, a cutscene)? Can you make it happen again?
+      placeholder: |
+        Boots and plays well. Text in the main menu flickers. Stage 2 slows down a lot during the boss fight.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: speed
+    attributes:
+      label: Speed
+      description: How fast the game runs during gameplay, as best you can tell.
+      options:
+        - Full speed
+        - Mostly full speed, with some slowdowns
+        - Noticeably slow, but playable
+        - Too slow to play
+        - Did not reach gameplay
+    validations:
+      required: true
+
+  - type: input
+    id: build
+    attributes:
+      label: NotDC-PS3 build
+      description: The release version, or the commit SHA of the build package (the 8 characters in `notdc-ps3-build_xxxxxxxx`).
+      placeholder: "notdc-ps3-build_0215084a"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Disc image format
+      options:
+        - GDI
+        - CDI
+        - CHD
+        - NRG
+        - MDS / MDF
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ps3
+    attributes:
+      label: PS3 model and firmware
+      description: Model (Fat, Slim, Super Slim, or the CECH number) and the firmware / CFW / HEN you run.
+      placeholder: "CECH-2504A Slim, Evilnat 4.92 CFW"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: bios
+    attributes:
+      label: BIOS region
+      description: The Dreamcast BIOS in `/dev_hdd0/data/NotDC/data/`.
+      options:
+        - NTSC-U (USA)
+        - PAL (Europe)
+        - NTSC-J (Japan)
+        - Don't know
+    validations:
+      required: true
+
+  - type: textarea
+    id: settings
+    attributes:
+      label: Changed settings
+      description: Settings you changed from the defaults (SH4 Clock, Speed Limiter, Frame Drop, CD Audio, Controller, and so on). Write "Defaults" if you changed nothing. Say if a setting makes the game better or worse.
+      placeholder: "Defaults, except Frame Drop ON. With Frame Drop OFF the game runs slower."
+    validations:
+      required: true
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots or video
+      description: Optional. Drag images here, or paste a video link. Very helpful for graphics problems.
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: Optional. If you captured the UDP debug log, paste it here.
+      render: text
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Optional. For example, how the game runs in Flycast or Redream, or on a real Dreamcast.
