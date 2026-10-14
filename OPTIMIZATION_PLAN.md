@@ -28,9 +28,131 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**MMU JIT (P38's JIT form, the last item of bundle 20) built 2026-10-14
+(Matt: "Let's work on the MMU JIT."). Package of 19:22
+(`build/notdc_ps3.pkg`, 1745008 bytes) = commit 1da9af8 + the JIT form.
+HW SUCCESS 2026-10-14 (Matt: "It booted!"): Sega Rally 2 boots on the
+MMU JIT with row LMMODE ON (OFF gave a black screen); Crazy Taxi as
+before. Results below the HW steps. LMMODE default ON in source
+(Matt: "Keep it as up by default."), not packaged. Not committed. `.got`
+0xF600 of 0x10000 (2.5 KB left), 0 `r2off`.**
+- Row SH4 MMU Engine (`MmuJit`, INTERP / JIT; SH4 / SYSTEM page, after
+  SH4 MMU; default INTERP, the old path; set before boot; in `[syscfg]`).
+  JIT: the boot that SH4 MMU picks (AUTO: a Windows CE disc) runs on the
+  JIT with MMU blocks; any other boot gets the blocks of today. With the
+  interpreter as the menu's engine the MMU interpreter runs, as before.
+- Design (my choices, after Flycast's rec-x64 and rec-arm64 and the gate
+  of P38 in section 7):
+  - Blocks keyed by (virtual pc, physical pc, mode: SR.MD, FPSCR PR and
+    SZ, RM 1), so one pc can have a block per frame (Windows CE maps each
+    program at 0x00010000). Every block end goes to an MMU lookup in C
+    (`jmmu_lookup`: the fetch through the ITLB with a 64-entry check cache,
+    then the block); static links only inside the block's own 1 KB page.
+  - Data accesses with AT on: an inline lookup in a 1 KB-page cache, the
+    JTC (4 tables of 1024 entries, by mode and read/write), about 10 PPC
+    words, that gives the host page. A miss calls the MMU interpreter's
+    TLB path (UTLB, protection, exceptions, URC) and fills the JTC.
+    ldtlb drops the slots of its entry and steps URC; a PTEH write with a
+    new ASID, any MMUCR write and the TLB arrays drop every translated
+    slot; an AT edge clears the code cache and the JTC.
+  - Exceptions: a slow path leaves the code; the block's cold exit
+    flushes the pinned GPRs and takes it (SPC = the op, or the branch of
+    a delay slot); ops the JIT leaves to the interpreter run on the MMU
+    interpreter's table (setjmp-wrapped; the PPU disassembly shows the
+    wrapper saves r14-r31, f14-f31 and CR).
+  - FPU disabled: a block with an FPU op tests SR.FD at its start (0x800
+    with SPC = the block's start, as Flycast); SR.FD set when a block with
+    an FPU op would compile raises it first, so FPSCR is right.
+  - Code changes: no code cache clear on CCR.ICI (Windows CE flushes the
+    I-cache 12-74 times a second). An I-cache flush moves an epoch; each
+    1 KB code page is hashed again at its next lookup, and a changed page
+    makes its blocks stale.
+  - Off for AT 1 blocks: fastmem, SQ shapes, guard reuse, DYN_IC, BCACHE;
+    off for the whole MMU boot: constprop, DVE (an exception between two
+    ops must find every register written), the idle hash, the JIT_SBP
+    guard. JIT RM 2/3 is ACCEPT for the boot. mac.l and mac.w, rte, pref
+    and a branch whose delay slot is in the next page run on the MMU
+    interpreter. Blocks end at a 1 KB page and at 96 ops; @-Rn stores
+    move Rn after the write (as Flycast with the MMU).
+- Logs: `[fullmmu] SH4 MMU AUTO, Windows CE disc yes: the MMU JIT runs
+  this boot`, `[fullmmu] MMU JIT: blocks by (vaddr, paddr, mode) ...`,
+  `[jitcfg] ... rmany=1`, the `[fullmmu] AT=1 | TLB miss ...` stats line,
+  and once a second `[jmmu] lookups N, compiles N, stale N, FPU off N |
+  fills N, slow r N w N | exc fetch N data N ifb N taken N | ldtlb N,
+  drops N, flushes N | I-cache N, pages hashed N changed N, AT edges N`
+  (counts of that second).
+- Code: new `dc/sh4/sh4_mmu_jit.cpp`, `sh4_mmu_jit.h`, `ps3/ps3_jit_mmu.h`;
+  changed `dc/sh4/sh4_mmu_int.cpp` (the JIT's entries at its end, the
+  ldtlb hook, the engine choice), `sh4_fullmmu.h`, `rec_v2/decoder.cpp`,
+  `decoder.h`, `shil.h`, `shil.cpp`, `blockmanager.cpp`, `blockmanager.h`,
+  `driver.cpp`; `ps3/ps3_driver.cpp`, `ps3_presets.cpp`, `ps3_presets.h`,
+  `ps3_menu.cpp`. No change to ccn.cpp, mmu.cpp, sh4_internal_reg.cpp: the
+  JIT's slow paths see the register writes that change a translation.
+- PC checks (WSL), all PASS:
+  - `misc/jmmu_check` (new): `ps3_jit_mmu.h` against ppu-as words (185)
+    and on a PPC64 model: JTC hits and misses against `_vmem`'s lane
+    rules, every cold path around a C call that may fault (95574 checks);
+    `sh4_mmu_jit.cpp` with blockmanager.cpp's MMU block functions on
+    scripted translations (74 checks). `mutate.py`: 81 of 81 planted
+    bugs fail (37 in the header, 39 in `sh4_mmu_jit.cpp`, 5 in the block
+    functions); with `JMMU_NOWORDS=1` the model alone catches the 37.
+  - `misc/fullmmu_check`: + the JIT's entries in `sh4_mmu_int.cpp` (data
+    and fetch translation, ifb, take) and the engine row in `t_select`:
+    66 programs; `mutate.py` 76 of 76.
+  - `misc/jit8_check`: the texts of the RM getter and the idle hash line
+    in `cut.py` and `mutate.py` updated.
+  - The other run.sh that read a changed file: fschg, interp, constprop,
+    div32, clock, exit, mmu, sqstore, sysgate, tcopy, timebase, flash,
+    glpath, maple, pad, rtt, screen, sys20, chd, greuse, dynic, link,
+    sqla, carry, idle, hot, ppe: all PASS.
+  - Not on the PC: the emitters' use in a block (`mmu_readm`,
+    `mmu_writem`, the exits, the ifb path), the main loop's MMU lookup and
+    its patch of `loop_no_update`. Only the HW run tests them.
+- HW steps (package of 19:22; the install keeps `nullDC.cfg`; SH4 Clock
+  200):
+  1. UDP listener on port 18194, only when Matt says so.
+  2. SH4 / SYSTEM: SH4 MMU AUTO, SH4 MMU Engine JIT. MMUCR Bits FIXED and
+     Maple VBlank DMA FIXED are the defaults of the source.
+  3. Boot 1: Sega Rally 2 (US), `Run2/Sega Rally 2 (U).cdi`. Log: the two
+     `[fullmmu]` lines above, then `[jmmu]` once a second. Note how far it
+     boots and the SPEED (the MMU interpreter: 32% for the first 40 s,
+     then 11.5% on the black screen), a FATAL or `recSh4: ... failed`
+     line, or the last lines of a hang.
+  4. Boot 2: Crazy Taxi, the same rows. Log: `Windows CE: no`, `the
+     engine of the menu runs`; the game and SPEED as before.
+  5. On a fault: SH4 MMU Engine back to INTERP (next boot).
+- HW 2026-10-14 (package of 19:22, SH4 Clock 200, SH4 MMU AUTO, SH4 MMU
+  Engine JIT):
+  - Sega Rally 2, row LMMODE OFF: no crash, Windows CE at SPEED ~48% (the
+    MMU interpreter: 11.5%), but a black screen. The game ran: its scenes
+    changed and it read the disc. Each new texture decoded black with
+    alpha 0 (`[texfmt] blacktex alpha0tex`). Cause: Windows CE sets
+    LMMODE0 to 0 (the 64-bit bus) and sends its textures by SQ to
+    0x113-0x114xxxxx; with LMMODE OFF an SQ write always takes the 32-bit
+    map, so the textures missed their area. The interpreter's black
+    screen had the same cause.
+  - Sega Rally 2, LMMODE ON (Matt: "It booted!"): the SQ uploads take the
+    64-bit path, no black texture. The game reaches a 3D scene (~6000
+    vertices a frame) with no fault line. SPEED ~45% in the logos and
+    menus, ~35% in the 3D scene (~11 fps). Costs a second there: 1.0M MMU
+    lookups, ~425K slow-path writes (mostly SQ writes), ~170K slow reads,
+    ~63K TLB exceptions, ~41K ldtlb, ~294 "SQ remap" lines that no
+    throttle stops (`dc/mem/mmu.cpp:64`).
+  - Crazy Taxi: `Windows CE disc no: the engine of the menu runs`, SPEED
+    100% with the same dip (84-90%) as an earlier Crazy Taxi boot of the
+    day: no change.
+  - `[ta-split] sq/s ta=` reads over 4e9 in the MMU boot: the MMU pref
+    path does not count `sq_calls`. A fault of the log only.
+  - LMMODE in 21 games' HW logs (from 2026-10-08): only Sega Rally 2 sends
+    SQ texture writes; every other game sends ch2 DMA to 0x11 with
+    LMMODE0 0, the same 64-bit path with the row OFF or ON; no DMA to
+    0x13. Matt: LMMODE default ON in source (`ps3_presets.cpp`).
+  - SH4 MMU Engine: default INTERP, no verdict yet.
+
 **NEXT SESSION (Matt 2026-10-14, after HW run 4: "Check option 3. Save
 it. I'll start a new session."): the JIT form of the SH4 MMU (P38, the
-last item of bundle 20). Not started. Start from here:**
+last item of bundle 20). Built 2026-10-14: see the block above. The notes
+of its start:**
 - What exists: the interpreter form (`dc/sh4/sh4_mmu_int.cpp`, row SH4
   MMU OFF / AUTO / ON, chosen at each reset by `sh4_fullmmu_select()`),
   its PC check `misc/fullmmu_check` (55 programs, op tests at AT 0 and 1,
@@ -14871,7 +14993,7 @@ Main gains:
 - HW: a two-disc game at its swap prompt; a GDI set with spaces in its
   file names; ChuChu Rocket CD-DA.
 
-### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, no HW run (section 0); new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
+### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, HW runs 1-4 of the interpreter form (section 0); P38's JIT form built 2026-10-14, no HW run; new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
 
 - Items: P46 (Flycast's SH4 op tests as `misc/interp_check` and a boot
   self-test), P32 (fneg with PR=1, mac.w with S=1), P64 (the FPSCR cause
@@ -14948,6 +15070,13 @@ Main gains:
   in the bundle 20 block of section 0. Sega Rally 2 (US) is the Windows CE
   disc of Matt's library in the old logs. Not built: P38's JIT form (its
   gate above stays).
+- Built 2026-10-14 (Matt: "Let's work on the MMU JIT."): P38's JIT form,
+  behind the gate above, as the row SH4 MMU Engine (INTERP / JIT, default
+  INTERP). Blocks are keyed by the virtual pc and checked against the
+  physical pc and the mode; the design, the PC checks and the HW steps
+  are in the MMU JIT block of section 0. HW SUCCESS 2026-10-14: Sega
+  Rally 2 boots with row LMMODE ON (SPEED ~45% menus, ~35% 3D); LMMODE
+  default ON in source (Matt).
 
 ### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 

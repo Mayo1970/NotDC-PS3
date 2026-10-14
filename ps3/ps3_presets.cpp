@@ -64,7 +64,7 @@ int g_depth_float_preset   = 1;   // 1 = RSX float depth with z = n/W, not Z24 w
 int g_yuv_block_preset     = 0;   // 1 = YUV textures decode by tables straight into the RSX texture (P42)
 int g_yuv_conv_fast_preset = 1;   // 1 = the TA YUV converter reads plane words, whole blocks in place (P43, HW)
 int g_vram_direct_preset   = 0;   // 1 = SQ/DMA runs on the 32-bit VRAM bus map the address once per bank stretch (P55)
-int g_lmmode_preset        = 0;   // 1 = SQ and ch2 DMA to 0x11/0x13 take the bus SB_LMMODE0/1 selects (P7)
+int g_lmmode_preset        = 1;   // 1 = SQ and ch2 DMA to 0x11/0x13 take the bus SB_LMMODE0/1 selects (P7, HW)
 int g_fb_watch_preset      = 0;   // 1 = a 32-bit VRAM write into the shown frame presents it at vblank (P26)
 int g_bump_map_preset      = 1;   // 1 = bump-map texels and the offset colour drawn by a bump program (plan 3j, HW)
 // Bundle 3 (plan section 7), the TEXTURES page: 0 is the old path in every one. Defaults since 2026-10-10 (Matt).
@@ -249,6 +249,7 @@ int g_holly_regs_preset    = 0;   // 1 = SB_TFREM 8, 8-bit VRAM reads, G2 DMA ad
 int g_reg_size_preset      = 0;   // 1 = a byte or halfword access to a register takes its low bits (P67)
 int g_elf_loader_preset    = 0;   // 1 = an .elf loads its segments, then the sections outside them; AICA interrupt levels set (P33, P68)
 int g_full_mmu_preset      = 0;   // the SH4 interpreter with the full MMU: 1 = for a Windows CE disc, 2 = always (P38)
+int g_mmu_jit_preset       = 0;   // the full MMU's engine: 0 the interpreter, 1 the JIT (P38, the JIT form)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -415,6 +416,7 @@ static const CfgItem s_items[] = {
 	{ "RegSize",       &g_reg_size_preset },
 	{ "ElfLoader",     &g_elf_loader_preset },
 	{ "FullMmu",       &g_full_mmu_preset },
+	{ "MmuJit",        &g_mmu_jit_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -720,6 +722,7 @@ static const CfgItem s_sys_items[] = {
 	{ "RegSize",       &g_reg_size_preset },
 	{ "ElfLoader",     &g_elf_loader_preset },
 	{ "FullMmu",       &g_full_mmu_preset },
+	{ "MmuJit",        &g_mmu_jit_preset },
 };
 #define SYS_ITEMS (sizeof(s_sys_items) / sizeof(s_sys_items[0]))
 
@@ -834,6 +837,9 @@ void ps3_syscfg_print(const char* when, bool always)
 	static bool printed;
 	cfg_print("syscfg", s_sys_items, SYS_ITEMS, last, &printed, when, always);
 }
+
+// MMU JIT (P38, sh4_mmu_jit.cpp): Windows CE sets FPSCR.RM 2 or 3, so this boot compiles them as JIT RM 2/3 ACCEPT.
+extern bool g_jit_mmu;
 
 extern "C" {
 int get_accuracy_preset()      { return g_accuracy_preset; }
@@ -955,7 +961,7 @@ int get_spg_field_bit_preset() { return g_spg_field_bit_preset; }
 int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 8: read at compile time by the decoder.
 int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
-int get_jit_rm_any_preset()    { return g_jit_rm_any_preset; }
+int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().

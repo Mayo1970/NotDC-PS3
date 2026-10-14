@@ -164,4 +164,8 @@ struct shil_opcode
 
     shil_param rd, rd2;
     shil_param rs1, rs2, rs3;
+
+    // MMU JIT (P38): the SPC of an exception in this op (a delay slot's is its branch), and whether it is a slot.
+    u32    guest_pc;
+    u32    delay_slot;
 };

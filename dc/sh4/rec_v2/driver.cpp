@@ -33,6 +33,11 @@
 #include "blockmanager.h"
 #include "ngen.h"
 #include "decoder.h"
+#include "../sh4_fullmmu.h"
+#include "../sh4_mmu_jit.h"
+
+// decoder.cpp: the MMU JIT's code read offset (physical - virtual pc) for the block in hand.
+extern u32 g_dec_code_delta;
 
 #ifndef HOST_NO_REC
 
@@ -302,7 +307,8 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	DecodedBlock* blk = dec_DecodeBlock(bpc, fpscr, SH4_TIMESLICE / 2);
 	if (!blk)
 	{
-		printf("recSh4: ERROR - decode failed at %08X\n", bpc);
+		if (!g_dec_fpu_disabled)
+			printf("recSh4: ERROR - decode failed at %08X\n", bpc);
 		return 0;
 	}
 
@@ -313,7 +319,8 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	void* code_start = emit_GetCCPtr();
 #endif
 
-	DynarecCodeEntry* rv = ngen_Compile(blk, DoCheck(blk->start, blk->sh4_code_size));
+	// The MMU JIT's guard is its page check (sh4_mmu_jit.cpp): GetMemPtr would read a virtual pc.
+	DynarecCodeEntry* rv = ngen_Compile(blk, !g_jit_mmu && DoCheck(blk->start, blk->sh4_code_size));
 
 #if JIT_MANAGED_CACHE
 	if (rv)
@@ -331,7 +338,7 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 			char ops[160];
 			int  n = 0;
 			for (u32 o = 0; o < blk->sh4_code_size && n < (int)sizeof(ops) - 6; o += 2)
-				n += snprintf(ops + n, sizeof(ops) - n, "%04X ", ReadMem16(bpc + o));
+				n += snprintf(ops + n, sizeof(ops) - n, "%04X ", ReadMem16(bpc + o + g_dec_code_delta));
 			ops[n > 0 ? n - 1 : 0] = 0;
 			printf("recSh4: ops %08X: %s\n", bpc, ops);
 		}
@@ -389,6 +396,35 @@ DynarecCodeEntry* rdv_CompilePC()
 
 	bm_AddCode(pc, rv);
 
+	return rv;
+}
+
+// MMU JIT (P38): the block of (pc, pa, cfg), its code read at pa. The JIT_SBP boot rule only for the P1/P2 handoff
+// addresses: Windows CE programs start at 0x00010000 in U0.
+DynarecCodeEntry* rdv_CompilePCMmu(u32 pc, u32 pa, u32 cfg, u32 pgen)
+{
+	if (get_jit_sbp_preset() != 0 && (pc >> 30) == 2)
+	{
+		const u32 masked = pc & 0xFFFFFF;
+		if (masked == 0x08300 || masked == 0x10000)
+		{
+			printf("recSh4: boot address %08X reached, clearing block cache\n", pc);
+			recSh4_ClearCache();
+		}
+	}
+	g_dec_code_delta = pa - pc;
+	DynarecCodeEntry* rv = rdv_CompileBlock(pc);
+	if (!rv && !g_dec_fpu_disabled)
+	{
+		printf("recSh4: WARNING - compile failed at %08X, retrying after cache clear\n", pc);
+		recSh4_ClearCache();
+		rv = rdv_CompileBlock(pc);
+		if (!rv && !g_dec_fpu_disabled)
+			printf("recSh4: FATAL - compile still failed at %08X after cache clear\n", pc);
+	}
+	g_dec_code_delta = 0;
+	if (rv)
+		bm_AddCodeMmu(pc, pa, cfg, pgen, rv);
 	return rv;
 }
 

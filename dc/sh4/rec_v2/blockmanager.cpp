@@ -27,7 +27,7 @@ static bm_List blocks[BM_BLOCKLIST_COUNT];
 
 // Cache for fast lookups - exposed for potential assembly access (same as original)
 DynarecBlock* cache[BM_BLOCKLIST_COUNT];
-static DynarecBlock empty_block = {0, 0xFFFFFFFF, 0};
+static DynarecBlock empty_block = {0, 0xFFFFFFFF, 0, 0, 0, 0};
 
 // BCACHE mirror of cache[] (see blockmanager.h), read by the JIT's emitted code. 32-byte aligned so no entry
 // straddles a cache line; mirroring empty_block writes the {0xFFFFFFFF, 0} sentinel, so one helper does both.
@@ -172,6 +172,7 @@ void bm_AddCode(u32 addr, DynarecCodeEntry* code)
 		block_list[min_lookups_idx].code = code;
 		block_list[min_lookups_idx].addr = addr;
 		block_list[min_lookups_idx].lookups = 0;
+		block_list[min_lookups_idx].paddr = block_list[min_lookups_idx].cfg = block_list[min_lookups_idx].pgen = 0;
 		
 		// Invalidate cache if we replaced the cached block
 		if (cache[idx] == &block_list[min_lookups_idx])
@@ -187,6 +188,7 @@ void bm_AddCode(u32 addr, DynarecCodeEntry* code)
 		new_block.code = code;
 		new_block.addr = addr;
 		new_block.lookups = 0;
+		new_block.paddr = new_block.cfg = new_block.pgen = 0;
 		block_list.push_back(new_block);
 		// Point cache at the new block immediately - it was just compiled
 		// so it will almost certainly be needed right away.
@@ -196,6 +198,61 @@ void bm_AddCode(u32 addr, DynarecCodeEntry* code)
 	// NOTE: do NOT reset cache to empty_block here when evicting.
 	// The eviction path already handles cache invalidation above.
 }
+
+// jmmu_check: begin bm
+// MMU JIT (P38): the bucket of the virtual pc; a block must also have the physical pc and the mode bits.
+DynarecBlock* bm_GetBlockMmu(u32 vaddr, u32 paddr, u32 cfg)
+{
+	CCALL(CC_GETCODE);
+	const u32 idx = bm_AddrHash(vaddr);
+	DynarecBlock* c = cache[idx];
+	if (c->addr == vaddr && c->paddr == paddr && c->cfg == cfg && c->code)
+		return c;
+	bm_List& list = blocks[idx];
+	for (u32 i = 0; i < list.size(); i++)
+	{
+		DynarecBlock& b = list[i];
+		if (b.addr == vaddr && b.paddr == paddr && b.cfg == cfg)
+		{
+			cache[idx] = &b;
+			bcache_mirror(idx, &b);
+			return &b;
+		}
+	}
+	return 0;
+}
+
+// A new block of that key, or new code for it. A full bucket replaces its least used block, as bm_AddCode.
+void bm_AddCodeMmu(u32 vaddr, u32 paddr, u32 cfg, u32 pgen, DynarecCodeEntry* code)
+{
+	const u32 idx = bm_AddrHash(vaddr);
+	bm_List& list = blocks[idx];
+	DynarecBlock* b = 0;
+	for (u32 i = 0; i < list.size() && !b; i++)
+		if (list[i].addr == vaddr && list[i].paddr == paddr && list[i].cfg == cfg)
+			b = &list[i];
+	if (!b && list.size() >= BM_MAX_BLOCKS_PER_BUCKET)
+	{
+		b = &list[0];
+		for (u32 i = 1; i < list.size(); i++)
+			if (list[i].lookups < b->lookups)
+				b = &list[i];
+	}
+	if (!b)
+	{
+		list.push_back(DynarecBlock());
+		b = &list.back();
+	}
+	b->code = code;
+	b->addr = vaddr;
+	b->paddr = paddr;
+	b->cfg = cfg;
+	b->pgen = pgen;
+	b->lookups = 0;
+	cache[idx] = b;
+	bcache_mirror(idx, b);
+}
+// jmmu_check: end bm
 
 // Remove a specific block (useful for invalidation)
 bool bm_RemoveCode(u32 addr)

@@ -388,6 +388,7 @@ static void FASTCALL mmu_op_ldtlb(u32 op)
 	s_st.ldtlb++;
 	if ((UTLB[urc].Address.VPN & (0xFC000000 >> 10)) == (0xE0000000 >> 10))
 		UTLB_Sync(urc);
+	jmmu_utlb_changed(urc);
 }
 
 // pref to the store queues: with AT on, the UTLB gives the target (Flycast mmu_full_SQ, a read's checks).
@@ -601,13 +602,9 @@ static void diag_print()
 	s_pc_samples = 0;
 }
 
-static void mmu_stats(u64& t_last)
+// The stats line when a count changed; the JIT form prints it too (jx_stats_print).
+static void stats_line()
 {
-	const u64 now = gettime();
-	if (now - t_last < ps3_timebase_hz)
-		return;
-	t_last = now;
-	diag_print();
 	if (!memcmp(&s_st, &s_st_last, sizeof(s_st)))
 		return;
 	printf("[fullmmu] AT=%u | TLB miss r %u w %u i %u, prot %u, first write %u, addr err %u, multi %u, FPU off %u, "
@@ -615,6 +612,16 @@ static void mmu_stats(u64& t_last)
 	       (u32)at_on(), s_st.miss_r, s_st.miss_w, s_st.miss_i, s_st.prot, s_st.firstw, s_st.addr, s_st.mhit, s_st.fpu,
 	       s_st.illegal, s_st.ldtlb, s_st.scans, s_st.hits, s_st.ifills, s_st.ihits, s_st.sq);
 	s_st_last = s_st;
+}
+
+static void mmu_stats(u64& t_last)
+{
+	const u64 now = gettime();
+	if (now - t_last < ps3_timebase_hz)
+		return;
+	t_last = now;
+	diag_print();
+	stats_line();
 }
 
 void Sh4_int_Run_Mmu()
@@ -657,17 +664,140 @@ void Sh4_int_Run_Mmu()
 // The MMU engine has no compiled code: an I-cache flush or an AT edge has nothing to drop (the JIT's clear did).
 static void mmu_reset_cache() {}
 
-// AUTO: the disc's IP.BIN names Windows CE (Flycast isWindowsCE()); ON: any disc.
+// AUTO: the disc's IP.BIN names Windows CE (Flycast isWindowsCE()); ON: any disc. SH4 MMU Engine JIT keeps the JIT,
+// which then compiles MMU blocks (sh4_mmu_jit.cpp); with the interpreter as the menu's engine the MMU interpreter runs.
 void sh4_fullmmu_select()
 {
 	g_fullmmu_active = g_full_mmu_preset == 2 || (g_full_mmu_preset == 1 && g_disc_wince);
+	const bool jit = g_fullmmu_active && g_mmu_jit_preset && jmmu_can_run();
 	printf("[fullmmu] SH4 MMU %s, Windows CE disc %s: %s\n", g_full_mmu_preset == 2 ? "ON" : g_full_mmu_preset ? "AUTO" : "OFF",
-	       g_disc_wince ? "yes" : "no", g_fullmmu_active ? "the MMU interpreter runs this boot" : "the engine of the menu runs");
-	if (g_fullmmu_active)
+	       g_disc_wince ? "yes" : "no", jit ? "the MMU JIT runs this boot" : g_fullmmu_active ? "the MMU interpreter runs this boot" :
+	       "the engine of the menu runs");
+	if (g_fullmmu_active && !jit)
 	{
 		sh4_cpu.Run = Sh4_int_Run_Mmu;
 		sh4_cpu.ResetCache = mmu_reset_cache;
 	}
+	if (jit)
+		mmu_tables_init();
+	jmmu_select(jit);
 	if (g_fullmmu_active && !g_mmu_bits_preset)
 		printf("[fullmmu] WARNING: MMUCR Bits is OLD, so MMUCR.TI flushes are lost: set it to FIXED\n");
 }
+
+// ---- the JIT form (row SH4 MMU Engine JIT): what sh4_mmu_jit.cpp takes from this engine ----
+// Each entry that can raise sets s_jb itself; __builtin_setjmp stays out of the fast paths (its prologue saves all).
+
+// The addresses xlat_data takes through the UTLB; it returns the others as they are.
+static inline bool jx_translated(u32 va)
+{
+	if (!sr.MD && (va & 0x80000000))
+		return false;
+	const u32 region = va >> 29;
+	return !((va & 0xFC000000) == 0x7C000000 || region == 4 || region == 5 || region == 7);
+}
+
+// A data access: 0 and the physical address, or the exception code (TEA and PTEH set). *ent: the UTLB entry used,
+// or -1 for an address the TLB does not translate.
+u32 __attribute__((noinline)) jx_data_xlat(u32 va, u32 size, u32 write, u32* pa, int* ent)
+{
+	if (__builtin_setjmp(s_jb))
+		return s_exc;
+	*ent = -1;
+	if (!at_on())
+	{
+		*pa = va;
+		return 0;
+	}
+	*pa = write ? xlat_data<AC_W>(va, size) : xlat_data<AC_R>(va, size);
+	if (jx_translated(va))
+		*ent = (int)s_xc[write ? AC_W : AC_R].idx;
+	return 0;
+}
+
+// The dispatcher's code translations: s_xc[AC_I]'s check, one per 1 KB page, LRUI as a fetch.
+static XCache s_jx_ctc[64];
+
+static u32 __attribute__((noinline)) jx_fetch_slow(u32 va, u32* pa)
+{
+	if (__builtin_setjmp(s_jb))
+		return s_exc;
+	*pa = xlat_inst(va);
+	return 0;
+}
+
+// A block's first fetch: 0 and the physical pc, or the exception code.
+u32 jx_fetch(u32 va, u32* pa)
+{
+	const u32 region = va >> 29;
+	if (!at_on() || ((region == 4 || region == 5) && sr.MD && !(va & 1)))
+	{
+		*pa = va;
+		return 0;
+	}
+	XCache& c = s_jx_ctc[(va >> 10) & 63];
+	if (!(va & 1) && region != 7 && (sr.MD || !(va & 0x80000000)) && xc_hit(c, ITLB, va))
+	{
+		s_st.ihits++;
+		lru_use(c.idx);
+		*pa = c.ppage | (va & ~c.mask);
+		return 0;
+	}
+	const u32 code = jx_fetch_slow(va, pa);
+	if (!code && region != 4 && region != 5)
+		c = s_xc[AC_I];
+	return code;
+}
+
+// SR.BL set: the SH4 resets there; the JIT spins on the op instead, as the interpreter stops.
+static void jx_fatal(u32 epc, u32 code)
+{
+	static u32 lines;
+	if (lines++ < 4)
+		printf("[fullmmu] FATAL: exception %03X at %08X with SR.BL set (TEA %08X): the SH4 stops\n", code, epc, CCN_TEA);
+	next_pc = epc;
+}
+
+// An op the JIT leaves to this engine: 1 = it raised an exception, now taken (next_pc is the vector). epc: the op, or
+// the branch of its delay slot.
+u32 __attribute__((noinline)) jx_ifb(u32 op, u32 epc, u32 slot)
+{
+	s_op_pc = epc;
+	s_in_delay = slot != 0;
+	if (__builtin_setjmp(s_jb))
+	{
+		// After the longjmp: the statics, not the arguments.
+		if (sr.BL)
+		{
+			jx_fatal(s_op_pc, s_exc);
+			s_in_delay = false;
+			return 1;
+		}
+		mmu_land();
+		return 1;
+	}
+	if (sr.FD && fpu_op(op))
+		mmu_raise(0x800);
+	s_ops[op](op);
+	s_in_delay = false;
+	return 0;
+}
+
+// An exception the JIT found outside an op (a translation, FPU disabled at a block start), taken as mmu_land.
+// 0 = SR.BL is set: next_pc stays at epc.
+u32 jx_take(u32 epc, u32 code)
+{
+	if (!sr.BL)
+	{
+		s_exc = code;
+		s_op_pc = epc;
+		s_in_delay = false;
+		mmu_land();
+		return 1;
+	}
+	jx_fatal(epc, code);
+	return 0;
+}
+
+bool jx_fpu_op(u32 op) { return fpu_op(op); }
+void jx_stats_print() { stats_line(); }

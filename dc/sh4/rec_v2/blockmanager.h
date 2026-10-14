@@ -38,7 +38,8 @@ struct DynarecBlock
 	DynarecCodeEntry* code;
 	u32 addr;
 	u32 lookups;
-	//u32 pad;
+	// MMU JIT (P38) only: the physical pc, the mode bits (sh4_mmu_jit.h) and the code page's generation.
+	u32 paddr, cfg, pgen;
 };
 
 // Cache array exposed for potential assembly access (like original)
@@ -58,6 +59,10 @@ extern BlockCacheFlatEntry bm_bcache[BM_BLOCKLIST_COUNT];
 void bm_Init();
 bool bm_RemoveCode(u32 addr);
 void bm_InvalidateRange(u32 start_addr, u32 end_addr);
+
+// MMU JIT (P38): one virtual pc can have a block per physical pc and mode; NULL when there is none.
+DynarecBlock* bm_GetBlockMmu(u32 vaddr, u32 paddr, u32 cfg);
+void bm_AddCodeMmu(u32 vaddr, u32 paddr, u32 cfg, u32 pgen, DynarecCodeEntry* code);
 
 // Statistics functions (only available when BM_ENABLE_STATS is defined)
 #ifdef BM_ENABLE_STATS

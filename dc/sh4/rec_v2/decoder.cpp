@@ -49,7 +49,18 @@ void DecodedBlock::Setup(u32 rpc)
 	has_store=false;
 	idle_loop=false;
 	idle_hash=false;
+	cur_pc=rpc;
+	cur_slot=0;
+	has_fpu=false;
 }
+
+// MMU JIT (P38, sh4_mmu_jit.cpp): a block stops at its 1 KB page and reads its code there at the physical address
+// (rdv_CompilePCMmu sets the delta); SR.FD with an FPU op in the block stops the decode, so FPSCR comes first.
+extern bool g_jit_mmu;
+bool jx_fpu_op(u32 op);
+u32 g_dec_code_delta;
+bool g_dec_fpu_disabled;
+static inline u32 dec_read16(u32 pc) { return ReadMem16(pc + g_dec_code_delta); }
 
 DecodedBlock block;
 
@@ -140,6 +151,8 @@ static void dec_fallback(u32 op)
 
 	opcd.rs2=shil_param(FMT_IMM,state.cpu.rpc+2);
 	opcd.rs3=shil_param(FMT_IMM,op);
+	opcd.guest_pc=block.cur_pc;
+	opcd.delay_slot=block.cur_slot;
 	block.oplist.push_back(opcd);
 }
 
@@ -810,7 +823,7 @@ static u32 MatchDiv32(u32 pc, Sh4RegType& reg1, Sh4RegType& reg2, Sh4RegType& re
 	u32 match = 1;
 	for (int i = 0; i < 32; i++)
 	{
-		u16 opcode = ReadMem16(v_pc);
+		u16 opcode = dec_read16(v_pc);
 		v_pc += 2;
 		if ((opcode & DIV_MASK_N) == ROTCL_KEY)
 		{
@@ -823,7 +836,7 @@ static u32 MatchDiv32(u32 pc, Sh4RegType& reg1, Sh4RegType& reg2, Sh4RegType& re
 		else
 			break;
 
-		opcode = ReadMem16(v_pc);
+		opcode = dec_read16(v_pc);
 		v_pc += 2;
 		if ((opcode & DIV_MASK_N_M) == DIV1_KEY)
 		{
@@ -859,9 +872,15 @@ static u32 MatchDiv32(u32 pc, Sh4RegType& reg1, Sh4RegType& reg2, Sh4RegType& re
 // How far the last MatchDiv32 got before it broke, for the [DIV1] probe below.
 static u32 s_div_match_len = 0;
 
+// MMU JIT: the 64 ops the match skips must stay in the block's 1 KB page.
+static bool div_past_page(u32 pc)
+{
+	return g_jit_mmu && (pc & 0x3FF) + 130 > 0x400;
+}
+
 static bool MatchDiv32u(u32 op, u32 pc)
 {
-	if (settings.dynarec.safemode)
+	if (settings.dynarec.safemode || div_past_page(pc))
 		return false;
 
 	div_som_reg1 = NoReg;
@@ -875,7 +894,7 @@ static bool MatchDiv32u(u32 op, u32 pc)
 
 static bool MatchDiv32s(u32 op, u32 pc)
 {
-	if (settings.dynarec.safemode)
+	if (settings.dynarec.safemode || div_past_page(pc))
 		return false;
 
 	// DIV0S Rm,Rn fixes the divisor / working-remainder registers up front.
@@ -930,7 +949,7 @@ static void dec_div0_probe(u32 pc, bool is_unsigned, bool matched)
 	{
 		printf("[DIV] div0%c pc=%08X failed at %u/65 -> next op %04X (%s)\n",
 			is_unsigned ? 'u' : 's', pc, s_div_match_len,
-			ReadMem16(pc+2), OpDesc[ReadMem16(pc+2)]->diss);
+			dec_read16(pc+2), OpDesc[dec_read16(pc+2)]->diss);
 	}
 }
 
@@ -943,7 +962,7 @@ static void dec_div1_probe(u32 op, u32 pc)
 		return;
 
 	printf("[DIV] div1 ifb pc=%08X (prev %04X, next %04X)\n",
-		pc, ReadMem16(pc-2), ReadMem16(pc+2));
+		pc, dec_read16(pc-2), dec_read16(pc+2));
 }
 
 bool dec_generic(u32 op)
@@ -960,8 +979,8 @@ bool dec_generic(u32 op)
 	if (dec_is_carryop(op) && !get_jit_carry_preset())
 		return false;
 
-	// JIT_MAC gate -- see dec_is_macop above.
-	if (dec_is_macop(op) && !get_jit_mac_preset())
+	// JIT_MAC gate -- see dec_is_macop above. MMU JIT: the interpreter's mac moves Rn and Rm only after both reads.
+	if (dec_is_macop(op) && (!get_jit_mac_preset() || g_jit_mmu))
 		return false;
 
 	u64 inf=OpDesc[op]->decode;
@@ -1116,7 +1135,8 @@ bool dec_generic(u32 op)
 			bool update_after=false;
 			if ((s32)e<0)
 			{
-				if (rs1._reg!=rs2._reg)	//reg shoudn't be updated if its writen
+				// MMU JIT: Rn moves after the write, so a write that faults leaves it as it was (Flycast).
+				if (rs1._reg!=rs2._reg && !g_jit_mmu)	//reg shoudn't be updated if its writen
 				{
 					block.Emit(shop_sub,rs1,rs1,mk_imm(-e));
 				}
@@ -1290,6 +1310,7 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 {
 	block.Setup(startpc);
 	state.Setup(startpc,fpu_cfg);
+	g_dec_fpu_disabled=false;
 #ifndef HOST_NO_REC
 	ngen_GetFeatures(&state.ngen);
 #endif
@@ -1303,18 +1324,31 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 			FALLTHROUGH;	//there is no break here by design
 		case NDO_NextOp:
 			{
-				if (block.cycles>=max_cycles && !state.cpu.is_delayslot)
+				// An MMU block's access is ~30 PPC words: 96 ops stay inside ngen_Compile's 16 KB and the cold branches' reach.
+				const bool page_end=g_jit_mmu && state.cpu.rpc!=block.start && ((state.cpu.rpc&0x3FF)==0 || block.opcodes>=96);
+				if ((block.cycles>=max_cycles || page_end) && !state.cpu.is_delayslot)
 				{
 					dec_End(state.cpu.rpc,BET_StaticJump,false);
 				}
 				else
 				{
-					u32 op=ReadMem16(state.cpu.rpc);
+					u32 op=dec_read16(state.cpu.rpc);
 					block.opcodes++;
 					if (op>=0xF000)
 						block.cycles+=0;
 					else
 						block.cycles+=CPU_RATIO;
+					block.cur_pc=state.cpu.is_delayslot ? state.cpu.rpc-2 : state.cpu.rpc;
+					block.cur_slot=state.cpu.is_delayslot;
+					if (g_jit_mmu && jx_fpu_op(op))
+					{
+						if (sr.FD)
+						{
+							g_dec_fpu_disabled=true;
+							return 0;
+						}
+						block.has_fpu=true;
+					}
 
 					RecOpCallFP* rec_oph=OpDesc[op]->rec_oph;
 					if (rec_oph && dec_is_newop(op) && !get_jit_newops_preset())
@@ -1323,9 +1357,13 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 					// JitIfbMask bisect: a whole top-nibble group to the interpreter, block ends untouched (unlike JitSafe
 					// and JitDynEnds). JitIfbGroup + JitIfbLoMask sub-bisect one group by low nibble.
 					const u32 hi=op>>12;
+					// MMU JIT: rte (its slot runs with the new SR), pref (the UTLB) and a branch whose slot is in the next
+					// page run on the MMU interpreter.
+					const bool mmu_ifb=g_jit_mmu && (op==0x002B || (op&0xF0FF)==0x0083 ||
+					    (OpDesc[op]->SetPC() && ((state.cpu.rpc+2)&0x3FF)==0));
 					const bool force_ifb=((get_jit_ifb_mask()>>hi)&1)
 					    || ((int)hi==get_jit_ifb_group()
-					        && ((get_jit_ifb_lomask()>>(op&0xF))&1));
+					        && ((get_jit_ifb_lomask()>>(op&0xF))&1)) || mmu_ifb;
 					if (force_ifb)
 						rec_oph=0;
 
@@ -1375,7 +1413,7 @@ _end:
 	block.BlockType=state.BlockType;
 	block.has_store=idle_block_stores(block);
 	const int idle_hash_level=get_jit_idle_hash_preset();
-	block.idle_hash=idle_hash_level && dec_idle_hash(idle_hash_level);
+	block.idle_hash=idle_hash_level && !g_jit_mmu && dec_idle_hash(idle_hash_level);
 
 	//cycle tricks
 	{

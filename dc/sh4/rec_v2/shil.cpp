@@ -92,12 +92,14 @@ static void RegWriteInfo(shil_opcode* ops, const shil_param& p, s32 ord)
 extern "C" int get_jit_constprop_preset();
 extern "C" int get_jit_dve_preset();
 
-// Plan 5.21: constant propagation, then dead value elimination, each on its own JIT SPEED toggle.
+// Plan 5.21: constant propagation, then dead value elimination, each on its own JIT SPEED toggle. Neither with the
+// MMU JIT (P38): an exception between two ops must find every register written.
+extern bool g_jit_mmu;
 static void shil_opt_run(DecodedBlock* blk)
 {
     const bool cp  = get_jit_constprop_preset() != 0;
     const bool dve = get_jit_dve_preset() != 0;
-    if (!cp && !dve)
+    if ((!cp && !dve) || g_jit_mmu)
         return;
 
     shil_opt_stats.blocks++;

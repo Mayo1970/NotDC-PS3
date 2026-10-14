@@ -34,7 +34,10 @@
 #include "ps3/ps3_jit_exit.h"
 #include "ps3/ps3_jit_gate.h"
 #include "ps3/ps3_jit_link.h"
+#include "ps3/ps3_jit_mmu.h"
 #include "dc/sh4/sys_gate.h"
+#include "dc/sh4/sh4_fullmmu.h"
+#include "dc/sh4/sh4_mmu_jit.h"
 #include "ps3_timebase.h"	// gettime — the plan 5.40 probe
 
 // ppc_emitter.h macros that clash with this file's own wrapper functions of the same names.
@@ -224,6 +227,17 @@ void* loop_do_update_write;
 void* loop_gate;	// plan 5.36 SYS GATE + RESUME: a block's cycle exit calls it; null at the other levels
 void (*loop_code)() ;
 void (*ngen_FailedToFindBlock)();
+
+// MMU JIT (P38): the main loop's MMU lookup, its exception entry (SPC = next_pc) and the exit of a block's exception
+// (SPC in r3); s_lnu_word: the first word of loop_no_update, which ngen_mmu_dispatch swaps for a `b loop_mmu`.
+void* loop_mmu;
+void* loop_mmu_exc;
+void* jmmu_exc_stub;
+static u32 s_lnu_word;
+// The block being compiled: an MMU block, compiled with AT on (its accesses through the JTC), static links allowed;
+// its JTC tables for reads and writes.
+static bool s_jm, s_jm_at, s_jm_link;
+static u32 s_jm_tbl_r, s_jm_tbl_w;
 
 // Emits the addis half of an absolute address into rD and returns the low 16-bit displacement.
 u32 ppc_addr_high(u32 rD,void* ptr);
@@ -1122,6 +1136,19 @@ void DoStatic(u32 pc)
 	ppc_call(ngen_LinkBlock_Static_stub);
 }
 
+// A static exit. MMU JIT (P38): linked only inside the block's 1 KB page, whose translation and code check are the
+// block's own; any other target through the MMU lookup.
+static void exit_static(const DecodedBlock* block,u32 target)
+{
+	if (!s_jm || (s_jm_link && (target & ~0x3FFu)==(block->start & ~0x3FFu)))
+		DoStatic(target);
+	else
+	{
+		ppc_li(ppc_next_pc,target);
+		ppc_jump(loop_no_update);
+	}
+}
+
 // ---- ngen_End: block exit code ----
 
 // JIT IDLE SKIP, before an idle loop's backward link. Cycles are >= 0 here (the block's own poll passed), so the
@@ -1175,13 +1202,13 @@ void ngen_End(DecodedBlock* block)
 				// fall-through: BranchBlock not taken, so T is the complement.
 				ppc_li(ppc_rarg0,want^1);
 				ppc_sh_store(ppc_rarg0,reg_sr_T);
-				DoStatic(block->NextBlock);
+				exit_static(block,block->NextBlock);
 
 				jtrue->MarkLabel();
 				ppc_li(ppc_rarg0,want);
 				ppc_sh_store(ppc_rarg0,reg_sr_T);
 				idle_check_before_link(block);
-				DoStatic(block->BranchBlock);
+				exit_static(block,block->BranchBlock);
 				break;
 			}
 
@@ -1206,10 +1233,10 @@ void ngen_End(DecodedBlock* block)
 			ppc_label* jtrue=ppc_CreateLabel();
 			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);
 
-			DoStatic(block->NextBlock);
+			exit_static(block,block->NextBlock);
 			jtrue->MarkLabel();
 			idle_check_before_link(block);
-			DoStatic(block->BranchBlock);
+			exit_static(block,block->BranchBlock);
 		}
 		break;
 
@@ -1219,6 +1246,13 @@ void ngen_End(DecodedBlock* block)
 		//printf("Dynamic !\n");
 		//mov reg,djump
 		ppc_ori(ppc_rarg0,ppc_djump,0);  // mr rarg0, djump
+
+		// MMU JIT (P38): a pc's block depends on its translation and mode, which only the MMU lookup knows.
+		if (s_jm)
+		{
+			ppc_jump(loop_no_update);
+			break;
+		}
 
 		// DYN_IC: a monomorphic inline cache per site (ps3_jit_dynic.h), filled with the first target; unfilled sites
 		// and misses take the lookup below. Every invalidation is a full clear, which drops guards and targets together.
@@ -1314,7 +1348,7 @@ void ngen_End(DecodedBlock* block)
 		{
 			printf("Static 0x%08X!\n", block->BranchBlock);
 		}
-		DoStatic(block->BranchBlock);
+		exit_static(block,block->BranchBlock);
 		break;
 
 	default:
@@ -1947,6 +1981,7 @@ static void idle_dump(double seconds)
 extern "C" void hotblocks_dump(double seconds,double vt_k)
 {
 	recSh4_CacheDump(seconds);
+	jmmu_stats(seconds);	// MMU JIT (P38): the [fullmmu] and [jmmu] lines
 
 	// The stats window calls this every second, so plan 5.22's [cyc] line rides on it (after new compiles only).
 	static u32 cyc_last;
@@ -2187,6 +2222,8 @@ struct ColdFrag
 	// before the C call; 2 (plan 5.27) tests for the store queue first.
 	u8         vmem_tier;
 	u8         gr_bit;  // plan 5.31: the CR flag its entry clears (the check it validates failed), 0xFF = none
+	// MMU JIT (P38): kinds 4-7 = the JTC miss of 0-3, 8 = SR.FD at the block start, 9 = an ifb that took an exception.
+	u32        epc;     // the SPC of the op's exception
 };
 // Cannot overflow: a block emits < 4096 instructions (ngen_Compile needs 16 KB free) and a mem op >= 4.
 static ColdFrag s_cold[1024];
@@ -2333,6 +2370,45 @@ static ppc_label* emit_vmem_tier(const ColdFrag& c)
 }
 
 
+// MMU JIT (P38): a JTC miss's C call (kinds 4-7), the FPU-disabled exit (8), an ifb's exception exit (9: next_pc
+// is the vector already). P11's cycle store rides in the call words.
+static void flush_mmu_cold(const ColdFrag& c)
+{
+	JmmuCold j;
+	j.ctx=ppc_contex;
+	j.fofs=c.fofs;
+	j.fault=(u32)(uintptr_t)&g_jmmu_fault;
+	j.epc=c.epc;
+	j.cyc_ofs=s_fine_tcnt ? (u32)offsetof(Sh4Context,jit_cycles) : 0;
+	j.stub=jmmu_exc_stub;
+	j.done=c.done;
+	const u32 f=c.fdreg, f1=c.fdreg==0xFF ? 0xFF : c.fdreg+1;
+	switch (c.kind)
+	{
+	case 4:
+		emit_jmmu_cold_read(j,c.sz,c.areg,c.rdreg,f,
+		                    c.sz==1 ? (void*)jmmu_rd8 : c.sz==2 ? (void*)jmmu_rd16 : (void*)jmmu_rd32);
+		break;
+	case 5:
+		emit_jmmu_cold_read_pair(j,f,f1,(void*)jmmu_rd64);
+		break;
+	case 6:
+		emit_jmmu_cold_write(j,c.sz,c.areg,c.datareg,f,
+		                     c.sz==1 ? (void*)jmmu_wr8 : c.sz==2 ? (void*)jmmu_wr16 : (void*)jmmu_wr32);
+		break;
+	case 7:
+		emit_jmmu_cold_write_pair(j,f,f1,(void*)jmmu_wr64);
+		break;
+	case 8:
+		emit_jmmu_fd_exit(j);
+		break;
+	default:
+		ppc_lwz(ppc_rarg0,ppc_contex,Sh4cntx.offset(reg_nextpc));
+		ppc_jump(loop_no_update);
+		break;
+	}
+}
+
 // cold_ctr (JIT HOTBLOCKS): count each fragment's entries, 20 B more per fragment, only while hot body + cold
 // area stay far inside the 32 KB branch reach. Returns the fragments counted.
 static u32 FlushCold(u32* cold_ctr)
@@ -2346,6 +2422,11 @@ static u32 FlushCold(u32* cold_ctr)
 		snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
 		verify(beq_disp >= 0 && beq_disp < 32768);
 		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
+		if (c.kind>=4)
+		{
+			flush_mmu_cold(c);           // MMU JIT: the counter's scratch could be a write's data
+			continue;
+		}
 		if (count)
 			emit_hot_cold_count(cold_ctr,c.kind);
 		if (c.gr_bit!=0xFF)
@@ -2890,6 +2971,176 @@ static void gr_prepare(DecodedBlock* block)
 	s_gr_reuses+=s_gr.reuses;
 }
 
+// ---- MMU JIT (P38): the accesses of an MMU block compiled with AT on ----
+extern u32 g_dec_code_delta;	// decoder.cpp: physical - virtual pc of the block in hand
+
+// The address of a scalar access into areg (a plain @Rn: its pinned reg), or of a pair into rarg0. idx_scratch: rs3's
+// register when it is not pinned (the writes keep rarg1-rarg3 for the data, so they pass rarg3).
+static u32 mmu_addr(shil_opcode* op,u32 idx_scratch)
+{
+	if (op->rs1.is_imm())
+	{
+		ppc_li(ppc_rarg0,op->rs1._imm);
+		return ppc_rarg0;
+	}
+	if (op->rs3.is_imm())
+	{
+		verify(op->rs3.is_imm_s16());
+		ppc_addi(ppc_rarg0,src_or_load(op->rs1,ppc_rarg0),op->rs3._imm);
+		return ppc_rarg0;
+	}
+	if (op->rs3.is_r32i())
+	{
+		u32 a1=src_or_load(op->rs1,ppc_rarg0);
+		u32 a3=src_or_load(op->rs3,idx_scratch);
+		ppc_addx(ppc_rarg0,a1,a3,0,0);
+		return ppc_rarg0;
+	}
+	verify(op->rs3.is_null());
+	ppc_ireg ap=op->flags!=8 ? GetIntReg(op->rs1._reg) : ppc_rinvalid;
+	if (ap!=ppc_rinvalid)
+		return (u32)ap;
+	ppc_sh_load(ppc_rarg0,op->rs1);
+	return ppc_rarg0;
+}
+
+// A read: the JTC lookup and the load, the miss in a cold fragment. A PC-relative literal in the block's own 1 KB page
+// reads the physical page the dispatcher found; any other address is translated as it runs.
+static void mmu_readm(DecodedBlock* block,shil_opcode* op)
+{
+	const u32 sz=op->flags;
+	u32 rdreg=ppc_rrv0;
+	if (sz!=8)
+	{
+		ppc_ireg rp=GetIntReg(op->rd._reg);
+		if (rp!=ppc_rinvalid)
+			rdreg=(u32)rp;
+	}
+	if (op->rs1.is_imm() && sz<=4 && (op->rs1._imm & ~0x3FFu)==(block->start & ~0x3FFu))
+	{
+		bool isram;
+		void* ptr=_vmem_read_const(op->rs1._imm+g_dec_code_delta,isram,sz);
+		if (isram)
+		{
+			if (sz==1)
+			{
+				ppc_lbz(rdreg,ppc_r4,ppc_addr_high(ppc_r4,ptr));
+				ppc_extsbx(rdreg,rdreg,0);
+			}
+			else if (sz==2)
+				ppc_lha(rdreg,ppc_r4,ppc_addr_high(ppc_r4,ptr));
+			else
+				ppc_lwz(rdreg,ppc_r4,ppc_addr_high(ppc_r4,ptr));
+			ppc_sh_store(rdreg,op->rd);
+			return;
+		}
+	}
+	// FPU_PIN: a pinned FR loads straight into its FPR; the cold path bounces through its context slot.
+	u32 fd0=0xFF, fofs=0;
+	if (get_fpu_pin_preset() && op->rs1.is_reg())
+	{
+		if (sz==8)
+		{
+			ppc_freg a=GetFloatReg(op->rd._reg), b=GetFloatReg(op->rd._reg+1);
+			if (a!=ppc_finvalid && b!=ppc_finvalid)
+				fd0=(u32)a;
+		}
+		else if (sz==4 && op->rd.is_r32f() && GetFloatReg(op->rd._reg)!=ppc_finvalid)
+			fd0=(u32)GetFloatReg(op->rd._reg);
+		if (fd0!=0xFF)
+			fofs=Sh4cntx.offset(op->rd._reg);
+	}
+	const u32 areg=mmu_addr(op,ppc_rarg1);
+	ColdFrag& c=cold_new();
+	c.beq=emit_jtc_lookup(areg,s_jm_tbl_r,sz);
+	if (sz==8)
+		emit_jtc_load_pair(ppc_rrv0,ppc_rrv1,fd0,fd0==0xFF ? 0xFF : fd0+1);
+	else
+		emit_jtc_load(sz,rdreg,fd0);
+	c.done=emit_GetCCPtr();
+	c.kind=sz==8 ? 5 : 4;
+	c.sz=(u8)sz;
+	c.rdreg=(u8)rdreg;
+	c.areg=(u8)areg;
+	c.fdreg=(u8)fd0;
+	c.fofs=(u16)fofs;
+	c.epc=op->guest_pc;
+	if (fd0==0xFF)
+	{
+		ppc_sh_store(rdreg,op->rd);
+		if (sz==8)
+			ppc_sh_store(ppc_rrv1,op->rd._reg+1);
+	}
+}
+
+// A write, as the read: the address first, then the data (pairs in rarg2:rarg3), as the old path orders them.
+static void mmu_writem(shil_opcode* op)
+{
+	const u32 sz=op->flags;
+	const u32 areg=mmu_addr(op,ppc_rarg3);
+	u32 fs0=0xFF, fofs=0;
+	if (get_fpu_pin_preset())
+	{
+		if (sz==8)
+		{
+			ppc_freg a=GetFloatReg(op->rs2._reg), b=GetFloatReg(op->rs2._reg+1);
+			if (a!=ppc_finvalid && b!=ppc_finvalid)
+				fs0=(u32)a;
+		}
+		else if (sz==4 && op->rs2.is_r32f() && GetFloatReg(op->rs2._reg)!=ppc_finvalid)
+			fs0=(u32)GetFloatReg(op->rs2._reg);
+		if (fs0!=0xFF)
+			fofs=Sh4cntx.offset(op->rs2._reg);
+	}
+	u32 datareg=ppc_rarg1;
+	if (fs0==0xFF)
+	{
+		if (sz==8)
+		{
+			ppc_sh_load(ppc_rarg2,op->rs2);
+			ppc_sh_load(ppc_rarg3,op->rs2._reg+1);
+		}
+		else
+		{
+			ppc_ireg dp=op->rs2.is_reg() ? GetIntReg(op->rs2._reg) : ppc_rinvalid;
+			if (dp!=ppc_rinvalid)
+				datareg=(u32)dp;
+			else if (op->rs2.is_imm())
+				ppc_li(ppc_rarg1,op->rs2._imm);
+			else
+				ppc_sh_load(ppc_rarg1,op->rs2);
+		}
+	}
+	ColdFrag& c=cold_new();
+	c.beq=emit_jtc_lookup(areg,s_jm_tbl_w,sz);
+	if (sz==8)
+		emit_jtc_store_pair(ppc_rarg2,ppc_rarg3,fs0,fs0==0xFF ? 0xFF : fs0+1);
+	else
+		emit_jtc_store(sz,datareg,fs0);
+	c.done=emit_GetCCPtr();
+	c.kind=sz==8 ? 7 : 6;
+	c.sz=(u8)sz;
+	c.datareg=(u8)datareg;
+	c.areg=(u8)areg;
+	c.fdreg=(u8)fs0;
+	c.fofs=(u16)fofs;
+	c.epc=op->guest_pc;
+}
+
+// No static link out of a block whose end state is not set by its key: one that loads FPSCR from a register or
+// memory, or writes SR (its MD may change in a delay slot).
+static bool mmu_links_ok(const DecodedBlock* block)
+{
+	for (const shil_opcode& o : block->oplist)
+	{
+		if (o.op==shop_sync_sr || (o.rd.is_reg() && o.rd._reg==reg_fpscr && o.op!=shop_xor))
+			return false;
+		if (o.op==shop_ifb && OpDesc[o.rs3._imm]->SetFPSCR())
+			return false;
+	}
+	return true;
+}
+
 // ngen_CompileBlock: Main Block Compilation Loop
 DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 {
@@ -2907,8 +3158,25 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 
 	DynarecCodeEntry* rv=(DynarecCodeEntry*)emit_GetCCPtr();
 
+	// MMU JIT (P38): the block's mode is the one the lookup keyed it by (SR.MD now), so its JTC tables are fixed.
+	s_jm=g_jit_mmu;
+	s_jm_at=s_jm && jmmu_at();
+	s_jm_link=!s_jm || mmu_links_ok(block);
+	verify((uintptr_t)&g_jtc[4][0] < 0x7FFF8000u);
+	s_jm_tbl_r=(u32)(uintptr_t)&g_jtc[sr.MD ? 2 : 0][0];
+	s_jm_tbl_w=(u32)(uintptr_t)&g_jtc[sr.MD ? 3 : 1][0];
+
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
 	ngen_Begin(block,force_checks);
+	// MMU JIT (P38): SR.FD set, with an FPU op in the block: the FPU-disabled exception at its start (Flycast). The
+	// decoder compiles no such block with FD set; this one ran before with FD clear.
+	if (s_jm && block->has_fpu)
+	{
+		ColdFrag& c=cold_new();
+		c.kind=8;
+		c.epc=block->start;
+		c.beq=emit_jmmu_fd_test(ppc_contex,Sh4cntx.offset(reg_sr_status));
+	}
 	tcopy_begin(compile_state.tc,get_jit_tcopy_preset() ? block : 0);
 	gr_prepare(block);
 
@@ -2946,6 +3214,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		{
 
 		case shop_readm:
+			if (s_jm_at)
+			{
+				mmu_readm(block,op);
+				break;
+			}
 			{
 				void* fuct=0;
 				bool isram=false;
@@ -3282,6 +3555,11 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			break;
 
 		case shop_writem:
+			if (s_jm_at)
+			{
+				mmu_writem(op);
+				break;
+			}
 			{
 				// Full address first, then the data: the rs3 register-index path uses rarg3 as scratch, which clobbered a
 				// pair store's low word (fmov.d FRm,@(R0,Rn)). areg: a plain @Rn reads rs1's pinned reg in place.
@@ -3623,7 +3901,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				// IFB_FLUSH: spill only what this opcode's handler touches (its GPRs; the float file if it can change it);
 				// preset off, or an unlisted opcode, spills everything.
 				IfbBracket br={IFB_GPR_ALL,true};
-				if (get_ifb_flush_preset())
+				if (get_ifb_flush_preset() && !s_jm)	// MMU JIT: an exception swaps the bank, so all GPRs
 					br=ifb_bracket(sh4op);
 
 				reg_flush_mask(br.gprs);
@@ -3636,12 +3914,27 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ppc_sh_store(ppc_rarg0,reg_nextpc);
 				}
 				ppc_li(ppc_rarg0,op->rs3._imm);
+				// MMU JIT (P38): the MMU interpreter's handler, with the op's SPC; it may take an exception.
+				if (s_jm)
+				{
+					ppc_li(ppc_rarg1,op->guest_pc);
+					ppc_li(ppc_rarg2,op->delay_slot);
+				}
 				emit_cycles_store();		// P11: the handler may read or write a TMU register
-				ppc_call_c(OpDesc[op->rs3._imm]->oph);
+				ppc_call_c(s_jm ? (void*)jmmu_ifb : (void*)OpDesc[op->rs3._imm]->oph);
 
 				if (br.fpu)
 					reg_reload_all_fpu();
 				reg_reload_mask(br.gprs);
+				if (s_jm)
+				{
+					// An exception was taken: its vector is in next_pc, and the reload has the new bank.
+					ppc_cmpi(ppc_cr0,ppc_rrv0,0,0);
+					ColdFrag& c=cold_new();
+					c.kind=9;
+					c.beq=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);
+				}
 			}
 			break;
 			
@@ -4522,8 +4815,18 @@ static inline u32 static_site_bl_word(const u32* site)
 void* FASTCALL ngen_LinkBlock_Static(u32 pc,u32* patch)
 {
 	next_pc=pc;
-	
-	DynarecCodeEntry* rv=rdv_FindOrCompile();
+
+	// MMU JIT (P38): the target through the MMU lookup (it is in the site's own page); a pending exception goes to
+	// the main loop's exception entry, unlinked.
+	DynarecCodeEntry* rv;
+	if (g_jit_mmu)
+	{
+		rv=(DynarecCodeEntry*)jmmu_lookup(pc);
+		if (!rv)
+			return loop_mmu_exc;
+	}
+	else
+		rv=rdv_FindOrCompile();
 	
 	// A cache clear (in rdv_FindOrCompile, or inside the calling block) can put new code on the site: patch only a site
 	// that still asks for pc and calls the stub, else just enter rv.
@@ -4580,6 +4883,21 @@ void* FASTCALL ngen_LinkBlock_Dynamic_IC(u32 pc,u32* site)
 	s_ic_fills++;
 
 	return (void*)rv;
+}
+
+// MMU JIT (P38): loop_no_update's first word is the old lookup's bl, or a b to the MMU lookup (sh4_mmu_jit.cpp
+// at each reset; ngen_mainloop once the loop exists).
+void ngen_mmu_dispatch(bool on)
+{
+	if (!loop_no_update || !loop_mmu)
+		return;
+	emit_ptr=(u32*)loop_no_update;
+	if (on)
+		ppc_jump(loop_mmu);
+	else
+		ppc_emit(s_lnu_word);
+	emit_ptr=0;
+	make_address_range_executable(loop_no_update,4);
 }
 
 // ---- Main loop ----
@@ -4863,6 +5181,32 @@ void ngen_mainloop()
 			ppc_call_and_jump_c(&rdv_BlockCheckFail);
 		}
 
+		// MMU JIT (P38): every block end of an MMU boot comes here, by the first word of loop_no_update. A pending
+		// exception (a fetch, FPU disabled at a compile) is taken with the GPRs in Sh4cntx, then its vector looked up.
+		loop_mmu=emit_GetCCPtr();
+		{
+			ppc_clrldi32(ppc_rarg0,ppc_rarg0);
+			ppc_call_c(&jmmu_lookup);
+			ppc_cmpi(ppc_cr0,ppc_rrv0,0,1);			// cmpdi: a code pointer
+			ppc_label* exc=ppc_CreateLabel();
+			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);
+			ppc_mtctr(ppc_rrv0);
+			ppc_bcctrx(BO_ALWAYS,BI_CR0_EQ,0);
+			exc->MarkLabel();
+		}
+		loop_mmu_exc=emit_GetCCPtr();
+		ppc_lwz(ppc_rarg0,ppc_contex,Sh4cntx.offset(reg_nextpc));
+		// A block's exception exit: r3 = the SPC. The pinned GPRs go to Sh4cntx before the bank swap.
+		jmmu_exc_stub=emit_GetCCPtr();
+		{
+			ppc_clrldi32(ppc_rarg0,ppc_rarg0);
+			reg_flush_all();
+			ppc_call_c(&jmmu_raise);
+			reg_reload_all();
+			ppc_jump(loop_mmu);
+		}
+		s_lnu_word=*(u32*)loop_no_update;
+
 		//Make _SURE_ this code is not overwriten !
 		emit_SetBaseAddr();
 		
@@ -4881,6 +5225,7 @@ void ngen_mainloop()
 		
     // CACHE COHERENCY
     make_address_range_executable((u8*)loop_code, (u8*)emit_GetCCPtr()-(u8*)loop_code);
+		ngen_mmu_dispatch(g_jit_mmu);
 	}
 
 	g_jit_exit_on=s_jit_exit;

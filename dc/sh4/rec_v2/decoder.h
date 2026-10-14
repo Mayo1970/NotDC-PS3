@@ -49,10 +49,15 @@ public:
 	bool idle_loop;	// idle-rule block whose backward branch closes a turn that keeps no state (plan 5.25)
 	bool idle_hash;	// in a list of known wait loops: the block drops the rest of the timeslice (bundle 8, way B)
 
+	// MMU JIT (P38): the decoder's op being decoded, copied into each op it emits; has_fpu: a block with an FPU op.
+	u32 cur_pc;
+	u32 cur_slot;
+	bool has_fpu;
+
 	void Emit(shilop op,shil_param rd=shil_param(),shil_param rs1=shil_param(),shil_param rs2=shil_param(),u32 flags=0,shil_param rs3=shil_param(),shil_param rd2=shil_param())
 	{
 		shil_opcode sp;
-		
+
 		sp.flags=flags;
 		sp.op=op;
 		sp.rd=(rd);
@@ -60,6 +65,8 @@ public:
 		sp.rs1=(rs1);
 		sp.rs2=(rs2);
 		sp.rs3=(rs3);
+		sp.guest_pc=cur_pc;
+		sp.delay_slot=cur_slot;
 
 		oplist.push_back(sp);
 	}

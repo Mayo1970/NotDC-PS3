@@ -144,7 +144,7 @@ MUTANTS = [
     (DEC, 'idle hash: not counted', '\tif (act)\n\t\tg_dec_hash_blocks++;\n', ''),
     (DEC, 'idle hash: log without a limit', 'if (lines<24)', 'if (lines<2400)'),
     (DEC, 'idle hash: one log share for both lists', 'u32& lines=logged[list==IDLE_LIST_OWN];', 'u32& lines=logged[0];'),
-    (DEC, 'idle hash: decoder without its row', 'block.idle_hash=idle_hash_level && dec_idle_hash(idle_hash_level);',
+    (DEC, 'idle hash: decoder without its row', 'block.idle_hash=idle_hash_level && !g_jit_mmu && dec_idle_hash(idle_hash_level);',
      'block.idle_hash=dec_idle_hash(2);'),
     (DEC, 'idle hash: flag kept from the last block', '\tidle_loop=false;\n\tidle_hash=false;\n', '\tidle_loop=false;\n'),
     (DRV, 'idle hash: driver keeps one cycle', '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,0);\n',

@@ -358,6 +358,7 @@ static const char* k_pergame[]   = { "OFF", "SLOT A1", "ALL SLOTS", NULL };
 static const char* k_clear[]     = { "OLD", "CLEAR", NULL };
 static const char* k_elfload[]   = { "OLD", "SEGMENTS", NULL };
 static const char* k_fullmmu[]   = { "OFF", "AUTO", "ON", NULL };
+static const char* k_mmujit[]    = { "INTERP", "JIT", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -835,6 +836,8 @@ static Option s_sys[] = {
 	  "SEGMENTS: an .elf loads as Flycast's, constructors and zeroed data too (P33). Set before boot." },
 	{ "SH4 MMU",         &g_full_mmu_preset,      OPT_CHOICE, k_fullmmu,   0, 0,0,0, NULL,
 	  "AUTO: a Windows CE disc runs on the interpreter with the full MMU. Slow (P38). Set before boot." },
+	{ "SH4 MMU Engine",  &g_mmu_jit_preset,       OPT_CHOICE, k_mmujit,    0, 0,0,0, NULL,
+	  "JIT: the boot that SH4 MMU picks runs on the JIT, with TLB lookups (P38). Set before boot." },
 };
 
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.

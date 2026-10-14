@@ -47,6 +47,14 @@ bool SRdecode() { return false; }
 void Sh4_ApplyAccuracyPreset() {}
 s32 sh4_GetCpuTimeslice() { return 1; }
 s32 sh4_GetCpuRatio() { return 1; }
+// The JIT form's side (sh4_mmu_jit.cpp): what the engine calls, recorded.
+int g_mmu_jit_preset;
+static bool g_can_jit;
+static int g_jit_selects, g_jit_selected;
+static u32 g_utlb_hooks, g_utlb_hook_last;
+bool jmmu_can_run() { return g_can_jit; }
+void jmmu_select(bool on) { g_jit_selects++; g_jit_selected = on; }
+void jmmu_utlb_changed(u32 e) { g_utlb_hooks++; g_utlb_hook_last = e; }
 // One op per slice: the run stops after g_stop_at ops.
 int FASTCALL UpdateSystem()
 {
@@ -941,23 +949,167 @@ static void t_select()
 	g_test = "the row and the disc pick the engine";
 	g_tests++;
 	const int rows[3] = { 0, 1, 2 };
-	for (int row : rows)
-		for (int wince = 0; wince < 2; wince++)
-		{
-			g_full_mmu_preset = row;
-			g_disc_wince = wince;
-			sh4_cpu.Run = nullptr;
-			sh4_cpu.ResetCache = jit_clear;
-			sh4_fullmmu_select();
-			const bool want = row == 2 || (row == 1 && wince);
-			CHECK(g_fullmmu_active == want && (sh4_cpu.Run == Sh4_int_Run_Mmu) == want, "row %d WinCE %d: active %d",
-			      row, wince, (int)g_fullmmu_active);
-			// The MMU engine has no JIT code: its cache reset must not run the JIT's clear.
-			g_jit_clears = 0;
-			sh4_cpu.ResetCache();
-			CHECK(g_jit_clears == (want ? 0u : 1u), "row %d WinCE %d: %u JIT clears", row, wince, g_jit_clears);
-		}
+	// SH4 MMU Engine JIT keeps the JIT (jmmu_select(true)) when it is the menu's engine; else the MMU interpreter.
+	for (int jit = 0; jit < 2; jit++)
+		for (int can = 0; can < 2; can++)
+			for (int row : rows)
+				for (int wince = 0; wince < 2; wince++)
+				{
+					g_full_mmu_preset = row;
+					g_mmu_jit_preset = jit;
+					g_can_jit = can;
+					g_disc_wince = wince;
+					sh4_cpu.Run = nullptr;
+					sh4_cpu.ResetCache = jit_clear;
+					g_jit_selects = 0;
+					g_jit_selected = -1;
+					sh4_fullmmu_select();
+					const bool want = row == 2 || (row == 1 && wince), on_jit = want && jit && can;
+					CHECK(g_fullmmu_active == want && (sh4_cpu.Run == Sh4_int_Run_Mmu) == (want && !on_jit),
+					      "engine %d JIT %d row %d WinCE %d: active %d", jit, can, row, wince, (int)g_fullmmu_active);
+					CHECK(g_jit_selects == 1 && g_jit_selected == (int)on_jit, "engine %d JIT %d row %d WinCE %d: select %d x%d",
+					      jit, can, row, wince, g_jit_selected, g_jit_selects);
+					// The MMU engine has no JIT code: its cache reset must not run the JIT's clear.
+					g_jit_clears = 0;
+					sh4_cpu.ResetCache();
+					CHECK(g_jit_clears == (want && !on_jit ? 0u : 1u), "row %d WinCE %d: %u JIT clears", row, wince,
+					      g_jit_clears);
+					if (on_jit)
+						CHECK(logged("the MMU JIT runs this boot"), "no JIT line");
+				}
 	g_full_mmu_preset = 2;
+	g_mmu_jit_preset = 0;
+}
+
+// ---- the JIT form's entries (sh4_mmu_jit.cpp calls them): translations, ops and exceptions with no longjmp out ----
+static void t_jit_data()
+{
+	u32 pa;
+	int ent;
+	fresh("JIT data translation: a hit, its UTLB entry", AT);
+	map(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	set_sr(SR_USER);
+	CHECK(jx_data_xlat(0x00400010, 4, 0, &pa, &ent) == 0 && pa == 0x0C400010 && ent == 5, "pa %08X entry %d", pa, ent);
+	CHECK(jx_data_xlat(0x00400FFE, 2, 1, &pa, &ent) == 0 && pa == 0x0C400FFE && ent == 5, "write: pa %08X entry %d", pa,
+	      ent);
+	// A write after a read of another page: its entry, not the read's.
+	map(6, 0x00410000, 0x0C410000, SZ_4K, 3);
+	CHECK(jx_data_xlat(0x00400010, 4, 0, &pa, &ent) == 0 && ent == 5, "read entry %d", ent);
+	CHECK(jx_data_xlat(0x00410020, 4, 1, &pa, &ent) == 0 && pa == 0x0C410020 && ent == 6, "write: pa %08X entry %d", pa,
+	      ent);
+	CHECK(g_exc.empty(), "an exception was taken");
+
+	fresh("JIT data translation: miss, protection, address error, no exception taken", AT);
+	map(5, 0x00400000, 0x0C400000, SZ_4K, 2);
+	set_sr(SR_USER);
+	CHECK(jx_data_xlat(0x00500004, 4, 0, &pa, &ent) == 0x040 && CCN_TEA == 0x00500004 &&
+	      (CCN_PTEH.reg_data & 0xFFFFFC00) == 0x00500000, "read miss: TEA %08X PTEH %08X", CCN_TEA, CCN_PTEH.reg_data);
+	CHECK(jx_data_xlat(0x00500004, 1, 1, &pa, &ent) == 0x060, "write miss");
+	CHECK(jx_data_xlat(0x00400004, 4, 1, &pa, &ent) == 0x0C0, "write to a read-only page");
+	CHECK(jx_data_xlat(0x00400002, 4, 0, &pa, &ent) == 0x0E0, "a misaligned read");
+	CHECK(jx_data_xlat(0x00400001, 2, 1, &pa, &ent) == 0x100, "a misaligned write");
+	CHECK(jx_data_xlat(0x8C001000, 4, 0, &pa, &ent) == 0x0E0, "P1 in user mode");
+	CHECK(g_exc.empty() && Sh4cntx.sr.MD == 0, "an exception was taken");
+
+	fresh("JIT data translation: P1 and AT 0 untranslated", AT);
+	set_sr(SR_PRIV);
+	CHECK(jx_data_xlat(0x8C001000, 4, 1, &pa, &ent) == 0 && pa == 0x8C001000 && ent == -1, "P1: pa %08X entry %d", pa, ent);
+	CCN_MMUCR.reg_data = 0;
+	set_sr(SR_USER);
+	CHECK(jx_data_xlat(0x00500006, 2, 0, &pa, &ent) == 0 && pa == 0x00500006 && ent == -1, "AT 0: pa %08X entry %d", pa,
+	      ent);
+}
+
+static void t_jit_fetch()
+{
+	u32 pa;
+	fresh("JIT fetch: the ITLB, its cache checked against the entry", AT);
+	set_sr(SR_USER);
+	CHECK(jx_fetch(CODE_VA + 4, &pa) == 0 && pa == CODE_PA + 4, "first fetch pa %08X", pa);
+	CHECK(jx_fetch(CODE_VA + 0x3FE, &pa) == 0 && pa == CODE_PA + 0x3FE, "second fetch pa %08X", pa);
+	// A new ITLB copy of the page at another frame: the cached translation must not stay.
+	for (TLB_Entry& e : ITLB)
+		if (e.Data.V)
+			e.Data.reg_data = ptel(0x0C020000, SZ_4K, 2, true);
+	CHECK(jx_fetch(CODE_VA + 8, &pa) == 0 && pa == 0x0C020008, "after the ITLB change pa %08X", pa);
+	CHECK(jx_fetch(CODE_VA + 1, &pa) == 0x0E0, "an odd pc");
+	CHECK(jx_fetch(P1_CODE, &pa) == 0x0E0, "P1 in user mode");
+	CHECK(jx_fetch(0x00600000, &pa) == 0x040 && CCN_TEA == 0x00600000, "a miss: TEA %08X", CCN_TEA);
+	set_sr(SR_PRIV);
+	CHECK(jx_fetch(P1_CODE, &pa) == 0 && pa == P1_CODE, "P1: pa %08X", pa);
+	CHECK(g_exc.empty(), "an exception was taken");
+
+	fresh("JIT fetch: a new ASID misses a page that is not shared", AT);
+	map(63, CODE_VA, CODE_PA, SZ_4K, 2, true, false, 7);
+	CCN_PTEH.reg_data = 7;
+	set_sr(SR_USER);
+	CHECK(jx_fetch(CODE_VA, &pa) == 0 && pa == CODE_PA, "ASID 7: pa %08X", pa);
+	CCN_PTEH.reg_data = 8;
+	CHECK(jx_fetch(CODE_VA + 2, &pa) == 0x040, "ASID 8 fetched the page");
+}
+
+static void t_jit_ifb()
+{
+	fresh("JIT ifb: an op that faults, from a slot and not", AT);
+	Prog(CODE_VA, CODE_PA).op(MOVL_LD(1, 0));
+	Sh4cntx.r[1] = 0x00500000;
+	set_sr(SR_USER);
+	CHECK(jx_ifb(MOVL_LD(1, 0), CODE_VA + 0x20, 0) == 1, "no exception reported");
+	exc_is(1, CODE_VA + 0x20, 0x040, 0x400);
+	CHECK(Sh4cntx.pc == MISS_H && Sh4cntx.sr.MD == 1, "pc %08X", Sh4cntx.pc);
+
+	fresh("JIT ifb: an op that runs", AT);
+	set_sr(SR_USER);
+	CHECK(jx_ifb(MOVI(4, 0x55), CODE_VA, 0) == 0 && Sh4cntx.r[4] == 0x55 && g_exc.empty(), "r4 %08X", Sh4cntx.r[4]);
+
+	fresh("JIT ifb: FPU disabled, then in a slot; an illegal op in a slot", AT);
+	set_sr(SR_PRIV | SR_FD);
+	CHECK(jx_ifb(FADD(1, 2), P1_CODE, 0) == 1, "FADD with FD");
+	exc_is(1, P1_CODE, 0x800, 0x100);
+	g_exc.clear();
+	set_sr(SR_PRIV | SR_FD);
+	CHECK(jx_ifb(LDS_FPUL(3), P1_CODE + 4, 1) == 1, "lds FPUL in a slot with FD");
+	exc_is(1, P1_CODE + 4, 0x820, 0x100);
+	g_exc.clear();
+	set_sr(SR_PRIV);
+	u32 bad_op = 0;
+	for (u32 op = 0xFFFF; op && !bad_op; op--)
+		if (OpPtr[op] == iNotImplemented)
+			bad_op = op;
+	CHECK(jx_ifb(bad_op, P1_CODE + 8, 1) == 1, "op %04X", bad_op);
+	exc_is(1, P1_CODE + 8, 0x1A0, 0x100);
+
+	fresh("JIT ifb: ldtlb calls the JIT's hook with the entry", AT);
+	set_sr(SR_PRIV);
+	CCN_MMUCR.reg_data = AT | 17 << 10;
+	g_utlb_hooks = 0;
+	CHECK(jx_ifb(LDTLB(), P1_CODE, 0) == 0 && g_utlb_hooks == 1 && g_utlb_hook_last == 17, "%u hooks, entry %u",
+	      g_utlb_hooks, g_utlb_hook_last);
+
+	fresh("JIT ifb: a fault with SR.BL set stops at the op", AT);
+	Sh4cntx.r[1] = 0x00500000;
+	set_sr(SR_PRIV | 0x10000000);
+	CHECK(jx_ifb(MOVL_LD(1, 0), CODE_VA + 6, 0) == 1 && g_exc.empty() && Sh4cntx.pc == CODE_VA + 6, "pc %08X, %u exceptions",
+	      Sh4cntx.pc, (u32)g_exc.size());
+	CHECK(logged("[fullmmu] FATAL"), "no FATAL line");
+}
+
+static void t_jit_take()
+{
+	fresh("JIT take: a write miss, FPU disabled, SR.BL", AT);
+	set_sr(SR_USER);
+	CHECK(jx_take(CODE_VA + 2, 0x060) == 1, "not taken");
+	exc_is(1, CODE_VA + 2, 0x060, 0x400);
+	CHECK(Sh4cntx.pc == MISS_H, "pc %08X", Sh4cntx.pc);
+	g_exc.clear();
+	set_sr(SR_USER | SR_FD);
+	CHECK(jx_take(CODE_VA + 4, 0x800) == 1, "not taken");
+	exc_is(1, CODE_VA + 4, 0x800, 0x100);
+	g_exc.clear();
+	set_sr(SR_PRIV | 0x10000000);
+	CHECK(jx_take(P1_CODE, 0x040) == 0 && g_exc.empty() && Sh4cntx.pc == P1_CODE, "BL: pc %08X", Sh4cntx.pc);
+	CHECK(jx_fpu_op(FADD(1, 2)) && jx_fpu_op(LDS_FPUL(1)) && !jx_fpu_op(MOVI(1, 1)) && !jx_fpu_op(MOVL_LD(1, 2)),
+	      "the FPU op table");
 }
 
 int main(int argc, char** argv)
@@ -993,6 +1145,10 @@ int main(int argc, char** argv)
 	t_translate();
 	t_illegal_trapa();
 	t_diag();
+	t_jit_data();
+	t_jit_fetch();
+	t_jit_ifb();
+	t_jit_take();
 	t_select();
 	CHECK(g_plain_slots == 0, "the plain delay slot ran %u times", g_plain_slots);
 	ok = ok && g_fails == 0;
