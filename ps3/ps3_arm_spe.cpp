@@ -14,6 +14,8 @@ extern "C" const u8 spe_arm7_elf[];
 extern "C" int get_spe_arm7_preset();
 extern "C" int get_arm7_speed_preset();
 extern "C" int get_arm7_batch_preset();
+extern "C" int get_arm7_rate_preset();
+extern "C" int get_arm7_interleave_preset();
 extern "C" int get_arm7_idle_skip_preset();
 extern "C" int get_cdda_preset();
 extern "C" int get_aica_race_fix_preset();
@@ -189,7 +191,10 @@ void arm_spe_update(u32 cycles, u32 samples)
 		f->b = cfg;
 		cmd_push();
 	}
+	// "ARM7 Rate" (plan 6.3): ticks per AICA sample; 0 = SH4 cycles / 20, the old rate
+	static const u16 k_arm7_rate[4] = { 0, 256, 384, 512 };
 	int stage = get_arm7_speed_preset(), batch = get_arm7_batch_preset();
+	const int rate = get_arm7_rate_preset();
 	stage = stage < 0 ? 0 : stage > 3 ? 3 : stage;
 	batch = batch < 0 ? 0 : batch > 16 ? 16 : batch;
 	ArmCmd* c = cmd_slot();
@@ -197,7 +202,7 @@ void arm_spe_update(u32 cycles, u32 samples)
 	c->flags = (u8)(batch | (stage << 5) | (get_arm7_idle_skip_preset() ? 0x80 : 0));
 	c->a = (u16)samples;
 	c->b = cycles;
-	c->c = 0;
+	c->c = k_arm7_rate[rate < 0 || rate > 3 ? 0 : rate] | (get_arm7_interleave_preset() ? 1u << 16 : 0);
 	cmd_push();
 	const u32 before = s_now;
 	s_now += samples;

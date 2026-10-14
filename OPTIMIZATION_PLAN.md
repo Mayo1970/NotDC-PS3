@@ -11,7 +11,7 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-13)
+## 0. Resume here (updated 2026-10-14)
 
 **Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
 work is in bundles 10 to 22 now. Bundles 1-9 are closed, and the table of
@@ -27,6 +27,526 @@ from 2026-10-12 until then and is bundle 22 now; its mentions in this
 file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
+
+**Bundle 18 resumed 2026-10-14 (Matt: "Let's resume bundle 18 with the
+latest review and findings."). Asked with four options, he chose
+"Measure + ADPCM row": one package with two measures (log only) and one
+row. Built: package of 01:23 on 2026-10-14 (1699760 bytes), then the
+package of 02:41 (`build/notdc_ps3.pkg`, 1699632 bytes) with the
+timebase fix of the SOUND STOP bullet. No older package is kept in
+`build/` (Matt removes the copies). Not committed. Every
+new row is at its old path by default. HW run 1 the same night (the
+first bullet): the two measures gave their answers, and ADPCM Loop
+RESTORE is an HW SUCCESS (Matt: "with restore, in the current log,
+the issue is fixed"). RESTORE is the default in the source since
+2026-10-14 (Matt: "Yes, keep it as default."), not packaged.**
+- HW run 1, 2026-10-14 01:40, Sonic Adventure 2 (Europe)[DCP].cdi, one
+  boot, about 100 s of stage play. Log `b18b_hw.txt` (13357 lines,
+  scratchpad of session 1ed40982; the first 25 s of the run are in
+  `b17_hw.txt` from line 78200, scratchpad of session 57436e7d: its
+  listener held the port and was stopped). Boot: SpeArm7=1,
+  DspRing64K=1, G2DmaSmall=0, KeyCensus=1, AdpcmLoop=0; JIT C-Calls ON.
+  Key Census and JIT C-Calls stayed ON for the whole run. ADPCM Loop
+  RESTORE from line 4081 to 5456 (about 25 s), RESET before and after.
+  From line 8944 the sound is off: the stop below. (I first read
+  that silence as a pause.)
+  - `[mem64]`: 209 lines, every one `rd 0 | wr 0`. In the same seconds
+    the `[CC]` lines count 1.3-1.8M writemem and 0.5-0.6M readmem
+    calls per second "from:codecache", so the caller test works. No
+    64-bit C call comes from JIT code in this run: 6.7 is not a cause
+    of this game's sound. (The 8 / 16 / 32-bit call rate is a speed
+    fact for bundle 22, not looked at here.)
+  - `[kon]`: 356 starts, 0 refused, 0 folds, 0 lines dropped. 17 stream
+    starts (slots 60 / 61): TL 0, DISDL 15. 339 effect starts: DISDL
+    15 in 338; TL 17 in 176 (52%), then 8, 2, 9, 0; two soft loops at
+    TL 113-197; DIPAN 00 in 221 (65%). MVOL 15, EFSDL 15 on buses 0
+    and 1. At most 18 slots keyed, 3-7 voices rendered per sample.
+  - The levels are the driver's own (scratch `bank.py`: the `[kon]`
+    lines joined on LSA and LEA with the tone rows of the review,
+    `adl3_rows.pkl`; 308 starts have a row). The bank TL is 0 in
+    nearly all rows. The TL written is a value of the driver's level
+    table (`sa2_drv.bin` 0x4F70, 256 entries): TL 17 = entries
+    200-202, TL 8 = 229-231, TL 2 = 250-251, TL 0 = 254-255. If the
+    entry is twice a volume of 0-127, these are 100, 115, 125 and 127
+    (my reading of the table: the driver code is not read). DISDL
+    written fits the driver's send table (0x5070) at 4 x the row's
+    DISDL: 14 -> 15, 12 -> 13 (three pairs seen). No written TL is
+    under its row's TL. Round volumes and table values: no sign of an
+    SH4 or ARM7 fault in the levels.
+  - The music plays at gain 1 (scratch `adxpeak.py`, `adxrun.py`: an
+    ADX decoder on the PC, files read from the .cdi). `START.ADX` (44.1
+    kHz stereo) has a running peak of 11698 (35.70%) at 1.353 s; the
+    window where only that stream plays has `peak=35.7%`. So the
+    SH4's ADX decode and the stream slots give the reference level.
+    The stage file `C_ESCAP1.ADX` peaks at 100% (RMS 34.5%), `A_MINE`
+    at 91.8%.
+  - So the loud mix is the game's own sum: music at full scale and TL
+    0, effects at -6.4 dB each (TL 17) on both sides. Peaks 149-220%,
+    59-624 clamped samples per second in the stage windows. Flycast's
+    code makes the same sum and the same 16-bit clamp (6.9 A). Lead 2
+    is closed on our side: the registers and the stream are right. A
+    Flycast census can only show the same values, if its ARM7 runs
+    the driver right.
+  - ADPCM Loop: loops with a loop start above 0 were keyed in each
+    part (RESET 12 and 41 starts, RESTORE 46; wave LSA 8232 - LEA
+    17024 at TL 8: 23 starts in the RESTORE part). The peaks do not
+    move with the row (RESTORE windows 160-214%, RESET 149-220%).
+    Matt's ear verdict: the two bullets below.
+  - Matt after the run, asked what he heard with RESTORE: "The issue
+    is that some sounds gets interrupted too early". The old rule
+    (RESET) does that to the looped effects of this stage. Scratch
+    `looplvl.py` decodes each looped wave of the `[kon]` lines from
+    the bank on the PC, a lap with RESET against a lap with the state
+    kept. Level of each lap after the first pass, with RESET:
+    - LSA 8232 - LEA 17024 (31 starts, TL 8): -26.9 dB after 0.77 s.
+    - LSA 3767 - LEA 13998 (7 starts, TL 6-14): -26.4 dB after 0.83 s.
+    - LSA 12557 - LEA 29239 (3 starts): -24.6 dB after 1.33 s.
+    - LSA 3912 - LEA 49266 (3 starts): -24.2 dB after 1.88 s.
+    - LSA 104 - LEA 8689 (10 starts, TL 145-179): -15.0 dB.
+    - LSA 83 - LEA 18512 (31 starts, TL 113-197): -7.9 dB.
+    - LSA 17827 - LEA 27444 (2 starts): -2.5 dB.
+    So a held effect plays its first pass and then is nearly silent:
+    to the ear it stops too early. 99 of the 339 effect starts are
+    such loops (all with a loop start above 0). RESTORE keeps the
+    level, as Flycast. In this run RESTORE was on for 25 s of about
+    100 s, and the run was starved.
+  - HW SUCCESS (Matt, 2026-10-14, his next message): "Wait, with
+    restore, in the current log, the issue is fixed". So the fault
+    he hears in Sonic Adventure 2 is the early stop of held effects,
+    and RESTORE ends it. "Too loud", "distortion" and "restarts
+    too early" were the options of my question of 2026-10-13, not
+    his words. The two open points are closed: RESTORE is the
+    default (the DEFAULT bullet), and HW run 3 was the run with the
+    log rows OFF.
+  - Other early ends in the log (scratch `cuts.py`): one one-shot of
+    2.86 s (LEA 63093) lost its slot after 2.12 s: the driver's stop
+    119 frames after each start (6.9 D) cuts a sound that is longer
+    than 2 s. One case in 238 one-shots (median length 0.67 s). If
+    Flycast stops it too is not known. Ten quick restarts of one
+    short wave on its slot (LEA 15353, 0.05-0.25 s apart) look like
+    the game's own retrigger.
+  - The voice clips are not in this image: `/DPETC/VOICE.AFS` holds
+    383 equal entries of 0.5 s of silence (scratch `afs.py`,
+    `afs2.py`). The 22 kHz mono starts on slots 58 / 59 are likely
+    those (run 4 keyed them for 0.5-0.7 s). The music files are 16 kHz
+    mono (77 files) or 32 kHz stereo (43): a cut-down rip.
+  - This run's crackle is mostly starvation: with JIT C-Calls ON the
+    sound ran at 94.8% of its rate, and 49 of 93 stage seconds had
+    silent blocks (794 blocks of 5.3 ms). An ear verdict on the row
+    needs a run with JIT C-Calls and Key Census OFF.
+  - Left as the difference to Flycast, all after the mix or by ear:
+    the clamp (check: SPE AICA Gain 50%, never run), the 44.1 -> 48
+    kHz line of the output (6.9 A, not built), the starved blocks in
+    heavy scenes (6.9 F), the DSP return (Flycast: OFF).
+- SOUND STOP in both HW runs (Matt, 2026-10-14: "At some point the
+  audio goes COMPLETELY silent. Right at the end."). Cause found, NOT
+  from this session's changes. Fix BUILT 2026-10-14 (Matt: "Yes,
+  thanks."), package of 02:41, not committed. HW SUCCESS the same
+  night (HW run 3, the last sub-bullet).
+  - The log: `[arm7spe] no progress for 100 ms: SPU tail N-5 of N,
+    exit 0x8001000F/0; ARM7 and AICA stop (no sound)` at line 8944
+    (run 1) and 28589 (run 2, a second boot from line 13358, same
+    file). It is the guard of `wait_tail()` in `ps3/ps3_arm_spe.cpp`:
+    after it the PPU sends no more commands, so the sound is off for
+    the rest of the boot. No older log of any session has this line.
+  - The ARM7 SPU did not hang: the next `[arm7spe]` line has `lag 0`
+    (it finished its queue), `timeouts 0`, `log waits 0`. The SH4
+    thread did not wait 100 ms: in those seconds the stall probe has
+    no frame over 20 ms and no section over 2.2 ms. So the timer of
+    the guard was wrong, not the SPU.
+  - Cause: `gettime()` (`ps3/include/ps3_timebase.h`, new at the
+    cleanup of 2026-10-06) is a bare `mftb`. On the Cell a read at the
+    moment the low 32 bits of the timebase roll over (each 2^32 /
+    79.8 MHz = 53.82 s) can return the low half as 0 with the old high
+    half: a time 53.8 s in the past. PSL1GHT's own `__gettime()`
+    (`ppu/include/ppu-asm.h`) reads again while the low word is 0;
+    ours does not. `wait_tail()` spins on `gettime()` (a read each 25
+    ns) while the SH4 waits for the ARM7 SPU, 17-20% of the time in
+    Sonic Adventure 2. One bad read makes `now - moved` a huge
+    unsigned number, over the 100 ms limit.
+  - Check on the log: the two stops are 1561 s apart (+- 1.3 s; the
+    boot lines `time()=1791935467` and `1791936892`, the `[hb]`
+    seconds). 29 rollovers are 1560.8 s.
+  - Every other wait that spins on `gettime()` has the same risk (157
+    uses of `gettime()` in ps3, dc and plugs): the fence waits of the
+    render SPUs, `snd_answer()` of the PPU twin, the audio pacing.
+  - Fix, built: the retry of PSL1GHT in `gettime()` (read again while
+    the low 32 bits are 0), one header, no row. In the ELF 242 of the
+    261 `mftb` reads have the retry (a compare of the low word with
+    0 and a branch back), the two reads of `wait_tail()` with them.
+    The PC checks have their own stub of the header, so no check
+    runs this code: the proof is an HW run. HW test: Sonic Adventure
+    2 for 10 minutes or more (11 rollovers) with no `no progress for
+    100 ms` line and no silence.
+  - Not changed: the guard still ends the sound for good when it
+    fires. The other 19 reads are the TA split probe
+    (`ps3/ps3_tasplit.h`, its own bare `mftb`): a wrong stamp there
+    is a wrong sample of a log line, not a stop.
+  - HW run 3, 2026-10-14 02:42 (Matt, Sonic Adventure 2, the boot at
+    log line 30678, stamp `Oct 14 2026 00:40:13`): "The audio didn't
+    cut off this time and (despite the slowdowns) it sounded fine!
+    The sound cues played correctly and the music looped
+    correctly." The log: 428 s, 7 or 8 rollovers, no `no progress`
+    line (the old build stopped after 134 s and 270 s). The SH4
+    waited for the ARM7 SPU 16.5% of the time (max 23.5%), so the
+    exposure was the same. Rows: ADPCM Loop RESTORE from the boot,
+    Key Census OFF, SPE ARM7 ON. So it is also the ear run of the
+    ADPCM row with the log rows OFF. SPEED: median 100%, mean 98.5%,
+    lowest 74.6% (235 of 310 seconds at 99% or more); the sound ran
+    at 98.4% of its rate (run 1: 90.2%). The slow seconds are the
+    SH4-bound heavy scenes of bundle 22.
+- DEFAULT 2026-10-14 (Matt: "Yes, keep it as default."): ADPCM Loop
+  RESTORE in the source (`g_adpcm_loop_preset = 1`), not packaged: the
+  package of 02:41 has RESET for an install with no `AdpcmLoop` key.
+  Matt's PS3 has RESTORE saved. Two more verdicts in the same message:
+  - ChuChu Rocket: "The Restore ADPCM Loop didn't affect ChuChu
+    Rocket, which was my main fear." (the boot at log line 29073,
+    RESTORE).
+  - Looney Tunes Space Race: "Sadly it didn't fix the sound balance
+    issue in Space Race." (the boot at log line 40782, RESTORE, Key
+    Census OFF). The balance was not a target of the three items of
+    this resume. It is still open in bundle 18. A first measure, not
+    run: Key Census ON in Space Race (the levels of each voice
+    start, the `fold` and `refused` counts).
+- Row "ADPCM Loop" RESET / RESTORE (AUDIO page, live, key `AdpcmLoop`,
+  default RESTORE since 2026-10-14; RESET at the build).
+  It is 6.9 B: with RESTORE a looped ADPCM voice (PCMS
+  2) starts each lap with the decoder state of its loop start, as in
+  Flycast (3f70e47ad) and nullAICA. RESET is the old rule (127, 0 at
+  each lap). It acts on SPE AICA Sound only.
+  - Model (`plugs/caiqueAICA/aica_model.cpp`): `lsa_state[64]`, one
+    word per slot (step << 16 | sample), at the end of `AicaModel`, so
+    no old member moves. A key-on sets 127, 0; the first pass over LSA
+    keeps the state before that decode (PCMS 2 and 3); a PCMS 2 lap
+    loads it when `adpcm_restore` is set. With LSA 0 both rules give
+    the same samples. Code: `adpcm_op()` for `run()` and
+    `slot_sample()` (ops `OP_LSA`, `OP_LOOP`), and the same lines in
+    `slot_fast()`. The loop-end partner (the word past LEA) is not
+    changed: that one is the console's.
+  - Path of the row: `gain_tick()` (`ps3/ps3_aica_spe.cpp`) writes
+    `AicaBell.adpcm_loop`; the sound SPU reads it at each wake
+    (`am_batch()`). The ARM7 SPU keeps the word (it writes the bell
+    with a reservation).
+  - PC, new check `misc/adpcm_check` (run.sh, mutate.py): one voice per
+    case against a decoder written from Flycast's rule, on the four
+    render paths (`run()`, `advance()` in chunks, by one sample, with
+    the DSP pass), RESET, RESTORE and the row changed while the voice
+    plays, second notes on one slot, one-shot ends: 8 seeds, 2400
+    cases, 8.8M compares, 6.8M laps (4.9M with a kept state): PASS.
+    Then `misc/spu_sim/diff_adv` with the new env `ADPCM` (0 = against
+    the old model ee0def6, 1 = RESTORE, 2 = live; the reference of 1
+    and 2 is the tree's own `run()`): PASS. 22 of 22 planted bugs fail
+    the check.
+  - PC, the real SPU image in `misc/spu_sim` (`run_a2` env `ADPCM`,
+    `ADPCM2`): RESET, RESTORE, live both ways, with the DSP and with
+    SPE AICA Gain: every frame equal, `bad 0`. The image of HEAD
+    against the RESTORE reference: 38031 of 47926 frames differ, so
+    the row acts in the scenario. RESET against the old model: 6 seeds
+    x 300 episodes, 46M DAC samples, equal.
+  - Cost: sound SPU image +728 bytes of code and +256 of data (image
+    end 0x3DDD0, was 0x3D9D0); LS spare 3920 bytes in the DSP
+    scenarios (about 4950 before; 4288 against 5328 with no DSP); 753
+    against 745 cycles per rendered slot in the simulator (+1%). ARM7
+    SPU image: 227000 of 262144 bytes.
+- Row "Key Census" OFF / ON (AUDIO page, live, key `KeyCensus`, log
+  only). The PPU follows the AICA write log (`s_shared.log`), which
+  either twin fills, with a copy of the slot registers. So it works
+  with SPE ARM7 ON and OFF. The copy always follows; the row only
+  turns the lines on.
+  - `[kon] t=<sample> sNN start|refused|fold <format> loop|one SA LSA
+    LEA OCT FNS TL DISDL DIPAN IMXL ISEL AR D1R D2R RR DL KRS LPSLNK Q
+    LPOFF VOFF FLV0 LFO age keyed`: one line per voice start, with the
+    key pass made as the model makes it (at the sample after the
+    KYONEX, a start only from release). "refused": KYONB 1 written on
+    a slot that is still keyed. "fold": a key-off and a key-on of one
+    slot in one sample (the AUDIO64 lead of 6.9 D); `age` = samples
+    since that slot's start. At most 150 lines per stats window.
+  - `[kon] window: starts, key-offs, refused, folds | keyed now, max |
+    lines dropped, records lost | MVOL MONO DAC18B | EFSDL` (18 hex
+    digits: buses 0-15, then EXTS 0-1), each stats window (about 5 s).
+  - No PC check: the code only reads the log and prints.
+- `[mem64]` (6.7): no new row. It rides on "JIT C-Calls" (VIDEO /
+  DEBUG page, live). While that row is ON, one line per second:
+  `[mem64] <s>  jit 64-bit C calls: rd N <class n ...> last <addr> |
+  wr N ...`, the calls of `_vmem_ReadMem64` / `_vmem_WriteMem64` that
+  come from the code cache, by target: aram, aica, a0 (rest of area
+  0), vram, ram, ta, p4, other. Each such call has the pair ABI
+  defect of 6.7. A line with `rd 0 | wr 0` is a result too.
+  - Code: `CCALL_MEM64` (`dc/sh4/rec_v2/ccall_census.h`), print in
+    `ccall_census_dump()`. No emitted code changes. Disassembly of the
+    two builds: the dispatcher writes r4 only inside the census block,
+    before the handler calls, so the register that the JIT takes as
+    the second word is what it was, row ON or OFF.
+- Older checks after the change, all PASS: the 11 run.sh files that
+  name `ps3_presets.cpp` or `ps3_menu.cpp`; `misc/a2_check` and
+  `misc/a3_check` (28.4M samples each, 175.7M DSP checks);
+  `misc/dspjit_check`; `misc/hz_check`; `misc/arm7spe_check` (80 of 80
+  runs on the new ARM7 SPU image); `misc/spu_sim/run_ring.sh` (it has
+  four new lines with env `ADPCM`) and `run_dsp.sh`. `scan_mut.py`:
+  1735 mutant texts, 1 stale (the known timebase one).
+  `misc/spu_sim/mutate_adv.sh`: 27 caught; the text of "fast: ADPCM
+  loop reset keeps s0" is repaired and caught; two texts are stale
+  since before this session ("final_mix: DAC18B shift", "fast: vo not
+  latched", the same on HEAD), NOT repaired; "fast: ADPCM preview kept"
+  is missed, on HEAD too (`diff_adv` cannot see s1 after a one-shot
+  end; `adpcm_check` compares it). `mutate_a3.sh`: 26 caught, 1 missed
+  as its text expects.
+- HW test, Sonic Adventure 2, the stage of the runs (City Escape):
+  1. Before the boot: SPE ARM7 back to ON (it was left OFF), read
+     `[sndcfg]` in the log.
+  2. In the stage: AUDIO, "Key Census" ON for about a minute of play
+     with effects, then OFF.
+  3. VIDEO / DEBUG, "JIT C-Calls" ON for about 10 s in the stage, then
+     OFF (it prints about 20 lines per second).
+  4. AUDIO, "ADPCM Loop" RESET against RESTORE, live, on effects that
+     hold (they loop): listen for level and for a step at each lap.
+     RESTORE makes these loops up to 27 dB louder from lap 2: read
+     `clip/s` and `peak` too.
+  5. If there is time, the no-build check 3 of the block below: SPE
+     AICA Gain 80%, then 50%.
+- What the log decides: `[mem64]` at 0 in the stage takes 6.7 off the
+  list for this fault; a count names the target. `[kon]` gives TL,
+  DISDL and DIPAN of each effect and of the music slot (60), and how
+  many slots are keyed: the half of lead 2 that needs no Flycast
+  build. The other half (the same lines from a Flycast build on the
+  PC) is not built.
+- Notes: the option table of the in-game menu holds 192 rows
+  (`MAX_INGAME_OPTS`, `ps3/ps3_menu.cpp`) and the pages have 191 now:
+  one more row fits, then the constant must grow. The kept packages
+  that older blocks name (`notdc_ps3_b17_1656.pkg` and before) are not
+  in `build/` any more. A UDP listener of session 57436e7d (bundle 17)
+  still runs and writes its `b17_hw.txt`.
+
+**Flycast sound review 2026-10-13 (Matt: "check on Flycast's audio
+driver, and see what differs from ours", for the faults of bundle 18;
+then he asked for the findings in this file). Read-only: nothing is
+built, no HW run, no row changed. 130 review agents: 12 readers by
+subsystem and by fault, then 6 more for the gaps that a critic named.
+They reported 111 differences. A skeptic checked each one against the
+code of both trees, the row defaults, the byte order and the HW logs of
+bundle 18: none was refuted, 96 were corrected in part. The text is 6.9
+(parts A to H). Short form, per fault:**
+- Loud effects (Sonic Adventure 2, Spider-Man): no cause in the sound
+  code. Both sides clamp the mix once at 16 bits with the same gain. One
+  voice of ours is -0.07 to +0.93 dB against Flycast at MVOL 15, +1.45
+  dB on the far side of an odd pan step, +1.96 dB with an odd MVOL too
+  (P81). The peaks of 120-275% need 1.6 to 8.8 dB on the whole mix. The
+  loud part is the dry mix: run 2 had no DSP, and Spider-Man has no
+  reverb at all with DSP Ring 64K OFF. Open: the registers the game
+  writes and the voice count (lead 2 of bundle 18), and 6.7. (6.9 A)
+- Crackle: two sources, neither shown to be the reported one.
+  - ADPCM loops with a loop start above 0. Ours (default path) restarts
+    the decoder at each lap. Flycast and nullAICA restore the state
+    saved at the loop start. The console rule is not measured. Sonic
+    Adventure 2 uses such loops: 6 of the 8 decoded loops of run 4 play
+    8-27 dB lower from lap 2. No HW run tested the rule. Candidate: a
+    row "ADPCM Loop" RESET / RESTORE, about 30 lines. (6.9 B)
+  - Silent output blocks of 5.3 ms when SPEED is under 100%: in about
+    40 of 180 seconds of run 1. Run 2 has none in the stage and the
+    fault stayed, so this is a second crackle, not the reported one.
+    (6.9 F)
+- Music restart (Sonic Adventure 2): no difference in the stream path.
+  The stage file `C_ESCAP1.ADX` (16 kHz mono in this image) loops by
+  itself at 129.8 s, back to sample 0. No log shows a restart without
+  a START press. Only run 1 plays past 129.8 s. Open: what Flycast
+  plays at 129.8 s (PC, no build). (6.9 C)
+- Key-off at 2 s (Sonic Adventure 2): not a fault. It is 119 video
+  frames, set on the game side, and the slot is already silent. Lead 3
+  of bundle 18 is closed for this game. (6.9 D)
+- SH4 wait for the sound SPUs (Sonic Adventure 2): cause found. At +
+  SAMPLE SYNC a G2 DMA write near a play point syncs with no test
+  (likely the music feed; the target is not logged): 75-77 syncs/s,
+  13.9-14.5% of wall. The long part is the DSP: 1250-1405 us per sync,
+  against 45 us with SPE AICA DSP OFF (3.6% of wall). A cost for bundle
+  22, not a sound fault. Candidate: 6.6 step (a), a range test per G2
+  DMA. (6.9 F)
+- Looney Tunes balance: not explained. Its DSP program is empty on ours
+  ("113 words, 2 live steps" is the floor of a program that stores
+  nothing), so "the voices go through the DSP only" does not hold. The
+  AUDIO64 driver (Looney Tunes, Spider-Man, Ecco the Dolphin) writes a
+  key-off and a key-on 379-388 ticks apart. About 73% of the pairs
+  fall in one ARM7 run, and a slot that is not in release then drops
+  the start. A lead for missing effects: no log has it, and Matt's
+  "The sound cues ALL played correctly" (2026-10-07) is against it.
+  (6.9 D, E)
+- Baseline: Flycast's DSP is OFF by default, and no state of row "SPE
+  AICA DSP" gives that mix. An ear test against Flycast needs its
+  "Enable DSP" ON (P81 step 2, never run). (6.9 E)
+- Do not port (ours follows the console, Flycast does not): the
+  one-shot end, rate 0 with key rate scaling, the ALFO depth, the
+  filter bypass, the loop-end partner, the 20-bit DSP bus wrap, the key
+  at the KYONEX write, Flycast's DSP rules, 512 ARM7 ticks as a default.
+- Checks with no build, recommended order:
+  1. PC: Flycast, the same .cdi, City Escape for 2 min 10 s with no
+     pause, death or Restart: does the song jump at 129.8 s?
+  2. PC: Flycast with "Enable DSP" OFF then ON: Looney Tunes (a menu
+     voice line and a race) and one Sonic Adventure 2 stage.
+  3. HW: Sonic Adventure 2, the stage of the runs, row "SPE AICA Gain"
+     at 80%, 50%, then cfg key `SpeAicaGain=35`. Read `clip/s`, `peak`
+     and `[aud] silent=`. Distortion at `clip/s=0/0` and `silent=0`
+     means the clamp is not the cause.
+  4. HW: Looney Tunes and Spider-Man, row "ARM7 Interleave" SLICE
+     against SAMPLE, live: listen for missing or cut effects.
+     Spider-Man with DSP Ring 64K OFF, then ON.
+- Candidate changes, none built, Matt picks: the row "ADPCM Loop"; the
+  G2 DMA range test (6.6 step (a)); the RING interval fix (about 10
+  lines, before DSP Ring 64K can be a default); the key pass at a
+  second KYONEX write (15-20 lines, a row); the G2 DMA register masks
+  (1-20 lines).
+- Data: `result.json` (the 111 differences with their checks),
+  `digest.py`, `show.py` and the folder `plan/` (the text per part, the
+  figures that differed, what each writer checked) in the scratchpad of
+  session 9cdb3bfe. The HW logs are those of bundle 18 (`b18_hw.txt`
+  and the older boots, scratchpad of session 507ac236).
+
+**Bundle 18 (Sound wrap-up) PARKED 2026-10-13 (Matt: "park this bundle
+for now. I will start a more intense session on this."). One session:
+an investigation and four HW runs on Sonic Adventure 2. No fix. Built on
+the way (Matt: "Yes, let's try it."): the AUDIO rows "ARM7 Rate" and
+"ARM7 Interleave" (6.3 and 6.2), both at the old path by default.
+Package of 18:56 on 2026-10-13 (`build/notdc_ps3.pkg`, 1696368 bytes);
+it also has bundle 17's source defaults. The package of 16:56 is kept as
+`build/notdc_ps3_b17_1656.pkg`. The source changes are not committed.**
+- Notes of 2026-10-13 from the Flycast sound review (the block above;
+  6.9). They correct or complete lines of this block:
+  - "Looney Tunes: 2 live steps, no ring": 113 words and 2 live steps
+    are the floor of an empty DSP program. No step writes EFREG, so
+    Looney Tunes has no DSP return on ours (75 of 75 windows of
+    `lt.txt`). (6.9 E)
+  - "One driver family: my inference": confirmed by the driver images:
+    AUDIO64 1.90g.1 (Looney Tunes), 1.90f.2 (Spider-Man), 1.90e.3 (Ecco
+    the Dolphin). The Sonic Adventure 2 driver is manatee.drv 2.02.08.
+  - "Flycast: 512 per sample, one run per sample (48e3a3eb6; a40210c55
+    ...; 59ff44132)": the two Tony Hawk commits removed a 32-sample
+    mixer batch (CA stood still for 32 samples). The ARM7 already ran
+    once per sample. 2e5309bfa (2024-11) cut the SH4-side step from 32
+    samples to 1.
+  - "The cost per instruction is the same (6 + extra)": only the base
+    of 6 is equal. A few extras differ (register shift, SWP, MRS / MSR,
+    a failed conditional LDR, STR or B). No skeptic checked this one.
+    (6.9 G)
+  - "About 10 RING records per second, source not known": the records
+    are false. With SPE ARM7 ON one min/max line interval per command
+    covers the whole ring when the SH4 writes on both sides of it. Run
+    4 (SPE ARM7 OFF): 0 records. (6.9 E)
+  - "Ruled out for Sonic Adventure 2 by the runs": this holds for the
+    loud mix only. For the music restart only run 1 plays past the
+    file's loop point (129.8 s). In run 4 the rows ARM7 Rate and ARM7
+    Interleave did nothing: the PPU fallback ignores them. (6.9 C)
+  - "timer A (period 44 samples, 997 FIQs/s": 44 samples is the reload.
+    The period in run 4 is 44.26 samples (median 996.4 overflows/s, 7
+    ARM7 runs); a run per sample gives 1002.3/s (computed). (6.9 C)
+  - "3-12 effect key-ons per second on slots 0-15": the pool is not 16
+    slots. 39 of 562 effect key-ons of run 4 go to slots 16-46, and 47
+    slots are keyed at once (`b18_hw.txt:34820`). (6.9 D)
+  - "251 of 398 effect key-offs come 1.9-2.1 s after the key-on": over
+    all of run 4 it is 316 of 560 holds, and 290 of them are 119 video
+    frames. The game side sets it. An ended slot feeds zero, so it is
+    not audible. Lead 3 below is closed for Sonic Adventure 2. (6.9 D)
+  - "ONE key-on for the whole stage (105 s)": 109.6 s (38.25 s to
+    147.83 s, `b18_hw.txt:27195` and `:39063`).
+  - "60-75 syncs per second, and the SH4 waits 12-13% of wall": a
+    recount gives medians of 75-77 syncs/s and 13.9-14.5% of wall
+    (7.5-18.4%). With SPE AICA DSP OFF (run 2) the same syncs cost
+    3.6%. (6.9 F)
+- The complaint (Matt, against Flycast on the PC with the same .cdi):
+  in Sonic Adventure 2 and Spider-Man the effects are too loud and the
+  sound distorts or crackles; in Sonic Adventure 2 the music track
+  restarts too early. A link to the Looney Tunes balance (open since
+  2026-10-11) is not shown. Flycast's DSP is OFF by default.
+- Facts from the old logs, before the runs:
+  - `slow=` above 0 on the `[aica-spe] dsp jit` line with `spu ring
+    lines in 0` means a 64K-word DSP ring (RBL 3). Five games: Sonic
+    Adventure 2 (95 live steps, 35 slow), Spider-Man (85, 33), Rez
+    (119, 39), Ecco the Dolphin (127, 30), Project Justice (127, 39).
+    DSP Ring 64K was OFF in every old boot, so their DSP writes were
+    lost (P20 G3). Looney Tunes: 2 live steps, no ring.
+  - Looney Tunes, Spider-Man and Ecco the Dolphin take no ARM7 interrupt
+    (`fiq 0`); their driver polls (at most 2260-2740 monitor reads and
+    7500-8170 records per second in each). One driver family: my
+    inference.
+  - ARM7 budget: 226.7 ticks per sample at SH4 200, one run per 6.3
+    samples (ARM7 Batch 4); the AICA stands still in a run. Flycast: 512
+    per sample, one run per sample (48e3a3eb6; a40210c55 "no aica
+    batching for Tony Hawk's 1 & 2"; 59ff44132). Reicast: 256, per
+    sample. The cost per instruction is the same (6 + extra).
+  - Sonic Adventure 2 clips in about 80% of the 5 s windows (peak median
+    160-171%). Sonic Adventure clips the same (140-152%) with a ring
+    that works. MONO is not set: left and right clip counts differ.
+- The HW runs, all Sonic Adventure 2, the same stage (log `b18_hw.txt`,
+  scratchpad of session 507ac236; the lines are the boots):
+  1. Lines 1387-7799, DSP Ring 64K ON. Matt: "Issue not fixed", "Wrong
+     music loop as well". The row works: `ring64=1`, about 95K cache
+     lines per second written back, no fault, sound SPU busy 34.6%
+     against 33.0%. About 10 RING records per second, source not known.
+  2. Lines 12099-15022, SPE AICA DSP OFF. Matt: "the issue is still
+     there". Peaks of 127-211% with no DSP: the dry mix is the loud part.
+  3. Lines 18083-22371, the new rows, live. Matt: "The issue remains but
+     at SLICE and 512 rate It's a bit better. HOWEVER, the game tanks
+     heavily in performance." At 512: 20-22M ticks/s, monitor reads
+     6.2K -> 21-24K per second, peaks still 143-195%. SPEED 90-92% in
+     two of three stretches (6-14 s each); ARM7 SPU busy 42-45%, not
+     full; the loss is SH4 wait for the sound SPUs, 20-28% of wall.
+  4. Lines 22964-43966, SPE ARM7 OFF and G2 DMA Small ON, G2 DMA Read ON
+     for a part. Matt: "not much is being done there." Peaks 120-240%,
+     nearly every window of the stage clips.
+- Ruled out for Sonic Adventure 2 by the runs: the DSP ring, the DSP
+  return, the ARM7 clock and interleave, the SPE ARM7 path, the small
+  G2 DMA rule.
+- Facts from run 4. With SPE ARM7 OFF the log has `[key]` (the KYONB
+  bits at each KYONEX), `[montrace]`, `[arm7s]` and `[aicarw]`;
+  `tools/keys.py` and `tools/keys2.py` in that scratchpad make key-on
+  and key-off events of them.
+  - The driver runs on timer A (period 44 samples, 997 FIQs/s; SCIEB
+    040, MCIEB 020) and makes 7800-8600 monitor reads per second.
+  - 3-12 effect key-ons per second on slots 0-15. Of 422 key-ons, 3
+    pairs start at the same sample, and 6 are a second key-on of a slot
+    within 100 ms. So the key-ons are not doubled.
+  - 251 of 398 effect key-offs come 1.9-2.1 s after the key-on. The
+    one-shot samples are 3065-38339 samples long. So a time limit of
+    2 s frees most voices, not the sample's end. If that is audible is
+    not known. The references differ here: caique (console): at a
+    one-shot end LP is set and the envelope keeps its state; Flycast
+    (`sgc_if.cpp` `disable()`): the envelope goes to 0x3FF, RELEASE.
+  - The stage music: a mono PCM16 ring on slot 60 (LEA 8192), ONE
+    key-on for the whole stage (105 s), fed by about 34 KB/s of G2 DMA;
+    the disc worker reads 8-15 sectors in a second. So the SH4 decodes
+    the ADX file, and an early restart of the track is not a slot
+    restart: look on the SH4 side (ADX, disc reads, game code).
+- Cost fact, with the rows at their old path: in Sonic Adventure 2 SPE
+  AICA Sync at + SAMPLE SYNC makes 60-75 syncs per second, and the SH4
+  waits 12-13% of wall for them (Looney Tunes race: 0%). For bundle 22.
+- The two rows (default LEGACY and SLICE, live, SPE ARM7 only):
+  `run_mu` in `ps3/spu/spe_arm7.cpp`; the values go in `ArmCmd.c` of
+  the MU command (`ps3/ps3_arm_spe.cpp`); keys `Arm7Rate`,
+  `Arm7Interleave`. PC: `misc/arm7spe_check` 80 of 80 runs (50 old, 30
+  new with env `MU_CFG`: a number, or `mix` = both rows change live),
+  10 of 10 new mutants caught (`try18`); the 11 checks that name the
+  menu and preset files pass. `tools/par_arm7spe.sh` in the scratchpad
+  runs the list 8 at a time (6 minutes; `run.sh` alone: about 50).
+  Open: Matt did not say if the rows stay in the source.
+- Leads, none tested:
+  1. 6.7, JIT FMOV.D ABI fix: never built, in no bundle. The JIT's
+     64-bit pair paths (`ps3/ps3_driver.cpp`, cold kinds 1 and 3, and
+     the fastmem trampolines) still call `ReadMem64` / `WriteMem64`
+     with the 32-bit EABI layout, so handler pages (wave RAM, AICA
+     registers, the VRAM window, P4) get junk. If Sonic Adventure 2
+     uses the path is not known: 6.7's `[mem64]` count comes first.
+  2. The effect levels and pans come from the game. A key-on census
+     (TL, DISDL, DIPAN, pitch, sample address per slot) on ours, and
+     the same lines from a Flycast build for the same scene, tell if
+     the registers differ (SH4 side) or the mix (AICA side).
+  3. The one-shot end as the driver sees it (run 4 above). CLOSED
+     2026-10-13 for Sonic Adventure 2: no sound differs (6.9 D).
+  4. The level probe P81 (not built).
+- Not run: Spider-Man and Looney Tunes with any row of this session;
+  the ARM7 Batch 1 / ARM7 Speed HALF test in a Looney Tunes race.
+- Matt's PS3 after run 4: SPE ARM7 OFF, G2 DMA Small ON, DSP Ring 64K
+  ON (the last two were OFF before the session). SPE ARM7 OFF costs
+  PPU time (`arm:` 6-7% of wall): set it back to ON.
+- Bundle 18's own list is as it was: no verdict for Mono Mix Fix, DSP
+  Reg Reads and LFORE Keep (DSP Ring 64K works, run 1); P81, P82, the
+  Bangai-O and Nomad Soul tests, the VMU beep, the nullAICA-only fixes.
 
 **Bundle 17 (Draw rules tail) built 2026-10-13 (Matt: "Let's work with
 Bundle 17."). HW run 1 the same day: PT Blend + ALPHA 1 in Jet Grind
@@ -11268,13 +11788,14 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | Item | Fault | Status |
 |---|---|---|
 | 6.1 ARM7 Idle Skip SAFE | F1 ChuChu | FAILURE on HW 2026-10-04: SAFE does not fix F1; the logs work. Diagnostic build HW run done; KYONB option FAILURE on HW 2026-10-04 |
-| 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[ ]` no target left: F3 fixed by 6.5, F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
-| 6.3 ARM7 Rate (capped) | F1 ChuChu | `[ ]` no target left: F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
+| 6.2 ARM7 Interleave SAMPLE | F1 ChuChu, F3 Looney Tunes | `[~]` built 2026-10-13 as the row "ARM7 Interleave" SLICE / SAMPLE (SPE ARM7 path only, default SLICE), bundle 18 (section 0); HW 2026-10-13, Sonic Adventure 2: no fix; no run with Looney Tunes; F3 fixed by 6.5, F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
+| 6.3 ARM7 Rate (capped) | F1 ChuChu | `[~]` built 2026-10-13 as the row "ARM7 Rate" LEGACY / 256 / 384 / 512 (SPE ARM7 path only, default LEGACY), bundle 18 (section 0); HW 2026-10-13, Sonic Adventure 2 at 512: "a bit better" (Matt), no fix, SPEED 90-92% in two of three stretches; F1 fixed 2026-10-12 by "ARM7 STR Align" (bundle 9) |
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[~]` built 2026-10-11 as "TMU Clock" SH4 / EFF, bundle 7 (section 0), default SH4, no HW run (Matt keeps SH4 Clock 200, where EFF changes nothing); merged 2026-10-06: P11 (built as "TMU Fine TCNT", HW run 2026-10-11, default ON in source), P57 (TMU test, in `misc/timebase_check`) |
 | 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (built 2026-10-11 as "G2 DMA Small", bundle 6, default OFF; HW run 1: no fix for F1 in ChuChu Rocket), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
-| 6.7 JIT FMOV.D ABI fix | every game | `[ ]` |
+| 6.7 JIT FMOV.D ABI fix | every game | `[ ]` the fix is not built, in no bundle; the first lead for Sonic Adventure 2's sound since 2026-10-13 (bundle 18, section 0); its `[mem64]` count is built 2026-10-14 (it rides on the row JIT C-Calls); HW run 1 2026-10-14, Sonic Adventure 2: 0 calls in 209 s, so not a cause of that game's sound |
 | 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | **F1 FIXED on HW 2026-10-12 by 6.8's unaligned ARM7 word store: row "ARM7 STR Align" ON (bundle 9, section 0; Matt: "THE SOUND IS FIXED")**; default ON in source since 2026-10-12, not packaged |
+| 6.9 Flycast sound review | bundle 18: Sonic Adventure 2, Spider-Man, Looney Tunes | `[ ]` review done 2026-10-13 (section 0), read-only, nothing built, no HW run; no cause found for the loud effects; leads: the ADPCM loop state at a loop start above 0 (crackle), the AUDIO64 key pair inside one ARM7 run (missing effects), the empty DSP program of Looney Tunes; the 2 s key-off and the music loop at 129.8 s are the game's own; the SH4 wait is a sync with no test at a G2 DMA write near a play point (bundle 22); built 2026-10-14 (section 0): the row "ADPCM Loop" RESET / RESTORE of part B (default RESET; HW SUCCESS 2026-10-14, Matt: RESTORE fixes the sounds that stop too early in Sonic Adventure 2) and the log row "Key Census"; HW run 1 2026-10-14: the levels the driver writes and the music level are right, the loud mix is the game's own sum |
 
 ### 6.0 Facts set on 2026-10-04
 
@@ -11522,8 +12043,14 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     (87-107 s), each confirm keyed one 0x02A04E note: held 344 ms, ended
     513 ms after its key-on (the driver sets a faster release there).
 
-### 6.2 ARM7 Interleave SAMPLE  `[ ]`
+### 6.2 ARM7 Interleave SAMPLE  `[~]` built 2026-10-13 for the SPE ARM7 path, default SLICE; HW (Sonic Adventure 2): no fix (section 0, bundle 18)
 
+- Built 2026-10-13 (bundle 18, section 0) as the AUDIO row "ARM7
+  Interleave" SLICE / SAMPLE, live, on the SPE ARM7 path only (`run_mu`
+  in `ps3/spu/spe_arm7.cpp`): a run before each sample's step, the
+  overshoot comes off the next run, ARM7 Batch is not used. The PPU
+  path below (`arm_aica.cpp`) is not changed. The text below is the
+  plan of 2026-10-04.
 - Fact: with Arm7Batch 4 (default, `ps3_presets.cpp:20`) and accuracy FAST
   (7168 SH4 cycles per MediumUpdate), the ARM7 runs one burst of 1433 ticks
   every 8.43 AICA samples at SH4 150 (191 us) (`arm_aica.cpp:59-77`). The
@@ -11550,8 +12077,13 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   Tunes (SPE AICA Sound ON): does the 34.76-sample loop change, do voices
   come back.
 
-### 6.3 ARM7 Rate (capped)  `[ ]`
+### 6.3 ARM7 Rate (capped)  `[~]` built 2026-10-13 for the SPE ARM7 path, default LEGACY; HW (Sonic Adventure 2, 512): no fix, speed loss (section 0, bundle 18)
 
+- Built 2026-10-13 (bundle 18, section 0) as the AUDIO row "ARM7 Rate"
+  LEGACY / 256 / 384 / 512, live, on the SPE ARM7 path only: ticks =
+  rate x the samples of the call (or of the batch), then the ARM7 Speed
+  shift. The PPU path below is not changed. The text below is the plan
+  of 2026-10-04.
 - Fact: ticks = Cycles / 20 (`arm_aica.cpp:61,71`, `arm7.h:20`). The budget
   follows SH4 Clock: 170 per sample at 150, 226.7 at 200. Engines charge 6+
   ticks per instruction (ours about 8.3 on average), so ours runs about 20.5
@@ -11731,6 +12263,17 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   2026-10-04). It changes every game.
 - Log: `[mem64]` when non-zero: JIT cold-path 64-bit reads/writes per area
   (aram, aica, other area 0, 0x05, p4).
+- 2026-10-14 (bundle 18, section 0): the count is built, the fix is
+  not. `[mem64]` prints once per second while the row "JIT C-Calls" is
+  ON (a line with 0 too): the calls of the two 64-bit dispatchers from
+  the code cache, by target class (aram, aica, a0, vram, ram, ta, p4,
+  other) with the last address. `CCALL_MEM64` in
+  `dc/sh4/rec_v2/ccall_census.h`; no emitted code changes. HW run 1
+  2026-10-14, Sonic Adventure 2 (boot, menus, 100 s of a stage): 209
+  lines, all `rd 0 | wr 0`. No run of another game.
+  The fastmem trampolines named above are dead code on the PS3
+  (`PS3_FASTMEM_DSI`): only the cold kinds 1 and 3 of `FlushCold()`
+  make these calls.
 - HW test: ChuChu, Looney Tunes, Soul Calibur (black texture), Crazy Taxi:
   any change; `[mem64]` counts.
 
@@ -11780,6 +12323,689 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
     a log census first; fix only if it fires (2-3 lines per engine,
     regenerate `arm7_cached_gen.inc`, two self-tests). Do not paste
     Reicast's `arm-new.h` diff.
+
+### 6.9 Flycast sound review (2026-10-13)  `[~]` read-only review for bundle 18; from it the row "ADPCM Loop" (part B) and the log row "Key Census" are built 2026-10-14; HW run 1 the same day: levels right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14 (section 0)
+
+- Matt 2026-10-13: "check on Flycast's audio driver, and see what
+  differs from ours", for the faults of bundle 18. The short form and
+  the order of the checks are in section 0 (block "Flycast sound
+  review").
+- Method: 12 readers compared Flycast (`core/hw/aica`, `core/hw/arm7`,
+  `core/audio`, the G2 DMA code, the git history of master and
+  origin/dev; local clone of 2026-09-23) with ours: 9 by subsystem, 3
+  from a fault. A critic named 6 gaps and 6 more readers took them (the
+  ADPCM loop rule, row "SPE AICA Sound" OFF, the Sonic Adventure 2
+  stream in the logs, the two sound drivers, the Sonic Adventure 2
+  sound bank). A skeptic checked each of the 111 reported differences:
+  the code on both sides, the row defaults of `ps3/ps3_presets.cpp`,
+  the byte order, the four HW runs of bundle 18. None was refuted; 96
+  were corrected in part. A writer per part then merged the checked
+  findings and settled the figures that differed.
+- Words used below. "Default path": SPE AICA Sound ON, SPE AICA DSP ON,
+  SPE ARM7 ON (the caique model on the sound SPU). "PPU fallback":
+  nullAICA and the vbaARM engines. "Console": what caique-rtl measured
+  (`model/NOTES.md`). "Runs 1-4": the HW runs of bundle 18 in
+  `b18_hw.txt`; `sa2.txt`, `sa1.txt`, `lt.txt`, `lt_ctl.txt`,
+  `spider.txt` and `pj.txt` are older boots (scratchpad of session
+  507ac236). "Review scratchpad": the scratchpad of session 9cdb3bfe
+  (`result.json`, the driver listings, the PC scripts).
+- Byte order: no fault found in any path that the review read.
+- Line numbers are those of 2026-10-13: search for the function.
+- State of every item below, unless it says otherwise: not built, no HW
+  run.
+
+**A. Levels and loudness: the loud effects and the clipping**
+
+- Levels and loudness. Every item below: not built, no HW run.
+- Output clamp and level budget (default path and PPU fallback): no
+  level stage explains the loud effects or the clipping. Open: the
+  registers the game writes and the voice count (lead 2).
+  - Both sides sum in 32 bits, apply MVOL and DAC18B `>> 2`, and clamp
+    the mix once at 16 bits: Flycast `core/hw/aica/sgc_if.cpp:1611-1631`
+    and ours `plugs/caiqueAICA/aica_model.cpp:1105-1115`.
+  - The laws differ (P81). TL: Flycast `2^(-i/16)` (`:1441`), ours
+    `M = 127 - (a & 63)` (`:724-728`, console measured). Sends: ours
+    x3/4 at an odd step (`:730-735`, `:1404`), Flycast x0.707
+    (`:55-59`). The console's DISDL, DIPAN and MVOL law is not measured.
+  - PC run of both chains, one voice: ours is -0.07 to +0.93 dB at MVOL
+    15, +1.45 dB on the far side of an odd pan step, +1.96 dB with an
+    odd MVOL too. Sonic Adventure 2's driver image sets MVOL 15 and
+    writes DISDL 15 for 3255 of 3606 tone rows. Not in any log.
+  - Log `b18_hw.txt`, runs 1-4: 91 of 118 windows pass 100%; median
+    peak 160-175%, highest 274.6%; 162-491 clipped samples/s (run
+    medians). The peaks need -1.6 to -8.8 dB on the whole mix; one full
+    voice is 99.2%. Spider-Man: 14 of 145 windows pass 100%.
+  - Run 2 clips up to 698 samples/s with `[aud] silent=0` in 34 of 35
+    stage seconds, and the fault stays. The four runs have starved
+    blocks (5.3 ms each) in about a third of the playing seconds.
+- Envelope rate 0 with key rate scaling (default path). Do not port.
+  - Flycast `sgc_if.cpp:807-815` has no rate 0 test: a rate 0 segment
+    falls when KRS < 15 and KRS + OCT >= 1 (0.8 dB/s at 1, 2.2 at 4,
+    8.7 at 8). Ours holds (`aica_model.cpp:186`), as the console at
+    KRS 1, OCT 0 (caique `model/cases/sgc_lfo.c:40`, capture hw9).
+  - Sonic Adventure 2 rests its effects at rate 0 (93 of 93 keyed
+    monitor reads of run 4). All 3581 such bank rows have KRS 0, and
+    3823 of 3825 note-row pairs play at OCT 0 or below: no effect at
+    neutral pitch. Spider-Man and Looney Tunes banks: not read.
+- Amplitude LFO depth (default path). Do not port; P82 is the fallback.
+  - Flycast `sgc_if.cpp:864`, `:1233`: `rv >> (8 - ALFOS)` in 0.376 dB
+    steps, 47.8 dB at ALFOS 7. Ours `aica_model.cpp:773`, `:1538`:
+    `(w & 0xFE) >> (7 - alfos)` in 0.094 dB steps, 23.9 dB, as the
+    console (caique `model/NOTES.md:193`). By energy ours is 2-3 dB
+    louder at ALFOS 5-7; the peak is equal.
+  - Sonic Adventure 2: 3 of 3606 rows have ALFOS, and the driver
+    writes depth 0 at modulation 0: not in use. Other games: not read.
+- Output rate conversion (both paths), new. Ours draws a 2-point line
+  from 44.1 to 48 kHz after the clamp (`ps3/spu/spe_aica_snd.h:85-86`,
+  `ps3/ps3_audio.cpp:255-256`). Flycast hands 44.1 kHz to SDL.
+  - PC run of the loop: -1.5 dB at 10 kHz, -3.4 dB at 15 kHz; false
+    tones at -23 dB (10 kHz in) and -15 dB (15 kHz in); no added level.
+    No link shown: every game has the line; no log has a spectrum.
+- DSP bus sum (default path, SPE AICA DSP ON). Do not port.
+  - Ours wraps the sum at 20 bits (`aica_model.cpp:1637`), as the
+    console (caique `model/NOTES.md:62-63`). Flycast keeps an s32 sum
+    (`sgc_if.cpp:708`) and never runs the DSP at its default. Run 2
+    runs no bus code and the fault stays. No log has a wrap count.
+- Low-pass filter (default path). Do not port Flycast's bypass. Same
+  law for Q 0-28 (within 0.35 dB). Flycast skips the filter at LPOFF
+  0, Q 4, all FLV >= 0x1FF8 (`sgc_if.cpp:915-918`). Ours runs it
+  (`aica_model.cpp:1522-1532`): flat within 0.40 dB, sign turned, as
+  the console (caique `model/NOTES.md:313-320`). Sonic Adventure 2:
+  3559 of 3606 rows are in that class, and Q is 4 in all: no effect.
+- Row "SPE AICA Sound" OFF (nullAICA, PPU fallback). No bundle 18 boot
+  ran it. It is not a clean test of the laws.
+  - It has Flycast's level tables x0.9, ALFO depth and rate 0 rule. It
+    has no filter, FEG or pitch LFO (`plugs/nullAICA/sgc_if.cpp:841`,
+    `:1119`), no DSP return, a linear attack from 0x3FF (`:677`,
+    `:1085`), and an idle slot reads EG 0x3FF, not 0x1FFF (`:1341`).
+- No link to a fault: the DSP return (about 35 dB under the dry voice
+  in Sonic Adventure 2, PC estimate), DSP-only tones (placeholder rows
+  only; keep P20, no dry mix), noise slots (ours is the console's).
+- Checks, cheapest first:
+  1. HW, no build: Sonic Adventure 2, same stage, row "SPE AICA Gain"
+     80%, 50%, then cfg key `SpeAicaGain=35`. Read `clip/s`, `peak`,
+     `[aud] silent=`. Distortion unchanged at 80%: the laws are out.
+     Distortion at `clip/s=0/0` and `silent=0`: the clamp is out.
+  2. HW, no build, low value: "SPE AICA Sound" OFF. Still too loud
+     clears the three Flycast rules; better names no cause. Reboot.
+  3. PC: the resampler loop (`misc/a2_check/snd_unit.cpp:45-62`) on a
+     44.1 kHz WAV clamped at 170%, by ear; a Spider-Man bank census.
+  4. PC, Flycast build: print the clipped `mixl`
+     (`sgc_if.cpp:1626-1627`), same stage. Do not set `CLIP_WARN`: it
+     adds asserts (`:685-690`). Peaks near 170%: the game's own mix.
+  5. Build, about 30 lines: lead 2's key-on line (`[pcm16] on`,
+     `plugs/nullAICA/sgc_if.cpp:710-715`, SPE ARM7 OFF) for all
+     formats, with DISDL, IMXL, ISEL, MVOL, register 0x1C, Q, LPOFF,
+     FLV0; counts of bus wraps and noise key-ons.
+- Candidate changes (none built):
+  - None on the default path: ours follows the console there.
+  - Probe rows, default OFF: "Send Law" (181/256 at odd steps; TL and
+    IMXL stay), 15-30 lines; bus clamp at +-524287, 4-10 lines. Traps:
+    `slot_fast` register pressure, the `misc/*_check` line counts.
+  - Output line -> 4-point curve or table filter, three places alike,
+    after check 3. Speed: skip the flat filter, 15 lines, not bit-exact.
+  - Fallback only: EG monitor 0x1FFF, 2 lines; attack, 15 lines;
+    filter and FEG, 90-115 lines.
+
+**B. ADPCM loops and the other loop rules**
+
+- ADPCM loop with a loop start above 0 (PCMS 2, LPCTL 1, LSA > 0): the
+  best lead of this topic, for weak or rough looped effects only.
+  - Flycast saves the decoder state at the first pass over LSA and
+    loads it at each later lap: `core/hw/aica/sgc_if.cpp:1111-1124`
+    (`q = adpcm.loopstart_quant;`). PCMS 3 only saves. No option.
+  - Ours, default path (SPE AICA Sound ON), resets at each lap:
+    `plugs/caiqueAICA/aica_model.cpp:470` `if (f == 2) op |= OP_RESET;`
+    then `:965`, `:1339`, `:1509` (`quant = 127; s0 = 0;`). The PPU
+    fallback has Flycast's rule (`plugs/nullAICA/sgc_if.cpp:949-961`).
+  - Console: not measured. Every caique ADPCM case loops from LSA 0
+    (`model/cases/sgc_formats.c:23`, `aica_io.h:140-142`), where both
+    rules give step 127 and sample 0. The reset is Minicast's line
+    (`sample-model/aica_model.cpp:392`). So "caique wins" in
+    `OPTIMIZATION_POTENTIAL.md:3638-3640` does not cover LSA > 0.
+  - Sonic Adventure 2 uses it. Every looped ADPCM row of the disc's
+    tone banks has LSA > 0 (800-1976 rows by parser scope); no row is
+    PCMS 3. Run 4 has 17 trace records of keyed loops with LSA > 0
+    (`b18_hw.txt:29409` `s09 10w C000 kb1 lp1 83-18512`), held up to
+    7 s. The log has no PCMS: the pairs match PCMS 2 bank rows.
+  - Size (PC decode of the disc's waves, both rules): from lap 2 ours
+    is 8-27 dB lower in 6 of the 8 decoded run 4 loops (83-18512: -7.9
+    dB, DC -5089, wrap step 12230 against 2162). Game banks: about 35%
+    of the loops fall (62 of 178 by over 3 dB, 85 of 242 by over 6
+    dB); median -0.1 to -0.2 dB; 1 is louder (+1.6 dB). The waves fit
+    a restore (at LEA 82% of 242 loops are near the LSA state): a hint.
+  - Link: crackle only, weak to plausible. The rule lowers levels: no
+    loud effects and no peaks of 120-240% (`:26617`, `:27019` clip
+    before the first such loop is traced). No run tested it: all six
+    boots have SpeAicaSound=1. Spider-Man, Looney Tunes: not read.
+  - Fix sketch: two render-only Slot fields (step and sample at LSA,
+    256-512 B of SPU LS), 127 / 0 at key-on, so LSA 0 stays bit-exact
+    with caique. Save before the first decode of ca == LSA (PCMS 2 and
+    3); load at the PCMS 2 wrap. Traps: a new op flag (OP_RESET is the
+    key-on too); slot_fast register pressure; the misc/*_check line
+    counts; `misc/spu_sim/mutate_adv.sh`. No byte order work. The loops
+    get up to 27 dB louder: clipping can grow. Not built, no HW run.
+  - BUILT 2026-10-14 as the row "ADPCM Loop" RESET / RESTORE (AUDIO,
+    live, default RESTORE since 2026-10-14): section 0, block "Bundle 18
+    resumed". Against the sketch: one word per slot at the end of the
+    model (`lsa_state`, 256 B), not Slot fields; two op flags
+    (`OP_LSA`, `OP_LOOP`); the lap of a PCMS 2 loop loads the kept
+    state, the first pass over LSA keeps it (PCMS 2 and 3). PC check
+    `misc/adpcm_check`. HW SUCCESS 2026-10-14 (Matt, Sonic Adventure
+    2): RESTORE fixes the held effects that stop too early; with
+    RESET their laps are 24-27 dB down after the first pass.
+- Loop-end interpolation partner (known: "F2, weak" in the sound list
+  of `OPTIMIZATION_POTENTIAL.md`, about line 3432).
+  Flycast takes the sample at LSA (`sgc_if.cpp:1071-1074`). Ours takes
+  the word past LEA (`aica_model.cpp:369`, `:1453`), as the console
+  (caique `NOTES.md:550-551`, tests/sgc_loop; ADPCM replay of
+  tests/sgc_formats: 0 of 13337 samples differ with ours, 4 with
+  Flycast's). Do not port; the ADPCM row above keeps our CA + 1 too.
+  - New: the Sonic Adventure 2 stage ring (slot 60) runs at OCT -2,
+    FNS 461 (15988 Hz; 11 CA reads fit within 1 sample over 96 s), the
+    Looney Tunes ring at OCT -2, FNS 1023 (`lt_ctl.txt:631`). So 2-3
+    output samples per lap (1.95 and 2.7 laps/s) lean to the word past
+    the ring (in no log): a tick about 44 dB under the music at most.
+- ADPCM long stream (PCMS 3) with LEA & 3 != 0: ours wraps to LSA +
+  1..3 (`aica_model.cpp:460`, `:468`, `:1495`), Flycast to LSA
+  (`sgc_if.cpp:1160`, `:1194`). Console: not measured. No game shown;
+  Sonic Adventure 2 has no PCMS 3 bank row. Not built.
+- Looping slot with LSA >= LEA: Flycast holds or stops
+  (`sgc_if.cpp:1171-1198`); ours plays on (`aica_model.cpp:464-468`),
+  as the console (caique `NOTES.md:160-163`). Do not port. No game.
+- Checks, cheapest first:
+  1. No build, a hint only: Sonic Adventure 2, the stage of the runs,
+     row SPE AICA Sound OFF. nullAICA restores, but the whole mixer
+     changes and the ARM7 goes to the PPU. If the held effects still
+     crackle, the ADPCM rule is out.
+  2. PC, no build: the run 4 loops as WAV with both rules, by ear.
+  3. One diag build, boots with SPE ARM7 OFF: PCMS in the `[montrace]`
+     record (`plugs/nullAICA/sgc_if.cpp:1293`), also for Spider-Man
+     and Looney Tunes; per wrap of a looping PCM16 slot the words at
+     SA and SA + 2*LEA (equal words close the partner item).
+  4. A caique console case with PCMS 2 and LSA above 0.
+- Candidate changes (none built):
+  1. Row "ADPCM Loop" RESET / RESTORE, default RESET: about 30 lines.
+  2. PCMS 3 wrap to LSA: 2 lines (`:468`, `:1495`), subtract
+     `((LEA + 3) & ~3u) - LSA`; no change for an aligned LEA.
+  3. Partner row CONSOLE / LSA, 8 lines: only if the words differ.
+
+**C. The Sonic Adventure 2 music stream, G2 DMA registers, ARM7 timing**
+
+- Sonic Adventure 2 stage music: the file loops by itself at 129.8 s.
+  `/SONIC2/C_ESCAP1.ADX` (LBA 60609, 572 sectors, 16 kHz mono) has
+  loop start sample 0 and loop end sample 2076586 in its header. The
+  best lead for "the music restarts too early"; not shown, no HW run.
+  - No emulator difference: both only serve sectors (Flycast
+    `core/hw/gdrom/gdromv3.cpp:1231-1306`; ours, default path,
+    `dc/gdrom/gdromv3.cpp:1391-1517`). Fix: none, 0 lines.
+  - Run 1, run 4 and sa2.txt read the file once, at 0.99-1.00x of its
+    rate, to sector 572. Each refill follows a START press. Only run
+    1 and sa2.txt pass 129.8 s; Matt's "Wrong music loop" came after
+    run 1. Runs 2-4 stop before it: their rows have no verdict for
+    the music. What Flycast plays at 129.8 s is not known.
+- The stream position. The SH4 touches no AICA register in the stage
+  (run 4), so it can learn the position only from the driver's data
+  in wave RAM (inference, not measured). Ours is older: the driver
+  scans CA of slots 58-63 118 times/s (8.5 ms; about 3 ms at 512
+  ticks), plus, default path only, the ARM7 SPU lag of at most 9.2 ms
+  (`ps3/ps3_arm_spe.cpp:36`, `:116-128`). 17.7 ms at most on a ring
+  of 512 ms; no step leads to a restart. The CA and LP rules are
+  equal (Flycast `core/hw/aica/sgc_if.cpp:1513-1539`; ours
+  `ps3/spu/aica_ctl.h:124-178`). Slot 60's CA fits one pitch (15988
+  Hz) within 1 sample over 96 s (run 4, PPU twin): the ring never
+  restarts. Fix: none justified.
+- G2 DMA registers, both paths. Flycast stores SB_ADLEN with mask
+  `0x81FFFFE0` (`core/hw/holly/sb.cpp:447`), SB_ADSTAG and SB_ADSTAR
+  as `data & 0x1FFFFFE0` (`core/hw/aica/aica_if.cpp:435`, P68), and
+  an SB_ADSUSP write changes bit 0 only (`sb.cpp:225-229`). Ours
+  stores raw words (`dc/mem/sb.cpp:1029-1083`), copies `len &= ~3u`
+  (`dc/aica/aica_if.cpp:323-326`), and a guest SB_ADSUSP write wipes
+  bit 4. It acts only off the 32-byte grid: up to 28 bytes (14
+  samples) more per start. The Sonic Adventure 2 rings are on the
+  grid. No log has a length; no game is named; no link to a fault.
+- ARM7 schedule, both paths. Flycast: 512 ticks, then `timeStep()`,
+  per sample (`core/hw/arm7/arm7_rec.cpp:735-746`). Ours: 226.7 ticks
+  per sample, one run per 6.32 samples (`ps3/spu/spe_arm7.cpp:620`,
+  `:660-681`); the AICA stands still in a run, not on the console.
+  - Sonic Adventure 2: run 3 ran Flycast's schedule (default path,
+    stretches of 10-15 s); the peaks stay at 143-195%. In run 4 the
+    rows did nothing: the PPU fallback ignores them
+    (`plugs/vbaARM/arm_aica.cpp:103`; `[arm7s]` 6975 runs/s).
+  - Looney Tunes, Spider-Man and Ecco the Dolphin ship AUDIO64.DRV
+    1.90 (read off the discs: one driver family). It polls CA only,
+    about 2500 reads/s. No boot of them at another rate exists. Timing
+    moves no level: no link to the Looney Tunes balance is shown.
+- Timer tick, SLICE: the FIQ waits for the next run. Period 44 gives
+  996.5 ticks/s, not 1002.3 (0.58% slow); SAMPLE gives 1002.4. The
+  2 s key-off is not in ticks: 273 of 560 holds are 1.980-1.990 s =
+  119 video frames, locked to the frame.
+- ARM7 speed. caique: 64 ARM7 memory cycles of 8 clocks per sample
+  (`model/NOTES.md:679-680`). Estimates, not measured: console 26-35
+  instructions per sample, ours about 28, Flycast about 62. 512
+  copies Flycast, not the console: never a default.
+- ARM7 Idle Skip OLD (`ps3/spu/arm7_spu.h:916-917`): no billed loop
+  in the main loop, scan or FIQ handler of MANATEE.DRV; AUDIO64.DRV
+  has one true wait, billed under SAFE too. No effect here.
+- AICA Race Fix: 50 ticks once per run, for an ARM7 store only
+  (`ps3/spu/arm7_spu.h:229-245`); Flycast at each raise, by either
+  CPU (`core/hw/aica/aica.cpp:187-200`). Sonic Adventure 2: 0 raises.
+  The console has no such rule.
+- Carry: a logical S operation with a register shift of 0 takes an
+  older carry in our three engines (`ps3/spu/arm7_spu.h:494`, `:559`);
+  Flycast keeps C (`core/hw/arm7/arm-new.h:498`), as the ARM7DI. No
+  driver of the four games reads that C. Flycast's x64 recompiler
+  keeps C for 1-255 too: do not port that.
+- KYONEX: ours scans the keys at the next sample, as the console
+  (caique `model/NOTES.md:696-704`); Flycast at the write: do not port.
+- Checks, cheapest first:
+  1. PC, no build: Flycast, the same .cdi, City Escape, 2 min 10 s
+     with no pause, death or Restart. A jump to the first bar at
+     129.8 s closes the music item as the rip's own loop.
+  2. HW, no build: the same on the PS3 with a stopwatch; then with
+     ARM7 Rate 512 and ARM7 Interleave SAMPLE (SPE ARM7 ON).
+  3. HW, no build: Looney Tunes race and Spider-Man with ARM7 Speed
+     HALF, then SAMPLE, then 512. Read `mon` on `[arm7spe]` first,
+     then `peak=` and `clip/s`.
+  4. One log build, about 20 lines: G2 starts with `(SB_ADSTAR |
+     SB_ADSTAG | SB_ADLEN) & 0x1F` not 0, SH4 accesses to SB_ADSUSP,
+     SH4 wave RAM reads per second.
+- Candidate changes (none built):
+  - G2 DMA masks: 1 line (`SB_ADLEN & 0x01FFFFE0`,
+    `dc/aica/aica_if.cpp:323`) to 20 lines with write functions;
+    `misc/g2dma_check` holds the old rule and counts lines.
+  - PPU fallback rows: 20-30 lines in `plugs/vbaARM/arm_aica.cpp`,
+    a test only. A run at a timer FIQ: 10 lines per path. Carry: 9
+    lines, three engines at once. Race fix parity: 15 lines.
+
+**D. Key events, the one-shot end, the 2 s key-off, the two drivers**
+
+- Key-off + key-on of one slot inside one ARM7 run: a lead for missing
+  effects in Looney Tunes, Spider-Man and Ecco the Dolphin, not for a
+  level. Plan 6.2 names the case. Not built, no HW run.
+  - Flycast keys at each KYONEX write, one ARM7 run per sample
+    (`core/hw/aica/sgc_if.cpp:942-952`, `core/hw/arm7/arm7.cpp:82-88`).
+  - Ours, SPE AICA Sound ON (default path and PPU ARM7 fallback): the
+    write sets `kyonex_pending`
+    (`plugs/caiqueAICA/aica_model.cpp:327-331`). One pass at the next
+    sample reads the last KYONB (`:1003-1006`, `:1370-1373`). A slot
+    not in RELEASE ignores a key-on (`:150`). A run's writes share one
+    sample time (`ps3/spu/spe_arm7.cpp:568-570`, `:676-681`); a run
+    is 1433 ticks, 6.3 samples. nullAICA sound keys at the write.
+  - Console (caique `model/NOTES.md:696-706`): the same latch, but a
+    pair is lost only inside 1-2 samples. Do not port key-at-write.
+  - The AUDIO64 driver (1.90g.1, the same code in the three games'
+    images) writes the pair at every play: KYONB 0 at 0x3C0C, 17
+    register copies, KYONB 1 at 0x3CD8, 379-388 ticks later
+    (`lt_a64.dis`, review scratchpad). About 73% of the plays fall in
+    one run. Console: 1.3-1.6 samples apart (computed, not measured).
+  - The start is lost when the slot is not in RELEASE: a voice still
+    playing, or a one-shot that ended with no KYONEX since (the end
+    path, 0x45B8-0x45C0, clears KYONB with no KYONEX). The group
+    key-on (0x3CE4) writes no key-off: ours and the console ignore it
+    on an ended slot, Flycast starts it. Do not port.
+  - For: no log (`lt.txt`, `spider.txt`: 0 `[key]` lines). Against:
+    Matt, 2026-10-07, Looney Tunes: "The sound cues ALL played
+    correctly". Not in Sonic Adventure 2: run 4 has 0 such pairs in
+    12941 `[key]` lines (1158 dropped at boot), nearest gap 727 samples.
+- One-shot end as a driver reads it: ours is the console rule. Do not
+  port. No sound differs (0 dB).
+  - Flycast: `CA = 0; disable();` (`sgc_if.cpp:1187-1190`) sets
+    RELEASE, 0x3FF (`:595-601`) and `ccd->KYONB = 0` (`:726-727`).
+    0x2810 reads 0xFFFF once, then 0x7FFF.
+  - Ours, SPE AICA Sound ON: only the fetch stops
+    (`aica_model.cpp:472-478`, `:1497-1503`). 0x2810 reads 0xC000
+    once, then 0x4000 (`:1804`; all 55 sampled reads of run 4). KYONB
+    stays. Console: the same (`tests/oneshot/hw/oneshot.txt:76-80`,
+    `NOTES.md:163-165`, `:927-933`). SPE AICA Sound OFF: nullAICA does
+    as Flycast, but reads 0x63FF (`plugs/nullAICA/sgc_if.cpp:1341`).
+  - The ended slot feeds zero (`aica_model.cpp:759`). The Sonic
+    Adventure 2 driver uses the value only to rank released voices
+    (`sa2_drv.asm` 0x974-0x9b0, 0x16dc-0x17f8). Both sides set LP.
+- The 2 s key-off of Sonic Adventure 2 is 119 video frames, set on the
+  game side: not a fault of ours. Lead 3 can close.
+  - Run 4: 316 of 560 effect holds are 1.9-2.1 s (median 87451
+    samples); 290 of them are 119 frames of 735.7 samples. Both ends
+    lock to the frame grid, not to the 44-sample timer.
+  - Not the sequence gate: gate 1920 ends at 498 ticks of 4 ms (88355
+    samples), and 0 holds end there. The stop command was not seen.
+    Flycast's key-off times are not measured.
+  - The pool is 58 voices, not 16: 47 are keyed (`b18_hw.txt:34820`).
+- No link to a fault:
+  - A lost stream key-on leaves CA at 0; AUDIO64's position test
+    (0x4480-0x4490) then fires each threshold. Narrow, in no log.
+  - A run of ours can end between Sonic Adventure 2's LP and CA reads
+    (`ps3/spu/arm7_spu.h:942`), as on the console: one position one
+    ring back for 9 ms in 9-16 minutes. Do not port.
+  - AUDIO64's two CA tests are 2.2 runs apart: a still CA is not seen.
+  - AUDIO64's 4.8 stores per sample are stack pushes of a delay loop
+    (0x4514-0x4568), each a DMA put (`ps3/spu/spe_arm7.cpp:104`):
+    211K puts/s in a Looney Tunes race. Host cost only.
+- Checks, cheapest first:
+  1. No build, by ear: Looney Tunes and Spider-Man, row "ARM7
+     Interleave" SLICE against SAMPLE, live (SPE ARM7 ON, "ARM7 Rate"
+     LEGACY: 227 ticks a run, so every pair splits). Listen for
+     missing or cut effects, not for level.
+  2. No build, log: a boot of each with SPE ARM7 OFF prints `[key]`.
+     Count two lines of one slot at one `t=`, its bit 0 then 1, with
+     no bit-0 line of that slot since its key-on.
+  3. Build, about 10 lines: a model counter of KYONB 1 on a slot not
+     in RELEASE at a key pass. 0 in a faulty scene refutes the lead.
+  4. Flycast PC build: log slot, KYONB and sample count at
+     `sgc_if.cpp:942`. Expect 119 frames in Sonic Adventure 2.
+- Candidate changes (none built):
+  - No code: "ARM7 Interleave" SAMPLE (SPE ARM7 path only; SH4 wait).
+  - `AicaModel::write`: a KYONEX write that finds `kyonex_pending`
+    runs the key pass with the old KYONB before the store
+    (`aica_model.cpp:1731`). 15-20 lines, one source for both twins
+    and the sound SPU, a row, default OFF. Traps: `misc/*_check` line
+    counts, `misc/spu_sim` copies, the first-sample rule (`:1228`).
+  - Or end the ARM7 run at a KYONEX write (a clamp like
+    `a7_race_clamp`, `ps3/spu/arm7_spu.h:227-246`; PPU:
+    `ps3aica_write`): about 15 lines a path, the model stays.
+  - Hold one pending put in `aram_store`: about 30 lines, 2-8 points
+    of ARM7 SPU time, nothing audible.
+
+**E. The DSP, Looney Tunes, Spider-Man**
+
+- Baseline (P20 G1, P81): Flycast's DSP is OFF by default
+  (`core/cfg/option.cpp:48`). It mixes no EFREG return
+  (`core/hw/aica/sgc_if.cpp:1583-1589`); a voice with no direct output
+  plays dry, centred, at TL + IMXL: `if (oLeft + oRight == 0 &&
+  !config::DSPEnabled) oLeft = oRight = oDsp >> 4;` (`:709-710`).
+  - Ours, default path: a send is heard only as `volpan(EFREG[i], ...)`
+    (`plugs/caiqueAICA/aica_model.cpp:1099-1101`), as on the console
+    (caique `NOTES.md:57-61`): do not port the dry rule (P20). Row "SPE
+    AICA DSP" OFF (`no_dsp`, `ps3/spu/spe_aica_model.cpp:267`) and the
+    nullAICA fallback mute a DSP-only voice: no state is Flycast's mix.
+  - Size: 3.01 dB per EFSDL step below 15 (DSP-only voice), at most
+    +6.0 dB (both sends). Not the loud part of Sonic Adventure 2:
+    median peak above 100% 174.7% in run 2 (no DSP), 171.4% in run 1.
+- Looney Tunes runs an empty DSP program on ours; a lead for its
+  balance, not shown. `lt.txt` has `code=113 words live=2/128 slow=0`
+  in 75 of 75 windows: the floor of a program that stores nothing
+  (`ps3/spu/spe_dsp_jit.c:535-541`, `:655-661`). EFREG stays 0, so
+  ours adds no return. A voice with DISDL 0 and IMXL above 0 is silent
+  on ours and dry in Flycast; no log holds DISDL or IMXL, so if the
+  game keys one is not known.
+  - The compile count moves only with the two ARM7 resets (46, 78,
+    109). The driver holds Spider-Man's built-in furutest2 (`lt_a64.bin`
+    0x237C); the disc has SRKDSP.KAT (newfx.FPD). Why ours ends empty
+    is not known: the driver's clear (`lt_a64.dis` 0x3894) or a load
+    that stops (it does if ring word 0xC288 is 0). Console: not known.
+  - On 2026-10-07 row "SPE AICA DSP" ON brought the voice lines in
+    with this same program, so not through EFREG. `no_dsp` also gates
+    the collision fetch (`aica_model.cpp:968`). Cause not known.
+  - The race of `lt.txt` plays CD-DA (`:4705`) and clips, more on the
+    right: 15 windows, up to 179.8% (`:9999`).
+- Spider-Man has no reverb at all with DSP Ring 64K OFF (all 3 boots).
+  The driver sets a 64K-word ring (RBL 3) and runs furutest2 (10 ring
+  writes, 23 reads, out to EFREG[0]; the logged `live=85/128 slow=33`).
+  The writes die in the line cache (`ps3/spu/spe_aica_ram.h:110-123`);
+  the reads return the fill word 0x6000, which unpacks to 0.
+  - So the loud part is the dry mix, as in Sonic Adventure 2: 13 of
+    145 windows clip with the wet part at 0, up to 167.9%.
+  - PC model with the ring working (`sk64r/sim.py`, scratchpad of
+    session 9cdb3bfe): wet part 3.2 dB below the bus 0 send (noise,
+    RMS), first echo after 19.6 ms, tail 2.6 s.
+- The RING records of run 1 are false. With SPE ARM7 ON the SH4's wave
+  RAM writes go out as one min/max line interval per command
+  (`ps3/ps3_arm_spe.h:17-24`). Writes on both sides of the ring report
+  all of it (`ps3/spu/spe_arm7.cpp:425-438`), and `am_ring` drops the
+  DSP's writes (`ps3/spu/spe_aica_model.cpp:353-357`): at most 64
+  samples per tap, with DSP Ring 64K ON only. Runs 1 and 3: 32 and 17
+  windows with 1-17 records/s; run 4 (SPE ARM7 OFF): 0, same sound.
+- Flycast with its DSP ON is not the console (ours follows caique, do
+  not port): memory access on odd steps only (`dsp_x64.cpp:264` in
+  `core/hw/aica`), NOFL never used, IWT from `MEMVAL[step & 3]`
+  (`:115`), ADRS added unsigned (`:365-368`), ACC zeroed each sample
+  (`:76-79`). furutest2 hits none of the first four (my count).
+- Checks, cheapest first:
+  1. PC, no build: Flycast with "Enable DSP" OFF then ON, the same
+     scenes (P81 step 2, never run). Looney Tunes: no change = no
+     DSP-only voice; voices drop out = Flycast's default plays them
+     dry; reverb comes in = ours misses a program load.
+  2. PS3, no build, none run yet: Spider-Man with DSP Ring 64K OFF
+     then ON; Spider-Man and Looney Tunes with row "SPE AICA DSP" OFF.
+  3. PC: a `misc/arm7spe_check` run with two SH4 writes around the
+     ring in one command must give a whole-ring record today.
+  4. Build: P81's probe (about 45 lines), with wave RAM byte 0xB402
+     and words 0xC200, 0xC288 for Looney Tunes.
+- Candidate changes (none built):
+  - RING: `arm_spe_aram_written` queues the old interval when a new
+    line is not inside or next to it. About 10 lines; `ArmCmd` is full
+    at 16 bytes; `misc/arm7spe_check` counts lines. Do it first.
+  - DSP Ring 64K default ON: one line (`ps3/ps3_presets.cpp:161`);
+    sound SPU busy 34.6% against 33.0% (run 1).
+  - A dry-rule test row, only on Matt's word: 15 to 55 lines.
+
+**F. The SH4 wait for the sound SPUs, silent blocks, the ARM7 SPU lag**
+
+- The SH4 wait for the sound SPUs (row "SPE AICA Sync" at + SAMPLE
+  SYNC, the default). Host time only: no guest value, time or order
+  changes. A cost lead for bundle 22, with no link to an audible fault.
+  - Flycast and the console: one clock, no wait. A G2 DMA is one copy
+    (`core/hw/aica/aica_if.cpp:398`); the ARM7 and the mixer run per
+    sample on the SH4 thread (`core/hw/aica/aica.cpp:87-104`).
+  - Ours, both paths: each G2 DMA word (`dc/aica/aica_if.cpp:329-333`)
+    passes `aram_hz_write` (`ps3/ps3_aica_spe.h:36`); a hit syncs with
+    no test (`ps3/spu/spe_arm7.cpp:501-534`; SPE ARM7 OFF:
+    `ps3/ps3_aica_spe.cpp:314-359`). Default path only: every write
+    hits while the map is over 192 samples old (`g_aram_hz_stale ||`,
+    `ps3/ps3_arm_spe.cpp:210`).
+  - Sonic Adventure 2: only the G2 DMA hits (`hits/s sh4 0`, `arm 0`;
+    122 starts/s, likely the music feed: the target is not logged).
+    Medians, default boot `sa2.txt` and run 1: 77 and 75 syncs/s, 1250
+    and 1405 us per sync, SH4 wait 13.9 and 14.5% of wall (7.5-18.4%):
+    about 10 points the sound SPU, 3.5-4.3 the ARM7 SPU request. 53-65%
+    of the syncs carry the stale flag; with `map pages 0` it syncs
+    alone (`b18_hw.txt:13393`). Run 4 (SPE ARM7 OFF, no stale rule): 57
+    syncs/s, 1836 us, 10.8%. `tests/s 0/0/0`: no hazard count exists.
+  - The long part is the DSP. SPE AICA DSP OFF (run 2, same stage): 70
+    syncs/s, 45 us, SH4 wait 3.6%, sound SPU busy 6% against 35%. The
+    64K-word ring is not in LS (P20 G3): each access is a call from
+    the DSP JIT (`ps3/spu/spe_dsp_jit.c:465-508`) into the 128-line
+    cache (`slow=35`, 195-218K misses/s). Flycast: ring in place, DSP
+    OFF by default (`core/cfg/option.cpp:48`). Not explained: Project
+    Justice (`slow=39`) waits 206 us at 148 syncs/s, Sonic Adventure
+    (ring in LS) 726 us. The backlog at a sync is not measured.
+  - Size: at 17-18K vertices SPEED 96.2% (`sa2.txt`) and 96.4% (run 1)
+    against 99.7% with the DSP OFF (run 2); 100% below 16K with the
+    wait. Run 2 has no window above 18K. Bundle 8's HW run 25 (the log
+    of the heavy-scene figures): SH4 wait 12.2-14.1% of wall in its two
+    5 s windows above 18K, SPEED 90.6%. So a part of bundle 22's
+    missing 10 points may be this wait: not measured, and no skeptic
+    checked this reading.
+- The silent output blocks: starvation below SPEED 100%, no rule
+  difference. Flycast also plays zeros on an underrun
+  (`core/audio/audiobackend_sdl2.cpp:37-40`, 1024 frames); ours:
+  `ps3/ps3_audio.cpp:91-95`, 256 frames (5.3 ms), both paths, about
+  187.5 x (1 - SPEED) blocks per second. Seconds with silent blocks:
+  about 40 of 180 in run 1, 40 of 100 in run 3, 88 of 200 in run 4,
+  nearly all below SPEED 98%. Run 2: 0 in the stage (29 s, peaks
+  127-211%), and the fault stayed. Spider-Man in the game: 0, same
+  complaint. So a second crackle in heavy scenes, not the reported one.
+- At + SAMPLE SYNC the sound SPU plays the slot 60 ring exact
+  (`am_sync`): no cause for the early music restart here.
+- The ARM7 SPU's lag (default path, plan 5.15): `LAG_MAX 256` commands
+  (`ps3/ps3_arm_spe.cpp:36`) = 9.1 ms at SH4 200, the Holly line too.
+  Sonic Adventure 2 raises no SH4 interrupt and run 4 kept its faults:
+  out there. Looney Tunes raises 54/s, Spider-Man 2/s: no SPE ARM7 OFF
+  run. No `LAG_MAX` row: 32 cost up to 8% of wall.
+- Checks, cheapest first:
+  1. HW, no build: Sonic Adventure 2 above 18K vertices, the row live
+     at OFF, then ON, 30 s each. Read SPEED, `[aud] silent=`,
+     `sh4 wait`, `hazards/s`, `miss/s`. Judge by the log: OFF can
+     click. ON tests 4 hits per block, a DMA has 7-11: a lower bound.
+  2. HW, no build: the same spot booted with SPE AICA DSP OFF.
+  3. HW, no build, never run: Looney Tunes and Spider-Man with SPE
+     ARM7 OFF; Sonic Adventure 2 with SPE AICA Sound OFF (nullAICA,
+     Flycast's level law: P81 by ear, at SPEED 100% only).
+  4. PC: `misc/spu_sim` with a 64K-word ring: the fetch share.
+  5. Log-only build, 20-30 lines: the exact range test of each G2 DMA,
+     counted, the sync kept. 8 lines: unplayed samples per sync.
+- Candidate changes (none built):
+  - Plan 6.6 step (a) for a G2 DMA: one request with dst and len from
+    `Write_SB_ADST`, a range form of `hz_hit`, a sync only on a hazard.
+    40-100 lines, both twins, `misc/hz_check`, `misc/arm7spe_check`.
+    Saves the sound SPU's part at most; 3-4% of wall stays. Traps: mask
+    dst to 2 MB, skip SB_ADDIR 1, no `^ 3` on the tested addresses, a
+    cleared DMA must not set `s_hz_synced_at`.
+  - Step (a) in full, a span table on the SH4 thread: also removes the
+    ARM7 SPU request and the stale asks. 80-150 lines, 6 files.
+  - A stale hit syncs only if the new map marks its page: 40 lines.
+  - Ring access: `dspjit_rd` / `dspjit_wr` call `aram_get` direct (15
+    lines), then an inline hit path in `emit_mem` (60-80 lines). Gain
+    not measured. A 2-way cache: 2-5 busy points at most, not first.
+  - Declick in `feeder_thread`: ramps at a silent block, 20 lines.
+
+**G. What is equal, and the small differences**
+
+- Found equal in effect (the readers' "same" lists, 268 lines of 18
+  parts): no need to compare again. Ours = the default path. A name
+  with no path is Flycast's `core/hw/aica` or `core/hw/arm7`, or our
+  `plugs/caiqueAICA`. Flycast origin/dev: save-state changes only.
+  - Voice: sample x16 (`sgc_if.cpp:652`; `aica_model.cpp:1521`), PCM8,
+    PCM16, ADPCM table and key-on state, key-on only from RELEASE at
+    0x280, loop wrap with LP for LSA < LEA, LPSLNK, KYONEX widths.
+  - Envelopes, filter: AEG and FEG laws, times within 1-9% for rates
+    2-60; filter poles, cutoff law, Q 0-28, 20-bit clamp; LPOFF, VOFF.
+  - Mix, output: 32-bit sum, one 16-bit clamp after MVOL, no limiter
+    (`sgc_if.cpp:1630-1631`; `aica_model.cpp:1114-1115`): with equal
+    registers Flycast clips the same (code, no run). Pan, CD-DA, gain 1.
+  - Registers: timers (`aica.h:360-399`; `ps3/spu/aica_ctl.h:138-157`),
+    SCIPD / MCIPD, FIQ level and latch, 0x2810 with the LP clear by
+    read size, 0x2814 with CA Clamp, access widths, ARMRST.
+  - DSP: float format bit-equal, MPRO decode, multiply and add, Y
+    select, INPUTS, EFREG, ring address (`dsp_interp.cpp:75-181`;
+    `aica_model.cpp:799-893`). No DSP path to keys, CA or G2 DMA.
+  - ARM7 core (`ps3/spu/arm7_spu.h`; Flycast `arm-new.h`): data ops,
+    flags, shifts, MUL, LDR / STR, LDM / STM, MRS / MSR, FIQ entry,
+    reset, memory map, unaligned LDR and STR, base cost 6.
+  - Scheduling: 4535 SH4 cycles per sample; a write acts from the next
+    sample; write order (`bad=0` in all four runs); the 50-tick rule.
+  - SH4 side, G2 DMA: area 0 routing, widths, RTC; with AICA Race Fix
+    ON the start guard, SB_ADST read rule and end registers
+    (`dc/aica/aica_if.cpp:214-229, 277-396`). No G2 DMA lost in 9 logs.
+  - Disc path (`dc/gdrom/gdromv3.cpp`): CD_READ, DMA pace, drive status.
+  - PPU fallback (row "SPE AICA Sound" OFF): level tables, ADPCM loop
+    state, decay, release and loop rules are Flycast's; volume x0.9.
+  - Byte order: no fault found; registers on mixed run 4 values.
+  - Sonic Adventure 2: the SH4 writes no AICA register; no slot is
+    keyed off and on at one sample (0 of 12787, run 4); slot 60 has one
+    key-on in 109.5 s at one pitch; the stream file runs at 1.00 +-0.01
+    of its rate in three boots, with no restart but at a START press.
+- Four "same" lines hold in part only (code read 2026-10-13):
+  - A one-shot is silent at once only with LPOFF 1: with the filter on
+    ours plays the filter tail (`aica_model.cpp:1518-1532`, console);
+    Flycast outputs 0 (`sgc_if.cpp:647-650`). Do not port.
+  - The effective rate differs at rate 0 (ours no step,
+    `aica_model.cpp:186`; Flycast `sgc_if.cpp:807-815`) and for KRS +
+    OCT below 0 or above 15. Ours is the console: do not port.
+  - The G2 DMA end counts whole 1792-cycle slices from the next slice
+    end (`dc/aica/aica_if.cpp:231-242`): up to one slice before len x 4.
+  - LSA > LEA is equal for a one-shot only: a looping slot stops in
+    Flycast (`sgc_if.cpp:1173-1182`) and jumps on ours
+    (`aica_model.cpp:462-468`, console). Run 4 has no such slot.
+- Log fact (counts checked): clip counts left / right are Looney Tunes
+  107 / 411 (15 of 75 windows), Spider-Man 42 / 389 (13 of 145), Sonic
+  Adventure 2 9627 / 9633 (31 of 39). Why mostly the right: not known.
+- Log fact: Sonic Adventure 2 keys slots 58 and 59 for 0.3-1.4 s at
+  times, slot 59 for 9 s at a stage start. The reader: stream voices
+  fed by the SH4 (8-sector disc reads), not driver effects.
+- Small differences, no fault link shown ("minor" lists: NO skeptic;
+  nothing built, no HW run). "(console)": ours is caique's, do not port.
+  - Driver tick: timer A (reload 44 samples) gives 996.4 FIQs/s in run
+    4; Flycast 1002.3, computed (`arm7_rec.cpp:735-746`). Plan 6.2.
+  - Monitor round of the Sonic Adventure 2 driver: about 9 ms, Flycast
+    about 4 (computed). LP and CA reads fall 6 samples apart at times
+    (`ps3/spu/spe_arm7.cpp:664-681`). Plan 6.3.
+  - Slot end (console): stop at 0x3C0 not 0x3FF, a decay 2 end keeps
+    its state, KYONB is never cleared (`aica_model.cpp:144, 612-620`;
+    `sgc_if.cpp:726-727, 1292-1305`).
+  - Pitch below octave 0 (console): 14 fraction bits, Flycast 10
+    (`aica_model.cpp:200-203`; `sgc_if.cpp:831-835`): the Sonic
+    Adventure 2 stream plays at 15988.4 Hz against 15977.6.
+  - Envelope (console): attack at rate 62 in 18 samples, Flycast 1;
+    decays 6-9% longer (`aica_model.cpp:499-508`; `sgc_if.cpp:63-76`).
+  - Sound only (console): filter state kept at key-on
+    (`aica_model.h:63`; `sgc_if.cpp:736-739`); ADPCM delta 0-2 less
+    per step (`aica_model.cpp:349`; `sgc_if.cpp:1048`).
+  - MCIPD bit 10 is never set (`ps3/spu/aica_ctl.h:322`); Flycast and
+    the console set it (plan 6.0). Sonic Adventure 2: MCIEB 020, unused.
+  - ARM7 extra ticks: Flycast's recompiler bills a failed conditional
+    LDR, STR or B in full (`arm7_rec.cpp:595-596`), ours 6
+    (`ps3/spu/arm7_spu.h:821-826`); SWP +4 and MRS +1 only on ours.
+  - SB_ADLEN is cut to a multiple of 4 bytes, Flycast to 32
+    (`dc/aica/aica_if.cpp:326`; `core/hw/holly/sb.cpp:447`); a write to
+    SB_ADSUSP can clear bit 4 (`dc/mem/sb.cpp:1079-1083`).
+  - Log trap: the `[pcm16]` budget of 60 lines never resets in SPE
+    sound mode; run 4's 60 lines are all from boot.
+
+**H. Older text of this plan that the review corrects**
+
+- The notes for the bundle 18 block are in that block (section 0). The
+  statements below stand elsewhere in this file. They are not edited
+  in place: search for a few of the quoted words.
+- Looney Tunes "through the DSP only". Section 0, HW 2026-10-07: "(they
+  go through the DSP only: G1 confirmed)". The 5.13 row of the section
+  5 table: "Looney Tunes' voices go through the DSP only". 6.0: "A3
+  (the voices go through the DSP only)". Section 0: "the voices reach
+  the output only through the DSP". The program of those boots is the
+  empty one (EFREG always 0), so the heard voices have a direct
+  output. What row "SPE AICA DSP" ON changed for the voice lines on
+  2026-10-07 is not known: `no_dsp` also gates the collision fetch and
+  the slot path (`plugs/caiqueAICA/aica_model.cpp:968`, `:1295`). Only
+  the race music is CD-DA. (Part E)
+- Section 0, "recompiled at each load (46 -> 109 compiles)", and
+  section 7, "Looney Tunes changes its DSP program at each load": in
+  `lt.txt` the compile count moves only with the two ARM7 resets (46,
+  78, 109), and the program is the same empty one. (Part E)
+- Section 0, "step (a), the test on the SH4 thread (it only removes
+  the SH4 wait of 1-5% of wall": true for Crazy Taxi. In Sonic
+  Adventure 2 the wait is 13.9-14.5% of wall with the DSP ON, and
+  SPEED at 17-18K vertices is 96.2-96.4% against 99.7% with SPE AICA
+  DSP OFF. (Part F)
+- Section 0, "That SPU makes the exact test of 6.6": at level ON only.
+  At + BLOCK SYNC and + SAMPLE SYNC (the default) a hit syncs with no
+  test (`ps3/spu/spe_arm7.cpp:501`, `ps3/ps3_aica_spe.cpp:328`), and a
+  stale map alone makes a hit. (Part F)
+- 6.6, "Cost: bounded by the cap: <=3.9% of wall (A2), <=15% (A3 DSP
+  JIT ON)", and section 7, "6.6's sync waits have a cap": the cap
+  holds for the sound SPU's part only. With SPE ARM7 ON the SH4 wait
+  also holds the ARM7 SPU request: 18.4% of wall with the DSP JIT ON
+  (`sa2.txt:5610`), 4.5% with SPE AICA DSP OFF (`b18_hw.txt:14446`).
+  (Part F)
+- Section 5, "the Holly line reaches the SH4 a few MediumUpdates
+  late": the bound is 256 commands, 9.1 ms at SH4 200. The window
+  maximum reached it in 32 of 39 Sonic Adventure 2 windows. (Part F)
+- Section 2, "`LSA > LEA`: the channel does not stop at LEA. It runs
+  on to LSA, then CA = 0 and it stops, also when looping" and "The
+  interpolation sample after CA wraps to LSA at the loop end": both
+  are Flycast's rules, not the console's (caique `tests/sgc_loop`,
+  `model/NOTES.md:160-163`, `:550-551`). Only nullAICA has them; the
+  default path follows the console. (Part B)
+- Section 0, "LFORE Keep ... Only the register read-back changes": not
+  only. With the row OFF a later byte write to 0x1C ends the SPU
+  model's held LFO reset, because the stored LFORE bit is already
+  cleared (`ps3/spu/aica_ctl.h:201-202`, `ps3/spu/spe_arm7.cpp:564`).
+  (Part A)
+- 6.6, "0.92 dB (even MVOL) to 1.43 dB (odd) louder than nullAICA", and
+  section 0, "0.9-1.4 dB louder than nullAICA" and "90% is nullAICA's
+  level at an even MVOL step": true for a voice at TL 0, DISDL 15 and
+  centre pan only. Over TL, DISDL and DIPAN the default path is 0.85
+  to 2.36 dB above nullAICA at MVOL 15 (P81). (Part A)
+- Section 2, "Flycast 512 (22.58 MHz, real)": 512 is the real clock
+  count per sample. The console's ARM7 gets one memory cycle per 8
+  clocks (caique `model/NOTES.md:679-680`), so 512 ticks at 6 per
+  instruction run above the console's instruction rate (an estimate:
+  about 2 times). (Part C)
+- Section 0, the heavy-scene facts, "JIT code about 77%" (Sonic
+  Adventure 2 at 18K+, run 25): that share holds the SH4's wait at the
+  SPE AICA Sync syncs, 12.2-14.1% of wall in run 25's two windows
+  above 18K. So a part of the missing 10 SPEED points may be this wait
+  and not JIT code. This is one writer's reading of the log and the
+  code: no skeptic checked it, and it is not measured. (Part F)
 
 ---
 
@@ -11859,7 +13085,7 @@ built by the change.
 | 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[x]` **HW SUCCESS 2026-10-13 (Matt: "I'd say that as of now It's a success."; section 0)**: Broadcast DISC gives Rayman 2 and Capcom vs. SNK 2 60 Hz at SPEED 100% (Rayman 2: 29.98 renders per second, 24.99 before), BIOS Language ITALIAN gives Italian BIOS menus (Matt: "It works"), RTC Local Time gives UTC + 2 h, Console ID keeps the flash's ID and sets version FE; **defaults in source since 2026-10-13 (Matt: "Place the one I used for the Rayman 2 run as defaults."): Broadcast DISC, BIOS Language ENGLISH, Flash Defaults FLYCAST, Console ID FLYCAST, Exit Flash Save OFF, RTC Local Time ON, not packaged (the package of 10:05 has the old path in each)**; open for the last checks before the release (Matt): Border Down, Exit Flash Save, Flash Defaults with no flash file; built 2026-10-13 (Matt: "We will work on Bundle 15 now."): a new FLASH / CLOCK page with Broadcast (CONSOLE / NTSC / PAL / DISC), BIOS Language (CONSOLE and the six languages), Flash Defaults (OLD / FLYCAST), Console ID (OLD / FLYCAST), Exit Flash Save (OFF / ON, live) and RTC Local Time (OFF / ON), every default is the old path; no row's value reaches `dc_flash_wb.bin` but the console ID; a `[flash]` line at each boot shows the bytes; the old logs: 10 of 23 games stay at 50 Hz in every boot, and the PS3 clock is UTC with no time zone, so P12's line never runs there and the row RTC Local Time (the XMB's zone and summer time) is an addition; PC checks PASS (`misc/flash_check`, 94 of 94 mutants); package of 09:56 on 2026-10-13 (= the G14 package + this bundle); not built: Flycast's block reuse in `alloc_block` (G11 needs it on a flash as full as Matt's) |
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, mark it as a success.")**; built 2026-10-13 (Matt: "We will now work at bundle 16."; section 0): a new MAPLE / VMU page with eight rows, every default the old path at the build: Maple Reply Delay, Maple Bus Speed, Maple Commands, Maple VBlank DMA, Maple Guards, Maple Frame Rules, VMU Per Game (OFF / SLOT A1 / ALL SLOTS), VMU Screen; **defaults in source since 2026-10-13 (Matt: "Keep them up as default then. Except Maple Bus Speed."): the rows ON but Maple Bus Speed (OLD) and VMU Per Game (OFF, no run), not packaged**; **HW runs 1-3 2026-10-13: VMU Screen works (Matt: "The VMU pictures are very cute! It works."); Maple Bus Speed REAL eats inputs in Sonic Adventure at Players 4 and stays OLD (Matt: "Maple Bus Speed fixes it."); the other five Maple rows ran ON with no fault**; the USB Keyboard and USB Mouse rows were built and removed the same day (Matt: "frankly I'd just remove this feature altogether. Very few games use it anyway."); VMU Per Game not run; PC checks PASS (`misc/maple_check`, 99 of 99 mutants); package of 12:39 on 2026-10-13; not built: the VMU beep (bundle 18) |
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
-| 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[ ]` |
+| 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance still open |
 | 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[ ]` |
 | 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[ ]` nothing built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
 | 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF |
@@ -13056,8 +14282,35 @@ Main gains:
   compare. HW: Jet Grind Radio; Crazy Taxi and Sonic Adventure unchanged;
   Shenmue only if Matt has it.
 
-### Bundle 18: Sound wrap-up  `[ ]` new at the re-cut of 2026-10-12 (the tails of bundles 5 and 6)
+### Bundle 18: Sound wrap-up  `[~]` RESUMED 2026-10-14 (Matt): the row ADPCM Loop, the log row Key Census and the `[mem64]` count are built; HW run 1 2026-10-14: `[mem64]` 0, the levels and the music are right, ADPCM Loop RESTORE HW SUCCESS (Matt: it fixes the sounds that stop too early), default RESTORE in source since 2026-10-14 (section 0); the sound stop of both runs was the timebase read, fixed, HW SUCCESS; the Looney Tunes Space Race balance is not fixed (Matt), still open; parked 2026-10-13 after four HW runs on Sonic Adventure 2 with no fix; the rows ARM7 Rate and ARM7 Interleave built, default the old path; new at the re-cut of 2026-10-12 (the tails of bundles 5 and 6); Flycast sound review 2026-10-13 in 6.9
 
+- RESUMED 2026-10-14 (Matt: "Let's resume bundle 18 with the latest
+  review and findings."). He chose "Measure + ADPCM row". Built, no HW
+  run, every row at its old path: the row "ADPCM Loop" RESET / RESTORE
+  (6.9 B), the log row "Key Census" (`[kon]` lines: lead 2 on our
+  side), the `[mem64]` count of 6.7 on the row "JIT C-Calls". The
+  block "Bundle 18 resumed 2026-10-14" in section 0 has the code, the
+  PC checks, the package and the HW test steps. Still candidates, not
+  built: the key pass at a second KYONEX write, the RING interval fix,
+  the G2 DMA register masks, the same census lines from a Flycast
+  build.
+- PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a
+  more intense session on this."). The report of the session is the
+  block "Bundle 18 (Sound wrap-up) PARKED" in section 0: the complaint
+  (Sonic Adventure 2, Spider-Man), the four HW runs, what they rule out,
+  the two new rows, the leads. None of the items below is started. DSP
+  Ring 64K ran in Sonic Adventure 2 with no fault; Rez, Ecco the Dolphin,
+  Spider-Man and Project Justice also have a 64K-word ring.
+- Flycast sound review 2026-10-13 (section 0; the text is 6.9): no
+  cause found for the loud effects; nothing built. It adds candidate
+  items to this bundle, none started: the row "ADPCM Loop" (RESET /
+  RESTORE, about 30 lines; 6.9 B), the key pass at a second KYONEX
+  write for the AUDIO64 games (15-20 lines, a row; 6.9 D), the RING
+  interval fix (about 10 lines, before DSP Ring 64K can be a default;
+  6.9 E), the G2 DMA register masks (1-20 lines; 6.9 C). The checks
+  with no build come first (section 0). P81's bound below is +1.96 dB
+  for one voice with four odd level steps, not 1.5 dB (6.9 A). The
+  SH4 wait at the sync is a cost item for bundle 22 (6.9 F).
 - Items: a verdict for the four rows of bundle 5 that are OFF (Mono Mix
   Fix, DSP Ring 64K, DSP Reg Reads, LFORE Keep); P81 (the output level
   budget: two tests with no code, then a probe on the `[aica-spe] sound`
@@ -13256,6 +14509,14 @@ Main gains:
   at X3 with JIT IDLE HASH), Sonic Adventure 2 above 18K vertices (89-91%
   at X3), Phantasy Star Online, Sonic Adventure and Jet Grind Radio (30
   frames at X3, SPEED 100%).
+- Added 2026-10-13 by the Flycast sound review (6.9 F), not built, not
+  started: in Sonic Adventure 2 the SH4 thread waits 13.9-14.5% of
+  wall for the sound SPUs (row "SPE AICA Sync" at + SAMPLE SYNC, 75-77
+  syncs/s from G2 DMA writes, likely the music feed; 3.6% with SPE
+  AICA DSP OFF). SPEED at 17-18K vertices: 96.2-96.4% against 99.7%
+  with the DSP OFF. The candidate is 6.6 step (a), a range test per G2
+  DMA (40-150 lines). The share of the missing 10 SPEED points above
+  18K is not measured.
 - Rule: do not start it unasked. Matt: "We'll get back to it at the end."
 
 ### Not bundled

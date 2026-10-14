@@ -14,7 +14,23 @@ uint8_t* base_ram(void*); uint64_t base_samples(void*);
 void* cur_create(int); void cur_write(void*, uint32_t, uint32_t); uint32_t cur_read(void*, uint32_t);
 void cur_advance(void*, uint32_t, int, const int32_t*, int16_t*); uint32_t cur_snap_hash(void*);
 uint8_t* cur_ram(void*); uint64_t cur_samples(void*); uint64_t cur_quiet(void*);
+void cur_step(void*, int32_t, int32_t, int16_t*); void cur_stepc(void*); void cur_set_adpcm(void*, int);
 }
+// The reference's entry points: the base model, or the tree's (env ADPCM)
+static void* (*B_create)(int) = base_create;
+static void (*B_write)(void*, uint32_t, uint32_t) = base_write;
+static uint32_t (*B_read)(void*, uint32_t) = base_read;
+static void (*B_step)(void*, int32_t, int32_t, int16_t*) = base_step;
+static void (*B_stepc)(void*) = base_stepc;
+static uint32_t (*B_snap_hash)(void*) = base_snap_hash;
+static uint8_t* (*B_ram)(void*) = base_ram;
+#define base_create B_create
+#define base_write B_write
+#define base_read B_read
+#define base_step B_step
+#define base_stepc B_stepc
+#define base_snap_hash B_snap_hash
+#define base_ram B_ram
 
 static std::mt19937_64 rng;
 static uint32_t rnd(uint32_t n) { return (uint32_t)(rng() % n); }
@@ -64,6 +80,12 @@ static void fail(int ep, uint64_t s, const char* what, uint32_t b, uint32_t n) {
 int main(int argc, char** argv) {
     const int episodes = argc > 1 ? atoi(argv[1]) : 200;
     const uint64_t seed0 = argc > 2 ? strtoull(argv[2], 0, 0) : 1;
+    // Env ADPCM (plan 6.9 B): the reference is the tree's own run(); 1 = ADPCM Loop RESTORE, 2 = the row changes live
+    const int adpcm = getenv("ADPCM") ? atoi(getenv("ADPCM")) : 0;
+    if (adpcm) {
+        B_create = cur_create; B_write = cur_write; B_read = cur_read; B_step = cur_step;
+        B_stepc = cur_stepc; B_snap_hash = cur_snap_hash; B_ram = cur_ram;
+    }
     uint64_t total = 0;
     double quiet_sum = 0, quiet_n = 0;
     for (int ep = 0; ep < episodes; ep++) {
@@ -71,6 +93,7 @@ int main(int argc, char** argv) {
         const bool render = ep & 1;
         B = base_create(render);
         N = cur_create(render);
+        if (adpcm) { cur_set_adpcm(B, adpcm == 1); cur_set_adpcm(N, adpcm == 1); }
         if (render) {
             uint8_t *rb = base_ram(B), *rn = cur_ram(N);
             for (uint32_t i = 0; i < (2u << 20); i += 8) { const uint64_t v = rng(); memcpy(rb + i, &v, 8); memcpy(rn + i, &v, 8); }
@@ -92,6 +115,7 @@ int main(int argc, char** argv) {
         std::vector<int16_t> ob, on;
         for (uint64_t s = 0; s < len;) {
             // events between chunks, as the PPU applies writes and reads between catch-ups
+            if (adpcm == 2 && pct(3)) { const int v = (int)rnd(2); cur_set_adpcm(B, v); cur_set_adpcm(N, v); }
             if (pct(p_key * 4)) {
                 const int n = 1 + rnd(4);
                 for (int i = 0; i < n; i++) key(act[rnd(nact)], rnd(2));

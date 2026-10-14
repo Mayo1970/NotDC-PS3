@@ -328,12 +328,13 @@ uint32_t am_check(uint32_t sample, void* snap)
 }
 
 // Plan 6.6: a batch of records starts after a wait, so wave RAM may have changed under the cache. The bell's words:
-// "SPE AICA Gain" for the samples from here on; a new peak_seq starts a new peak window.
-void am_batch(uint32_t gain, uint32_t peak_seq)
+// "SPE AICA Gain" and "ADPCM Loop" for the samples from here on; a new peak_seq starts a new peak window.
+void am_batch(uint32_t gain, uint32_t peak_seq, uint32_t adpcm_loop)
 {
 	static uint32_t seq;
 	aram_invalidate();
 	M->out_gain = gain;
+	M->adpcm_restore = adpcm_loop != 0;
 	if (peak_seq != seq)
 	{
 		seq = peak_seq;

@@ -22,6 +22,9 @@ enum { ARM_HZ_NONE, ARM_HZ_SYNCED, ARM_HZ_MISS, ARM_HZ_DEAD };
 #define ARM_MU_BATCH(f) ((f) & 31u)
 #define ARM_MU_STAGE(f) (((f) >> 5) & 3u)
 #define ARM_MU_SAFE(f)  (((f) >> 7) & 1u)
+// MU c (plan 6.3, 6.2): "ARM7 Rate" ticks per sample in bits 0-15 (0 = SH4 cycles / 20), "ARM7 Interleave" SAMPLE in 16
+#define ARM_MU_RATE(c)   ((c) & 0xFFFFu)
+#define ARM_MU_SAMPLE(c) (((c) >> 16) & 1u)
 
 // 16 bytes. dlo..dhi: the ARAM lines (128 bytes) the SH4 wrote before this command; dhi < dlo = none.
 typedef struct
@@ -30,7 +33,7 @@ typedef struct
 	uint16_t a;    // MU: AICA samples; WR / RD: register offset
 	uint32_t b;    // MU: SH4 cycles; WR: data; RD: sequence; CDDA: AicaShared cdda slot or AICA_CDDA_SILENT
 	uint16_t dlo, dhi;
-	uint32_t c;    // WR / RD: size
+	uint32_t c;    // MU: ARM_MU_RATE, ARM_MU_SAMPLE; WR / RD: size
 } ArmCmd;
 
 // The PPU writes it; the SPU holds a reservation on it, so a PPU store wakes the SPU.

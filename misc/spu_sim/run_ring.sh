@@ -20,5 +20,10 @@ for s in "dsp 0.3 28 1" "dsprand 0.3 28 2" "dsprand 0.3 64 5"; do MVOL=1 DSPJIT=
 GAIN=230 one ./out/run_a2 $E mix 0.3 28 1
 GAIN=256 GAIN2=179 one ./out/run_a2 $E pcm16 0.3 28 3
 GAIN=205 GAIN2=128 DSPJIT=1 one ./out/run_a2 $E dsp 0.3 28 1
+# plan 6.9 B ADPCM Loop: RESTORE, the row changed at half the run (live, both ways), and with the DSP
+ADPCM=1 one ./out/run_a2 $E adpcm 0.5 28 2
+ADPCM=0 ADPCM2=1 one ./out/run_a2 $E adpcm 0.5 28 3
+ADPCM=1 ADPCM2=0 one ./out/run_a2 $E mix 0.5 28 4
+ADPCM=1 DSPJIT=1 one ./out/run_a2 $E dsp 0.3 28 1
 [ $rc -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $rc

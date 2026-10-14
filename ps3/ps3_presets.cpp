@@ -19,6 +19,8 @@ int g_speed_limiter_preset = 1;
 int g_render_delay_preset  = 0;
 int g_arm7_speed_preset    = 0;   // clock divider stage, ~10 MHz >> stage
 int g_arm7_batch_preset    = 4;
+int g_arm7_rate_preset     = 0;   // ARM7 ticks per AICA sample: 0 LEGACY (SH4 cycles / 20), 1 = 256, 2 = 384, 3 = 512 (6.3)
+int g_arm7_interleave_preset = 0; // 0 SLICE: one ARM7 run per Arm7Batch calls, 1 SAMPLE: a run before each sample (6.2)
 int g_arm7_idle_skip_preset = 0;  // 0 OLD: +100 ticks on any store-free self-loop, 1 SAFE: true wait loops only (6.1)
 int g_aica_kyonb_preset    = 0;   // 0 nullAICA clears KYONB on release, 1 never cleared, as on hardware (6.1)
 int g_aica_race_fix_preset = 1;   // 1 = Flycast's SH4/ARM7 race fixes: G2 DMA guards, +50 ARM7 ticks per SH4 interrupt (6.5, HW)
@@ -161,6 +163,8 @@ int g_dsp_reg_read_preset  = 0;   // 1 = a read of TEMP, MEMS, MIXS or EFREG ret
 int g_aica_mono_fix_preset = 0;   // 1 = MONO output is (L + R) / 2, as Flycast 136ce267d (P31)
 int g_aica_lfore_preset    = 0;   // 1 = LFORE stays set after a write, as Flycast 27fd0d426 and caique (P31)
 int g_spe_aica_gain_preset = 100; // SPE AICA Sound output level in percent before the 16-bit clamp; 100 = none (6.6 clipping)
+int g_adpcm_loop_preset    = 1;   // 0 RESET: an ADPCM loop lap clears the decoder, 1 RESTORE: it takes the state of LSA (6.9 B)
+int g_key_census_preset    = 0;   // 1 = [kon] lines: each voice start with its registers, refused key-ons (bundle 18, log only)
 // OPTIMIZATION_PLAN section 7, bundle 6: a row is off until it is cleared on hardware.
 int g_g2_dma_small_preset  = 0;   // 1 = an AICA G2 DMA of 512 SH4 cycles or less ends in its start call (P24)
 int g_g2_dma_read_preset   = 0;   // 1 = an AICA G2 DMA with SB_ADDIR 1 copies wave RAM to system RAM (P9)
@@ -248,6 +252,8 @@ static const CfgItem s_items[] = {
 	{ "RenderDelay",   &g_render_delay_preset },
 	{ "Arm7Speed",     &g_arm7_speed_preset },
 	{ "Arm7Batch",     &g_arm7_batch_preset },
+	{ "Arm7Rate",      &g_arm7_rate_preset },
+	{ "Arm7Interleave", &g_arm7_interleave_preset },
 	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
 	{ "AicaRaceFix",   &g_aica_race_fix_preset },
@@ -376,6 +382,8 @@ static const CfgItem s_items[] = {
 	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
 	{ "AicaLfore",     &g_aica_lfore_preset },
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
+	{ "AdpcmLoop",     &g_adpcm_loop_preset },
+	{ "KeyCensus",     &g_key_census_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
 	{ "TmuClock",      &g_tmu_clock_preset },
@@ -466,6 +474,8 @@ static const CfgItem s_snd_items[] = {
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "Arm7Speed",     &g_arm7_speed_preset },
 	{ "Arm7Batch",     &g_arm7_batch_preset },
+	{ "Arm7Rate",      &g_arm7_rate_preset },
+	{ "Arm7Interleave", &g_arm7_interleave_preset },
 	{ "Arm7IdleSkip",  &g_arm7_idle_skip_preset },
 	{ "AicaKyonb",     &g_aica_kyonb_preset },
 	{ "AicaRaceFix",   &g_aica_race_fix_preset },
@@ -489,6 +499,8 @@ static const CfgItem s_snd_items[] = {
 	{ "AicaMonoFix",   &g_aica_mono_fix_preset },
 	{ "AicaLfore",     &g_aica_lfore_preset },
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
+	{ "AdpcmLoop",     &g_adpcm_loop_preset },
+	{ "KeyCensus",     &g_key_census_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
 };
@@ -788,6 +800,8 @@ int get_speed_limiter_preset() { return g_speed_limiter_preset; }
 int get_render_delay_preset()  { return g_render_delay_preset; }
 int get_arm7_speed_preset()    { return g_arm7_speed_preset; }
 int get_arm7_batch_preset()    { return g_arm7_batch_preset; }
+int get_arm7_rate_preset()     { return g_arm7_rate_preset; }
+int get_arm7_interleave_preset() { return g_arm7_interleave_preset; }
 int get_arm7_idle_skip_preset() { return g_arm7_idle_skip_preset; }
 int get_arm7_jit_preset()      { return g_arm7_jit_preset; }
 int get_audio_buffers_preset() { return g_audio_buffers_preset; }
@@ -878,6 +892,9 @@ int get_aica_mono_fix_preset() { return g_aica_mono_fix_preset; }
 int get_aica_lfore_preset()    { return g_aica_lfore_preset; }
 // OPTIMIZATION_PLAN 6.6, the clipping step: read at each CHECK.
 int get_spe_aica_gain_preset() { return g_spe_aica_gain_preset; }
+// Bundle 18, both read at each CHECK: ADPCM Loop goes to the sound SPU's bell, Key Census turns the [kon] lines on.
+int get_adpcm_loop_preset()    { return g_adpcm_loop_preset; }
+int get_key_census_preset()    { return g_key_census_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 6: read at each G2 DMA start by dc/aica/aica_if.cpp.
 int get_g2_dma_small_preset()  { return g_g2_dma_small_preset; }
 int get_g2_dma_read_preset()   { return g_g2_dma_read_preset; }

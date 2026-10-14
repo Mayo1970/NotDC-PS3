@@ -43,7 +43,8 @@ typedef struct
 	volatile uint32_t quit;
 	volatile uint32_t gain;      // plan 6.6 "SPE AICA Gain", live: output level in 1/256, 0 = none
 	volatile uint32_t peak_seq;  // a new value starts a new AicaEcho::peak window
-	uint32_t pad[28];
+	volatile uint32_t adpcm_loop; // plan 6.9 B "ADPCM Loop", live: 1 = a PCMS 2 loop lap takes the decoder state of LSA
+	uint32_t pad[27];
 } __attribute__((aligned(128))) AicaBell;
 
 // 5.13 A1b DSP recompiler. Modes: 0 interpreter, 1 recompiler, 2 recompiler + interpreter check.

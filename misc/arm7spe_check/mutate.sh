@@ -58,5 +58,28 @@ try9 "census never put" 's/^\t\tcensus_put();/\t\t;/'
 try9 "census put without the lists" 's/^\tcen.p49 = cpu.p49;/\tcen.p49.scan = cpu.p49.scan;/'
 try9 "census key without the store count" 's/ + s_unal + (cpu.p49.scan >> 10);/ + (cpu.p49.scan >> 10);/'
 try9 "census key without the scan count" 's/ + s_unal + (cpu.p49.scan >> 10);/ + s_unal;/'
+# Bundle 18 (ARM7 Rate, ARM7 Interleave): one rate, SAMPLE at 512, then both rows live
+try18() {
+	total=$((total + 1))
+	sed "$2" ../../ps3/spu/spe_arm7.cpp > $M
+	if cmp -s $M ../../ps3/spu/spe_arm7.cpp; then echo "MUTATION DID NOT APPLY: $1"; return; fi
+	SRC=misc/arm7spe_check/$M sh build_spu.sh > out/mut_build.log 2>&1 || { echo "BUILD FAILED: $1"; return; }
+	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/arm7spe_check && MU_CFG=384 ./out/harness out/spe_arm7_sim.elf out/syms.txt 7 1500 > out/mut_run.log 2>&1 && MU_CFG=66048 ./out/harness out/spe_arm7_sim.elf out/syms.txt 5 1500 >> out/mut_run.log 2>&1 && MU_CFG=mix ./out/harness out/spe_arm7_sim.elf out/syms.txt 58 2500 >> out/mut_run.log 2>&1'; then
+		echo "NOT CAUGHT: $1"
+	else
+		echo "caught: $1"
+		caught=$((caught + 1))
+	fi
+}
+try18 "ARM7 Rate ignored" 's/return (rate ? rate \* samples : cycles \/ 20) >> stage_n;/return (cycles \/ 20) >> stage_n;/'
+try18 "ARM7 Rate without the speed stage" 's/return (rate ? rate \* samples : cycles \/ 20) >> stage_n;/return rate ? rate * samples : (cycles \/ 20) >> stage_n;/'
+try18 "SAMPLE ignored" 's/if (ARM_MU_SAMPLE(c->c))/if (0)/'
+try18 "SAMPLE: the overshoot is dropped" 's/s_owed -= a7_run(&cpu, (uint32_t)share);/a7_run(\&cpu, (uint32_t)share), s_owed -= share;/'
+try18 "SAMPLE: all the ticks before the first sample" 's/const int32_t share = s_owed \/ (int32_t)n;/const int32_t share = s_owed;/'
+try18 "SAMPLE: ticks kept while the ARM7 is off" 's/^\t\t\t\ts_owed = 0;/\t\t\t\t;/'
+try18 "SAMPLE: the debt lives on in SLICE" 's/^\ts_owed = 0;/\t;/'
+try18 "SAMPLE: Idle Skip SAFE ignored" 's/^\t\t\t\tcpu.idle_pref = (uint8_t)ARM_MU_SAFE(c->flags);/\t\t\t\tcpu.idle_pref = 0;/'
+try18 "SLICE: the batch's samples not banked" 's/^\t\ts_batch_smp += c->a;/\t\t;/'
+try18 "SLICE: banked samples kept after the run" 's/^\t\ts_batch_acc = s_batch_smp = 0;$/\t\ts_batch_acc = 0;/'
 echo "$caught of $total mutations caught"
 SRC= sh build_spu.sh > out/mut_build.log 2>&1

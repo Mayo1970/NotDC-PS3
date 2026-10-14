@@ -12,7 +12,11 @@ extern uint64_t ps3_timebase_hz;
 static inline uint64_t gettime(void)
 {
 	uint64_t tb;
-	__asm__ volatile("mftb %0" : "=r"(tb));
+	// Cell: a read at a rollover of the low 32 bits (each 53.8 s) can give them as 0 with the old high half, a time
+	// 53.8 s in the past. Read again while they are 0, as PSL1GHT's __gettime() and Linux (CPU_FTR_CELL_TB_BUG).
+	do
+		__asm__ volatile("mftb %0" : "=r"(tb));
+	while (__builtin_expect((uint32_t)tb == 0, 0));
 	return tb;
 }
 

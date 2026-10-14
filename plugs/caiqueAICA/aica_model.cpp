@@ -56,6 +56,7 @@ static uint16_t chan_mask(uint32_t o) {
 }
 
 const uint32_t AicaModel::ADV_MAX;
+const uint32_t AicaModel::LSA_KEYON;
 
 AicaModel::AicaModel() { init(); }
 AicaModel::~AicaModel() { free(ram); }
@@ -69,6 +70,7 @@ void AicaModel::init() {
     no_dsp = false;
     mono_half = false;
     out_gain = 0;
+    adpcm_restore = false;
     reset();
 }
 
@@ -125,6 +127,7 @@ void AicaModel::reset() {
         slot[ch].AEG.state = EG_RELEASE;
         slot[ch].AEG.a = 0x3FF;
         slot[ch].AEG.off = true;
+        lsa_state[ch] = LSA_KEYON;
     }
 }
 
@@ -389,6 +392,19 @@ void AicaModel::decode_sample(int ch, bool last, uint32_t CA) {
     c.s1 = s1;
 }
 
+/* The ADPCM decoder before an op's decode: a key-on clears it, the first pass over LSA keeps a copy, and a loop lap
+ * loads that copy (adpcm_restore) or clears the decoder again (caique's cases all loop from LSA 0: the same there) */
+void AicaModel::adpcm_op(int ch, uint32_t flags) {
+    Slot &c = slot[ch];
+    if (flags & OP_LSA) lsa_state[ch] = (uint32_t)c.adpcm_quant << 16 | ((uint32_t)c.s0 & 0xFFFF);
+    if (flags & OP_RESET) lsa_state[ch] = LSA_KEYON;
+    if (flags & (OP_RESET | OP_LOOP)) {
+        const uint32_t v = (flags & OP_LOOP) && adpcm_restore ? lsa_state[ch] : LSA_KEYON;
+        c.adpcm_quant = (int32_t)(v >> 16);
+        c.s0 = (int16_t)v;
+    }
+}
+
 /* Whether slot ch fetches this sample, and the word it leaves on the bus: the one holding CA + 1 (tests/dsp_coll).
  * PCM fetches every playing sample; ADPCM only on key-on or a word change, none at OCT 3..7; noise never. */
 bool AicaModel::slot_fetch(int ch, bool en, bool keyed, uint32_t ca_old, uint32_t ca, uint16_t &word) const {
@@ -463,11 +479,12 @@ void AicaModel::stream_step(int ch, Frame *F, uint32_t smp) {
          * LSA == LEA plays through; LEA < LSA jumps forward and triggers at LEA after the 0xFFFF wrap. */
         bool armed = c.in_loop;
         if (CA >= c.LSA) c.in_loop = true;
+        if (!armed && CA == c.LSA && (f == 2 || f == 3)) op |= OP_LSA;
         if (ca_t >= c.LEA && armed) {
             c.looped = true;
             CA = (uint32_t)((int32_t)CA - ((int32_t)c.LEA - (int32_t)c.LSA)) & 0xFFFF;
             if (LPCTL) {
-                if (f == 2) op |= OP_RESET;
+                if (f == 2) op |= OP_LOOP;
             } else {
                 /* one-shot end (tests/oneshot): only the fetch stops, CA reads LEA now and 0 from the next sample;
                  * the envelope runs on (a key-on is ignored until a key-off) */
@@ -962,7 +979,7 @@ void AicaModel::run(bool render) {
         if (!render) continue;
         for (uint32_t i = 0; i < F.nops; i++) {
             const RenderOp &o = F.ops[i];
-            if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
+            if (o.flags & (OP_RESET | OP_LSA | OP_LOOP)) adpcm_op(ch, o.flags);
             if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
         }
         if (ch >= 7 && !no_dsp) coll_claim[ch] = slot_fetch(ch, sf.en_fetch, sf.keyed, sf.ca_old, sf.ca, coll_word[ch]);
@@ -1336,7 +1353,7 @@ void AicaModel::slot_sample(int ch, uint32_t i, const AdvCtx &x, bool render, in
             slot_control(ch, sf);
             for (uint32_t k = 0; k < F.nops; k++) {
                 const RenderOp &o = F.ops[k];
-                if (o.flags & OP_RESET) { c.adpcm_quant = 127; c.s0 = 0; }
+                if (o.flags & (OP_RESET | OP_LSA | OP_LOOP)) adpcm_op(ch, o.flags);
                 if (o.flags & OP_DECODE) decode_sample(ch, (o.flags & OP_LAST) != 0, o.ca);
             }
             if (!no_dsp) {   /* 5.13 A3: run()'s fetch claim; for slots 0..6 it is the previous sample's */
@@ -1490,6 +1507,8 @@ uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix,
                         if (LPSLNK && ast == EG_ATTACK && ca >= LSA) { ast = c.AEG.state = EG_DECAY1; es = c.env_skip = 0; }
                         const bool armed = in_loop;
                         if (ca >= LSA) in_loop = true;
+                        if (R && f >= 2 && !armed && ca == LSA)   /* adpcm_op()'s OP_LSA */
+                            lsa_state[ch] = (uint32_t)quant << 16 | ((uint32_t)s0 & 0xFFFF);
                         if (ca_t >= LEA && armed) {
                             c.looped = true;
                             ca = (uint32_t)((int32_t)ca - ((int32_t)LEA - (int32_t)LSA)) & 0xFFFF;
@@ -1506,7 +1525,11 @@ uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix,
                     }
                     CA = ca;
                     if (R && __builtin_expect((f >= 2) | (ip == 0), 1)) {
-                        if (__builtin_expect(rst, 0)) { quant = 127; s0 = 0; }
+                        if (__builtin_expect(rst, 0)) {   /* adpcm_op()'s OP_LOOP */
+                            const uint32_t v = adpcm_restore ? lsa_state[ch] : LSA_KEYON;
+                            quant = (int32_t)(v >> 16);
+                            s0 = (int16_t)v;
+                        }
                         decode(CA, ip == 0);
                     }
                 } while (__builtin_expect(ip != 0, 0));

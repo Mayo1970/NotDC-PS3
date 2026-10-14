@@ -1308,7 +1308,7 @@ Games affected: unknown for each.
 - About 60 lines. PC check first: port `div32_test.cpp` plus random cases
   into a `misc/*_check`, against the interpreter.
 
-### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[~]` merged: plan 5.13 A3; G1 done; G2-G4 built 2026-10-11 as "DSP Ring RAM", "DSP Ring 64K" and "DSP Reg Reads", bundle 5 (plan section 0); DSP Ring RAM ran on HW 2026-10-11 with no fault (PSO), default ON; the other two OFF, HW not run
+### P20 The DSP: A3 by default, and its gaps against caique-rtl  `[~]` merged: plan 5.13 A3; G1 done; G2-G4 built 2026-10-11 as "DSP Ring RAM", "DSP Ring 64K" and "DSP Reg Reads", bundle 5 (plan section 0); DSP Ring RAM ran on HW 2026-10-11 with no fault (PSO), default ON; DSP Ring 64K ran on HW 2026-10-13 with no fault (Sonic Adventure 2; five games have a 64K-word ring, plan section 0, bundle 18), default OFF; DSP Reg Reads OFF, HW not run
 
 Missing DSP in the default setup:
 - Default setup: SPE AICA Sound ON, SPE AICA DSP OFF

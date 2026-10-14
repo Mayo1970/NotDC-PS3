@@ -32,6 +32,8 @@ extern "C" int get_dsp_ring_64k_preset();
 extern "C" int get_dsp_reg_read_preset();
 extern "C" int get_aica_mono_fix_preset();
 extern "C" int get_spe_aica_gain_preset();
+extern "C" int get_adpcm_loop_preset();
+extern "C" int get_key_census_preset();
 // ps3_audio.cpp
 void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now);
 u64 ps3_audio_spu_wait(u32 end);
@@ -100,7 +102,8 @@ static bool wait_echo_state(u32 want, u64 budget_ticks)
 
 static void stats(u64 now);
 
-// "SPE AICA Gain" (live): the percent as 1/256 into the bell line, which the sound SPU reads at each wake
+// The live rows of the sound SPU, which reads the bell line at each wake: "SPE AICA Gain" (the percent as 1/256) and
+// "ADPCM Loop" (1 = RESTORE)
 static u32 s_gain_pct = 100;
 static void gain_tick()
 {
@@ -109,6 +112,9 @@ static void gain_tick()
 	const u32 g = s_gain_pct == 100 ? 0 : (s_gain_pct * 256 + 50) / 100;
 	if (g != s_bell.gain)
 		s_bell.gain = g;
+	const u32 lp = get_adpcm_loop_preset() != 0;
+	if (lp != s_bell.adpcm_loop)
+		s_bell.adpcm_loop = lp;
 }
 
 static void publish()
@@ -226,6 +232,136 @@ static void catch_up()
 	const u32 n = s_now - (u32)s_m->samples;
 	s_m->advance(n, false, 0);
 	s_ctl_samples += n;
+}
+
+// ── Bundle 18 "Key Census" (log only): a copy of the slot registers follows the AICA write log, which either twin
+// fills. [kon]: each voice start with its registers, each key-on that its slot refuses, counts per stats window ──
+static u16 s_cen_reg[64][18], s_cen_com[19];   // slot registers 0x00-0x44; 0x2000-0x2044 and 0x2800
+static u64 s_cen_kyonb, s_cen_keyed;           // KYONB as written; the slots that are not in release
+static u64 s_cen_wr1, s_cen_offreq;            // since the last key pass: KYONB 1 written; a KYONEX asked for the key-off
+static u32 s_cen_tail, s_cen_at, s_cen_t0[64]; // log records read; the sample of the waiting KYONEX; each slot's start
+static bool s_cen_kx;
+static u32 s_cen_n[4], s_cen_max, s_cen_lines, s_cen_dropped, s_cen_lost;   // n: starts, key-offs, refused, folds
+
+static void census_reset()
+{
+	memset(s_cen_reg, 0, sizeof(s_cen_reg));
+	memset(s_cen_com, 0, sizeof(s_cen_com));
+	s_cen_kyonb = s_cen_keyed = s_cen_wr1 = s_cen_offreq = 0;
+	s_cen_kx = false;
+}
+
+static void census_line(const char* what, int ch, u32 keyed)
+{
+	if (!get_key_census_preset())
+		return;
+	if (s_cen_lines >= 150)
+	{
+		s_cen_dropped++;
+		return;
+	}
+	s_cen_lines++;
+	static const char* const k_fmt[4] = {"PCM16", "PCM8", "ADPCM", "ADPCMS"};
+	const u16* r = s_cen_reg[ch];
+	const int oct = (int)((r[6] >> 11) & 0xF);
+	printf("[kon] t=%u s%02d %s %s %s SA=%06X LSA=%u LEA=%u OCT=%d FNS=%u TL=%u DISDL=%u DIPAN=%02X IMXL=%u ISEL=%u"
+	       " AR=%u D1R=%u D2R=%u RR=%u DL=%u KRS=%u LPSLNK=%u Q=%u LPOFF=%u VOFF=%u FLV0=%04X LFO=%04X age=%u keyed=%u\n",
+	       s_cen_at, ch, what, (r[0] & 0x400) ? "NOISE" : k_fmt[(r[0] >> 7) & 3], (r[0] & 0x200) ? "loop" : "one",
+	       ((u32)(r[0] & 0x7F) << 16) | r[1], r[2], r[3], oct >= 8 ? oct - 16 : oct, r[6] & 0x3FF, r[10] >> 8,
+	       (r[9] >> 8) & 0xF, r[9] & 0x1F, (r[8] >> 4) & 0xF, r[8] & 0xF, r[4] & 0x1F, (r[4] >> 6) & 0x1F, r[4] >> 11,
+	       r[5] & 0x1F, (r[5] >> 5) & 0x1F, (r[5] >> 10) & 0xF, (r[5] >> 14) & 1, r[10] & 0x1F, (r[10] >> 5) & 1,
+	       (r[10] >> 6) & 1, r[11] & 0x1FFF, r[7], s_cen_at - s_cen_t0[ch], keyed);
+}
+
+// The key pass of the sample after a KYONEX write, as the model makes it: only a slot in release starts. A fold is a
+// key-off and a key-on of one slot in one sample: the model keeps the old voice, the console restarts it (6.9 D).
+static void census_pass()
+{
+	const u64 on = s_cen_kyonb, was = s_cen_keyed, fold = s_cen_offreq & on & was;
+	const u32 keyed = (u32)__builtin_popcountll(on);
+	s_cen_kx = false;
+	for (u64 m = (on & ~was) | (s_cen_wr1 & on & was); m; m &= m - 1)
+	{
+		const int ch = __builtin_ctzll(m);
+		const u64 bit = 1ull << ch;
+		const int k = !(was & bit) ? 0 : (fold & bit) ? 3 : 2;
+		static const char* const k_what[4] = {"start", "", "refused", "fold"};
+		s_cen_n[k]++;
+		if (!k)
+			s_cen_t0[ch] = s_cen_at;
+		census_line(k_what[k], ch, keyed);
+	}
+	s_cen_n[1] += (u32)__builtin_popcountll(~on & was);
+	if (keyed > s_cen_max)
+		s_cen_max = keyed;
+	s_cen_keyed = on;
+	s_cen_wr1 = s_cen_offreq = 0;
+}
+
+static void census_rec(const AicaRec* r)
+{
+	if (s_cen_kx && r->sample != s_cen_at)   // the writes of the KYONEX's own sample come before the pass
+		census_pass();
+	if (r->op == AICA_OP_RESET)
+		census_reset();
+	if (r->op != AICA_OP_WRITE)
+		return;
+	const u32 off = r->off, ch = off >> 7, o = (off & 0x7F) >> 2;
+	if (off >= 0x2000)
+	{
+		if (off < 0x2048)
+			s_cen_com[(off - 0x2000) >> 2] = (u16)r->val;
+		else if (off == 0x2800)
+			s_cen_com[18] = (u16)r->val;
+		return;
+	}
+	if (o >= 18)
+		return;
+	s_cen_reg[ch][o] = (u16)r->val;
+	if (o)
+		return;
+	const u64 bit = 1ull << ch;
+	s_cen_kyonb = (r->val & 0x4000) ? s_cen_kyonb | bit : s_cen_kyonb & ~bit;
+	if (r->val & 0x4000)
+		s_cen_wr1 |= bit;
+	if (r->val & 0x8000)
+	{
+		s_cen_offreq |= s_cen_keyed & ~s_cen_kyonb;
+		s_cen_kx = true;
+		s_cen_at = r->sample;
+	}
+}
+
+// At each CHECK: the records up to `head`. The log keeps the last AICA_LOG records; a head that went back is a new log.
+static void census_tick(u32 head)
+{
+	const u32 n = head - s_cen_tail;
+	if (n > AICA_LOG)
+	{
+		s_cen_lost += (s32)n > 0 ? n - AICA_LOG : 0;
+		s_cen_tail = (s32)n > 0 ? head - AICA_LOG : head;
+	}
+	for (; s_cen_tail != head; s_cen_tail++)
+		census_rec(&s_shared.log[s_cen_tail & (AICA_LOG - 1)]);
+}
+
+// The window's counts, the output level registers and the 18 send levels (EFSDL of buses 0-15, then of EXTS 0-1)
+static void census_print()
+{
+	if (get_key_census_preset())
+	{
+		char ef[19];
+		for (int i = 0; i < 18; i++)
+			ef[i] = "0123456789ABCDEF"[(s_cen_com[i] >> 8) & 0xF];
+		ef[18] = 0;
+		printf("[kon] window: starts %u key-offs %u refused %u folds %u | keyed now %u max %u | lines dropped %u,"
+		       " records lost %u | MVOL %u MONO %u DAC18B %u | EFSDL %s\n",
+		       s_cen_n[0], s_cen_n[1], s_cen_n[2], s_cen_n[3], (u32)__builtin_popcountll(s_cen_keyed), s_cen_max,
+		       s_cen_dropped, s_cen_lost, s_cen_com[18] & 0xF, s_cen_com[18] >> 15, (s_cen_com[18] >> 8) & 1, ef);
+	}
+	memset(s_cen_n, 0, sizeof(s_cen_n));
+	s_cen_max = (u32)__builtin_popcountll(s_cen_keyed);
+	s_cen_lines = s_cen_dropped = s_cen_lost = 0;
 }
 
 // ── Bundle 5 with the PPU twin: what spu/spe_arm7.cpp's hz code does, on this thread (no sound thread) ──
@@ -429,6 +565,7 @@ void ps3aica_step()
 	push(AICA_OP_CHECK, 0, s_checks, caique::AicaModel::snap_hash(s_snaps[i]));
 	s_checks++;
 	gain_tick();
+	census_tick(s_head);
 	if (g_aica_spe_snd && !g_snd_thread)
 		hz_tick();
 	s_ctl_ticks += gettime() - t0;
@@ -496,6 +633,7 @@ void ps3aica_pace(u32 now)
 	if (t0 - s_win_t0 >= 5 * ps3_timebase_hz)
 		stats(t0);
 	gain_tick();
+	census_tick(s_bell.head);
 	if (g_aica_spe_snd)
 		s_ring_wait_ticks += ps3_audio_spu_wait(s_w0 + frames_for(now) - echo()->snd_drops);
 }
@@ -698,6 +836,7 @@ static void stats(u64 now)
 		l_clip[0] = clip[0];
 		l_clip[1] = clip[1];
 	}
+	census_print();
 	if (g_aica_spe_snd && !g_arm_spe)   // with SPE ARM7 the twin's counts are that SPU's: arm_spe_stats prints
 	{
 		ps3aica_hz_print(&s_hz, w, s_hz_ppu);
@@ -758,8 +897,10 @@ bool ps3aica_init(u8* aica_ram)
 
 	s_bell.head = 0;
 	s_bell.quit = 0;
-	s_bell.gain = s_bell.peak_seq = 0;
+	s_bell.gain = s_bell.peak_seq = s_bell.adpcm_loop = 0;
 	gain_tick();
+	census_reset();
+	s_cen_tail = 0;
 	s_head = s_pub = s_tail_seen = s_checks = s_bad_seen = s_dbad_seen = s_now = 0;
 	memset(s_live, 0, sizeof(s_live));
 	s_live_n = 0;

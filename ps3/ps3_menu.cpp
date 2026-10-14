@@ -297,6 +297,9 @@ static const char* k_drop[]      = { "DROP", "WAIT 1 FRAME", "WAIT", NULL };
 static const char* k_exit_fix[]  = { "OFF", "SAFE", "SAFE + WATCHDOG",
                                      "SAFE + WATCHDOG + HOST POLL", NULL };
 static const char* k_arm7[]      = { "FULL", "HALF", "QUARTER", "EIGHTH", NULL };
+static const char* k_arm7_rate[] = { "LEGACY", "256", "384", "512", NULL };
+static const char* k_arm7_il[]   = { "SLICE", "SAMPLE", NULL };
+static const char* k_adpcm_lp[]  = { "RESET", "RESTORE", NULL };
 static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
 static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
@@ -422,6 +425,10 @@ static Option s_audio[] = {
 	  "Sound CPU clock divider. Lower reclaims PPU time; check the music." },
 	{ "ARM7 Batch",      &g_arm7_batch_preset,    OPT_RANGE,  NULL,        0, 1,8,1, "%d call(s)",
 	  "Runs the ARM7 once per N calls, with the cycles of all N." },
+	{ "ARM7 Rate",       &g_arm7_rate_preset,     OPT_CHOICE, k_arm7_rate, 0, 0,0,0, NULL,
+	  "ARM7 ticks per sound sample (6.3). LEGACY: 227 at SH4 200. Flycast: 512. SPE ARM7. Live." },
+	{ "ARM7 Interleave", &g_arm7_interleave_preset, OPT_CHOICE, k_arm7_il, 0, 0,0,0, NULL,
+	  "SAMPLE: the ARM7 runs before each sound sample, no ARM7 Batch (6.2). SPE ARM7. Live." },
 	{ "ARM7 Idle Skip",  &g_arm7_idle_skip_preset, OPT_CHOICE, k_idle_skip, 0, 0,0,0, NULL,
 	  "OLD: +100 ticks per store-free self-loop. SAFE: wait loops only. Live." },
 	{ "KYONB",           &g_aica_kyonb_preset,    OPT_CHOICE, k_kyonb,     0, 0,0,0, NULL,
@@ -462,6 +469,10 @@ static Option s_audio[] = {
 	  "The LFO reset bit stays set after a write, as on hardware (P31). Set before boot." },
 	{ "SPE AICA Gain",   &g_spe_aica_gain_preset, OPT_RANGE,  NULL,        0, 50,100,5, "%d%%",
 	  "SPE AICA Sound output level. Below 100% leaves room before clipping (6.6). Live." },
+	{ "ADPCM Loop",      &g_adpcm_loop_preset,    OPT_CHOICE, k_adpcm_lp,  0, 0,0,0, NULL,
+	  "RESTORE: a looped ADPCM voice keeps the decoder state of its loop start (6.9). Live." },
+	{ "Key Census",      &g_key_census_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "[kon] log lines: each voice start with its levels, refused key-ons. Log only. Live." },
 	{ "G2 DMA Small",    &g_g2_dma_small_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A sound DMA of 512 cycles or less ends at once (P24, Bangai-O). Needs DMA Fix. Live." },
 	{ "G2 DMA Read",     &g_g2_dma_read_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -512,7 +523,7 @@ static Option s_video[] = {
 	{ "IFB Probe",       &g_ifb_probe_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
 	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Logs [CC] C call-outs and the [stall] slowest frame each second. Live." },
+	  "Logs [CC] C call-outs, [mem64] and the [stall] slowest frame each second. Live." },
 	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Counts JIT block entries: [HOTC] census, code dumps. Slower. Set before boot." },
 	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -1319,6 +1330,8 @@ static int* const k_live_opts[] = {
 	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,
 	&g_maple_frame_preset, &g_vmu_screen_preset,
 	&g_sprite_corner_preset, &g_offset_colour_preset, &g_colour_clamp_preset, &g_trilinear_preset,
+	&g_arm7_rate_preset, &g_arm7_interleave_preset,
+	&g_adpcm_loop_preset, &g_key_census_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 

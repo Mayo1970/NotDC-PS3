@@ -75,6 +75,42 @@ static inline u32 ccall_src_of(const void* ra)
 		} \
 	} while (0)
 
+// ---- [mem64] (plan 6.7): the 64-bit dispatcher calls that emitted code makes, by target ----
+
+// The JIT's pair paths hold the u64 in two registers, the C dispatchers in one: such a call moves junk. Classes: wave
+// RAM, AICA registers, the rest of area 0, area 1 (VRAM), area 3 (RAM), area 4 (TA), P4, others.
+enum { M64_ARAM = 0, M64_AICA, M64_A0, M64_VRAM, M64_RAM, M64_TA, M64_P4, M64_OTHER, M64_COUNT };
+extern "C" u32 g_mem64[2][M64_COUNT];   // [0]=read, [1]=write
+extern "C" u32 g_mem64_last[2];         // the last address of each
+
+static inline u32 mem64_class(u32 addr)
+{
+	if (addr >= 0xE0000000u) return M64_P4;
+	const u32 area = (addr >> 26) & 7, m = addr & 0x01FFFFFFu;   // area 0 has two images of 32 MB
+	if (area == 1) return M64_VRAM;
+	if (area == 3) return M64_RAM;
+	if (area == 4) return M64_TA;
+	if (area != 0) return M64_OTHER;
+	return m >= 0x00800000u && m < 0x01000000u ? M64_ARAM : (m >> 16) == 0x70 ? M64_AICA : M64_A0;
+}
+
+// CCALL_MEM for the two 64-bit dispatchers, with the [mem64] count of the calls from the code cache
+#define CCALL_MEM64(site, rw, addr) \
+	do { \
+		if (g_jit_ccalls_preset) \
+		{ \
+			const u32 src_ = ccall_src_of(__builtin_return_address(0)); \
+			g_ccall[site]++; \
+			g_ccall_area[rw][((u32)(addr) >> 26) & 7]++; \
+			g_ccall_src[rw][src_]++; \
+			if (src_ == CCS_CODECACHE) \
+			{ \
+				g_mem64[rw][mem64_class(addr)]++; \
+				g_mem64_last[rw] = (u32)(addr); \
+			} \
+		} \
+	} while (0)
+
 // Prints and resets the census; called once a second from the SPG stats block (plugs/drkPvr/SPG.cpp) to share the stats
 // line's time base and fflush. `vbs` = vblanks/sec, for the per-frame column.
 extern "C" void ccall_census_dump(double seconds, double vbs);

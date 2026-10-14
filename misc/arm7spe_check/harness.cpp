@@ -406,16 +406,38 @@ static void ac_cdda_refill(void)
 	r_push(AICA_OP_CDDA, 0, v, 0);
 }
 
-// arm_aica.cpp arm_aica_run
-static u32 r_acc, r_calls;
-static void ref_mu(u32 cycles, u32 samples, u32 flags)
+// arm_aica.cpp arm_aica_run. cfg (plan 6.3, 6.2): ARM7 Rate ticks per sample, and ARM7 Interleave SAMPLE, where the
+// ARM7 runs before each sample's step and a run's overshoot comes off the next one.
+static u32 r_acc, r_calls, r_smp;
+static s32 r_owed;
+static void ref_mu(u32 cycles, u32 samples, u32 flags, u32 cfg)
 {
-	const u32 stage = ARM_MU_STAGE(flags);
+	const u32 stage = ARM_MU_STAGE(flags), rate = ARM_MU_RATE(cfg);
 	u32 batch = ARM_MU_BATCH(flags), ticks;
+	if (ARM_MU_SAMPLE(cfg))
+	{
+		r_acc = r_smp = r_calls = 0;
+		r_owed += (s32)((rate ? rate * samples : cycles / 20) >> stage);
+		for (u32 left = samples; left; left--)
+		{
+			if (!g_cpu.enabled)
+				r_owed = 0;
+			else if (r_owed >= (s32)left)
+			{
+				g_cpu.idle_pref = (u8)ARM_MU_SAFE(flags);
+				r_in_arm = 1;
+				r_owed -= a7_run(&g_cpu, (u32)r_owed / left);
+				r_in_arm = 0;
+			}
+			ac_timestep();
+		}
+		return;
+	}
+	r_owed = 0;
 	if (batch <= 1)
 	{
-		ticks = (cycles / 20) >> stage;
-		r_acc = 0;
+		ticks = (rate ? rate * samples : cycles / 20) >> stage;
+		r_acc = r_smp = 0;
 		r_calls = 0;
 	}
 	else
@@ -423,10 +445,11 @@ static void ref_mu(u32 cycles, u32 samples, u32 flags)
 		if (batch > 16)
 			batch = 16;
 		r_acc += cycles;
+		r_smp += samples;
 		if (++r_calls < batch)
 			goto deferred;
-		ticks = (r_acc / 20) >> stage;
-		r_acc = 0;
+		ticks = (rate ? rate * r_smp : r_acc / 20) >> stage;
+		r_acc = r_smp = 0;
 		r_calls = 0;
 	}
 	g_cpu.idle_pref = (u8)ARM_MU_SAFE(flags);   // arm7_cached reads the preset when it rebuilds its table
@@ -630,6 +653,9 @@ static u32 g_dlo = 0xFFFF, g_dhi;
 static bool g_lag;   // the sound SPU stops taking records for a while: the ARM7 SPU waits in log_room
 static bool g_storm; // SH4 register writes by the dozen (lagging seeds): the log fills and wraps
 static bool g_hz_seed;   // seed 100 and up: bundle 5
+// Bundle 18, env MU_CFG: ArmCmd.c of every MediumUpdate (rate | SAMPLE << 16), or "mix": the two rows change live
+static u32 g_mu_cfg;
+static bool g_mu_mix;
 static u32 p_synced_at = ~0u, p_blk = ~0u, p_reqs, n_sync_cmd, n_ppu_miss;   // the PPU's side (ps3_arm_spe.cpp)
 static u64 g_cmds, g_mismatch, g_limit_runs;
 
@@ -924,6 +950,12 @@ int main(int argc, char** argv)
 	g_rng = 0x9E3779B97F4A7C15ull * (seed + 1);
 	g_storm = (seed % 4) == 3;
 	g_lag = g_storm && !g_hz_seed;   // a lagging sound SPU would not answer in time
+	if (const char* mc = getenv("MU_CFG"))
+	{
+		g_mu_mix = !strcmp(mc, "mix");
+		g_mu_cfg = g_mu_mix ? 0 : (u32)strtoul(mc, 0, 0);
+		printf("seed %s, MU_CFG %s:\n", argv[3], mc);
+	}
 	g_log = (u8*)calloc(AICA_LOG, 16);
 	g_aram = (u8*)calloc(ARAM, 1);
 	g_raram = (u8*)calloc(ARAM, 1);
@@ -1120,9 +1152,12 @@ int main(int argc, char** argv)
 					cdda_index += 2;
 				}
 				const u32 batch = pick(20) ? batch_pref : pick(17);
-				c = { ARM_CMD_MU, (u8)(batch | (pick(30) ? 0 : 1) << 5 | safe << 7), (u16)samples, cycles, 0 };
+				static const u32 k_rate[4] = { 0, 256, 384, 512 };
+				if (g_mu_mix && pick(25) == 0)
+					g_mu_cfg = k_rate[pick(4)] | pick(2) << 16;   // the rows as the menu sets them
+				c = { ARM_CMD_MU, (u8)(batch | (pick(30) ? 0 : 1) << 5 | safe << 7), (u16)samples, cycles, g_mu_cfg };
 				push_cmd(c);
-				ref_mu(c.b, c.a, c.flags);
+				ref_mu(c.b, c.a, c.flags, c.c);
 			}
 			else if (k < 90)   // SH4 register write
 			{

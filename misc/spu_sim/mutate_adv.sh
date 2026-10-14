@@ -26,7 +26,7 @@ run 'const uint32_t md = (x.mdec0 - (n - 1) - 2) & 0xFFFF;' 'const uint32_t md =
 run '    if (c.keyed || c.keyed_off) c.keyed = c.keyed_off = false;   /* each lasts one sample */' '' 'sample: key flags never cleared'
 run '        if (!kx0 && (render ? (quiet & rsilent & bit) != 0 : (quiet & bit) != 0)) break;' '        if (!kx0 && (quiet & bit) != 0) break;' 'run: render stops at quiet (tails dropped)'
 run '            s1 = (int16_t)(rd8(a1) | rd8(a1 + 1) << 8);' '            s1 = (int16_t)(rd8(a0) | rd8(a0 + 1) << 8);' 'fast: PCM16 s1 from s0'
-run '                        if (__builtin_expect(rst, 0)) { quant = 127; s0 = 0; }' '                        if (__builtin_expect(rst, 0)) quant = 127;' 'fast: ADPCM loop reset keeps s0'
+run '                            s0 = (int16_t)v;' '' 'fast: ADPCM loop reset keeps s0'
 run '& -(int32_t)last;' ';' 'fast: ADPCM preview kept on a step that is not the last'
 run 'const uint64_t todo = x.kx ? ~0ull : render ? ~(quiet & rsilent) : (fetching | ~quiet);' 'const uint64_t todo = x.kx ? ~0ull : render ? ~quiet : (fetching | ~quiet);' 'round: render todo misses tails'
 run '            lfsr = lfsr_adv(lfsr_at(x, i), ch);   /* only noise reads it; slot_control steps it once more */' '            ;' 'sample: noise LFSR not set'

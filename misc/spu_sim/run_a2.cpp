@@ -18,6 +18,7 @@ extern "C" {
 DECL(base_) DECL(cur_)
 void cur_set_mono(void*, int);
 void cur_set_gain(void*, uint32_t);
+void cur_set_adpcm(void*, int);
 }
 
 // ---- main memory (big-endian data, PS3 layout) ----
@@ -82,6 +83,7 @@ static uint32_t g_now;   // samples run (the PPU's s_now)
 // (G4); wave RAM must match a model whose ring is plain RAM. mono: P31 (env MONO=0: the old sum).
 static bool g_rscn, g_mono;   // a ring* scenario; the mono scenario
 static uint32_t g_gain;       // env GAIN: SPE AICA Gain in 1/256 from the start; env GAIN2: the level from half the run on
+static uint32_t g_adpcm;      // env ADPCM: ADPCM Loop (1 = RESTORE, plan 6.9 B) from the start; env ADPCM2: from half the run on
 static uint32_t g_prog_at = ~0u;   // the sample a new DSP program comes at
 static uint32_t g_setup_flags, g_rbp = 0x1E0000, g_ring_bytes = 65536;
 static uint32_t g_ring_plo = 1, g_ring_phi, g_ring_pt;
@@ -291,7 +293,7 @@ static void scenario_tick(uint32_t t, uint32_t total)
     const bool pause = !strcmp(g_scn, "pause") && t >= total / 2;
     if (t == 0)
     {
-        if (g_rscn || g_mono || g_gain || getenv("MVOL"))   // the older scenarios leave MVOL at 0: their frames are silent
+        if (g_ref_cur || getenv("MVOL"))   // the older scenarios leave MVOL at 0: their frames are silent
             wr(0x2800, 0x000F | (g_mono ? 0x8000 : 0));
         if (g_dsp) program_dsp();
         for (int ch = 0; ch < g_nv; ch++) { program_voice(ch); key(ch, true); }
@@ -409,7 +411,9 @@ int main(int argc, char** argv)
         g_setup_flags |= AICA_SETUP_MONO;
     g_gain = getenv("GAIN") ? (uint32_t)atoi(getenv("GAIN")) : 0;
     const uint32_t gain2 = getenv("GAIN2") ? (uint32_t)atoi(getenv("GAIN2")) : g_gain;
-    g_ref_cur = g_rscn || g_mono || g_gain;
+    g_adpcm = getenv("ADPCM") ? (uint32_t)atoi(getenv("ADPCM")) : 0;
+    const uint32_t adpcm2 = getenv("ADPCM2") ? (uint32_t)atoi(getenv("ADPCM2")) : g_adpcm;
+    g_ref_cur = g_rscn || g_mono || g_gain || getenv("ADPCM") || getenv("ADPCM2");
     const uint32_t dspjit = getenv("DSPJIT") ? (uint32_t)atoi(getenv("DSPJIT")) : 1;
     const bool snd = !getenv("SND") || atoi(getenv("SND")) != 0;   // SND=0: the A1 check alone, no frames
     const uint32_t total = g_total = (uint32_t)(secs * 44100) & ~63u;
@@ -434,6 +438,11 @@ int main(int argc, char** argv)
     {
         cur_set_gain(g_base, g_gain);
         put32(g_bell + offsetof(AicaBell, gain), g_gain);
+    }
+    if (g_adpcm)
+    {
+        cur_set_adpcm(g_base, 1);
+        put32(g_bell + offsetof(AicaBell, adpcm_loop), 1);
     }
     g_cur = cur_create(0);
     // wave RAM: smooth PCM16, PCM8, random ADPCM nibbles
@@ -540,6 +549,11 @@ int main(int argc, char** argv)
             put32(g_bell + offsetof(AicaBell, gain), gain2);
             put32(g_bell + offsetof(AicaBell, peak_seq), 1);
         }
+        if (adpcm2 != g_adpcm && g_now == ((total / 2) & ~63u))   // live too
+        {
+            cur_set_adpcm(g_base, adpcm2 != 0);
+            put32(g_bell + offsetof(AicaBell, adpcm_loop), adpcm2 != 0);
+        }
         if (g_now > total * 7 / 10) late_n += AICA_BLOCK;
         if (g_rscn)
             ram_compare((g_checks & 15) == 0 || g_now == total);
@@ -569,10 +583,11 @@ int main(int argc, char** argv)
                ECHO(dsp_checks), ECHO(dsp_bad), prof[3] * 40 * 100.0 / ((double)g_now * 3200000000.0 / 44100));
     printf("bundle 5: flags %u | frames not silent %u | guest ring writes %u syncs %u | DSP reads ok %u bad %u | ring bytes"
            " bad %u, wave RAM bytes bad %u | SPU ring lines in %u out %u, cache lines out %u | clip %u/%u | gain %u -> %u"
-           " of 256, peak %u\n",
+           " of 256, peak %u | adpcm loop %u -> %u\n",
            g_setup_flags, g_frames_nz, g_guest_wr, ECHO(sync), g_rd_ok, g_rd_bad, g_ring_bad, g_ram_bad,
            ECHO(ring_in), ECHO(ring_out), ECHO(line_out),
-           get32(g_echo + offsetof(AicaEcho, clip)), get32(g_echo + offsetof(AicaEcho, clip) + 4), g_gain, gain2, ECHO(peak));
+           get32(g_echo + offsetof(AicaEcho, clip)), get32(g_echo + offsetof(AicaEcho, clip) + 4), g_gain, gain2, ECHO(peak),
+           g_adpcm, adpcm2);
     if (late_n) printf("SPU after 70%% of the run: %.0f cycles/sample = %.1f%% of real time\n", (double)busy_late / late_n,
                        busy_late * 100.0 / ((double)late_n * 3200000000.0 / 44100));
     printf("SPU LS: image end %05X, lowest stack store %05X: %u bytes of stack used, %u spare\n", sim->stack_floor,

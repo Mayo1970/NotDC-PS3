@@ -20,6 +20,13 @@ if [ -z "$SEEDS" ]; then
 	./out/harness out/spe_arm7_sim.elf out/syms.txt 9 $B 135 || fail=1
 	./out/harness out/spe_arm7_sim.elf out/syms.txt optest 0 || fail=1
 	./out/harness out/spe_arm7_sim.elf out/syms.txt optest 130 || fail=1
+	# Bundle 18 (plan 6.3, 6.2): ARM7 Rate 512, ARM7 Interleave SAMPLE at the old rate and at 512, then both rows live
+	for s in 1 2 7 58; do MU_CFG=512 ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1; done
+	for s in 3 4 9 59; do MU_CFG=65536 ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1; done
+	for s in 5 6 10 60; do MU_CFG=66048 ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1; done
+	for s in 1 2 3 4 7 8 17 18 33 56 57 58 61 63 100 106 131 190; do
+		MU_CFG=mix ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1
+	done
 fi
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

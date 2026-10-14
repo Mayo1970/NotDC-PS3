@@ -19,7 +19,7 @@ void am_reset(void);
 void am_write(uint32_t sample, uint32_t off, uint32_t val);
 uint32_t am_check(uint32_t sample, void* snap);
 void am_cdda(uint32_t sample, uint32_t val);
-void am_batch(uint32_t gain, uint32_t peak_seq);
+void am_batch(uint32_t gain, uint32_t peak_seq, uint32_t adpcm_loop);
 void am_sync(uint32_t sample);
 void am_ring(uint32_t sample, uint32_t lo, uint32_t hi);
 uint32_t am_dsp_read(uint32_t sample, uint32_t off);
@@ -151,7 +151,7 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_shared)
 		if (head != tail)
 		{
 			const uint32_t t0 = spu_read_decrementer();
-			am_batch(bell.gain, bell.peak_seq);
+			am_batch(bell.gain, bell.peak_seq, bell.adpcm_loop);
 			tail = run_recs(tail, head);
 			echo.busy += t0 - spu_read_decrementer();
 			continue;

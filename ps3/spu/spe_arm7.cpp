@@ -611,17 +611,48 @@ static void ac_cdda_refill(void)
 
 // ── Commands ──
 
-static uint32_t s_batch_acc, s_batch_calls;
+static uint32_t s_batch_acc, s_batch_calls, s_batch_smp;
+static int32_t s_owed;   // "ARM7 Interleave" SAMPLE: ticks not run yet; below 0 = the last run's overshoot
+
+// "ARM7 Rate" (plan 6.3): rate ticks per sample, or SH4 cycles / 20 as before; then the arm7_speed stage.
+static inline uint32_t mu_ticks(uint32_t rate, uint32_t cycles, uint32_t samples, uint32_t stage_n)
+{
+	return (rate ? rate * samples : cycles / 20) >> stage_n;
+}
 
 // arm_aica_run: the ARM7 slice (Arm7Batch, arm7_speed), then one AICA step per sample.
+// "ARM7 Interleave" SAMPLE (plan 6.2, as Flycast): a run before each sample's step, Arm7Batch not used.
 static void run_mu(const ArmCmd* c)
 {
-	const uint32_t stage_n = ARM_MU_STAGE(c->flags);
+	const uint32_t stage_n = ARM_MU_STAGE(c->flags), rate = ARM_MU_RATE(c->c);
 	uint32_t batch = ARM_MU_BATCH(c->flags), ticks;
+	if (ARM_MU_SAMPLE(c->c))
+	{
+		s_batch_acc = s_batch_smp = s_batch_calls = 0;
+		s_owed += (int32_t)mu_ticks(rate, c->b, c->a, stage_n);
+		for (uint32_t n = c->a; n; n--)
+		{
+			const int32_t share = s_owed / (int32_t)n;   // what is owed, over the samples left in this call
+			if (!cpu.enabled)
+				s_owed = 0;
+			else if (share > 0)
+			{
+				st.runs++;
+				st.ticks += (uint32_t)share;
+				cpu.idle_pref = (uint8_t)ARM_MU_SAFE(c->flags);
+				s_in_arm = 1;
+				s_owed -= a7_run(&cpu, (uint32_t)share);
+				s_in_arm = 0;
+			}
+			ac_timestep();
+		}
+		return;
+	}
+	s_owed = 0;
 	if (batch <= 1)
 	{
-		ticks = (c->b / 20) >> stage_n;
-		s_batch_acc = 0;
+		ticks = mu_ticks(rate, c->b, c->a, stage_n);
+		s_batch_acc = s_batch_smp = 0;
 		s_batch_calls = 0;
 	}
 	else
@@ -629,10 +660,11 @@ static void run_mu(const ArmCmd* c)
 		if (batch > 16)
 			batch = 16;
 		s_batch_acc += c->b;
+		s_batch_smp += c->a;
 		if (++s_batch_calls < batch)
 			goto deferred;
-		ticks = (s_batch_acc / 20) >> stage_n;
-		s_batch_acc = 0;
+		ticks = mu_ticks(rate, s_batch_acc, s_batch_smp, stage_n);
+		s_batch_acc = s_batch_smp = 0;
 		s_batch_calls = 0;
 	}
 	if (cpu.enabled)

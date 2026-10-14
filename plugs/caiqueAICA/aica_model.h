@@ -83,8 +83,9 @@ struct Slot {
     uint16_t env_skip;          /* idle slot: a clock with (eg_cnt - 1) & env_skip set moves neither envelope */
 };
 
-/* What the render pass does at one CA position of a slot's stream walk */
-enum { OP_RESET = 1, OP_DECODE = 2, OP_LAST = 4 };
+/* What the render pass does at one CA position of a slot's stream walk. ADPCM state: OP_RESET a key-on, OP_LSA the
+ * first pass over LSA, OP_LOOP a PCMS 2 loop lap. */
+enum { OP_RESET = 1, OP_DECODE = 2, OP_LAST = 4, OP_LOOP = 8, OP_LSA = 16 };
 struct RenderOp { uint16_t ca; uint8_t flags; };
 
 /* Max CA advances in one sample: OCT 7, FNS 0x3FF, full PLFO -> (2298 << 11) + 0x3FFF over 2^14 */
@@ -192,6 +193,11 @@ struct AicaModel {
     uint32_t clip[2];         /* plan 6.6: output samples final_mix() clamped, left and right */
     uint32_t out_gain;        /* plan 6.6: output level in 1/256 before the clamp, 0 = none; init() clears it, reset() keeps it */
     uint32_t peak;            /* the largest |output| final_mix() saw before out_gain; the user clears it */
+    /* Plan 6.9 B, render state: the ADPCM decoder before the first decode of LSA, quant << 16 | s0 (key-on: 127, 0).
+     * adpcm_restore: a PCMS 2 loop lap loads it (Flycast 3f70e47ad), else it resets; init() clears, reset() keeps it. */
+    uint32_t lsa_state[64];
+    bool adpcm_restore;
+    static const uint32_t LSA_KEYON = 127u << 16;
 
     AicaModel();
     ~AicaModel();
@@ -237,6 +243,7 @@ struct AicaModel {
     static uint32_t eff_rate(uint32_t rate, uint16_t r14, uint16_t r18); /* from the KRS (r14) and OCT/FNS (r18) given */
     void stream_step(int ch, Frame *F, uint32_t smp);
     void decode_sample(int ch, bool last, uint32_t CA);
+    void adpcm_op(int ch, uint32_t flags) __attribute__((noinline));   /* rare, and the SPU's LS is short */
     void aeg_clock(int ch);
     void feg_clock(int ch);
     int32_t lpf_step(int ch, uint32_t v, int32_t x8); /* cutoff v; input and output in 1/8 sample units */

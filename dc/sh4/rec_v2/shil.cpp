@@ -269,6 +269,8 @@ extern "C"
 	const u8* g_ccall_cc_lo = 0;
 	const u8* g_ccall_cc_hi = 0;
 	int g_jit_ccalls_preset = 0;
+	u32 g_mem64[2][M64_COUNT] = { { 0 } };
+	u32 g_mem64_last[2] = { 0 };
 }
 
 // Which side of the JIT a call-out came from: a fastmem trampoline, emitted code, or the emulator's own C code
@@ -307,6 +309,27 @@ extern "C" void ccall_census_dump(double seconds, double vbs)
 
 	if (!g_jit_ccalls_preset || seconds <= 0.0)
 		return;
+
+	// [mem64] (plan 6.7): one line per window while the row is ON, so that a count of 0 is a result too.
+	static const char* const s_m64_name[M64_COUNT] = { "aram", "aica", "a0", "vram", "ram", "ta", "p4", "other" };
+	char m64[256];
+	int m64n = snprintf(m64, sizeof(m64), "[mem64] %.2fs  jit 64-bit C calls:", seconds);
+	for (u32 rw = 0; rw < 2; rw++)
+	{
+		u32 sum = 0;
+		for (u32 k = 0; k < M64_COUNT; k++)
+			sum += g_mem64[rw][k];
+		m64n += snprintf(m64 + m64n, sizeof(m64) - m64n, "%s %u", rw ? " | wr" : " rd", sum);
+		for (u32 k = 0; k < M64_COUNT; k++)
+		{
+			if (g_mem64[rw][k])
+				m64n += snprintf(m64 + m64n, sizeof(m64) - m64n, " %s %u", s_m64_name[k], g_mem64[rw][k]);
+			g_mem64[rw][k] = 0;
+		}
+		if (sum)
+			m64n += snprintf(m64 + m64n, sizeof(m64) - m64n, " last %08X", g_mem64_last[rw]);
+	}
+	printf("%s\n", m64);
 
 	// Sort by rate, descending. CC_COUNT is tiny, so a selection sort once a
 	// second costs nothing and keeps qsort out of the build.
