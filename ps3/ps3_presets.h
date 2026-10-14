@@ -150,6 +150,7 @@ extern int g_aica_lfore_preset;
 extern int g_spe_aica_gain_preset;
 extern int g_adpcm_loop_preset;
 extern int g_key_census_preset;
+extern int g_adpcm_stream_preset;
 extern int g_g2_dma_small_preset;
 extern int g_g2_dma_read_preset;
 extern int g_tmu_clock_preset;

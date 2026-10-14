@@ -1,5 +1,5 @@
-// OPTIMIZATION_PLAN 6.9 B PC check (WSL): the caique model's ADPCM Loop row, one voice per case, against a decoder
-// written from Flycast's rule (3f70e47ad), on each render path of the model. Usage: adpcm_check seed cases
+// OPTIMIZATION_PLAN 6.9 B PC check (WSL): the caique model's ADPCM Loop and ADPCM Stream rows, one voice per case,
+// against a decoder written from Flycast's rules (3f70e47ad), on each render path. Usage: adpcm_check seed cases
 #include "aica_model.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,12 +32,13 @@ static int32_t ref_adpcm(uint32_t nib, int32_t prev, int32_t& q)
 struct Ref
 {
 	uint32_t fmt, lpctl, lsa, lea, inc, sa;
-	bool restore;
+	bool restore, stream;   // the rows ADPCM Loop RESTORE and ADPCM Stream FIXED
 	const uint8_t* ram;
 	uint32_t ca, step;
 	int32_t q, s0, s1, sq, ss;
 	bool armed, ad_in, en, clr;
 	uint32_t laps, differ;   // loop laps; laps where the kept state is not the reset state
+	uint32_t s_old, s_new;   // stream laps whose LEA is no multiple of 4: with the old rule, with Flycast's
 
 	uint32_t nib(uint32_t p) const { return (ram[(sa + (p >> 1)) & (AicaModel::RAM_SIZE - 1)] >> ((p & 1) * 4)) & 0xF; }
 
@@ -83,7 +84,9 @@ struct Ref
 			if (p >= lsa) armed = true;
 			if (pt >= lea && was)
 			{
-				p = (p - (lea - lsa)) & 0xFFFF;
+				// OLD: the model's CA -= LEA - LSA. FIXED: Flycast's rule for a stream, the lap goes back to LSA.
+				if (fmt == 3 && lpctl && (lea & 3)) (stream ? s_new : s_old)++;
+				p = fmt == 3 && stream ? lsa : (p - (lea - lsa)) & 0xFFFF;
 				if (!lpctl) { ca = (ca + 1) & 0xFFFF; en = false; clr = true; return; }   // a one-shot end: no decode
 				lap = true;
 				laps++;
@@ -95,7 +98,7 @@ struct Ref
 };
 
 static int32_t g_mix[4 * AicaModel::ADV_MAX] __attribute__((aligned(16)));
-static uint64_t g_cmp, g_laps, g_differ, g_cases[4], g_ends, g_live, g_notes;
+static uint64_t g_cmp, g_laps, g_differ, g_cases[4], g_ends, g_live, g_notes, g_s_old, g_s_new;
 
 // n samples on path 0 run(), 1 advance() in chunks, 2 advance() per sample, 3 advance() with the DSP pass (A3)
 static void run_model(AicaModel* m, int path, uint32_t n)
@@ -116,6 +119,7 @@ static bool one_note(AicaModel* m, int path, int mode, int ch, bool again, uint3
 	memset(&r, 0, sizeof(r));
 	r.ram = m->ram;
 	r.restore = m->adpcm_restore;
+	r.stream = m->stream_lsa;
 	r.fmt = rnd(4) ? 2 : 3;
 	r.lpctl = rnd(8) ? 1 : 0;
 	r.lea = 2 + rnd(rnd(3) ? 400 : 6000);
@@ -165,15 +169,17 @@ static bool one_note(AicaModel* m, int path, int mode, int ch, bool again, uint3
 		g_cmp++;
 		if (c.CA != r.ca || c.step != r.step || c.s0 != r.s0 || c.s1 != r.s1 || c.adpcm_quant != r.q || c.enabled != r.en)
 		{
-			printf("MISMATCH seed %u case %u path %d mode %d (restore %d) PCMS %u LPCTL %u LSA %u LEA %u inc %u at sample %u:"
+			printf("MISMATCH seed %u case %u path %d mode %d (restore %d stream %d) PCMS %u LPCTL %u LSA %u LEA %u inc %u at sample %u:"
 			       " model CA %u step %u s0 %d s1 %d quant %d en %d | reference CA %u step %u s0 %d s1 %d quant %d en %d\n",
-			       seed, idx, path, mode, (int)r.restore, r.fmt, r.lpctl, r.lsa, r.lea, r.inc, t, c.CA, c.step, c.s0, c.s1,
+			       seed, idx, path, mode, (int)r.restore, (int)r.stream, r.fmt, r.lpctl, r.lsa, r.lea, r.inc, t, c.CA, c.step, c.s0, c.s1,
 			       c.adpcm_quant, (int)c.enabled, r.ca, r.step, r.s0, r.s1, r.q, (int)r.en);
 			return false;
 		}
 	}
 	g_laps += r.laps;
 	g_differ += r.differ;
+	g_s_old += r.s_old;
+	g_s_new += r.s_new;
 	g_ends += !r.en;
 	return true;
 }
@@ -185,6 +191,7 @@ static bool one_case(uint32_t seed, uint32_t idx)
 	const int mode = (int)rnd(5);   // 0, 1 RESET; 2, 3 RESTORE; 4 the row changes while the voice plays
 	m->no_dsp = path != 3;
 	m->adpcm_restore = mode == 2 || mode == 3;
+	m->stream_lsa = rnd(2) != 0;   // set before boot on the PS3: no change while a voice plays
 	m->write(0x2800, 0x000F);
 	const uint32_t notes = 1 + rnd(2);
 	for (uint32_t i = 0; i < notes; i++)
@@ -204,12 +211,14 @@ int main(int argc, char** argv)
 		if (!one_case(seed, i))
 			return 1;
 	// A run with no lap that keeps a state, no one-shot end, no second note or no live change tests too little: it fails
-	const bool thin = !g_differ || !g_ends || !g_live || !g_notes || !g_cases[0] || !g_cases[1] || !g_cases[2] || !g_cases[3];
+	const bool thin = !g_differ || !g_ends || !g_live || !g_notes || !g_cases[0] || !g_cases[1] || !g_cases[2] || !g_cases[3] ||
+	                  !g_s_old || !g_s_new;
 	printf("seed %u: %s: %u cases (run() %llu, advance %llu, advance by 1 %llu, with the DSP %llu), %llu compares, %llu laps"
-	       " (%llu with a kept state), %llu one-shot ends, %llu second notes, %llu live changes\n",
+	       " (%llu with a kept state), %llu one-shot ends, %llu second notes, %llu live changes, stream laps off 4: %llu old"
+	       " rule, %llu fixed\n",
 	       seed, thin ? "TOO THIN" : "OK", cases, (unsigned long long)g_cases[0], (unsigned long long)g_cases[1],
 	       (unsigned long long)g_cases[2], (unsigned long long)g_cases[3], (unsigned long long)g_cmp,
 	       (unsigned long long)g_laps, (unsigned long long)g_differ, (unsigned long long)g_ends, (unsigned long long)g_notes,
-	       (unsigned long long)g_live);
+	       (unsigned long long)g_live, (unsigned long long)g_s_old, (unsigned long long)g_s_new);
 	return thin ? 1 : 0;
 }

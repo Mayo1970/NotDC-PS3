@@ -27,6 +27,10 @@ if [ -z "$SEEDS" ]; then
 	for s in 1 2 3 4 7 8 17 18 33 56 57 58 61 63 100 106 131 190; do
 		MU_CFG=mix ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1
 	done
+	# Plan 6.9 B ADPCM Stream (flag 256): stream voices, the twin goes to LSA at their loop ends. Only seeds from 100
+	# play voices: 263 = the three fixes + 256, 383 = the rows of seed 131 + 256.
+	for s in 100 116; do ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B 263 || fail=1; done
+	./out/harness out/spe_arm7_sim.elf out/syms.txt 131 $B 383 || fail=1
 fi
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

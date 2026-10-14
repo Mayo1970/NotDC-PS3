@@ -76,6 +76,7 @@ typedef struct
 #define ARM_SETUP_RING64    32u   // P20 G3: so does a 64K-word ring, through its line cache
 #define ARM_SETUP_DSPRD     64u   // P20 G4: a read of TEMP, MEMS, MIXS or EFREG asks the sound SPU
 #define ARM_SETUP_STR_ALIGN 128u  // 6.8 "ARM7 STR Align": an unaligned ARM7 word store writes the aligned word
+#define ARM_SETUP_STREAM   256u  // 6.9 B "ADPCM Stream": the twin's ADPCM streams go to LSA, as the sound SPU's
 
 typedef struct
 {

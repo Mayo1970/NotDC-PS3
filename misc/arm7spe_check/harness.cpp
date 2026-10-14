@@ -1,6 +1,5 @@
-// OPTIMIZATION_PLAN 5.15 B2: the spe_arm7 SPU image in misc/spu_sim against an x86 reference made of the same ARM7
-// core, aica_ctl.h and caique model on flat memory, fed the same SH4 commands. Usage: harness elf syms seed batches
-// [flags], or harness elf syms optest flags (bundle 9: the conformance binaries and the op tests on the SPU image).
+// OPTIMIZATION_PLAN 5.15 B2: the spe_arm7 SPU image in misc/spu_sim against an x86 reference (same ARM7 core, aica_ctl.h,
+// caique model, SH4 commands). Usage: harness elf syms seed batches [flags] | harness elf syms optest flags (bundle 9)
 #include "spusim.h"
 #include "aica_model.h"
 #include "spe_aica.h"
@@ -987,6 +986,7 @@ int main(int argc, char** argv)
 	ac.lfore_keep = (g_flags & ARM_SETUP_LFORE) != 0;
 	a7_init(&g_cpu, (g_flags & ARM_SETUP_RESET_FIX) != 0);
 	g_m = new caique::AicaModel();
+	g_m->stream_lsa = (g_flags & ARM_SETUP_STREAM) != 0;   // plan 6.9 B ADPCM Stream: the twin's rule
 	g_m->reset();
 
 	g_sim = (SpuSim*)calloc(1, sizeof(SpuSim));
@@ -1032,7 +1032,9 @@ int main(int argc, char** argv)
 	auto hz_setup = [&]() {
 		for (u32 i = 0; i < 8; i++)
 		{
-			const u32 b = pick(64) * 0x80, fmt = pick(3), sa = pick(2) ? 0xE000 + pick(0x4000) : pick(ARAM), lsa = pick(300);
+			// an ARM_SETUP_STREAM run has ADPCM streams (PCMS 3) too: most loop ends are no multiple of 4
+			const u32 b = pick(64) * 0x80, fmt = pick((g_flags & ARM_SETUP_STREAM) ? 4 : 3);
+			const u32 sa = pick(2) ? 0xE000 + pick(0x4000) : pick(ARAM), lsa = pick(300);
 			sh4_wr(b + 0x04, sa & 0xFFFF);
 			sh4_wr(b + 0x08, lsa);
 			sh4_wr(b + 0x0C, lsa + 200 + pick(3000));

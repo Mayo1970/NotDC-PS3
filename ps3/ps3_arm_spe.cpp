@@ -340,7 +340,8 @@ bool arm_spe_init(u8* aica_ram)
 	                (get_aica_lfore_preset() ? ARM_SETUP_LFORE : 0) | ((af & AICA_SETUP_RING) ? ARM_SETUP_RING : 0) |
 	                ((af & AICA_SETUP_RING64) ? ARM_SETUP_RING64 : 0) |
 	                (get_dsp_reg_read_preset() && get_spe_aica_dsp_preset() ? ARM_SETUP_DSPRD : 0) |
-	                (get_arm7_str_align_preset() ? ARM_SETUP_STR_ALIGN : 0);
+	                (get_arm7_str_align_preset() ? ARM_SETUP_STR_ALIGN : 0) |
+	                ((af & AICA_SETUP_STREAM) ? ARM_SETUP_STREAM : 0);
 	memset(&s_census, 0, sizeof(s_census));
 	s_setup.census_ea = (u32)(uintptr_t)&s_census;
 	memset(&s_hz, 0, sizeof(s_hz));

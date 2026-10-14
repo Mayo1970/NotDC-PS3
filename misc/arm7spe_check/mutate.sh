@@ -81,5 +81,19 @@ try18 "SAMPLE: the debt lives on in SLICE" 's/^\ts_owed = 0;/\t;/'
 try18 "SAMPLE: Idle Skip SAFE ignored" 's/^\t\t\t\tcpu.idle_pref = (uint8_t)ARM_MU_SAFE(c->flags);/\t\t\t\tcpu.idle_pref = 0;/'
 try18 "SLICE: the batch's samples not banked" 's/^\t\ts_batch_smp += c->a;/\t\t;/'
 try18 "SLICE: banked samples kept after the run" 's/^\t\ts_batch_acc = s_batch_smp = 0;$/\t\ts_batch_acc = 0;/'
+# Plan 6.9 B ADPCM Stream: the twin's rule comes from flag 256; a run with stream voices (seeds from 100) fails without it.
+try69() {
+	total=$((total + 1))
+	sed "$2" ../../ps3/spu/spe_arm7.cpp > $M
+	if cmp -s $M ../../ps3/spu/spe_arm7.cpp; then echo "MUTATION DID NOT APPLY: $1"; return; fi
+	SRC=misc/arm7spe_check/$M sh build_spu.sh > out/mut_build.log 2>&1 || { echo "BUILD FAILED: $1"; return; }
+	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/arm7spe_check && ./out/harness out/spe_arm7_sim.elf out/syms.txt 100 3000 263 > out/mut_run.log 2>&1 && ./out/harness out/spe_arm7_sim.elf out/syms.txt 116 3000 263 >> out/mut_run.log 2>&1'; then
+		echo "NOT CAUGHT: $1"
+	else
+		echo "caught: $1"
+		caught=$((caught + 1))
+	fi
+}
+try69 "ADPCM Stream: the twin keeps the old rule" 's/^\tM->stream_lsa = (setup.flags \& ARM_SETUP_STREAM) != 0;/\t;/'
 echo "$caught of $total mutations caught"
 SRC= sh build_spu.sh > out/mut_build.log 2>&1

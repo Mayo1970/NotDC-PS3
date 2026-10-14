@@ -165,6 +165,7 @@ int g_aica_lfore_preset    = 0;   // 1 = LFORE stays set after a write, as Flyca
 int g_spe_aica_gain_preset = 100; // SPE AICA Sound output level in percent before the 16-bit clamp; 100 = none (6.6 clipping)
 int g_adpcm_loop_preset    = 1;   // 0 RESET: an ADPCM loop lap clears the decoder, 1 RESTORE: it takes the state of LSA (6.9 B)
 int g_key_census_preset    = 0;   // 1 = [kon] lines: each voice start with its registers, refused key-ons (bundle 18, log only)
+int g_adpcm_stream_preset  = 1;   // 1 FIXED: an ADPCM stream (PCMS 3) goes to LSA at its loop end, no nibble lost (6.9 B)
 // OPTIMIZATION_PLAN section 7, bundle 6: a row is off until it is cleared on hardware.
 int g_g2_dma_small_preset  = 0;   // 1 = an AICA G2 DMA of 512 SH4 cycles or less ends in its start call (P24)
 int g_g2_dma_read_preset   = 0;   // 1 = an AICA G2 DMA with SB_ADDIR 1 copies wave RAM to system RAM (P9)
@@ -384,6 +385,7 @@ static const CfgItem s_items[] = {
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
 	{ "AdpcmLoop",     &g_adpcm_loop_preset },
 	{ "KeyCensus",     &g_key_census_preset },
+	{ "AdpcmStream",   &g_adpcm_stream_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
 	{ "TmuClock",      &g_tmu_clock_preset },
@@ -501,6 +503,7 @@ static const CfgItem s_snd_items[] = {
 	{ "SpeAicaGain",   &g_spe_aica_gain_preset },
 	{ "AdpcmLoop",     &g_adpcm_loop_preset },
 	{ "KeyCensus",     &g_key_census_preset },
+	{ "AdpcmStream",   &g_adpcm_stream_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
 };
@@ -895,6 +898,7 @@ int get_spe_aica_gain_preset() { return g_spe_aica_gain_preset; }
 // Bundle 18, both read at each CHECK: ADPCM Loop goes to the sound SPU's bell, Key Census turns the [kon] lines on.
 int get_adpcm_loop_preset()    { return g_adpcm_loop_preset; }
 int get_key_census_preset()    { return g_key_census_preset; }
+int get_adpcm_stream_preset()  { return g_adpcm_stream_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 6: read at each G2 DMA start by dc/aica/aica_if.cpp.
 int get_g2_dma_small_preset()  { return g_g2_dma_small_preset; }
 int get_g2_dma_read_preset()   { return g_g2_dma_read_preset; }

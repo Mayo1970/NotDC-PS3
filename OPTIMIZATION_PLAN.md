@@ -32,14 +32,48 @@ bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 latest review and findings."). Asked with four options, he chose
 "Measure + ADPCM row": one package with two measures (log only) and one
 row. Built: package of 01:23 on 2026-10-14 (1699760 bytes), then the
-package of 02:41 (`build/notdc_ps3.pkg`, 1699632 bytes) with the
-timebase fix of the SOUND STOP bullet. No older package is kept in
-`build/` (Matt removes the copies). Not committed. Every
+package of 02:41 with the timebase fix of the SOUND STOP bullet,
+then the package of 03:41 (`build/notdc_ps3.pkg`, 1699760 bytes) with
+the row ADPCM Stream (HW run 4's bullet; HW SUCCESS in HW run 5). No
+older package is kept in `build/` (Matt removes the copies). Not
+committed. Every
 new row is at its old path by default. HW run 1 the same night (the
 first bullet): the two measures gave their answers, and ADPCM Loop
 RESTORE is an HW SUCCESS (Matt: "with restore, in the current log,
 the issue is fixed"). RESTORE is the default in the source since
-2026-10-14 (Matt: "Yes, keep it as default."), not packaged.**
+2026-10-14 (Matt: "Yes, keep it as default."), in the package of
+03:41. ADPCM Stream FIXED is the default in the source since
+2026-10-14 (Matt: "Yes, place it as default."), not packaged.**
+- **PC checks of the stop: DONE 2026-10-14 09:05-09:15 (session
+  72efb758), all at their pass marks. Matt, 03:54: "Can you stop it
+  and save it as the first thing to do in the next session?". Then
+  Matt's HW run of ADPCM Stream FIXED: HW SUCCESS (HW run 5, in HW
+  run 4's bullet).** These are the older checks of the files that
+  the row ADPCM Stream changed. Logs: `/tmp/b18w` in WSL (scratch
+  `verify2.sh`) and scratch `arm7mut.log`. No tracked file changed.
+  1. `misc/spu_sim/mutate_adv.sh`: 27 caught. MISSED: "fast: ADPCM
+     preview kept" (known) and "fast: one-shot keeps the mask" (its
+     text expects MISSED). BADPATTERN: "final_mix: DAC18B shift" and
+     "fast: vo not latched" (stale, known). These are the same lines
+     as in the last full run. `mutate_a3.sh`: 26 caught, 1 MISSED as
+     its text expects ("fast: stale claim seen by slot_quiet"). The
+     two lists took 5 minutes, not 45.
+  2. `misc/hz_check/run.sh`: 8 of 8 seeds PASS.
+  3. `misc/spu_sim/run_dsp.sh '0 1 2'`: 17 runs, each `bad 0`. Modes 1
+     and 2: self-test pass, 25 compiles, 0 fails. Mode 2: 1883-3145
+     checks, 0 bad. The argument is the list of DSP JIT modes, not the
+     scenarios. The stopped run had `'dsp dsprand'`, which `atoi()`
+     reads as mode 0 (the interpreter) twice.
+  4. `misc/arm7spe_check/mutate.sh`: 38 of 39 caught, `try69` too.
+     NOT CAUGHT: "twin catch-up skipped on writes". Its text is stale
+     since 02444ac (2026-10-11): the sed takes the FIRST `catch_up();`
+     line, now the one in `hz_map()` (line 374), not the one before
+     `M->write()` (line 568). That bug run by hand at line 568:
+     caught (seed 7, a log record MISMATCH). The text is NOT repaired.
+  The checks that passed before the stop: a2_check, a3_check,
+  dspjit_check, the 11 presets / menu checks, arm7spe_check (83 of
+  83), `run_ring.sh` (51 scenarios), adpcm_check (32 of 32 planted
+  bugs).
 - HW run 1, 2026-10-14 01:40, Sonic Adventure 2 (Europe)[DCP].cdi, one
   boot, about 100 s of stage play. Log `b18b_hw.txt` (13357 lines,
   scratchpad of session 1ed40982; the first 25 s of the run are in
@@ -205,9 +239,128 @@ the issue is fixed"). RESTORE is the default in the source since
   - Looney Tunes Space Race: "Sadly it didn't fix the sound balance
     issue in Space Race." (the boot at log line 40782, RESTORE, Key
     Census OFF). The balance was not a target of the three items of
-    this resume. It is still open in bundle 18. A first measure, not
-    run: Key Census ON in Space Race (the levels of each voice
-    start, the `fold` and `refused` counts).
+    this resume. It stayed open until HW run 5 (ADPCM Stream FIXED:
+    HW SUCCESS). The first measure, Key Census ON in Space Race (the
+    levels of each voice start, the `fold` and `refused` counts), is
+    HW run 4.
+- HW run 4, 2026-10-14 02:53-03:00, Looney Tunes Space Race (the boot
+  at log line 48635, 392 s; ADPCM Loop RESTORE, SPE ARM7 ON). Matt set
+  Key Census ON for one span, 183 s to 219 s ("I turned it on and off
+  in the important parts."): 52 `[kon]` lines. The cause of the
+  balance fault is found (the CAUSE sub-bullet). Its fix is the row
+  ADPCM Stream (the BUILT sub-bullet), package of 03:41: HW SUCCESS
+  (Matt: "It works!", the HW run 5 sub-bullet).
+  - A 2D screen before the scene, 183-198 s: 46 starts of four ADPCM
+    one-shots (22.05 kHz, 1.1 to 1.9 s long) on slots 0 and 1 in
+    turn, one each 0.28 s; TL 36
+    (-13.5 dB), DISDL 15, DIPAN 01. Output peak 9.7%.
+  - A 3D scene (about 20000 vertices), 198-229 s: a stereo ADPCM
+    stream (PCMS 3, a ring of 8192 samples, 22.05 kHz) on slots 0 and
+    1, TL 12 (-4.5 dB), DISDL 15, DIPAN 1F / 0F. Output peak 61.7% in
+    each window. No other voice starts in its 15 s of census.
+  - All windows: refused 0, folds 0 (the AUDIO64 key pair lead of 6.9
+    D is out for this span). IMXL 0 on each start, EFSDL 0 on the 16
+    DSP outputs, DSP program `live=2/128`: the DSP is not in the mix,
+    so the lead "the voices reach the output only through the DSP"
+    is out. MVOL 15. The CD audio input (EXTS) is at level 11 of 15
+    on both sides (-12 dB).
+  - Not in the span: the race. `SPI_CD_PLAY` at 302 s, CD audio from
+    304 s to 378 s (75 sectors/s; the image has 13 audio tracks, 12
+    of them 158-198 s long: the race music is CD audio). There the
+    mix peaks at 69% to 191%, and one window clips (367 samples/s).
+    If the EXTS level stays 11, the CD music alone can reach 25%, so
+    the slot voices are the loud part of the race mix. Their levels
+    are not in the log (Key Census OFF from 219 s).
+  - The model's EXTS mix (`final_mix`, `volpan` with EFSDL / EFPAN of
+    registers 0x2040 / 0x2044) reads the same as Flycast's.
+  - Matt's words (2026-10-14): the fault is in "the 3D scene before
+    the menu": "The sound balance is off. Sometimes it would balance
+    on the left or the right, and the music gets instantly quiet the
+    moment there's a voice in."
+  - CAUSE FOUND (code + this census + a PC estimate), NOT BUILT: the
+    wrap of an ADPCM stream. The scene's sound is the stereo stream
+    above: PCMS 3, LSA 0, LEA 8191, a ring of 8192 nibbles per side
+    (the two rings are 0x1000 bytes apart). In `stream_step()` and
+    `slot_fast()` (`plugs/caiqueAICA/aica_model.cpp:476-485`,
+    `:1506-1514`) a stream tests the loop end on `CA & ~3`, so the
+    test fires at CA 8192, and `CA -= LEA - LSA` then gives 1. Ring
+    position 0 is not decoded on any lap after the first: one ADPCM
+    nibble of the stream is lost per lap, 2.7 times per second on
+    each side. ADPCM is a delta format with a step state, so each
+    lost nibble shifts the level and the offset of that side for the
+    rest of the stream, and the two sides shift apart.
+  - Flycast wraps to LSA (`sgc_if.cpp`, `alignedLEA`): no nibble is
+    lost. The caique console case (`cases/sgc_formats.c`) loops over
+    [0, 4096): its LEA is a multiple of 4, and for such a LEA the two
+    rules are equal. So the console data does not cover LEA 8191,
+    and a ring of 8192 nibbles with LEA 8191 decodes as one stream
+    only with Flycast's rule. This is 6.9 B's item "ADPCM long
+    stream (PCMS 3) with LEA & 3 != 0", which had no game.
+  - PC estimate (scratch `ringdrop.py`, a synthetic stream, not the
+    game's data): with the nibble at ring position 0 left out, 46 of
+    59 and 58 of 59 half-second windows are off by 3 dB or more (two
+    channels, each in its own way), and the output sits at the
+    16-bit clamp. In the log the scene's peak is 61.7% in window
+    after window: TL 12 of a signal at the clamp is 59.6%.
+  - BUILT 2026-10-14 (Matt: "Yes, thanks."): row "ADPCM Stream" OLD /
+    FIXED (AUDIO page, key `AdpcmStream`, default OLD at the build,
+    FIXED since 2026-10-14, set before boot), package of 03:41. With
+    FIXED a stream wraps to LSA
+    (subtract `((LEA + 3) & ~3) - LSA`): model flag `stream_lsa`, 2
+    lines (`stream_step()`, `slot_fast()`), no change for a LEA that
+    is a multiple of 4. The play position changes, so each copy of
+    the model gets the rule at boot: the sound SPU
+    (`AICA_SETUP_STREAM`), the control twin on the ARM7 SPU
+    (`ARM_SETUP_STREAM`: the game reads CA from it) and the PPU twin.
+    That is why the row is not live. SPU text: sound +136 B (LS
+    spare 3840 B in the DSP scenarios), ARM7 +224 B. No SPU time
+    cost (742 against 753 cycles per rendered slot, mix scenario).
+    The option pages now hold 192 rows = `MAX_INGAME_OPTS`: the next
+    row needs a larger value.
+  - PC checks of the row, all complete: `misc/adpcm_check` (its
+    reference now has Flycast's literal rule, CA = LSA; it had the
+    model's own wrap before, so it could not see this fault): 8
+    seeds PASS, 32 of 32 planted bugs fail it. `diff_adv` with
+    `STREAM=1`: 3 seeds PASS. The real sound SPU image, new scenario
+    `stream` of `run_a2`: OLD equals the base model and FIXED equals
+    the reference (47926 frames each, 0 bad). Two negative runs: the
+    image from before the row against FIXED has 41438 bad frames; a
+    twin with the old rule (`TWIN_OLD=1`) has 311 of 344 bad checks.
+    So on the PS3 `checks=N bad=0` in the `[aica-spe]` line shows
+    that the copies agree. `misc/arm7spe_check`: 83 of 83, with 3
+    new runs (flag 256, seeds 100, 116, 131); the bug "the twin
+    keeps the old rule" fails all three. Trap: only seeds from 100
+    play voices there; my first runs (seeds 7, 58) passed with the
+    bug in.
+  - HW test (Matt), done in HW run 5: AUDIO > ADPCM Stream FIXED
+    before the game starts, Space Race, the 3D scene before the menu.
+    The log: `AdpcmStream=1` in `[sndcfg] boot:`, `adpcm stream 1` in
+    `[aica-spe] bundle 5 in use`, `bad=0`. A compare needs a second
+    boot with OLD.
+  - HW run 5, 2026-10-14 09:24-09:26 (session 72efb758, log
+    `b18s_hw.txt` in its scratchpad; boot stamp `Oct 14 2026
+    01:28:33`): Space Race, one boot of 102 s, ADPCM Stream FIXED
+    from the boot (`AdpcmStream=1`, `adpcm stream 1`), ADPCM Loop
+    RESTORE, Key Census OFF, SPE ARM7 ON. HW SUCCESS (Matt: "It
+    works!"). The log: `bad=0` in all 140 check counts (3211-3456
+    twin checks per window), 0 drops, 0 clipped samples. In the 3D
+    scene the peak changes from window to window (61.3, 57.5, 54.2,
+    50.7, 58.8%). With OLD (HW run 4) it was 61.7% in each window. No
+    boot with OLD in this run. The next boot of the log is ChuChu
+    Rocket with FIXED (line 3584).
+  - DEFAULT 2026-10-14 (Matt: "Yes, place it as default."): FIXED in
+    the source (`g_adpcm_stream_preset = 1`), not packaged: the
+    package of 03:41 has OLD for an install with no `AdpcmStream` key.
+    Matt's PS3 has FIXED saved (`AdpcmStream=1` at the ChuChu Rocket
+    boot too). No PC check names the key or the variable.
+  - Matt on the race: "During the race while loading a sound cue it
+    would micro-stutter most likely." The log: the SH4 reads nothing
+    from the disc in the race (304-378 s; only the CD audio
+    read-ahead runs). 16 of 75 seconds are under 98% SPEED (lowest
+    94.1%), at 30.9K vertices on average against 23.2K in the other
+    seconds, and the sound output has 56 silent 5.3 ms blocks, all in
+    or next to those seconds. So it is the SH4-bound heavy scene of
+    bundle 22, heard as gaps, not a cue load.
 - Row "ADPCM Loop" RESET / RESTORE (AUDIO page, live, key `AdpcmLoop`,
   default RESTORE since 2026-10-14; RESET at the build).
   It is 6.9 B: with RESTORE a looped ADPCM voice (PCMS
@@ -12510,6 +12663,12 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   1..3 (`aica_model.cpp:460`, `:468`, `:1495`), Flycast to LSA
   (`sgc_if.cpp:1160`, `:1194`). Console: not measured. No game shown;
   Sonic Adventure 2 has no PCMS 3 bank row. Not built.
+  GAME SHOWN 2026-10-14: the intro of Looney Tunes Space Race, a
+  stereo stream with LEA 8191. It is the cause of that game's balance
+  fault (section 0, HW run 4). BUILT 2026-10-14 as the row "ADPCM
+  Stream" OLD / FIXED. HW SUCCESS 2026-10-14 (Matt: "It works!";
+  section 0, HW run 5). Default FIXED in the source since 2026-10-14
+  (Matt), not packaged.
 - Looping slot with LSA >= LEA: Flycast holds or stops
   (`sgc_if.cpp:1171-1198`); ours plays on (`aica_model.cpp:464-468`),
   as the console (caique `NOTES.md:160-163`). Do not port. No game.
@@ -13085,7 +13244,7 @@ built by the change.
 | 15 | Flash and clock (re-cut 2026-10-12; was Flash defaults) | P59 (corrects 3i), P85, P37's BIOS language row, P12 | Capcom vs. SNK 2, Border Down and Rayman 2 at 60 Hz; a new flash in English; no BIOS settings lost on a forced exit; the block code that G11 needs | `[x]` **HW SUCCESS 2026-10-13 (Matt: "I'd say that as of now It's a success."; section 0)**: Broadcast DISC gives Rayman 2 and Capcom vs. SNK 2 60 Hz at SPEED 100% (Rayman 2: 29.98 renders per second, 24.99 before), BIOS Language ITALIAN gives Italian BIOS menus (Matt: "It works"), RTC Local Time gives UTC + 2 h, Console ID keeps the flash's ID and sets version FE; **defaults in source since 2026-10-13 (Matt: "Place the one I used for the Rayman 2 run as defaults."): Broadcast DISC, BIOS Language ENGLISH, Flash Defaults FLYCAST, Console ID FLYCAST, Exit Flash Save OFF, RTC Local Time ON, not packaged (the package of 10:05 has the old path in each)**; open for the last checks before the release (Matt): Border Down, Exit Flash Save, Flash Defaults with no flash file; built 2026-10-13 (Matt: "We will work on Bundle 15 now."): a new FLASH / CLOCK page with Broadcast (CONSOLE / NTSC / PAL / DISC), BIOS Language (CONSOLE and the six languages), Flash Defaults (OLD / FLYCAST), Console ID (OLD / FLYCAST), Exit Flash Save (OFF / ON, live) and RTC Local Time (OFF / ON), every default is the old path; no row's value reaches `dc_flash_wb.bin` but the console ID; a `[flash]` line at each boot shows the bytes; the old logs: 10 of 23 games stay at 50 Hz in every boot, and the PS3 clock is UTC with no time zone, so P12's line never runs there and the row RTC Local Time (the XMB's zone and summer time) is an addition; PC checks PASS (`misc/flash_check`, 94 of 94 mutants); package of 09:56 on 2026-10-13 (= the G14 package + this bundle); not built: Flycast's block reuse in `alloc_block` (G11 needs it on a flash as full as Matt's) |
 | 16 | Maple bus and VMU (new at the re-cut of 2026-10-12) | P29, P9 SB_MDST, P68's maple parts, P37 (VMU per game, VMU LCD, keyboard and mouse) | Geist Force and Silent Scope; no maple hang or crash; one VMU file per game | `[x]` **HW SUCCESS 2026-10-13 (Matt: "Yes, mark it as a success.")**; built 2026-10-13 (Matt: "We will now work at bundle 16."; section 0): a new MAPLE / VMU page with eight rows, every default the old path at the build: Maple Reply Delay, Maple Bus Speed, Maple Commands, Maple VBlank DMA, Maple Guards, Maple Frame Rules, VMU Per Game (OFF / SLOT A1 / ALL SLOTS), VMU Screen; **defaults in source since 2026-10-13 (Matt: "Keep them up as default then. Except Maple Bus Speed."): the rows ON but Maple Bus Speed (OLD) and VMU Per Game (OFF, no run), not packaged**; **HW runs 1-3 2026-10-13: VMU Screen works (Matt: "The VMU pictures are very cute! It works."); Maple Bus Speed REAL eats inputs in Sonic Adventure at Players 4 and stays OLD (Matt: "Maple Bus Speed fixes it."); the other five Maple rows ran ON with no fault**; the USB Keyboard and USB Mouse rows were built and removed the same day (Matt: "frankly I'd just remove this feature altogether. Very few games use it anyway."); VMU Per Game not run; PC checks PASS (`misc/maple_check`, 99 of 99 mutants); package of 12:39 on 2026-10-13; not built: the VMU beep (bundle 18) |
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
-| 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance still open |
+| 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance = the ADPCM stream wrap, row "ADPCM Stream" FIXED HW SUCCESS 2026-10-14 (Matt), default FIXED in source since 2026-10-14 (Matt), not packaged |
 | 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[ ]` |
 | 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[ ]` nothing built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
 | 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF |
@@ -14282,7 +14441,7 @@ Main gains:
   compare. HW: Jet Grind Radio; Crazy Taxi and Sonic Adventure unchanged;
   Shenmue only if Matt has it.
 
-### Bundle 18: Sound wrap-up  `[~]` RESUMED 2026-10-14 (Matt): the row ADPCM Loop, the log row Key Census and the `[mem64]` count are built; HW run 1 2026-10-14: `[mem64]` 0, the levels and the music are right, ADPCM Loop RESTORE HW SUCCESS (Matt: it fixes the sounds that stop too early), default RESTORE in source since 2026-10-14 (section 0); the sound stop of both runs was the timebase read, fixed, HW SUCCESS; the Looney Tunes Space Race balance is not fixed (Matt), still open; parked 2026-10-13 after four HW runs on Sonic Adventure 2 with no fix; the rows ARM7 Rate and ARM7 Interleave built, default the old path; new at the re-cut of 2026-10-12 (the tails of bundles 5 and 6); Flycast sound review 2026-10-13 in 6.9
+### Bundle 18: Sound wrap-up  `[~]` RESUMED 2026-10-14 (Matt): the row ADPCM Loop, the log row Key Census and the `[mem64]` count are built; HW run 1 2026-10-14: `[mem64]` 0, the levels and the music are right, ADPCM Loop RESTORE HW SUCCESS (Matt: it fixes the sounds that stop too early), default RESTORE in source since 2026-10-14 (section 0); the sound stop of both runs was the timebase read, fixed, HW SUCCESS; the Looney Tunes Space Race balance (RESTORE did not fix it) is the ADPCM stream wrap: row ADPCM Stream FIXED HW SUCCESS 2026-10-14 (Matt: "It works!"), default FIXED in source since 2026-10-14 (Matt), not packaged; parked 2026-10-13 after four HW runs on Sonic Adventure 2 with no fix; the rows ARM7 Rate and ARM7 Interleave built, default the old path; new at the re-cut of 2026-10-12 (the tails of bundles 5 and 6); Flycast sound review 2026-10-13 in 6.9
 
 - RESUMED 2026-10-14 (Matt: "Let's resume bundle 18 with the latest
   review and findings."). He chose "Measure + ADPCM row". Built, no HW

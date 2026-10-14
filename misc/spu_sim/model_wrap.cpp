@@ -119,5 +119,6 @@ void F(live)(void* h, uint32_t* l) { ((M*)h)->live_stats(l[0], l[1], l[2], l[3])
 void F(set_mono)(void* h, int on) { ((M*)h)->mono_half = on != 0; }   // P31 Mono Mix Fix
 void F(set_gain)(void* h, uint32_t g) { ((M*)h)->out_gain = g; }       // plan 6.6 SPE AICA Gain, in 1/256
 void F(set_adpcm)(void* h, int on) { ((M*)h)->adpcm_restore = on != 0; }   // plan 6.9 B ADPCM Loop RESTORE
+void F(set_stream)(void* h, int on) { ((M*)h)->stream_lsa = on != 0; }     // plan 6.9 B ADPCM Stream FIXED
 #endif
 }

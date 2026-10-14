@@ -772,6 +772,7 @@ int main(uint64_t arg_bell, uint64_t arg_echo, uint64_t arg_setup)
 	ac.lfore_keep = (setup.flags & ARM_SETUP_LFORE) != 0;
 	a7_init(&cpu, (setup.flags & ARM_SETUP_RESET_FIX) != 0);
 	M->init();
+	M->stream_lsa = (setup.flags & ARM_SETUP_STREAM) != 0;
 	M->reset();
 	aram_invalidate_all();
 	st.state = ARM_SPE_STATE_RUNNING;

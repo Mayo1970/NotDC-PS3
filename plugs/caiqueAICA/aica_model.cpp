@@ -71,6 +71,7 @@ void AicaModel::init() {
     mono_half = false;
     out_gain = 0;
     adpcm_restore = false;
+    stream_lsa = false;
     reset();
 }
 
@@ -482,7 +483,8 @@ void AicaModel::stream_step(int ch, Frame *F, uint32_t smp) {
         if (!armed && CA == c.LSA && (f == 2 || f == 3)) op |= OP_LSA;
         if (ca_t >= c.LEA && armed) {
             c.looped = true;
-            CA = (uint32_t)((int32_t)CA - ((int32_t)c.LEA - (int32_t)c.LSA)) & 0xFFFF;
+            const uint32_t lea = f == 3 && stream_lsa ? (c.LEA + 3) & ~3u : c.LEA;   /* a stream's lap: see stream_lsa */
+            CA = (uint32_t)((int32_t)CA - ((int32_t)lea - (int32_t)c.LSA)) & 0xFFFF;
             if (LPCTL) {
                 if (f == 2) op |= OP_LOOP;
             } else {
@@ -1511,7 +1513,8 @@ uint32_t AicaModel::slot_fast(int ch, uint32_t i, const AdvCtx &x, int32_t *mix,
                             lsa_state[ch] = (uint32_t)quant << 16 | ((uint32_t)s0 & 0xFFFF);
                         if (ca_t >= LEA && armed) {
                             c.looped = true;
-                            ca = (uint32_t)((int32_t)ca - ((int32_t)LEA - (int32_t)LSA)) & 0xFFFF;
+                            const uint32_t lea = f == 3 && stream_lsa ? (LEA + 3) & ~3u : LEA;   /* as stream_step() */
+                            ca = (uint32_t)((int32_t)ca - ((int32_t)lea - (int32_t)LSA)) & 0xFFFF;
                             if (LPCTL) rst = f == 2;
                             else {   /* one-shot end: CA reads LEA now, 0 from the next sample */
                                 CA = (CA + 1) & 0xFFFF;

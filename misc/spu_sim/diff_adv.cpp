@@ -15,6 +15,7 @@ void* cur_create(int); void cur_write(void*, uint32_t, uint32_t); uint32_t cur_r
 void cur_advance(void*, uint32_t, int, const int32_t*, int16_t*); uint32_t cur_snap_hash(void*);
 uint8_t* cur_ram(void*); uint64_t cur_samples(void*); uint64_t cur_quiet(void*);
 void cur_step(void*, int32_t, int32_t, int16_t*); void cur_stepc(void*); void cur_set_adpcm(void*, int);
+void cur_set_stream(void*, int);
 }
 // The reference's entry points: the base model, or the tree's (env ADPCM)
 static void* (*B_create)(int) = base_create;
@@ -82,7 +83,8 @@ int main(int argc, char** argv) {
     const uint64_t seed0 = argc > 2 ? strtoull(argv[2], 0, 0) : 1;
     // Env ADPCM (plan 6.9 B): the reference is the tree's own run(); 1 = ADPCM Loop RESTORE, 2 = the row changes live
     const int adpcm = getenv("ADPCM") ? atoi(getenv("ADPCM")) : 0;
-    if (adpcm) {
+    const int stream = getenv("STREAM") ? atoi(getenv("STREAM")) : 0;   // 1 = ADPCM Stream FIXED, the same reference
+    if (adpcm || stream) {
         B_create = cur_create; B_write = cur_write; B_read = cur_read; B_step = cur_step;
         B_stepc = cur_stepc; B_snap_hash = cur_snap_hash; B_ram = cur_ram;
     }
@@ -94,6 +96,7 @@ int main(int argc, char** argv) {
         B = base_create(render);
         N = cur_create(render);
         if (adpcm) { cur_set_adpcm(B, adpcm == 1); cur_set_adpcm(N, adpcm == 1); }
+        if (stream) { cur_set_stream(B, 1); cur_set_stream(N, 1); }
         if (render) {
             uint8_t *rb = base_ram(B), *rn = cur_ram(N);
             for (uint32_t i = 0; i < (2u << 20); i += 8) { const uint64_t v = rng(); memcpy(rb + i, &v, 8); memcpy(rn + i, &v, 8); }

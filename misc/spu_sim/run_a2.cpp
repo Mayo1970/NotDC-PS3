@@ -19,6 +19,7 @@ DECL(base_) DECL(cur_)
 void cur_set_mono(void*, int);
 void cur_set_gain(void*, uint32_t);
 void cur_set_adpcm(void*, int);
+void cur_set_stream(void*, int);
 }
 
 // ---- main memory (big-endian data, PS3 layout) ----
@@ -133,6 +134,7 @@ static bool g_dsp;   // dsp / dsprand: the SPU runs the DSP (A3); env DSPJIT = i
 static uint32_t pick_fmt()
 {
     if (!strcmp(g_scn, "adpcm")) return 2;
+    if (!strcmp(g_scn, "stream")) return 3;   // ADPCM streams: loop ends that are no multiple of 4 (env STREAM)
     if (!strcmp(g_scn, "pcm16")) return 0;
     if (!strcmp(g_scn, "pcm8")) return 1;
     const uint32_t r = rnd(10);
@@ -391,7 +393,7 @@ int main(int argc, char** argv)
 {
     if (argc < 2)
     {
-        fprintf(stderr, "usage: run_a2 elf [mix|adpcm|pcm16|pcm8|pause|dsp|dsprand|mono|ring|ringrand|ring64|ringwrap]"
+        fprintf(stderr, "usage: run_a2 elf [mix|adpcm|stream|pcm16|pcm8|pause|dsp|dsprand|mono|ring|ringrand|ring64|ringwrap]"
                         " [seconds] [voices] [seed]\n");
         return 2;
     }
@@ -409,11 +411,13 @@ int main(int argc, char** argv)
         g_setup_flags = (uint32_t)atoi(getenv("ROWS"));
     if (mono_fix)
         g_setup_flags |= AICA_SETUP_MONO;
+    if (getenv("STREAM") && atoi(getenv("STREAM")))   // plan 6.9 B ADPCM Stream FIXED: the SPU, the reference, the twin
+        g_setup_flags |= AICA_SETUP_STREAM;
     g_gain = getenv("GAIN") ? (uint32_t)atoi(getenv("GAIN")) : 0;
     const uint32_t gain2 = getenv("GAIN2") ? (uint32_t)atoi(getenv("GAIN2")) : g_gain;
     g_adpcm = getenv("ADPCM") ? (uint32_t)atoi(getenv("ADPCM")) : 0;
     const uint32_t adpcm2 = getenv("ADPCM2") ? (uint32_t)atoi(getenv("ADPCM2")) : g_adpcm;
-    g_ref_cur = g_rscn || g_mono || g_gain || getenv("ADPCM") || getenv("ADPCM2");
+    g_ref_cur = g_rscn || g_mono || g_gain || getenv("ADPCM") || getenv("ADPCM2") || getenv("STREAM");
     const uint32_t dspjit = getenv("DSPJIT") ? (uint32_t)atoi(getenv("DSPJIT")) : 1;
     const bool snd = !getenv("SND") || atoi(getenv("SND")) != 0;   // SND=0: the A1 check alone, no frames
     const uint32_t total = g_total = (uint32_t)(secs * 44100) & ~63u;
@@ -445,6 +449,11 @@ int main(int argc, char** argv)
         put32(g_bell + offsetof(AicaBell, adpcm_loop), 1);
     }
     g_cur = cur_create(0);
+    if (g_setup_flags & AICA_SETUP_STREAM)
+    {
+        cur_set_stream(g_base, 1);
+        if (!getenv("TWIN_OLD")) cur_set_stream(g_cur, 1);   // TWIN_OLD=1: the twin keeps the old rule, the checks must fail
+    }
     // wave RAM: smooth PCM16, PCM8, random ADPCM nibbles
     g_dc.resize(2u << 20);
     for (uint32_t a = 0; a < 0x100000; a += 2)

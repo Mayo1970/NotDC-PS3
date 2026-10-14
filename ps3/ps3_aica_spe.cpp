@@ -33,6 +33,7 @@ extern "C" int get_dsp_reg_read_preset();
 extern "C" int get_aica_mono_fix_preset();
 extern "C" int get_spe_aica_gain_preset();
 extern "C" int get_adpcm_loop_preset();
+extern "C" int get_adpcm_stream_preset();
 extern "C" int get_key_census_preset();
 // ps3_audio.cpp
 void ps3_audio_ring_info(u32* ring_ea, u32* frames, u32* wr_ea, u32* rd_ea, u32* wr_now);
@@ -927,10 +928,11 @@ bool ps3aica_init(u8* aica_ram)
 	}
 	// Bundle 5. The ring rows need the twin on the SH4 thread or on the ARM7 SPU: not with the sound thread.
 	const bool twin_ok = get_spe_arm7_preset() || !get_sound_thread_preset();
-	s_setup_flags = get_aica_mono_fix_preset() ? AICA_SETUP_MONO : 0;
+	s_setup_flags = (get_aica_mono_fix_preset() ? AICA_SETUP_MONO : 0) | (get_adpcm_stream_preset() ? AICA_SETUP_STREAM : 0);
 	if (snd_dsp && twin_ok)
 		s_setup_flags |= (get_dsp_ring_ram_preset() ? AICA_SETUP_RING : 0) | (get_dsp_ring_64k_preset() ? AICA_SETUP_RING64 : 0);
 	s_shared.setup.flags = s_setup_flags;
+	s_m->stream_lsa = (s_setup_flags & AICA_SETUP_STREAM) != 0;   // the PPU twin walks CA as the two SPU copies do
 	s_dsp_rd = snd_dsp && get_dsp_reg_read_preset() != 0;
 	memset(&s_hz, 0, sizeof(s_hz));
 	memset(s_hz_ppu, 0, sizeof(s_hz_ppu));
@@ -977,9 +979,9 @@ bool ps3aica_init(u8* aica_ram)
 		printf("[aica-spe] SPU thread up: caique control on the PPU, full model on the SPU, check every %u samples;"
 		       " dsp jit %s\n", AICA_BLOCK, k_mode[s_shared.setup.dsp_mode & AICA_DSPF_MODE]);
 	if (s_setup_flags || s_dsp_rd)
-		printf("[aica-spe] bundle 5 in use: dsp ring ram %d, ring 64k %d, dsp reg reads %d, mono fix %d\n",
+		printf("[aica-spe] bundle 5 in use: dsp ring ram %d, ring 64k %d, dsp reg reads %d, mono fix %d, adpcm stream %d\n",
 		       (s_setup_flags & AICA_SETUP_RING) != 0, (s_setup_flags & AICA_SETUP_RING64) != 0, (int)s_dsp_rd,
-		       (s_setup_flags & AICA_SETUP_MONO) != 0);
+		       (s_setup_flags & AICA_SETUP_MONO) != 0, (s_setup_flags & AICA_SETUP_STREAM) != 0);
 	return true;
 }
 

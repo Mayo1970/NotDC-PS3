@@ -473,6 +473,8 @@ static Option s_audio[] = {
 	  "RESTORE: a looped ADPCM voice keeps the decoder state of its loop start (6.9). Live." },
 	{ "Key Census",      &g_key_census_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "[kon] log lines: each voice start with its levels, refused key-ons. Log only. Live." },
+	{ "ADPCM Stream",    &g_adpcm_stream_preset,  OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: an ADPCM stream loses no sample at its ring end (6.9). Set before boot." },
 	{ "G2 DMA Small",    &g_g2_dma_small_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A sound DMA of 512 cycles or less ends at once (P24, Bangai-O). Needs DMA Fix. Live." },
 	{ "G2 DMA Read",     &g_g2_dma_read_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,

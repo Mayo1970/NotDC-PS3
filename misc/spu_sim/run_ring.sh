@@ -25,5 +25,10 @@ ADPCM=1 one ./out/run_a2 $E adpcm 0.5 28 2
 ADPCM=0 ADPCM2=1 one ./out/run_a2 $E adpcm 0.5 28 3
 ADPCM=1 ADPCM2=0 one ./out/run_a2 $E mix 0.5 28 4
 ADPCM=1 DSPJIT=1 one ./out/run_a2 $E dsp 0.3 28 1
+# plan 6.9 B ADPCM Stream: stream voices with the old rule (base model), then FIXED in the SPU, the reference and the twin
+MVOL=1 one ./out/run_a2 $E stream 0.5 28 2
+MVOL=1 STREAM=1 one ./out/run_a2 $E stream 0.5 28 2
+MVOL=1 STREAM=1 one ./out/run_a2 $E stream 0.5 40 6
+MVOL=1 STREAM=1 ADPCM=1 one ./out/run_a2 $E mix 0.3 28 4
 [ $rc -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $rc

@@ -1,6 +1,6 @@
 #!/bin/sh
-# OPTIMIZATION_PLAN 6.9 B (WSL): the ADPCM Loop row. One voice against Flycast's rule (adpcm_check), then run() against
-# advance() with the row on and live (misc/spu_sim diff_adv). SRC=<file>: another copy of aica_model.cpp (mutate.py).
+# OPTIMIZATION_PLAN 6.9 B (WSL): the rows ADPCM Loop and ADPCM Stream. One voice against Flycast's rules (adpcm_check),
+# then run() against advance() with each row on (misc/spu_sim diff_adv). SRC=<file>: another aica_model.cpp (mutate.py).
 cd "$(dirname "$0")"
 M=../../plugs/caiqueAICA
 SRC=${SRC:-$M/aica_model.cpp}
@@ -20,6 +20,10 @@ for a in 0 1 2; do
 		out=$(ADPCM=$a /tmp/adpcm_diff ${EPI:-120} $s) || fail=1
 		echo "diff_adv ADPCM=$a seed $s: $out" | cut -c1-150
 	done
+done
+for s in 31 32 33; do
+	out=$(STREAM=1 /tmp/adpcm_diff ${EPI:-120} $s) || fail=1
+	echo "diff_adv STREAM=1 seed $s: $out" | cut -c1-150
 done
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

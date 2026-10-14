@@ -266,6 +266,7 @@ void am_init(const AicaSetup* su, uint64_t dbad_ea, uint64_t isabad_ea, uint64_t
 	s_snd = su->snd != 0;
 	M->no_dsp = s_snd && !su->snd_dsp;   // A2 plays without the DSP; A3 and the A1 check run it
 	M->mono_half = (su->flags & AICA_SETUP_MONO) != 0;
+	M->stream_lsa = (su->flags & AICA_SETUP_STREAM) != 0;
 	s_flags = s_snd && su->snd_dsp ? su->flags : 0;   // the ring goes to wave RAM only when this SPU is the sound
 	if (s_snd)
 		snd_init(su->ring_ea, su->ring_frames, su->wr_ea, su->rd_ea, su->w0);

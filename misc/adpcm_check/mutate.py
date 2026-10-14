@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPTIMIZATION_PLAN 6.9 B (WSL): plants one bug at a time in the ADPCM Loop code of a copy of aica_model.cpp; run.sh
+# OPTIMIZATION_PLAN 6.9 B (WSL): plants one bug at a time in the ADPCM Loop / Stream code of a copy of aica_model.cpp; run.sh
 # must fail. Usage: python3 misc/adpcm_check/mutate.py [name part]   (takes minutes: run it detached, with a log)
 import os
 import subprocess
@@ -15,6 +15,8 @@ PACK_FAST = "lsa_state[ch] = (uint32_t)quant << 16 | ((uint32_t)s0 & 0xFFFF);"
 PACK_OP = "if (flags & OP_LSA) lsa_state[ch] = (uint32_t)c.adpcm_quant << 16 | ((uint32_t)c.s0 & 0xFFFF);"
 LOAD_OP = "const uint32_t v = (flags & OP_LOOP) && adpcm_restore ? lsa_state[ch] : LSA_KEYON;"
 LOAD_FAST = "const uint32_t v = adpcm_restore ? lsa_state[ch] : LSA_KEYON;"
+LAP_OP = "const uint32_t lea = f == 3 && stream_lsa ? (c.LEA + 3) & ~3u : c.LEA;"
+LAP_FAST = "const uint32_t lea = f == 3 && stream_lsa ? (LEA + 3) & ~3u : LEA;"
 
 MUTANTS = [
     ("ops: the first pass over LSA keeps nothing", SAVE_OP, ""),
@@ -43,6 +45,16 @@ MUTANTS = [
     ("fast: RESET with the row at RESTORE", LOAD_FAST, "const uint32_t v = LSA_KEYON;"),
     ("fast: a stream (PCMS 3) lap acts too", "if (LPCTL) rst = f == 2;", "if (LPCTL) rst = f >= 2;"),
     ("fast: the kept sample loses its sign", "                            s0 = (int16_t)v;", "                            s0 = (int32_t)(v & 0xFFFF);"),
+    ("ops: the stream lap with the row at OLD", LAP_OP, "const uint32_t lea = f == 3 ? (c.LEA + 3) & ~3u : c.LEA;"),
+    ("ops: the old lap with the row at FIXED", LAP_OP, "const uint32_t lea = c.LEA;"),
+    ("ops: the stream lap for a PCMS 2 voice too", LAP_OP, "const uint32_t lea = stream_lsa ? (c.LEA + 3) & ~3u : c.LEA;"),
+    ("ops: the stream lap rounded down", LAP_OP, "const uint32_t lea = f == 3 && stream_lsa ? c.LEA & ~3u : c.LEA;"),
+    ("ops: the stream lap one position long", LAP_OP, "const uint32_t lea = f == 3 && stream_lsa ? ((c.LEA + 3) & ~3u) + 1 : c.LEA;"),
+    ("fast: the stream lap with the row at OLD", LAP_FAST, "const uint32_t lea = f == 3 ? (LEA + 3) & ~3u : LEA;"),
+    ("fast: the old lap with the row at FIXED", LAP_FAST, "const uint32_t lea = LEA;"),
+    ("fast: the stream lap for a PCMS 2 voice too", LAP_FAST, "const uint32_t lea = stream_lsa ? (LEA + 3) & ~3u : LEA;"),
+    ("fast: the stream lap rounded down", LAP_FAST, "const uint32_t lea = f == 3 && stream_lsa ? LEA & ~3u : LEA;"),
+    ("fast: the stream lap one position long", LAP_FAST, "const uint32_t lea = f == 3 && stream_lsa ? ((LEA + 3) & ~3u) + 1 : LEA;"),
     ("fast: the kept step from the low half", "quant = (int32_t)(v >> 16);\n                            s0", "quant = (int32_t)(v & 0xFFFF);\n                            s0"),
 ]
 

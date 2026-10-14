@@ -197,6 +197,9 @@ struct AicaModel {
      * adpcm_restore: a PCMS 2 loop lap loads it (Flycast 3f70e47ad), else it resets; init() clears, reset() keeps it. */
     uint32_t lsa_state[64];
     bool adpcm_restore;
+    /* Plan 6.9 B: a PCMS 3 stream's lap ends at LEA rounded up to 4 and goes to LSA (Flycast alignedLEA); with LEA 4k - 1
+     * the old CA -= LEA - LSA gives LSA + 1, one nibble of the ring lost per lap. init() clears, reset() keeps it. */
+    bool stream_lsa;
     static const uint32_t LSA_KEYON = 127u << 16;
 
     AicaModel();

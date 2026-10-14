@@ -102,6 +102,7 @@ typedef struct
 #define AICA_SETUP_RING   1u   // P20 G2: the LS copy of the DSP ring (up to 32K words) mirrors wave RAM
 #define AICA_SETUP_RING64 2u   // P20 G3: DSP writes through the line cache (64K-word ring, TABLE) reach wave RAM
 #define AICA_SETUP_MONO   4u   // P31: MONO output is (L + R) / 2
+#define AICA_SETUP_STREAM 8u   // 6.9 B "ADPCM Stream": an ADPCM stream goes to LSA at its loop end (each model copy)
 
 typedef struct
 {
