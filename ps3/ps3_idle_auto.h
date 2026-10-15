@@ -73,3 +73,93 @@ static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double
 	a.slow = a.spare = 0;
 	return true;
 }
+
+// Bundle 21, JIT X30 FORWARD AUTO: at the X30 level, PLAIN (a forward-branch block bills its own cycles) or X30, kept
+// by the frames a second on screen. A slow PLAIN run tries X30, a spare X30 run tries PLAIN.
+#define FA_N          3      // windows of a run, and of a try
+#define FA_X30_GAIN   1.05   // an X30 try stays only with more than this many times PLAIN's frames
+#define FA_PLAIN_KEEP 0.97   // a PLAIN try stays with this share of X30's frames: PLAIN keeps the game's own timing
+#define FA_HOLD_MIN   5      // windows after a try before a run counts
+#define FA_HOLD_MAX   160
+
+enum { FA_NONE, FA_TRY, FA_KEEP, FA_BACK };
+
+struct FwdAuto
+{
+	int plain;             // 1 = PLAIN now
+	int trying;            // 1 = the level now is a try
+	u32 run, n;            // the windows of the run, and of the try
+	double run_fps, base;  // frames a second summed over the run; the run's mean as the try began
+	double try_fps, mean;  // summed over the try; the last try's mean
+	u32 wait, hold;        // windows left before a run counts; the wait after the next failed try
+};
+
+static inline void fwd_auto_init(FwdAuto& f)
+{
+	f.plain = 1;
+	f.trying = 0;
+	f.run = f.n = 0;
+	f.run_fps = f.base = f.try_fps = f.mean = 0.0;
+	f.wait = 0;
+	f.hold = FA_HOLD_MIN;
+}
+
+// JIT IDLE RULE AUTO left X30: a try ends at the level before it, and the run starts again.
+static inline void fwd_auto_cancel(FwdAuto& f)
+{
+	if (f.trying)
+		f.plain = !f.plain;
+	f.trying = 0;
+	f.run = f.n = 0;
+	f.run_fps = f.try_fps = 0.0;
+}
+
+// One window at the X30 level. FA_TRY and FA_BACK change the level (the caller patches the bills); FA_KEEP ends a
+// try at its level.
+static inline int fwd_auto_step(FwdAuto& f, double secs, double speed, double sleep_s, double fps)
+{
+	if (secs <= 0.0)
+		return FA_NONE;
+	if (f.trying)
+	{
+		f.try_fps += fps;
+		if (++f.n < FA_N)
+			return FA_NONE;
+		f.mean = f.try_fps / FA_N;
+		const bool keep = f.plain ? f.mean >= f.base * FA_PLAIN_KEEP : f.mean > f.base * FA_X30_GAIN;
+		f.trying = 0;
+		f.n = 0;
+		f.try_fps = 0.0;
+		if (keep)
+		{
+			f.hold = FA_HOLD_MIN;
+			f.wait = f.hold;
+			return FA_KEEP;
+		}
+		f.plain = !f.plain;
+		f.hold = f.hold * 2 < FA_HOLD_MAX ? f.hold * 2 : FA_HOLD_MAX;
+		f.wait = f.hold;
+		return FA_BACK;
+	}
+	if (f.wait)
+	{
+		f.wait--;
+		return FA_NONE;
+	}
+	const bool counts = f.plain ? speed < IA_LOW : speed >= IA_FULL && sleep_s >= IA_SPARE * secs;
+	if (!counts)
+	{
+		f.run = 0;
+		f.run_fps = 0.0;
+		return FA_NONE;
+	}
+	f.run_fps += fps;
+	if (++f.run < FA_N)
+		return FA_NONE;
+	f.base = f.run_fps / FA_N;
+	f.run = 0;
+	f.run_fps = 0.0;
+	f.plain = !f.plain;
+	f.trying = 1;
+	return FA_TRY;
+}

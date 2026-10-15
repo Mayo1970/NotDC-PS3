@@ -31,6 +31,8 @@ if [ -z "$SEEDS" ]; then
 	# play voices: 263 = the three fixes + 256, 383 = the rows of seed 131 + 256.
 	for s in 100 116; do ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B 263 || fail=1; done
 	./out/harness out/spe_arm7_sim.elf out/syms.txt 131 $B 383 || fail=1
+	# Bundle 21, SPE AICA Defer: HOLD SYNCs at the three levels (116 117 ON, 148 149 + BLOCK, 180-183 190 + SAMPLE)
+	for s in 116 117 148 149 180 181 182 183 190; do DEFER=1 ./out/harness out/spe_arm7_sim.elf out/syms.txt $s $B || fail=1; done
 fi
 [ $fail -eq 0 ] && echo "ALL PASS" || echo "SOME FAILED"
 exit $fail

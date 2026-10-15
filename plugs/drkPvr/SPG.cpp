@@ -41,7 +41,7 @@ extern "C" void ifb_probe_dump(double seconds);
 // JIT HOTBLOCKS (ps3_driver.cpp, plan 5.18); vt_k is the stats line's vt, which marks dense windows.
 extern "C" void hotblocks_dump(double seconds, double vt_k);
 // JIT IDLE RULE AUTO (ps3_driver.cpp): X3 BACKWARD or X30 by SPEED and the pacer's sleep, once a window.
-extern "C" void jit_idle_auto(double seconds, double speed, double sleep_s);
+extern "C" void jit_idle_auto(double seconds, double speed, double sleep_s, double fps);
 // C call-out census (dc/sh4/rec_v2/ccall_census.h). Takes vblanks/sec too,
 // so it can report the per-FRAME rate dave actually asked for.
 extern "C" void ccall_census_dump(double seconds, double vbs);
@@ -430,7 +430,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
                 hotblocks_dump(tdiff, spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0);   // no-op unless JIT HOTBLOCKS is on
-                jit_idle_auto(tdiff, spd_cpu * 100.0 / clk_mhz, pace_sleep);         // no-op unless JIT IDLE RULE AUTO
+                jit_idle_auto(tdiff, spd_cpu * 100.0 / clk_mhz, pace_sleep, spd_fps); // no-op unless an idle AUTO row
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 stall_dump(tdiff);                 // plan 5.32, the same switch
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs

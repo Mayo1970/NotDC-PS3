@@ -656,6 +656,9 @@ static bool g_hz_seed;   // seed 100 and up: bundle 5
 static u32 g_mu_cfg;
 static bool g_mu_mix;
 static u32 p_synced_at = ~0u, p_blk = ~0u, p_reqs, n_sync_cmd, n_ppu_miss;   // the PPU's side (ps3_arm_spe.cpp)
+// Bundle 21, env DEFER=1 (SPE AICA Defer): each SYNC is a HOLD SYNC; the PPU's store goes in while the SPU holds
+static bool g_defer;
+static u32 n_held;
 static u64 g_cmds, g_mismatch, g_limit_runs;
 
 struct Cmd { u8 op, flags; u16 a; u32 b, c; };
@@ -756,7 +759,8 @@ static bool compare(bool rd, u32 rd_seq, u32 rd_val, int hz_res = -1)
 		if (g_hz[i] != r_hz_out.map[i])
 			return fail("hz map byte", i, g_hz[i], r_hz_out.map[i]);
 	for (u32 f = AICA_HZ_MAP; f < sizeof(AicaHz); f += 4)
-		if (f != offsetof(AicaHz, wait_ticks) && be32(g_hz + f) != *(const u32*)((const u8*)&r_hz_out + f))
+		if (f != offsetof(AicaHz, wait_ticks) && f != offsetof(AicaHz, hold_ticks) && f != offsetof(AicaHz, hold_timeouts) &&
+		    be32(g_hz + f) != *(const u32*)((const u8*)&r_hz_out + f))
 			return fail("hz count", f - AICA_HZ_MAP, be32(g_hz + f), *(const u32*)((const u8*)&r_hz_out + f));
 	if (be32(e + offsetof(ArmEcho, tail)) != g_head)
 		return fail("echo tail", be32(e + offsetof(ArmEcho, tail)), g_head, 0);
@@ -955,6 +959,9 @@ int main(int argc, char** argv)
 		g_mu_cfg = g_mu_mix ? 0 : (u32)strtoul(mc, 0, 0);
 		printf("seed %s, MU_CFG %s:\n", argv[3], mc);
 	}
+	g_defer = getenv("DEFER") != 0;
+	if (g_defer)
+		printf("seed %s, DEFER (HOLD SYNCs):\n", argv[3]);
 	g_log = (u8*)calloc(AICA_LOG, 16);
 	g_aram = (u8*)calloc(ARAM, 1);
 	g_raram = (u8*)calloc(ARAM, 1);
@@ -1074,9 +1081,29 @@ int main(int argc, char** argv)
 			{
 				p_reqs = lvl == 2 ? AICA_HZ_TESTS : p_reqs + 1;
 				n_sync_cmd++;
-				Cmd c = { ARM_CMD_SYNC, 0, 0, a, pick(2) };
+				Cmd c = { ARM_CMD_SYNC, (u8)(g_defer ? ARM_SYNC_HOLD : 0), 0, a, pick(2) };
 				push_cmd(c);
 				const u32 res = r_hz_write(a, c.c);
+				if (g_defer)
+				{
+					// The reference counts the hold after the SYNC's map; the SPU must stand still until the store is in
+					r_hz.holds++;
+					r_dirty = true;
+					if (!run_spu())
+						return false;
+					if (be32(g_echo + offsetof(ArmEcho, held)) != ++n_held)
+						return fail("HOLD SYNC reached", be32(g_echo + offsetof(ArmEcho, held)), n_held, 0);
+					if (be32(g_echo + offsetof(ArmEcho, tail)) == g_head)
+						return fail("HOLD SYNC passed before the store", be32(g_echo + offsetof(ArmEcho, tail)), g_head, 0);
+					aram_write(h, v, n);
+					put32(g_bell + offsetof(ArmBell, applied), n_held);
+					spusim_llr_lost(g_sim);
+					if (!run_spu() || !compare(false, 0, 0, (int)res))
+						return false;
+					if (res == ARM_HZ_SYNCED)
+						p_synced_at = ac.smp;
+					return true;
+				}
 				if (!run_spu() || !compare(false, 0, 0, (int)res))
 					return false;
 				if (res == ARM_HZ_SYNCED)
@@ -1225,6 +1252,12 @@ int main(int argc, char** argv)
 		       " recs %u | syncs %u miss %u (ppu %u) | dsp reads sh4 %u arm %u\n", seed, g_flags, hz_sync ? (int)hz_on : 0, n_sync_cmd,
 		       r_hz.arm_hits, r_hz.tests[0], r_hz.tests[1], r_hz.tests[2], r_hz.hazards[0], r_hz.hazards[1], r_hz.hazards[2],
 		       r_hz.ring_hits, r_hz.ring_recs, r_hz.syncs, r_hz.miss, n_ppu_miss, r_hz.dsp_rd[0], r_hz.dsp_rd[1]);
+	if (g_defer)
+	{
+		printf("seed %u DEFER: %u HOLD SYNCs\n", seed, n_held);
+		if (!n_held && g_hz_seed && hz_sync)   // a run that held nothing has not tested the hold
+			ok = fail("no HOLD SYNC in a DEFER run", 0, 0, 0);
+	}
 	printf("seed %u: %s | fixes %u: races %u raises %u resets %u stale %u ca %u/%u | batches %u cmds %llu | samples %u"
 	       " recs %zu (checks %u) | arm runs %u fiqs %u decodes %u evicts %u"
 	       " | aram misses %u puts %u | sh4 wr %u rd %u aram %u armrst %u | log waits %u limit runs %llu | %llu insns"

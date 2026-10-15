@@ -36,7 +36,8 @@ public:
 
 	u32 start;	//entry point, the block may be non-linear in memory
 	u32 cycles;
-	u32 bill_x3, bill_x30;	// JIT IDLE RULE AUTO: the cycles at X3 BACKWARD and at X30, for a switch's patch
+	u32 bill_x3, bill_x30, bill_x30p;	// AUTO: the cycles at X3 BACKWARD, X30 and X30 + FORWARD PLAIN, for a switch's patch
+	u32 bill_plain;	// the cycles with no idle-rule trick (JIT HOTBLOCKS: what the rule adds)
 	u32 opcodes;
 	u32 sh4_code_size;	//bytes of SH4 source consumed, for the block-check guard
 
@@ -48,7 +49,7 @@ public:
 
 	bool has_store;	// may write guest memory (plan 5.25)
 	bool idle_loop;	// idle-rule block whose backward branch closes a turn that keeps no state (plan 5.25)
-	bool idle_hash;	// in a list of known wait loops: the block drops the rest of the timeslice (bundle 8, way B)
+	u8 idle_hash;	// in a list of known wait loops: the timeslices the block drops, 0 = none (bundle 8, way B; 21)
 
 	// MMU JIT (P38): the decoder's op being decoded, copied into each op it emits; has_fpu: a block with an FPU op.
 	u32 cur_pc;

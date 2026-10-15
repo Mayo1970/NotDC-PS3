@@ -61,6 +61,8 @@ void FASTCALL libAICA_WriteMem_aica_reg(u32 addr, u32 data, u32 size)
 u32 libAICA_ReadMem_aica_ram(u32 addr, u32 size)
 {
     addr &= AICA_RAM_MASK;
+    if (g_arm_spe && arm_spe_defer_covers(addr, size))   // bundle 21: a held store to these bytes goes out first
+        arm_spe_defer_flush();
     if (size == 1)
         return aica_ram_l[addr ^ 3];
     else if (size == 2)
@@ -72,9 +74,18 @@ u32 libAICA_ReadMem_aica_ram(u32 addr, u32 size)
 void libAICA_WriteMem_aica_ram(u32 addr, u32 data, u32 size)
 {
     addr &= AICA_RAM_MASK;
-    aram_hz_write(addr, g_aram_hz_dma);   // plan 6.6: first, so the lines below belong to the command after a sync
+    // plan 6.6: first, so the lines below belong to the command after a sync
+    const bool held = aram_hz_write(addr, g_aram_hz_dma);
     if (g_arm_spe)
+    {
         arm_spe_aram_written(addr);
+        // bundle 21, SPE AICA Defer: held for a HOLD SYNC, or after a held store to the same bytes
+        if (held || arm_spe_defer_covers(addr, size))
+        {
+            arm_spe_defer(addr, data, size, !held);
+            return;
+        }
+    }
     if (size == 1)
         aica_ram_l[addr ^ 3] = (u8)data;
     else if (size == 2)

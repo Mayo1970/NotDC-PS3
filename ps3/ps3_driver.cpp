@@ -357,6 +357,10 @@ extern u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static u32 s_bcache_sites, s_mac_sites;
 // JIT IDLE HASH (bundle 8, way B), also on the [jit8] line: listed blocks compiled since boot.
 extern "C" int get_jit_idle_hash_preset();
+extern "C" int get_jit_x30_fwd_preset();
+extern "C" int get_jit_x30_fwd();
+extern int g_jit_x30_fwd_now;
+extern "C" int get_jit_task_idle_preset();
 extern u32 g_dec_hash_blocks;
 
 // Plan 5.31 JIT GUARD REUSE: this block's plan (each memory op's check, then the roles); sites since boot.
@@ -393,9 +397,9 @@ void reg_reload_all_fpu();
 
 // ---- Block begin/end ----
 
-// JIT IDLE RULE AUTO: each compiled block's bill word and both of its bills, so a switch patches the blocks in place.
-// The table goes with the code cache; once full, a switch clears the cache instead.
-struct IdleBill { u32 insn; u16 x3, x30; };
+// JIT IDLE RULE AUTO and X30 FORWARD AUTO: each compiled block's bill word and its bills, so a switch patches the
+// blocks in place. The table goes with the code cache; once full, a switch clears the cache instead.
+struct IdleBill { u32 insn; u16 x3, x30, x30p; };
 #define IDLE_BILL_MAX 131072
 static IdleBill* s_bills;
 static u32 s_bills_n;
@@ -501,9 +505,10 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	if (get_jit_idle_skip_preset() && block->has_store)
 		emit_idle_mark(ppc_contex,offsetof(Sh4Context,jit_idle_work));
 
-	// JIT IDLE HASH: a known wait loop's block drops the rest of the timeslice, so the next poll ends it.
+	// JIT IDLE HASH: a known wait loop's block drops the rest of the timeslice, so the next poll ends it. A task-loop
+	// entry drops more: each later poll pays one slice of the debt, and an event due still runs at its slice.
 	if (block->idle_hash)
-		ppc_li(ppc_cycles,0);
+		ppc_li(ppc_cycles,(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());
 
 	// No GPR reload: pinned r14..r28 hold the SH4 GPRs across blocks, loaded once in the mainloop prologue and
 	// resynced only around shop_ifb and the canonical fallback.
@@ -1694,6 +1699,10 @@ struct HotBlock
 	u64 dense_hits;
 	u64 dense_cold;
 	u16 cls[HC_COUNT];
+	// Bundle 21: the cycles with no idle-rule trick, at X3 BACKWARD, at X30 (and PLAIN), as compiled; the conditional end.
+	u16 bill_plain, bill_x3, bill_x30, bill_x30p, bill_cur;
+	u8 br;		// 0 no conditional end, 1 forward, 2 backward, 3 to itself
+	u32 br_to;
 };
 
 // Looney Tunes compiles ~40K blocks from its last cache clear to a race's end. ~13 MB, only with the preset on.
@@ -1724,6 +1733,24 @@ static double hot_weight(u32 i)
 	return (double)s_hb[i].dense_hits * s_hb[i].cls[HC_INSN];
 }
 
+extern int g_jit_idle_rule_now;	// ps3_presets.cpp: the level the decoder bills under AUTO
+extern "C" int get_jit_idle_rule();	// the level billed now: AUTO gives 1 or 0
+
+// Bundle 21: the cycles the idle rule adds to one entry of a block now (AUTO: the bill in force, else as compiled).
+static u32 hot_bill_extra(const HotBlock& h)
+{
+	u32 b=h.bill_cur;
+	if (get_jit_idle_rule_preset()==4 || get_jit_x30_fwd_preset()==2)
+		b=get_jit_idle_rule()!=IA_X30 ? h.bill_x3 : get_jit_x30_fwd() ? h.bill_x30p : h.bill_x30;
+	return b>h.bill_plain ? b-h.bill_plain : 0;
+}
+
+// Emulated cycles the idle rule added to a block over the summed windows.
+static double hot_extra_weight(u32 i)
+{
+	return (double)s_hb[i].dense_hits * hot_bill_extra(s_hb[i]);
+}
+
 static bool hot_dumped(u32 pc)
 {
 	for (u32 i=0;i<s_hb_dumped_n;i++)
@@ -1732,19 +1759,19 @@ static bool hot_dumped(u32 pc)
 	return false;
 }
 
-// The k heaviest blocks, heaviest first; with undumped, only pcs not dumped yet.
-static u32 hot_top(u32* out,u32 k,bool undumped)
+// The k heaviest blocks by wf, heaviest first; with undumped, only pcs not dumped yet.
+static u32 hot_top(u32* out,u32 k,bool undumped,double (*wf)(u32)=hot_weight)
 {
 	u32 n=0;
 	for (u32 i=0;i<s_hb_n;i++)
 	{
-		const double w=hot_weight(i);
-		if (w<=0.0 || (n==k && w<=hot_weight(out[k-1])))
+		const double w=wf(i);
+		if (w<=0.0 || (n==k && w<=wf(out[k-1])))
 			continue;
 		if (undumped && hot_dumped(s_hb[i].sh4_pc))
 			continue;
 		u32 j=(n<k) ? n++ : k-1;
-		while (j>0 && hot_weight(out[j-1])<w)
+		while (j>0 && wf(out[j-1])<w)
 		{
 			out[j]=out[j-1];
 			j--;
@@ -1843,6 +1870,45 @@ static void hot_census(const char* why)
 			m+=snprintf(buf+m,sizeof(buf)-m," %u",h.cls[c]);
 		o.line("%s%s\n",buf,hot_dumped(h.sh4_pc) ? " D" : "");
 	}
+
+	// Bundle 21: the blocks the idle rule bills above their plain cycles, by the emulated cycles it adds, with their code.
+	double xt=0.0;
+	u32 xn=0;
+	for (u32 i=0;i<s_hb_n;i++)
+	{
+		const double x=hot_extra_weight(i);
+		if (x>0.0)
+		{
+			xt+=x;
+			xn++;
+		}
+	}
+	static const char* const k_br[4]={ "-", "fwd", "back", "self" };
+	o.line("[HOTB] census %u: idle rule %d (now %d): %u blocks add %.2f Mcycles/s |"
+	       " # pc ent/s ops plain bill branch target addMc/s share | code\n",
+	       s_hb_census_n, get_jit_idle_rule_preset(), get_jit_idle_rule(), xn, xt/s/1e6);
+	if (xt>0.0)
+	{
+		const u32 xk=hot_top(top,24,false,hot_extra_weight);
+		for (u32 a=0;a<xk;a++)
+		{
+			const HotBlock& h=s_hb[top[a]];
+			const double x=hot_extra_weight(top[a]);
+			m=snprintf(buf,sizeof(buf),"[HOTB] %u %08X %.0f %u %u %u %s %08X %.3f %.1f%% |",a+1,h.sh4_pc,
+			           (double)h.dense_hits/s,h.sh4_ops,h.bill_plain,h.bill_plain+hot_bill_extra(h),k_br[h.br&3],
+			           h.br_to,x/s/1e6,x*100.0/xt);
+			for (u32 j=0;j<h.sh4_size/2 && j<6 && m<(int)sizeof(buf);j++)
+			{
+				u16 op=0;
+				if (!g_jit_mmu)
+					op=ReadMem16(h.sh4_pc+j*2);
+				else if (!jx_peek16(h.sh4_pc+j*2,op))
+					op=0;
+				m+=snprintf(buf+m,sizeof(buf)-m," %04X",op);
+			}
+			o.line("%s\n",buf);
+		}
+	}
 	o.flush();
 	fflush(stdout);
 }
@@ -1907,6 +1973,14 @@ static s32 hotblocks_slot(DecodedBlock* block)
 	h->sh4_pc   = block->start;
 	h->sh4_size = block->sh4_code_size;
 	h->sh4_ops  = block->opcodes;
+	h->bill_plain = (u16)(block->bill_plain>0xFFFF ? 0xFFFF : block->bill_plain);
+	h->bill_x3    = (u16)(block->bill_x3>0xFFFF ? 0xFFFF : block->bill_x3);
+	h->bill_x30   = (u16)(block->bill_x30>0xFFFF ? 0xFFFF : block->bill_x30);
+	h->bill_x30p  = (u16)(block->bill_x30p>0xFFFF ? 0xFFFF : block->bill_x30p);
+	h->bill_cur   = (u16)(block->cycles>0xFFFF ? 0xFFFF : block->cycles);
+	if (block->BlockType==BET_Cond_0 || block->BlockType==BET_Cond_1)
+		h->br = block->BranchBlock==block->start ? 3 : block->BranchBlock<block->start ? 2 : 1;
+	h->br_to = block->BranchBlock;
 	s_hb_hits[idx] = 0;
 	s_hb_cold[idx] = 0;
 	return idx;
@@ -2008,7 +2082,6 @@ static void idle_dump(double seconds)
 }
 
 void recSh4_ClearCache();
-extern int g_jit_idle_rule_now;	// ps3_presets.cpp: the level the decoder bills under AUTO
 static bool s_jit_in_loop;	// the main loop runs: JIT IDLE RULE AUTO acts only then
 
 // ngen_Compile, for each block compiled under AUTO: its bill word and both bills.
@@ -2018,7 +2091,8 @@ static void idle_bill_note(const DecodedBlock* block)
 		return;
 	if (!s_bills)
 		s_bills=(IdleBill*)malloc(sizeof(IdleBill)*IDLE_BILL_MAX);
-	if (!s_bills || s_bills_n>=IDLE_BILL_MAX || block->bill_x3>0xFFFF || block->bill_x30>0xFFFF)
+	if (!s_bills || s_bills_n>=IDLE_BILL_MAX || block->bill_x3>0xFFFF || block->bill_x30>0xFFFF ||
+	    block->bill_x30p>0xFFFF)
 	{
 		s_bills_full=true;
 		return;
@@ -2027,10 +2101,12 @@ static void idle_bill_note(const DecodedBlock* block)
 	b.insn=(u32)(uintptr_t)s_bill_insn;
 	b.x3=(u16)block->bill_x3;
 	b.x30=(u16)block->bill_x30;
+	b.x30p=(u16)block->bill_x30p;
 }
 
-// A switch: each noted block bills rule's cycles from now on. With no table or a full one, every block goes instead.
-static void idle_bills_patch(int rule)
+// A switch: each noted block bills rule's cycles (at X30, PLAIN's with plain) from now on. With no table or a full
+// one, every block goes instead.
+static void idle_bills_patch(int rule,bool plain)
 {
 	if (!s_bills || s_bills_full)
 	{
@@ -2045,7 +2121,8 @@ static void idle_bills_patch(int rule)
 		u32* const p=(u32*)(uintptr_t)s_bills[i].insn;
 		u32 w=*p;
 		// A word that is no bill of the cycle register is left as it is (it cannot be, while the table holds).
-		if (((w>>16)&31)!=(u32)ppc_cycles || !idle_bill_word(w,rule==IA_X3 ? s_bills[i].x3 : s_bills[i].x30))
+		const u32 bill=rule==IA_X3 ? s_bills[i].x3 : plain ? s_bills[i].x30p : s_bills[i].x30;
+		if (((w>>16)&31)!=(u32)ppc_cycles || !idle_bill_word(w,bill))
 		{
 			odd++;
 			continue;
@@ -2061,31 +2138,61 @@ static void idle_bills_patch(int rule)
 	       ticks_to_microsecs(gettime()-t0)/1000.0,odd);
 }
 
-// JIT IDLE RULE AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every compiled block, so the
-// new level reaches all code without a recompile.
-extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s)
+// JIT IDLE RULE AUTO and X30 FORWARD AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every
+// compiled block, so the new level reaches all code without a recompile. fps: frames a second on screen.
+extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps)
 {
 	static IdleAuto s_ia;
+	static FwdAuto s_fa;
 	static bool s_ia_ready;
 	static u32 s_ia_switches;
-	if (get_jit_idle_rule_preset()!=4 || !s_jit_in_loop)
+	const bool rule_auto=get_jit_idle_rule_preset()==4, fwd_auto=get_jit_x30_fwd_preset()==2;
+	if ((!rule_auto && !fwd_auto) || !s_jit_in_loop)
 		return;
 	if (!s_ia_ready)
 	{
 		idle_auto_init(s_ia);
+		fwd_auto_init(s_fa);
 		s_ia_ready=true;
 	}
-	if (!idle_auto_step(s_ia,seconds,speed,sleep_s))
+	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s))
+	{
+		g_jit_idle_rule_now=s_ia.rule;
+		if (fwd_auto)
+		{
+			fwd_auto_cancel(s_fa);
+			g_jit_x30_fwd_now=s_fa.plain;
+		}
+		s_ia_switches++;
+		if (s_ia.rule==IA_X30)
+			printf("[idle-auto] X3 BACKWARD -> X30: SPEED %.1f%%, sleep %.0f ms/s; an X3 try after %u s (switch %u)\n",
+			       speed,sleep_s*1000.0/seconds,s_ia.hold,s_ia_switches);
+		else
+			printf("[idle-auto] X30 -> X3 BACKWARD: SPEED %.1f%%, sleep %.0f ms/s (switch %u)\n",
+			       speed,sleep_s*1000.0/seconds,s_ia_switches);
+		idle_bills_patch(s_ia.rule,get_jit_x30_fwd()!=0);
 		return;
-	g_jit_idle_rule_now=s_ia.rule;
+	}
+	if (!fwd_auto || get_jit_idle_rule()!=IA_X30)
+		return;
+	const int step=fwd_auto_step(s_fa,seconds,speed,sleep_s,fps);
+	if (step==FA_NONE)
+		return;
+	const char* const now=s_fa.plain ? "PLAIN" : "X30";
+	if (step==FA_KEEP)
+	{
+		printf("[idle-auto] X30 FORWARD %s kept: %.1f frames/s against %.1f\n",now,s_fa.mean,s_fa.base);
+		return;
+	}
+	g_jit_x30_fwd_now=s_fa.plain;
 	s_ia_switches++;
-	if (s_ia.rule==IA_X30)
-		printf("[idle-auto] X3 BACKWARD -> X30: SPEED %.1f%%, sleep %.0f ms/s; an X3 try after %u s (switch %u)\n",
-		       speed,sleep_s*1000.0/seconds,s_ia.hold,s_ia_switches);
+	if (step==FA_TRY)
+		printf("[idle-auto] X30 FORWARD %s -> %s try: SPEED %.1f%%, sleep %.0f ms/s, %.1f frames/s (switch %u)\n",
+		       s_fa.plain ? "X30" : "PLAIN",now,speed,sleep_s*1000.0/seconds,s_fa.base,s_ia_switches);
 	else
-		printf("[idle-auto] X30 -> X3 BACKWARD: SPEED %.1f%%, sleep %.0f ms/s (switch %u)\n",
-		       speed,sleep_s*1000.0/seconds,s_ia_switches);
-	idle_bills_patch(s_ia.rule);
+		printf("[idle-auto] X30 FORWARD back to %s: %.1f frames/s against %.1f; a run counts after %u s (switch %u)\n",
+		       now,s_fa.mean,s_fa.base,s_fa.hold,s_ia_switches);
+	idle_bills_patch(IA_X30,s_fa.plain!=0);
 }
 
 // Stats window (SPG.cpp, once a second, SH4 thread): one line per window; dense windows add to the census.
@@ -2151,7 +2258,7 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	// JIT HOTBLOCKS ALL WINDOWS: every second counts, also the ones with few vertices (an FMV, a menu).
 	const bool all = get_hotblocks_preset()==2;
 	const bool dense = all || vt_k > 3.0;
-	double hits=0.0, insn=0.0, cold=0.0;
+	double hits=0.0, insn=0.0, cold=0.0, extra=0.0;
 	for (u32 i=0;i<s_hb_n;i++)
 	{
 		const u32 e=s_hb_hits[i], c=s_hb_cold[i];
@@ -2160,6 +2267,7 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 		hits+=e;
 		insn+=(double)e*s_hb[i].cls[HC_INSN];
 		cold+=c;
+		extra+=(double)e*hot_bill_extra(s_hb[i]);
 		if (dense)
 		{
 			s_hb[i].dense_hits+=e;
@@ -2168,8 +2276,9 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 		s_hb_hits[i]=0;
 		s_hb_cold[i]=0;
 	}
-	printf("[HOT] %.2fs dense=%d vt %.1fK: %u blocks, entries/s %.0f, hot insn/entry %.2f, cold entries/s %.0f\n",
-	       seconds, dense?1:0, vt_k, s_hb_n, hits/seconds, hits>0.0 ? insn/hits : 0.0, cold/seconds);
+	printf("[HOT] %.2fs dense=%d vt %.1fK: %u blocks, entries/s %.0f, hot insn/entry %.2f, cold entries/s %.0f,"
+	       " idle rule adds %.2f Mcycles/s\n",
+	       seconds, dense?1:0, vt_k, s_hb_n, hits/seconds, hits>0.0 ? insn/hits : 0.0, cold/seconds, extra/seconds/1e6);
 	if (s_hb_overflow)
 		printf("[HOT] (%u blocks did not fit the %u-entry table)\n", s_hb_overflow, (u32)HOT_MAX);
 
@@ -4946,7 +5055,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		             (uintptr_t)CodeCache, (uintptr_t)CodeCache+CODE_SIZE, h.cls);
 	}
 
-	if (get_jit_idle_rule_preset()==4)
+	if (get_jit_idle_rule_preset()==4 || get_jit_x30_fwd_preset()==2)
 		idle_bill_note(block);
 
 	return rv;
@@ -5112,8 +5221,9 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
-	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d\n", get_jit_idle_rule_preset(),
-	       get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(), get_jit_sq_copy_preset());
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d x30fwd=%d taskidle=%d\n",
+	       get_jit_idle_rule_preset(), get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(),
+	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each

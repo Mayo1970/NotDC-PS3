@@ -23,14 +23,17 @@ GATE = 'if (!get_jit_pr_moves_preset() || !dec_is_pr_free(op))'
 L0 = 'if (idle_rule==0 || (idle_rule==3 && block.idle_loop))'
 L1 = 'else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'
 SELF = 'if (block.BranchBlock==block.start && idle_rule!=2)'
+FWD = 'if (idle_rule==0 && block.BranchBlock>block.start && fwd_plain)'
 SYSC = 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule!=2)'
 PURE = 'block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);'
 FLAG = ('\t\t// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice. Set at every level.\n'
         '\t\tif (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6 &&\n'
         '\t\t    (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1))\n\t\t\t' + PURE + '\n')
-BILL = ('\t\tblock.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles);\n'
-        '\t\t// JIT IDLE RULE AUTO: both of its bills, so a switch patches the compiled block in place (ps3_driver.cpp).\n'
-        '\t\tblock.bill_x3=dec_bill(1,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(0,plain_cycles,max_cycles);\n')
+BILL = ('\t\tblock.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles,get_jit_x30_fwd()!=0);\n'
+        '\t\t// JIT IDLE RULE AUTO and X30 FORWARD AUTO: each bill, so a switch patches the compiled block in place.\n'
+        '\t\tblock.bill_x3=dec_bill(1,plain_cycles,max_cycles,false);\n'
+        '\t\tblock.bill_x30=dec_bill(0,plain_cycles,max_cycles,false);\n'
+        '\t\tblock.bill_x30p=dec_bill(0,plain_cycles,max_cycles,true);\n')
 RMV = '\t\tif (!get_jit_rm_any_preset())\n\t\t{\n\t\t\tverify(fpu_cfg.RM<2);\n\t\t}\n\t\telse if (fpu_cfg.RM>=2)\n'
 
 MUTANTS = [
@@ -108,6 +111,18 @@ MUTANTS = [
      'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'),
     (DEC, 'X3 + WAITS drops the self-loop x10', SELF, 'if (block.BranchBlock==block.start && idle_rule<2)'),
     (DEC, 'X3 + WAITS drops the syscall bill', SYSC, 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)'),
+    (DEC, 'X30 FORWARD: the row does nothing', FWD, 'if (false)'),
+    (DEC, 'X30 FORWARD: acts with the row OFF', FWD, 'if (idle_rule==0 && block.BranchBlock>block.start)'),
+    (DEC, 'X30 FORWARD: backward branches too', FWD, 'if (idle_rule==0 && fwd_plain)'),
+    (DEC, 'X30 FORWARD: a self loop too', FWD, 'if (idle_rule==0 && block.BranchBlock>=block.start && fwd_plain)'),
+    (DEC, 'X30 FORWARD: at every level', FWD, 'if (block.BranchBlock>block.start && fwd_plain)'),
+    (DEC, 'X30 FORWARD: the bill ignores the choice of now', 'max_cycles,get_jit_x30_fwd()!=0);', 'max_cycles,false);'),
+    (DEC, 'X30 FORWARD: the bill always PLAIN', 'max_cycles,get_jit_x30_fwd()!=0);', 'max_cycles,true);'),
+    (DEC, 'X30 FORWARD: the X30 bill with PLAIN', 'block.bill_x30=dec_bill(0,plain_cycles,max_cycles,false);',
+     'block.bill_x30=dec_bill(0,plain_cycles,max_cycles,true);'),
+    (DEC, 'X30 FORWARD: the PLAIN bill without PLAIN', 'block.bill_x30p=dec_bill(0,plain_cycles,max_cycles,true);',
+     'block.bill_x30p=dec_bill(0,plain_cycles,max_cycles,false);'),
+    (DEC, 'X30 FORWARD: the PLAIN bill at X3', 'block.bill_x30p=dec_bill(0,', 'block.bill_x30p=dec_bill(1,'),
     (DEC, 'X3 + WAITS reads the flag before it is set', FLAG + BILL, BILL + FLAG),
     (DEC, 'idle_loop only at X30', PURE,
      'block.idle_loop=get_jit_idle_rule()==0 && block.BranchBlock<=block.start && idle_turn_is_pure(block);'),
@@ -116,8 +131,8 @@ MUTANTS = [
      'if (state.info.has_readm && !state.info.has_fpu && block.opcodes<6 &&\n\t\t    (block'),
     (DEC, 'AUTO X3 bill at level 3', 'block.bill_x3=dec_bill(1,', 'block.bill_x3=dec_bill(3,'),
     (DEC, 'AUTO X30 bill at the level of now', 'block.bill_x30=dec_bill(0,', 'block.bill_x30=dec_bill(get_jit_idle_rule(),'),
-    (DEC, 'AUTO bills swapped', 'block.bill_x3=dec_bill(1,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(0,',
-     'block.bill_x3=dec_bill(0,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(1,'),
+    (DEC, 'AUTO bills swapped', 'block.bill_x3=dec_bill(1,plain_cycles,max_cycles,false);\n\t\tblock.bill_x30=dec_bill(0,',
+     'block.bill_x3=dec_bill(0,plain_cycles,max_cycles,false);\n\t\tblock.bill_x30=dec_bill(1,'),
     (DEC, 'AUTO X3 bill from the billed cycles', 'block.bill_x3=dec_bill(1,plain_cycles,', 'block.bill_x3=dec_bill(1,block.cycles,'),
     (DEC, 'the bill at a fixed level', 'block.cycles=dec_bill(get_jit_idle_rule(),', 'block.cycles=dec_bill(0,'),
     (DEC, 'idle_loop without the purity test', PURE, 'block.idle_loop=block.BranchBlock<=block.start;'),
@@ -161,20 +176,39 @@ MUTANTS = [
     (HASH, 'idle hash: limit one too high', 'opcodes > IDLE_HASH_MAX_OPS)', 'opcodes > IDLE_HASH_MAX_OPS + 1)'),
     (HASH, 'idle hash: full form with decimal opcodes', '">:1:%08X:%02X:', '">:1:%08X:%02d:'),
     (HASH, 'idle hash: brief form with decimal opcodes', '">:1:%02X:%08X', '">:1:%02d:%08X'),
-    (DEC, 'idle hash: level 1 acts on the Reicast list', 'const bool act=list==IDLE_LIST_OWN || level>=2;',
-     'const bool act=list==IDLE_LIST_OWN || level>=1;'),
-    (DEC, 'idle hash: level 2 leaves the Reicast list', 'const bool act=list==IDLE_LIST_OWN || level>=2;',
-     'const bool act=list==IDLE_LIST_OWN;'),
+    (DEC, 'idle hash: level 1 acts on the Reicast list', '|| level>=2 ? 1 : 0;', '|| level>=1 ? 1 : 0;'),
+    (DEC, 'idle hash: level 2 leaves the Reicast list', '(list==IDLE_LIST_OWN && level>=1) || level>=2 ? 1 : 0;',
+     '(list==IDLE_LIST_OWN && level>=1) ? 1 : 0;'),
+    (DEC, 'idle hash: our list at level 0', '(list==IDLE_LIST_OWN && level>=1)', '(list==IDLE_LIST_OWN)'),
+    (DEC, 'task idle: the task list without its row', 'list==IDLE_LIST_TASK ? (task ? IDLE_TASK_SLICES : 0)',
+     'list==IDLE_LIST_TASK ? IDLE_TASK_SLICES'),
+    (DEC, 'task idle: one slice', 'list==IDLE_LIST_TASK ? (task ? IDLE_TASK_SLICES : 0)', 'list==IDLE_LIST_TASK ? (task ? 1 : 0)'),
+    (DEC, 'task idle: the task list as ours', 'list==IDLE_LIST_TASK ? (task ? IDLE_TASK_SLICES : 0)',
+     'list==IDLE_LIST_TASK ? (level>=1 ? 1 : 0)'),
+    (DEC, 'task idle: log text as ours', 'list==IDLE_LIST_TASK?"the task list":', 'list==IDLE_LIST_TASK?"our list":'),
+    (DEC, 'task idle: decoder without the task row', '(idle_hash_level || task_idle) && !g_jit_mmu',
+     'idle_hash_level && !g_jit_mmu'),
+    (DEC, 'task idle: the MMU JIT too', '(idle_hash_level || task_idle) && !g_jit_mmu ?', '(idle_hash_level || task_idle) ?'),
+    (DEC, 'task idle: the row ignored', 'dec_idle_hash(idle_hash_level,task_idle)', 'dec_idle_hash(idle_hash_level,true)'),
+    (DRV, 'task idle: the debt in cycles, not slices', '(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice()', '(1-(s32)block->idle_hash)'),
+    (DRV, 'task idle: one slice too many', '(1-(s32)block->idle_hash)*', '(0-(s32)block->idle_hash)*'),
+    (PRE, 'task idle: default OFF', 'int g_jit_task_idle_preset = 1;', 'int g_jit_task_idle_preset = 0;'),
+    (PRE, 'task idle: getter fixed', '{ return g_jit_task_idle_preset; }', '{ return 0; }'),
+    (HASH, 'task list: not looked up', '\tif (strstr(idle_hash_task, full))\n\t\treturn IDLE_LIST_TASK;\n', ''),
+    (HASH, 'task list: without the address', 'if (strstr(idle_hash_task, full))', 'if (strstr(idle_hash_task, brief))'),
+    (HASH, 'task list: Shuffle entry on the turn tail', '">:1:8C0158A0:04:', '">:1:8C01589A:04:'),
+    (HASH, 'task list: Border Down entry with a wrong word', '">:1:8C04838C:04:63FE2E15:', '">:1:8C04838C:04:63FE2E14:'),
+    (HASH, 'task slices 2', '#define IDLE_TASK_SLICES 3', '#define IDLE_TASK_SLICES 2'),
     (DEC, 'idle hash: every second byte', 'code[i]=ReadMem8(block.start+i);', 'code[i]=ReadMem8(block.start+i*2);'),
     (DEC, 'idle hash: decoder limit one too high', 'block.opcodes>IDLE_HASH_MAX_OPS)', 'block.opcodes>IDLE_HASH_MAX_OPS+1)'),
-    (DEC, 'idle hash: not counted', '\tif (act)\n\t\tg_dec_hash_blocks++;\n', ''),
+    (DEC, 'idle hash: not counted', '\tif (slices)\n\t\tg_dec_hash_blocks++;\n', ''),
     (DEC, 'idle hash: log without a limit', 'if (lines<24)', 'if (lines<2400)'),
-    (DEC, 'idle hash: one log share for both lists', 'u32& lines=logged[list==IDLE_LIST_OWN];', 'u32& lines=logged[0];'),
-    (DEC, 'idle hash: decoder without its row', 'block.idle_hash=idle_hash_level && !g_jit_mmu && dec_idle_hash(idle_hash_level);',
-     'block.idle_hash=dec_idle_hash(2);'),
+    (DEC, 'idle hash: one log share for all lists', 'u32& lines=logged[list];', 'u32& lines=logged[0];'),
+    (DEC, 'idle hash: decoder without its row', '(idle_hash_level || task_idle) && !g_jit_mmu ? dec_idle_hash(idle_hash_level,task_idle) : 0',
+     'dec_idle_hash(2,task_idle)'),
     (DEC, 'idle hash: flag kept from the last block', '\tidle_loop=false;\n\tidle_hash=false;\n', '\tidle_loop=false;\n'),
-    (DRV, 'idle hash: driver keeps one cycle', '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,0);\n',
-     '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,1);\n'),
+    (DRV, 'idle hash: driver keeps one cycle', '\t\tppc_li(ppc_cycles,(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());\n',
+     '\t\tppc_li(ppc_cycles,1+(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());\n'),
     (DRV, 'idle hash: driver on every idle-rule loop', '\tif (block->idle_hash)\n', '\tif (block->idle_loop)\n'),
     (PRE, 'idle hash: presets default OFF', 'int g_jit_idle_hash_preset = 1;', 'int g_jit_idle_hash_preset = 0;'),
     (PRE, 'idle hash: presets getter fixed', '{ return g_jit_idle_hash_preset; }', '{ return 0; }'),

@@ -495,12 +495,12 @@ static void hz_write(u32 a, u32 src)
 	hz_map(0);
 }
 
-void aram_hz_hit(u32 addr, u32 src)
+bool aram_hz_hit(u32 addr, u32 src)
 {
 	if (g_arm_spe)
-		arm_spe_hz_hit(addr, src);
-	else
-		hz_write(addr, src);
+		return arm_spe_hz_hit(addr, src);
+	hz_write(addr, src);
+	return false;
 }
 
 // P20 G4 with the PPU twin: TEMP, MEMS, MIXS or EFREG from the sound SPU's DSP at this sample; old = nullAICA's copy
@@ -766,11 +766,13 @@ void ps3aica_hz_print(const void* hzp, double w, const u32* ppu)
 		for (u32 i = 0; i < AICA_HZ_MAP; i++)
 			pages += (u32)__builtin_popcount(h.map[i]);
 		const u32 syncs = h.syncs - last.syncs, wait = h.wait_ticks - last.wait_ticks;
+		const u32 holds = h.holds - last.holds, hold = h.hold_ticks - last.hold_ticks;
 		const double us = 1e6 / (double)ps3_timebase_hz, tw = (double)ps3_timebase_hz * w / 100.0;
 		printf("[aram-hz] sync=%d ring=%d ring64=%d dsprd=%d | map pages %u | hits/s sh4 %.0f dma %.0f arm %.0f stale %.0f"
 		       " | tests/s %.0f/%.0f/%.0f hazards/s %.1f/%.1f/%.1f near <16:%u <64:%u <256:%u more:%u"
 		       " | ring hits/s %.0f recs/s %.0f | syncs/s %.1f miss/s %.1f timeouts %u | sync wait %.0f us avg, sh4 wait"
-		       " %.2f%% of wall | dsp reads/s sh4 %.0f arm %.0f | spu ring lines in %u out %u cache out %u\n",
+		       " %.2f%% of wall | dsp reads/s sh4 %.0f arm %.0f | spu ring lines in %u out %u cache out %u"
+		       " | holds/s %.1f hold %.0f us avg long %u\n",
 		       get_spe_aica_sync_preset(), (s_setup_flags & AICA_SETUP_RING) != 0, (s_setup_flags & AICA_SETUP_RING64) != 0,
 		       (int)s_dsp_rd, pages, ppu[0] / w, ppu[1] / w, (h.arm_hits - last.arm_hits) / w, ppu[2] / w,
 		       (h.tests[0] - last.tests[0]) / w, (h.tests[1] - last.tests[1]) / w, (h.tests[2] - last.tests[2]) / w,
@@ -779,7 +781,8 @@ void ps3aica_hz_print(const void* hzp, double w, const u32* ppu)
 		       h.near[2] - last.near[2], h.near[3] - last.near[3], (h.ring_hits - last.ring_hits) / w,
 		       (h.ring_recs - last.ring_recs) / w, syncs / w, (h.miss - last.miss + ppu[4]) / w, h.timeouts,
 		       syncs ? wait * us / syncs : 0.0, (g_arm_spe ? ppu[5] : wait) / tw, (h.dsp_rd[0] - last.dsp_rd[0]) / w,
-		       (h.dsp_rd[1] - last.dsp_rd[1]) / w, ring[0] - l_ring[0], ring[1] - l_ring[1], ring[2] - l_ring[2]);
+		       (h.dsp_rd[1] - last.dsp_rd[1]) / w, ring[0] - l_ring[0], ring[1] - l_ring[1], ring[2] - l_ring[2],
+		       holds / w, holds ? hold * 1e6 / 79800000.0 / holds : 0.0, h.hold_timeouts - last.hold_timeouts);
 	}
 	last = h;
 	memcpy(l_ring, ring, sizeof(l_ring));

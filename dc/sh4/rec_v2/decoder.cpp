@@ -68,10 +68,12 @@ DecodedBlock block;
 extern "C" int get_jit_rm_any_preset();
 extern "C" int get_jit_pr_moves_preset();
 extern "C" int get_jit_idle_rule();	// the level billed now: AUTO gives 1 or 0
+extern "C" int get_jit_x30_fwd();	// bundle 21: at X30 a forward branch bills its own cycles (AUTO: the choice now)
 // Since boot, for the [jit8] line: PR=1 moves kept native, blocks the idle rule billed, blocks with RM 2 or 3.
 u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 // JIT IDLE HASH (bundle 8, way B): 0 off, 1 our list, 2 also Reicast's. Blocks that end the slice, since boot.
 extern "C" int get_jit_idle_hash_preset();
+extern "C" int get_jit_task_idle_preset();
 u32 g_dec_hash_blocks;
 
 struct
@@ -1278,44 +1280,48 @@ int stuffcmp(const void* p1,const void* p2)
 	return b->fallbacks-a->fallbacks;
 }
 
-// JIT IDLE HASH: true = this block ends the timeslice. Level 1 acts on our list and only logs a block of
-// Reicast's list; level 2 acts on both. The first hits of each list go to the log in hash()'s full form.
-static bool dec_idle_hash(int level)
+// JIT IDLE HASH: the timeslices this block drops (0 = none). Level 1 acts on our list and only logs a block of
+// Reicast's list; level 2 acts on both. JIT TASK IDLE acts on the task list. The first hits go to the log.
+static u32 dec_idle_hash(int level,bool task)
 {
 	if (block.opcodes==0 || block.opcodes>IDLE_HASH_MAX_OPS)
-		return false;
+		return 0;
 	u8 code[IDLE_HASH_MAX_OPS];
 	for (u32 i=0;i<block.opcodes;i++)
 		code[i]=ReadMem8(block.start+i);
 	char full[IDLE_HASH_STR];
 	const int list=idle_hash_listed(block.start,block.opcodes,code,full);
 	if (list==IDLE_LIST_NONE)
-		return false;
-	const bool act=list==IDLE_LIST_OWN || level>=2;
+		return 0;
+	const u32 slices=list==IDLE_LIST_TASK ? (task ? IDLE_TASK_SLICES : 0)
+	                : (list==IDLE_LIST_OWN && level>=1) || level>=2 ? 1 : 0;
 	// A log share per list: Reicast's entries hit dozens of blocks in a boot and must not hide ours.
-	static u32 logged[2];
-	u32& lines=logged[list==IDLE_LIST_OWN];
+	static u32 logged[4];
+	u32& lines=logged[list];
 	if (lines<24)
 	{
 		lines++;
-		printf("[idlehash] %s %s: %s\n",full,list==IDLE_LIST_OWN?"our list":"Reicast's list",
-		       act?"ends the slice":"log only");
+		printf("[idlehash] %s %s: %s\n",full,list==IDLE_LIST_OWN?"our list":list==IDLE_LIST_TASK?"the task list":
+		       "Reicast's list",!slices?"log only":slices==1?"ends the slice":"skips the slices");
 	}
-	if (act)
+	if (slices)
 		g_dec_hash_blocks++;
-	return act;
+	return slices;
 }
 
 // P71 JIT IDLE RULE: the cycles this block bills at a level. 1 = Reicast's x3 (a bt block only when it branches back),
 // 2 = no cycle trick (Flycast), 3 = as 1, a pure wait loop as 0. AUTO bills 1 or 0 (ps3/ps3_idle_auto.h).
-static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles)
+static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles,bool fwd_plain)
 {
 	//Small-n-simple idle loop detector :p
 	if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6)
 	{
 		if (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1)
 		{
-			if (idle_rule==0 || (idle_rule==3 && block.idle_loop))
+			// Bundle 21, JIT X30 FORWARD PLAIN: a forward branch closes no loop, so it is the game's own work.
+			if (idle_rule==0 && block.BranchBlock>block.start && fwd_plain)
+				cycles*=1;
+			else if (idle_rule==0 || (idle_rule==3 && block.idle_loop))
 				cycles*=30;
 			else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))
 				cycles*=3;
@@ -1452,7 +1458,9 @@ _end:
 	block.BlockType=state.BlockType;
 	block.has_store=idle_block_stores(block);
 	const int idle_hash_level=get_jit_idle_hash_preset();
-	block.idle_hash=idle_hash_level && !g_jit_mmu && dec_idle_hash(idle_hash_level);
+	const bool task_idle=get_jit_task_idle_preset()!=0;
+	block.idle_hash=(u8)((idle_hash_level || task_idle) && !g_jit_mmu ? dec_idle_hash(idle_hash_level,task_idle) : 0);
+	block.bill_plain=block.cycles;
 
 	//cycle tricks
 	{
@@ -1461,10 +1469,11 @@ _end:
 		if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6 &&
 		    (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1))
 			block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);
-		block.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles);
-		// JIT IDLE RULE AUTO: both of its bills, so a switch patches the compiled block in place (ps3_driver.cpp).
-		block.bill_x3=dec_bill(1,plain_cycles,max_cycles);
-		block.bill_x30=dec_bill(0,plain_cycles,max_cycles);
+		block.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles,get_jit_x30_fwd()!=0);
+		// JIT IDLE RULE AUTO and X30 FORWARD AUTO: each bill, so a switch patches the compiled block in place.
+		block.bill_x3=dec_bill(1,plain_cycles,max_cycles,false);
+		block.bill_x30=dec_bill(0,plain_cycles,max_cycles,false);
+		block.bill_x30p=dec_bill(0,plain_cycles,max_cycles,true);
 		if (block.cycles>plain_cycles)
 			g_dec_rule_blocks++;
 	}

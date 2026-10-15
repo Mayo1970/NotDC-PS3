@@ -29,9 +29,10 @@ put('pr_free.inc', cut(dec, 'static bool dec_is_pr_free(u32 op)\n', '\n}\n', 'de
 put('pr_gate.inc', cut(dec, '\t\tif (state.cpu.FPR64 /*|| state.cpu.FSZ64*/)\n', '\n\t\tif (state.cpu.FSZ64 && (d==PRM_FRN_SZ',
                        'PR gate'))
 put('cycle.inc', cut(dec, '\t//cycle tricks\n', '\n\tstatic int cc=0;', 'cycle block'))
-put('bill.inc', cut(dec, 'static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles)\n', '\n}\n', 'dec_bill', True))
+put('bill.inc', cut(dec, 'static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles,bool fwd_plain)\n', '\n}\n',
+                     'dec_bill', True))
 put('rm.inc', cut(dec, '\t\tcpu.FSZ64=fpu_cfg.SZ;\n', '\t\t//what about fp/fs ?', 'RM setup'))
-put('hash_dec.inc', cut(dec, 'static bool dec_idle_hash(int level)\n', '\n}\n', 'dec_idle_hash', True))
+put('hash_dec.inc', cut(dec, 'static u32 dec_idle_hash(int level,bool task)\n', '\n}\n', 'dec_idle_hash', True))
 
 # hash8_check's references. SHA-1 from hashlib, over the first n bytes of a fixed stream.
 stream = bytes((i * 167 + 13) & 0xFF for i in range(128))
@@ -66,8 +67,11 @@ KNOWN = [
     ('CvS2 vsync wait, the hook call', 0x8C21A2DA, '4D0B E407', '-'),
     ('CvS2 hook dispatcher', 0x8C217FE0, '4F22 7FF8 6243 D30E 4208 2F42 4200 323C 6423 1F21 6122 410B 5441', 'R'),
     ('CvS2 hook dispatcher, its return', 0x8C217FFA, '7F08 4F26 000B E000', 'R'),
+    ('Sonic Shuffle task dispatch, loop test', 0x8C0158A0, 'E310 51F1 3133 8BE1', 'T'),
+    ('Sonic Shuffle task dispatch, the turn tail', 0x8C01589A, '52F1 7201 1F21 E310 51F1 3133 8BE1', '-'),
+    ('Border Down task dispatch, loop test', 0x8C04838C, 'E310 51F1 3133 8BE1', 'T'),
 ]
-LISTS = {'R': 'IDLE_LIST_REICAST', 'O': 'IDLE_LIST_OWN', '-': 'IDLE_LIST_NONE'}
+LISTS = {'R': 'IDLE_LIST_REICAST', 'O': 'IDLE_LIST_OWN', 'T': 'IDLE_LIST_TASK', '-': 'IDLE_LIST_NONE'}
 rows = ''
 for name, addr, text, lst in KNOWN:
     words = [int(w, 16) for w in text.split()]
@@ -120,12 +124,17 @@ LINES = [
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }'),
     ('ps3/ps3_presets.cpp', 'JIT IDLE HASH defaults to ON (Matt 2026-10-15)', 'int g_jit_idle_hash_preset = 1;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }'),
-    ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: under its row, with the level',
+    ('ps3/ps3_presets.cpp', 'JIT TASK IDLE defaults to ON (Matt 2026-10-15)', 'int g_jit_task_idle_preset = 1;'),
+    ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_task_idle_preset() { return g_jit_task_idle_preset; }'),
+    ('ps3/ps3_presets.cpp', 'the key', '\t{ "JitTaskIdle",   &g_jit_task_idle_preset },\n'),
+    ('ps3/ps3_menu.cpp', 'the row', '\t{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_onoff,'),
+    ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: under its rows, with the level',
      '\tconst int idle_hash_level=get_jit_idle_hash_preset();\n'
-     '\tblock.idle_hash=idle_hash_level && !g_jit_mmu && dec_idle_hash(idle_hash_level);\n'),
+     '\tconst bool task_idle=get_jit_task_idle_preset()!=0;\n'
+     '\tblock.idle_hash=(u8)((idle_hash_level || task_idle) && !g_jit_mmu ? dec_idle_hash(idle_hash_level,task_idle) : 0);\n'),
     ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: a new block starts unlisted', '\tidle_loop=false;\n\tidle_hash=false;\n'),
-    ('ps3/ps3_driver.cpp', 'idle hash: a listed block drops the rest of the slice',
-     '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,0);\n'),
+    ('ps3/ps3_driver.cpp', 'idle hash: a listed block drops the rest of the slice, a task entry more',
+     '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());\n'),
     ('dc/sh4/sh4_registers.cpp', 'the host FPSCR follows RM and DN',
      '\tif ((old_rm!=fpscr.RM) || (old_dn!=fpscr.DN) || (old_rm==0xFF )|| (old_dn==0xFF))\n'),
 ]

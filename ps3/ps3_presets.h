@@ -143,6 +143,7 @@ extern int g_spe_aica_dsp_preset;
 extern int g_sound_thread_preset;
 extern int g_spe_arm7_preset;
 extern int g_spe_aica_sync_preset;
+extern int g_spe_aica_defer_preset;
 extern int g_dsp_ring_ram_preset;
 extern int g_dsp_ring_64k_preset;
 extern int g_dsp_reg_read_preset;
@@ -167,6 +168,9 @@ extern int g_jit_idle_rule_preset;
 extern int g_jit_idle_rule_now;
 extern int g_jit_idle_hash_preset;
 extern int g_jit_sq_copy_preset;
+extern int g_jit_x30_fwd_preset;
+extern int g_jit_x30_fwd_now;
+extern int g_jit_task_idle_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
 extern int g_stick_deadzone_preset;

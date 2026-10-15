@@ -534,6 +534,31 @@ static uint32_t hz_write(uint32_t a, uint32_t src)
 	return ARM_HZ_SYNCED;
 }
 
+// Bundle 21, SPE AICA Defer: the SH4's store of this SYNC reaches wave RAM only now, from the PPU; nothing runs before it.
+// No time limit: a paused SH4 thread writes it when it goes on (a hold over 50 ms is only counted).
+static void hz_hold(void)
+{
+	st.held++;
+	hz.holds++;
+	hz_dirty = true;
+	put_echo();
+	spu_write_decrementer(0x7FFFFFFFu);   // the PPU's bell store is the wake, so the hold time needs no reload
+	const uint32_t t0 = spu_read_decrementer();
+	for (;;)
+	{
+		mfc_getllar(&bell, bell_ea, 0, 0);
+		mfc_read_atomic_status();
+		if ((int32_t)(bell.applied - st.held) >= 0 || bell.quit)
+			break;
+		spu_write_event_ack(spu_read_event_status());
+	}
+	const uint32_t dt = t0 - spu_read_decrementer();
+	hz.hold_ticks += dt;
+	if (dt > HZ_WAIT_MAX)
+		hz.hold_timeouts++;
+	spu_write_decrementer(DEC_TICKS);
+}
+
 static void hz_arm_store(uint32_t a)
 {
 	hz.arm_hits++;
@@ -693,6 +718,8 @@ static void run_cmd(const ArmCmd* c)
 	{
 	case ARM_CMD_SYNC:
 		st.hz_res = hz_write(c->b & 0x1FFFFFu, c->c ? 1 : 0);
+		if (c->flags & ARM_SYNC_HOLD)
+			hz_hold();
 		break;
 	case ARM_CMD_CFG:
 		hz_live = c->b & (ARM_CFG_SYNC | ARM_CFG_BLOCK | ARM_CFG_ALL);

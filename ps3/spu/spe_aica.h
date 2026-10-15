@@ -133,7 +133,8 @@ typedef struct
 	uint32_t syncs, miss, timeouts, wait_ticks;   // miss: a hazard or a test over the block's limit
 	uint32_t arm_hits;                  // ARM7 stores into a marked page
 	uint32_t dsp_rd[2];                 // reads of DSP registers 0x4000-0x45BF by the SH4 and by the ARM7
-	uint32_t pad[12];
+	uint32_t holds, hold_timeouts, hold_ticks;   // bundle 21, SPE AICA Defer: waits for the PPU's stores at a SYNC
+	uint32_t pad[9];
 } __attribute__((aligned(128))) AicaHz;
 
 // One CD-DA sector, 128-byte aligned for the SPU's DMA

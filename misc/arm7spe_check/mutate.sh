@@ -95,5 +95,22 @@ try69() {
 	fi
 }
 try69 "ADPCM Stream: the twin keeps the old rule" 's/^\tM->stream_lsa = (setup.flags \& ARM_SETUP_STREAM) != 0;/\t;/'
+# Bundle 21 (SPE AICA Defer): HOLD SYNCs at + SAMPLE SYNC and at ON, the harness storing while the SPU holds
+try21() {
+	total=$((total + 1))
+	sed "$2" ../../ps3/spu/spe_arm7.cpp > $M
+	if cmp -s $M ../../ps3/spu/spe_arm7.cpp; then echo "MUTATION DID NOT APPLY: $1"; return; fi
+	SRC=misc/arm7spe_check/$M sh build_spu.sh > out/mut_build.log 2>&1 || { echo "BUILD FAILED: $1"; return; }
+	if wsl -e sh -c 'cd /mnt/e/Users/Matteo/Desktop/Dreamcast/flycastPS3/misc/arm7spe_check && DEFER=1 ./out/harness out/spe_arm7_sim.elf out/syms.txt 180 1500 > out/mut_run.log 2>&1 && DEFER=1 ./out/harness out/spe_arm7_sim.elf out/syms.txt 116 1500 >> out/mut_run.log 2>&1'; then
+		echo "NOT CAUGHT: $1"
+	else
+		echo "caught: $1"
+		caught=$((caught + 1))
+	fi
+}
+try21 "Defer: the HOLD flag ignored" 's/^\t\tif (c->flags \& ARM_SYNC_HOLD)$/\t\tif (0)/'
+try21 "Defer: the hold ends at once" 's/if ((int32_t)(bell.applied - st.held) >= 0 || bell.quit)/if (1)/'
+try21 "Defer: the hold not counted in the echo" 's/^\tst.held++;/\t;/'
+try21 "Defer: the hold not counted in the map block" 's/^\thz.holds++;/\t;/'
 echo "$caught of $total mutations caught"
 SRC= sh build_spu.sh > out/mut_build.log 2>&1

@@ -293,6 +293,397 @@ of session 74d25a32: `cdi_extract.py`, `sh4dis.py`, `xref.py`).**
   SUCCESS (package of 11:04). Render Delay defaults to FLYCAST in source
   only (not packaged). Not committed. Open: the green menus (parked) and
   Matt's close of the bundle.
+- Heavy scenes, investigated 2026-10-15 (Matt: "Let's continue Bundle 21.
+  Games will struggle in running 100% with 20k+ vertices per frame.
+  Investigate the possible causes, and what can we do to address it.").
+  Read only: nothing built, no HW run. It is the same issue as bundle 22
+  and P86. Sources: the HW logs of 2026-10-10 to 2026-10-15, the ELF of the
+  package of 11:04, three read-only agent reviews. Tools and agent notes:
+  `tools/` (`wins.py`, `fit.py`, `flush_excess2.py`, `heavy_scan.py`),
+  `agent_jit/`, `agent_snd/`, `agent_rend/` in the scratchpad of session
+  77328546.
+  - The limit is vertices per second on the SH4 thread. Sonic Adventure 2
+    at X30, package of 11:04 (`b21_hw.txt` lines 38212-45002, 86 windows):
+    host time per emulated second = 0.50 s + 410 ns per TA flush (r 0.86),
+    full load at 1.21M flushes a second = 20K vertices a frame at 60 frames
+    a second. The 30-frame games (Sonic Adventure, Phantasy Star Online,
+    Shenmue, Spider-Man) run 20-25K at 100% in every log.
+  - Heavy windows, latest packages:
+
+    | Game | Scene | SPEED | TA flushes/s | SQ flush share | Other large cost |
+    |---|---|---|---|---|---|
+    | Sonic Adventure 2 | 20-23K, X30 | 99.4-101.2% (sleep 0-56 ms/s) | 1.21-1.34M | 12.5-14.6% | sound syncs 3-6% |
+    | Sonic Adventure 2 | 20-21K, X3 (AUTO try) | 88.1-90.6% | 1.06-1.12M | 12.5-12.8% | aica 5.0-5.4% (1.9-2.0% at X30) |
+    | Sonic Adventure 2 | 15-18K, X3, a later stage | 91.8-97.5% | 0.82-0.98M | 9-14% | sound syncs 16-22% |
+    | Crazy Taxi | 16-20K, X30 | 84-93% | 0.78-1.04M | 10-14% | render busy 31-58% |
+    | Looney Tunes race | 26-28K, X30 | 85-90% | 1.06-1.12M | 13-15% | none found |
+    | Ikaruga (AT = 1, log of 2026-10-13) | 14-20K, X30 | 75-83% | 0.54-0.86M | 15-21%, + RAM SQ 8-10% | Kamui vsync loop 0.4-0.75M turns/s |
+
+  - Cause 1, the store-queue flush into the TA (every 3D game). The JIT
+    calls `do_sqw_nommu` at each PREF: 92-94 instructions, 12 TOC loads,
+    a QACR branch that flips at each flush (SQ0/SQ1). The 5.17 probe: about
+    115 ns (IPC about 0.3). In Ikaruga and Rez (AT = 1) the old chain
+    costs 23-31% of the thread (P74).
+  - Cause 2, the game's own vertex code. SA2's loop 8C141BBA is 161 JIT
+    instructions a vertex now: JIT SQ COPY puts all 5 store-queue stores
+    inline (the old build had 5 cold entries a turn). Each `fmov @r2+` pays
+    its own RAM check (4 a vertex), the two fschg cancel (8 instructions).
+  - Cause 3, the sound SPU syncs (SA2). Only G2 DMA writes hit (`hits/s
+    sh4 0 dma 445-576 arm 0`), the music feed. At + SAMPLE SYNC each hit
+    syncs with no test: 45-86 syncs a second, 0.5-2.5 ms each, a busy spin
+    (`wait_tail`, `ps3/ps3_arm_spe.cpp:83`). Estimates from the counters,
+    not logged: most of a sync is the ARM7 SPU waiting for the sound SPU,
+    whose DSP (64K-word ring through a 16 KB cache) costs about 5.9 us a
+    sample; 44-74% of the syncs come from the stale flag.
+  - Cause 4, the idle rule. SA2 at X30 holds 60 frames a second at 20-23K
+    (Render Delay FLYCAST: the old X30 frame drops are gone in this boot;
+    corrected by HW run 2 below: not in every area).
+    AUTO's X3 tries cost about 10 points in heavy scenes: 3 of the 7 20K+
+    windows of the boot, so the mean was 95.5%. Ikaruga, Rez: the Kamui
+    vsync loop has no idle-list entry.
+  - Cause 5, the render thread on the same PPE core. The VMU Screen
+    overlay (`ps3/ps3_vmulcd.cpp:59-80`) draws one quad, one ps3gl flush,
+    per run of dark dots: 1835-1860 flushes a frame in Crazy Taxi (8
+    screens, Players 4), 210-236 in SA2; 1-17 before bundle 16. About 16
+    points of render busy in Crazy Taxi. TR Triangle Sort 3: about 16
+    more (sort, corner writes, 165-904 pass-2 runs of 2 triangles). The
+    plan's HW facts give 0.07-0.2 SPEED points per busy point.
+  - Ways, Matt picks (sizes are estimates):
+    1. AUTO: stay at X30 when an X3 try gives no more frames per emulated
+       second. SA2 20K+: 95.5% -> about 100%. About 20-30 lines.
+    2. VMU Screen as one texture (or one draw) per screen: Crazy Taxi
+       about -16 busy points, +1 to +3 SPEED. 10-40 lines. Test with no
+       build: VMU Screen OFF in a Crazy Taxi drive (live row).
+    3. Sound syncs: the exact range test per G2 DMA (6.6 step (a); 40-100
+       lines, or 80-150 with the test on the SH4 thread), or LAG_MAX 256 ->
+       about 100 (1 line, HW test first). SA2: up to 12-18% of wall back in
+       its heavy music stages.
+    4. TA flush inline in the JIT, with a dcbz at each new 128-byte line of
+       the raw buffer: about 45 instructions a vertex less; 2-3% of the
+       thread, up to 5-10% if the IPC 0.3 holds (unverified). 150-300
+       lines, medium-high risk (QACR writes, the gates, the 2 MB bound).
+    5. Ikaruga, Rez: P74 (about 20 lines) and an entry, or a rule by code,
+       for the Kamui vsync loop.
+    6. Small JIT items: one RAM check for a run of `@Rm+` loads (21
+       instructions, 1-1.5%), drop a cancelling fschg pair (8), JIT GUARD
+       REUSE ON (no build; 5.31 showed no gain in Crazy Taxi).
+    7. TR Triangle Sort: an overlap-aware pass 2 (60-100 lines) or the sort
+       on an SPU (200-300 lines). Later.
+  - Estimate for SA2 at X30 with ways 1, 3 and 4: full load at about
+    1.33-1.5M flushes a second, 22-25K vertices a frame at 60 frames a
+    second (not measured).
+  - HW run 1, 2026-10-15 (package of 11:04, no build; log `b21h_hw.txt`,
+    scratchpad of session 77328546, lines 638-5487): Crazy Taxi, VMU Screen
+    ON / OFF from the menu, 4 switches. Matt: "There are no gains whether
+    the VMU is on or off."
+    - Players was 1 in this boot: the overlay was 467-513 extra flushes a
+      frame (1835-1860 in the boot with Players 4).
+    - Render busy at 8-10K vertices: 28-41% ON, 19-20% OFF. SPEED: no
+      change that shows over the scene changes.
+    - So the render thread's load costs the SH4 thread little here. Way 2
+      gives no speed (a render-thread saving only); way 7 is likely the
+      same.
+    - Also seen: AUTO ran X3 to line 4730. At X3 `aica` was 2-7% and the
+      sound waits 4.0-6.3% (`[aram-hz]`) / 6.2-9.6% (`[arm7spe]`) of wall;
+      at X30 1.6-1.9% and 1.6-3.2%.
+  - HW run 2, 2026-10-15 (same log, lines 5679-10002): Sonic Adventure 2,
+    JIT IDLE RULE X30 by hand, VMU Screen ON. Matt: "Sort of the same. The
+    dips are still in the same areas."
+    - The host keeps up at X30: the 31 windows at 14K+ run at SPEED 99.0-
+      101.1% (mean 100.0%). Fit: 0.496 s + 415 ns a flush, full load at
+      1.21M flushes a second, as in the AUTO run.
+    - The dips are frame drops in emulated time: SPEED 99-101% with 187-334
+      ms/s of sleep, but 38-46 frames a second (lines 9270, 9415, 9743-
+      9798; 7-20K vertices).
+    - The AUTO run has the same kind of window, each one at X30 (`b21_hw.txt`
+      41481-42474: 30-48 frames at SPEED 100%), and so do the X30 boots
+      with Render Delay OFF (`ps3log_step2_run1.txt`). The X3 boots have
+      none (`b18s_hw.txt` 151510 and 211186), but there the host is 6-12
+      points short at 18K+.
+    - Reading: the X30 bill (P71). X30 bills small read-and-branch blocks
+      x30 (x300 for a self loop, `dec_bill`, `dc/sh4/rec_v2/decoder.cpp:
+      1311`), so in these areas the game runs out of emulated time and
+      drops frames while the host has time to spare. Which blocks: not
+      known (the dip windows show the wait 8C12CBB8, skipped, and the range
+      poll loop 8C1102E6-8C110300, 16-19K turns a second, not skipped).
+    - Correction to the block above: "the old X30 frame drops are gone in
+      this boot" is wrong; they are still there in some areas.
+    - Way 1 changes with this: AUTO must use the frame count both ways: X30
+      where X3 gives no more frames, X3 where X30 drops frames with host
+      time to spare. Today it tries X3 only at 30% sleep, so it stays at
+      X30 in these dips (19-32% sleep).
+    - Next steps proposed (Matt picks): a profile boot with no build (JIT
+      HOTBLOCKS ALL WINDOWS, X30, the same areas) to name the blocks X30
+      bills there; or the same areas at X3 BACKWARD by hand as a check.
+  - Order after HW runs 1 and 2, given to Matt 2026-10-15 (he picks the
+    steps one by one; nothing started):
+    1. The profile boot above, then a bill fix (10-30 lines). A rule fix
+       helps every game with X30 frame drops (Looney Tunes race, Ecco, Tomb
+       Raider TLR, PSO, Jet Grind Radio, Sonic Adventure); an exception for
+       SA2's own blocks helps SA2 only. Known only after the profile.
+    2. Way 4 (TA flush inline, dcbz): every 3D game; most in 60-frame games
+       at 15K+ (SA2, Crazy Taxi, Looney Tunes). Ikaruga and Rez need P74
+       first.
+    3. Way 3 (sound sync range test): games that stream music into wave RAM
+       by G2 DMA. Measured: SA2 2-22% of wall, Crazy Taxi 4-10% at X3,
+       Looney Tunes 0%.
+    4. Way 1 revised (AUTO by frames): every game. Only if step 1 finds no
+       small fix.
+    - Later: way 5 (Ikaruga, Rez), way 6 (JIT GUARD REUSE ON needs no
+      build). Dropped: ways 2 and 7 (HW run 1: no speed).
+  - Step 1 started 2026-10-15 (Matt: "Let's do the profile + bill fix.").
+    The `[HOTC]` census ranks blocks by host time, so a billed block that
+    is cheap on the host can miss its top 64. So a profile addition is
+    built first: package of 16:09 (`build/notdc_ps3.pkg`, 1757168 bytes) =
+    the package of 11:04 + the Render Delay default (source) + this. Not
+    committed. `.got` 0xF950 of 0x10000.
+    - `dc/sh4/rec_v2/decoder.h` / `.cpp`: `bill_plain`, the block's cycles
+      before the idle rule.
+    - `ps3/ps3_driver.cpp`, JIT HOTBLOCKS only: each `[HOT]` window line
+      ends with "idle rule adds N Mcycles/s". Each census adds a `[HOTB]`
+      block: the blocks the rule bills above their plain cycles, by the
+      emulated cycles it adds (top 24: entries/s, ops, plain and billed
+      cycles, branch kind and target, share, the first 6 opcodes).
+    - PC checks (WSL), PASS: jit8, idleauto, hot, constprop (its UBSan
+      notes are bool fields of DecodedBlock copies, not this change).
+    - HW steps: install the package. JIT SPEED: JIT IDLE RULE X30, JIT IDLE
+      HASH ON. VIDEO / DEBUG: JIT HOTBLOCKS ALL WINDOWS, JIT C-Calls OFF.
+      Other rows as in HW run 2 (VMU Screen ON, Render Delay FLYCAST, SH4
+      Clock 200). SA2, the stage of HW run 2: about 30 s of a part at 60
+      frames a second, then the dip areas for about 30 s or more. The
+      profile costs host time, so SPEED can fall in heavy parts.
+    - Read in the log: per window, the cycles the rule adds against RPS
+      and SPEED; per census, which blocks add them.
+  - HW run 3, the profile, 2026-10-15 (package of 16:09; log `b21p_hw.txt`,
+    scratchpad of session 77328546, lines 22-21611; Matt played the whole
+    level at X30 with JIT HOTBLOCKS ALL WINDOWS; tools `billwin.py`):
+    - In play the idle rule adds 97-133 Mcycles a second, 49-66% of the
+      200 MHz clock, in every window, with and without dips.
+    - The top 24 billed blocks hold 43-52% of it: blocks that branch
+      forward 39-46 points, loops 4-10. Top: 8C02B4F6 (`mov.l @(24,r14),r5;
+      tst r5,r5; bt`, 113-132K entries a second, 9.8-11.5 Mcycles),
+      8C05739C (4 ops, 76K, 8.8), 8C02B502 (4 ops, 33-62K). These are field
+      tests in the game's object loops: work, not waits.
+    - The dips (30-51 frames a second at SPEED 100%) have about the same
+      total a second (99-125), so more of it falls on each frame.
+    - Reading: X30 bills the game's object work 30 times, and a heavy
+      moment no longer fits in a frame. X3 BACKWARD bills a forward `bt`
+      block x1, and no X3 log has these dips.
+  - The bill fix, built 2026-10-15: row JIT X30 FORWARD (JIT SPEED page,
+    X30 / PLAIN, key `JitX30Fwd`, set before boot, default X30 = the old
+    path). PLAIN: at X30 and at AUTO's X30 level, a small read block whose
+    conditional branch goes forward bills its own cycles; loops (backward
+    or to itself) keep x30. `dec_bill` in `dc/sh4/rec_v2/decoder.cpp`; the
+    `[jitcfg]` line has `x30fwd=`. Package of 16:25 (`build/notdc_ps3.pkg`,
+    1757296 bytes) = the package of 16:09 + the row. Not committed. `.got`
+    0xF958.
+    - PC checks (WSL), all PASS: jit8 (2629764 decoder checks: each case
+      with the row OFF and ON, the rule cases with ON), idleauto, hot,
+      constprop, maple, flash, pad, mmu, fullmmu, interp, sys20, glpath,
+      rtt, screen, timebase, clock, chd. `jit8_check/mutate.py`: 5 new
+      mutants (X30 FORWARD) and the 32 old bill mutants, all caught;
+      `maple_check/mutate.py` (its key-table mutant sits next to the new
+      key): 99 of 99 caught.
+    - HW steps: install the package. JIT SPEED: JIT IDLE RULE X30, JIT IDLE
+      HASH ON, JIT X30 FORWARD PLAIN. VIDEO / DEBUG: JIT HOTBLOCKS OFF.
+      Other rows as in HW run 2. SA2, the whole level. Expected: the dips
+      at 60 frames a second where the host has time; SPEED can fall a
+      little in the heaviest parts (60 frames there now). Then the same
+      at JIT IDLE RULE AUTO.
+  - HW run 4, 2026-10-15 (package of 16:25; `b21p_hw.txt` lines 21897-
+    26272 = AUTO + PLAIN, 26273-32679 = X30 + PLAIN). Matt: "Run done.
+    There's still dips though."
+    - The old dips are gone: 59.9-60.0 frames per emulated second in every
+      play window but one load (X30 + PLAIN, 146 play windows).
+    - The dips now are SPEED dips: X30 + PLAIN at 18-22K 89-96%, a few
+      windows at 17-20K 80-88%, no sleep (old X30: 100% with 87-101 ms/s).
+      AUTO + PLAIN: 20-22K 92.4%, 22-25K 87.0%.
+    - Cause in the log: the SH4 thread waits for the sound SPUs about 3
+      times longer. `[aram-hz]` sh4 wait mean 14.9% of wall (old X30 4.2%),
+      `[arm7spe]` wait 16.3% (4.3%); 80-89 syncs a second at 1.2-1.4 ms
+      (old 67-72 at 0.4-0.6 ms); the ARM7 SPU queue at its limit (`max 256`,
+      183-262 lag-waits; old max 67-86, 0). `aica` 5-6% (old 1.7-1.9%).
+      The same as X3 BACKWARD in `b21_hw.txt`.
+    - Reading: with PLAIN the game spends more emulated time in its pure
+      wait, which JIT IDLE SKIP runs through fast; the SH4 thread gets
+      ahead of the sound SPUs, and each music DMA then waits for them.
+    - So the bill fix works (no frame drops in emulated time), and the
+      limit is now way 3 (the sound syncs). Proposed (Matt picks): LAG_MAX
+      256 -> about 100 as a 1-line HW test, then the range test per G2 DMA.
+  - Way 3 as deferred writes, built 2026-10-15 (Matt first: "Go with 2.",
+    the range test; told that the code shows it removes little at PLAIN
+    (about half the syncs come from a stale map, the rest are refills the
+    lagging sound has not played), then "Let's try with option 2." = the
+    deferred writes). Package of 17:50 (`build/notdc_ps3.pkg`, 1759280
+    bytes) = the package of 16:25 + this. Not committed. `.got` 0xF9B0.
+    - Row SPE AICA Defer (AUDIO page, OFF / ON, live, key `SpeAicaDefer`,
+      default OFF; acts with SPE ARM7 only). ON: a hit store does not make
+      the SH4 thread wait. The PPU sends the SYNC with `ARM_SYNC_HOLD` and
+      keeps the store (`ps3/ps3_aica_defer.h`, 1024 stores). The ARM7 SPU
+      syncs with the sound SPU as before, then waits in `hz_hold` until the
+      PPU wrote the stores (`ArmEcho.held`, `ArmBell.applied`). The PPU
+      writes them at its next command, in `wait_tail`, or in a flush.
+    - Rules: a store that overlaps one in flight waits too; an SH4 read of
+      such bytes, a full table and the row going OFF flush first; a dead
+      SPU or the exit write them at once.
+    - Log: `[arm7spe] ... defer syncs/s, stores/s, after/s, flushes, in
+      flight`; `[aram-hz] ... holds/s, hold us avg, long (over 50 ms)`.
+    - PC checks (WSL), all PASS: new `misc/defer_check` (1850276 checks;
+      `mutate.py` 8 of 8); `misc/arm7spe_check`: 9 new DEFER=1 runs (198-
+      1280 HOLD SYNCs each) and the 54 old runs, mutants 4 of 4 new;
+      `misc/aicactl_check` 64 seeds (its stubs had not built since bundle
+      9: two stubs added); jit8, idleauto, hot, maple, flash, pad, mmu,
+      fullmmu, interp, sys20, glpath, rtt, screen, timebase, clock, chd.
+    - HW steps: install the package. AUDIO: SPE AICA Defer ON. JIT SPEED:
+      JIT IDLE RULE X30, JIT X30 FORWARD PLAIN, JIT IDLE HASH ON. VIDEO /
+      DEBUG: JIT HOTBLOCKS OFF. SA2, the whole level; listen for sound
+      faults. Expected: `[aram-hz]` sh4 wait about 0, SPEED at 18-22K up by
+      most of the 15% the SH4 waited. Then, as a check of the crackle fix,
+      a Crazy Taxi drive with the row ON.
+  - HW run 5, 2026-10-15 (package of 17:50; `b21p_hw.txt` lines 32946-
+    40278, SA2 Europe CDI, Defer ON, X30 + PLAIN, IDLE HASH ON, 225
+    windows). Matt: "Done. Check it out!"
+    - The SH4 sound wait is gone: `[aram-hz]` sh4 wait 0.00% in all 45
+      reports (HW run 4: mean 14.9%). Holds 107-156 a second in play, 28-
+      106 us avg; long holds (1.7-7 ms avg) only in menus and loads.
+    - SPEED: 15-18K 100.1%, 18-20K 100.6%, 20-22K 99.1%, 22-25K 99.1% (2
+      windows); frames 58-63 a second, sleep 0-134 ms/s at 18-22K. HW run
+      4 at 18-22K: 89-96%, no sleep. One 25.0K window: 88.7%, no sleep
+      (the host limit of the model; way 4 is the next step there).
+    - One dip, 20.2K at 66.6% (line 35993, with its 105.8% catch-up): a
+      335 ms GD-ROM read (`[gdr]` wait 1 335.3), the PS3 HDD latency, not
+      the row. 4 such reads in the boot (330-335 ms, 80 ms).
+    - ARM7 SPU queue: the PPU wait (`[arm7spe]` wait) 0-9.5% in play,
+      mostly under 2.5% (HW run 4: 16.3%); max 256 still reached; flushes
+      0-206 a second, up to 64 stores in flight.
+    - Not in the log: Matt's verdict on the sound, the Crazy Taxi drive.
+  - HW run 6, 2026-10-15 (same package and log, lines 40745-; all at JIT
+    IDLE RULE AUTO + PLAIN + Defer ON). Matt: "I tested a few more games."
+    and "The only faults I saw was the low framerate" (Looney Tunes ends at
+    line 61470).
+    - Sound in all 4 boots: `[aram-hz]` sh4 wait 0.00%, sound SPU drops 0,
+      no long hold; silent blocks only in slow windows and loads.
+    - SA2 PAL (GDI, 40745-46782): 15-25K 97.5-101%, 60 frames; 4 AUTO
+      switches (HW run 4 AUTO + PLAIN: 92.4% at 20-22K, 87.0% at 22-25K).
+    - Looney Tunes (54244-, still running at the read): race 20-25K
+      100.4-100.7%, 60 frames; 27-28K 89-92% (host limit), 33-55 frames
+      (10-14 log at X30: 25K+ about 29 a second, the x30 frame drops). Boot
+      videos 68-72% (10-14 at X30: about 100%).
+    - Sonic Shuffle (51268-53747): AUTO went to X30; then 45-83%, no sleep,
+      at 0.1-2.4K vertices. 10-13 log (PAL 50): X30 99-100% with sleep, X3
+      70.8%. Border Down (46920-50866, now NTSC 60 Hz): X30 77-79% at 0-1K,
+      53-59% at 9-18K, no sleep; 10-13 X3 78.7%, no X30 play before.
+    - Both games run the same SDK code: a 16-handler dispatch loop (Sonic
+      Shuffle 8C01585C, cond block 8C0158A0; Border Down 8C04838C), called
+      from a task loop with small read-only forward-branch blocks (Shuffle
+      8C015BB4: `cmp/eq #3/#4` + bf, `tst` + bf). It runs 185-194K times a
+      second (Shuffle 10-13 at X30: 19-22K). Reading: these blocks need the
+      x30 bill as in X30; PLAIN bills them as X3 does, so the idle task
+      costs about 10 times more host time. Not proven: Render Delay
+      FLYCAST and the rows since 10-13 changed too.
+    - Proposed (Matt picks): a no-build A/B, Sonic Shuffle with JIT X30
+      FORWARD X30; if confirmed, AUTO keeps PLAIN or X30 by renders per
+      host second (SA2 and the Looney Tunes race gain with PLAIN).
+  - HW run 7, 2026-10-15 (same log 61923-67465; Matt: "Doing test number
+    1.", then "Done."): Sonic Shuffle, JIT IDLE RULE X30 by hand, JIT X30
+    FORWARD X30, other rows as in HW run 6.
+    - PLAIN is the cause of the low SPEED: SPEED 97-100% in play with
+      380-550 ms/s sleep (HW run 6: 57-74%, no sleep); 8C0158A0 median
+      24.6K a second (HW run 6: 129K). Sound clean.
+    - But X30 drops frames in emulated time: 30 frames a second in 34 of
+      36 play windows with PLAIN; with X30 26.7 (0-1K), 23.0 (1-3K), 18.8
+      (3-10K), 16.2 (10-25K). On screen X30 still gives more: 26.0 / 22.6
+      / 18.5 a second against PLAIN's 21.1 / 17.7 / 17.3.
+    - So neither level is right for this game: the game's own work wants
+      PLAIN, the SDK task loop wants x30. 11 disc reads of 338-582 ms gave
+      the only dips.
+  - HW run 8, 2026-10-15 (same log; Matt: "Done."): Border Down, JIT X30
+    FORWARD X30; boot 67633-70500 at X30 by hand, boot 71050-74391 at
+    AUTO (one switch to X30 at 69.3%). Both boots give the same picture.
+    - Without PLAIN, X30 windows (HW run 6 with PLAIN in brackets): 0-1K
+      97.4% with sleep, 49-50 fps (78.4%, 43); 5-10K 74.5-74.9%, 36-42
+      fps (67.0%, 29); 10-15K 63.9-68.3%, 38-41 fps (55.4%, 33), no sleep,
+      60 frames per emulated second. Sound clean.
+    - So PLAIN costs this game too, but the 10-15K parts stay host-bound
+      without it. `[hb]` samples there: about a quarter in the SDK task
+      code (8C0483xx dispatch, 8C0484xx, 8C0452BC = a task switch with
+      `ldc SR` / SSR / SPC), the rest in game work (8C023B76, the vertex
+      loop with `pref` per vertex, and others). The dispatch loop runs
+      70-75K times a second there, 180K at 0-1K.
+  - Both fixes built 2026-10-15 (Matt: "Yes, do the special case and the
+    safety net with the AUTO by frames."). Package of 19:51
+    (`build/notdc_ps3.pkg`, 1760304 bytes) = the package of 17:50 + both.
+    Not committed. `.got` 0xFA20 (0x5E0 left).
+    - The game code, read on the PC from the discs: both games run Sega's
+      Shinobi syMng task manager (Ver.1.03 / 1.04) on syFbr fibers. Fiber 4
+      is the idle task: main yields once a frame, the level 3 servers give
+      0, then fiber 4 turns until the V-blank wake. Its 16-slot dispatch
+      table is empty in both games. A turn is about 750 SH4 instructions:
+      the empty walk, a yield and a full switch to itself (about 310). The
+      code is the same in both games; only the literal pools differ.
+    - Row JIT TASK IDLE (JIT SPEED page, OFF / ON, key `JitTaskIdle`,
+      default OFF, set before boot): the dispatch's loop test (Shuffle
+      8C0158A0, Border Down 8C04838C; entered once a turn, its only caller
+      is fiber 4) is in a new task list in `idle_hash.h`, with its address.
+      Each run drops the rest of the timeslice and 2 more
+      (`IDLE_TASK_SLICES` 3, about what X30 bills a turn): the cycle count
+      goes to minus 2 slices, and each later poll pays one slice, so an
+      event due still runs at its slice. Log: `[idlehash] ... the task
+      list: skips the slices`, `[jitcfg] ... taskidle=`.
+    - JIT X30 FORWARD AUTO (a third value, key `JitX30Fwd` = 2): at the X30
+      level (X30 by hand, or AUTO at X30), PLAIN or X30 by the frames a
+      second on screen (RPS). It starts at PLAIN. 3 windows under 95% at
+      PLAIN try X30 for 3 windows; X30 stays only with more than 1.05 times
+      PLAIN's frames. 3 windows at 98%+ with 30%+ sleep at X30 try PLAIN;
+      PLAIN stays with 0.97 of X30's frames. A failed try doubles the wait
+      (5 to 160 windows); a kept one sets it back to 5. A switch patches
+      each block's bill in place (a third bill per block, `bill_x30p`); a
+      level switch of JIT IDLE RULE AUTO ends a try. Log: `[idle-auto] X30
+      FORWARD` lines (a try, kept, back).
+    - PC checks (WSL), all PASS: idleauto (180 checks, 34 source lines;
+      mutants 122 of 122, 46 new), jit8 (decoder 2629764 checks, idle hash
+      695, 22 source lines; the mutants of the changed code 85 of 85),
+      sysgate, constprop, div32, sys20, hot, idle, maple, flash, pad, mmu,
+      fullmmu, interp, glpath, rtt, screen, timebase, clock, chd, link,
+      greuse, dynic, tcopy.
+    - HW steps: install the package. AUDIO: SPE AICA Defer ON. JIT SPEED:
+      JIT IDLE RULE X30, JIT X30 FORWARD PLAIN, JIT TASK IDLE ON: Sonic
+      Shuffle (the parts of HW runs 6 and 7), then Border Down. Expected:
+      SPEED near 100% with sleep and full frames in Shuffle, `[idlehash]`
+      task-list lines, the `[idle]` count of the loop test far under 129K.
+      Then the safety net: JIT IDLE RULE AUTO, JIT X30 FORWARD AUTO, JIT
+      TASK IDLE OFF: Looney Tunes (boot videos, a race). Expected: X30 in
+      the videos, PLAIN in the race (`[idle-auto] X30 FORWARD` lines).
+  - HW run 9, 2026-10-15 (package of 19:51, same log: Border Down 95397-
+    98682, Sonic Shuffle 98925-105031; both at JIT IDLE RULE AUTO, X30
+    FORWARD AUTO, TASK IDLE ON, Defer ON). Matt: "Border Down is still
+    heavy apparently! But Sonic Shuffle got huge improvements."
+    - Both task entries act (`[idlehash] ... the task list: skips the
+      slices`). Sound clean in both (sh4 wait 0.00%, no drops).
+    - Sonic Shuffle: 30 frames a second on screen (its full rate) at
+      0-15K, 98-100% SPEED with 160-610 ms/s sleep; 28 at 15-18K (94-95%);
+      18-22K 74-92%, 17-27 frames. Before: 17-21 (PLAIN) or 16-26 (X30).
+      FORWARD AUTO tried X30 once and went back to PLAIN (15.6 frames
+      against 25.8).
+    - Border Down: 0-10K 97-100%; 10-15K 77-104% (mean 90-93%), 46-62
+      frames, no sleep. Before: 64-68% with 38-41 frames (X30), 55% with
+      33 (PLAIN). The dispatch turns 15-33K a second (was 70-134K); 1 of 20
+      `[hb]` samples at 10K+ in the task code, the rest in game code
+      (8C0272xx, the vertex loop 8C023B76, 8C01B7xx). FORWARD AUTO kept
+      X30 (52.4 frames against 47.5): X30 makes no frame drops there.
+    - Also in the log, the package of 17:50: Re-Volt, Crazy Taxi twice
+      (Defer ON: `[aram-hz]` miss/s 0.0, sh4 wait 0.00%, no drops), Sonic
+      Adventure, Donald Duck. Not read further.
+  - Defaults since 2026-10-15 (Matt: "Yes. Add them as default."): JIT
+    TASK IDLE ON, JIT X30 FORWARD AUTO, in source only (not packaged; an
+    install keeps its own settings). SPE AICA Defer still defaults to OFF
+    (no default named). Not committed. PC checks of the defaults PASS.
+  - State at the end of session 77328546 (Matt: "Good job! I am very
+    satisfied.", a new session next): open = Border Down 10-15K at about
+    91% (game code: 8C0272xx, the vertex loop 8C023B76), Sonic Shuffle
+    18-22K at 74-92%. Proposed next (Matt picks): a JIT HOTBLOCKS ALL
+    WINDOWS boot in Border Down's heavy part (no build), then way 4 (the
+    inline TA flush). The rest of the saved order is in this block.
 
 **JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
 to no left-out seconds and a shorter hold, now that a switch costs about
@@ -15988,6 +16379,10 @@ Main gains:
   bundle."): the menus and the HUD show green with Texture Filter GAME or
   NEAREST, right with LINEAR (which cuts the fighters). Section 0 has the
   facts and the proposed dump.
+- Added 2026-10-15 (Matt: "Let's continue Bundle 21. Games will struggle in
+  running 100% with 20k+ vertices per frame."): the heavy scenes,
+  investigated, nothing built. Causes and 7 ways in the bundle 21 block of
+  section 0. It is the same issue as bundle 22 items 2 and 7 (P86, P74).
 
 ### Bundle 22: Frame rate in heavy scenes  `[ ]` new at the re-cut of 2026-10-12 as bundle 21, bundle 22 since 2026-10-13; parked for the end (Matt 2026-10-12)
 

@@ -69,7 +69,7 @@ static u32 load(const Known& k, u8* code)
 
 static void test_known()
 {
-	u32 own = 0, reicast = 0;
+	u32 own = 0, reicast = 0, task = 0;
 	for (u32 i = 0; i < KNOWN_N; i++)
 	{
 		const Known& k = k_known[i];
@@ -81,6 +81,7 @@ static void test_known()
 		check(list == k.list, "list", k.addr, (u32)list);
 		own += list == IDLE_LIST_OWN;
 		reicast += list == IDLE_LIST_REICAST;
+		task += list == IDLE_LIST_TASK;
 
 		// The brief form is the full one without the address: the same words through idle_hash_words.
 		u32 h[5];
@@ -88,7 +89,7 @@ static void test_known()
 		snprintf(want, sizeof(want), ">:1:%02X:%08X:%08X:%08X:%08X:%08X", k.n, h[0], h[1], h[2], h[3], h[4]);
 		check(strcmp(want, k.brief) == 0, "brief form", k.addr, i);
 
-		// One of ours is bound to its address; one of Reicast's is not. Its second half does not count.
+		// Ours and the task list's are bound to their address; one of Reicast's is not. Its second half does not count.
 		char other[IDLE_HASH_STR];
 		const int moved = idle_hash_listed(k.addr + 0x100, k.n, code, other);
 		check(moved == (k.list == IDLE_LIST_REICAST ? IDLE_LIST_REICAST : IDLE_LIST_NONE), "other address", k.addr, (u32)moved);
@@ -103,7 +104,7 @@ static void test_known()
 		}
 		check(idle_hash_listed(k.addr, k.n + 1, code, other) == IDLE_LIST_NONE, "one more opcode", k.addr, i);
 	}
-	check(own >= 1 && reicast >= 6, "known blocks cover both lists", own, reicast);
+	check(own >= 1 && reicast >= 6 && task == 2, "known blocks cover the lists", own, reicast);
 
 	// No block and a block over the limit: not listed, no text.
 	u8 big[IDLE_HASH_MAX_OPS * 2 + 2] = {};
@@ -117,43 +118,55 @@ static void test_known()
 	check(strstr(idle_hash_reicast, ">1:08:AF4AC687") && !strstr(idle_hash_reicast, ">:1:08:AF4AC687"), "dead entry", 0, 0);
 }
 
-// dec_idle_hash(): level 1 acts on our list and logs Reicast's; level 2 acts on both; 24 log lines per list.
+// dec_idle_hash(): the timeslices a block drops. Level 1 acts on our list and logs Reicast's, level 2 acts on both;
+// JIT TASK IDLE acts on the task list (IDLE_TASK_SLICES). 24 log lines per list.
 static void test_dec()
 {
-	for (int level = 1; level <= 2; level++)
-		for (u32 i = 0; i < KNOWN_N; i++)
-		{
-			const Known& k = k_known[i];
-			memset(g_mem, 0xEE, sizeof(g_mem));
-			g_mem_base = k.addr;
-			load(k, g_mem);
-			block.start = k.addr;
-			block.opcodes = k.n;
-			const u32 n0 = g_dec_hash_blocks, l0 = g_lines;
-			g_line[0] = 0;
-			const bool act = dec_idle_hash(level);
-			const bool want = k.list == IDLE_LIST_OWN || (k.list == IDLE_LIST_REICAST && level == 2);
-			check(act == want, "dec act", k.addr, (u32)level);
-			check(g_dec_hash_blocks - n0 == (u32)want, "dec count", k.addr, (u32)level);
-			check(g_lines - l0 == (u32)(k.list != IDLE_LIST_NONE), "dec log", k.addr, (u32)level);
-			if (k.list != IDLE_LIST_NONE)
-				check(strstr(g_line, k.full) && strstr(g_line, want ? "ends the slice" : "log only") &&
-				      strstr(g_line, k.list == IDLE_LIST_OWN ? "our list" : "Reicast's list"), "dec log text", k.addr, (u32)level);
-		}
+	u32 lines[4] = {};
+	for (int level = 0; level <= 2; level++)
+		for (int task = 0; task <= 1; task++)
+			for (u32 i = 0; i < KNOWN_N; i++)
+			{
+				const Known& k = k_known[i];
+				// Reicast's list is long: its log share is kept for the limit test below.
+				if (k.list == IDLE_LIST_REICAST && (level == 0 || task))
+					continue;
+				memset(g_mem, 0xEE, sizeof(g_mem));
+				g_mem_base = k.addr;
+				load(k, g_mem);
+				block.start = k.addr;
+				block.opcodes = k.n;
+				const u32 n0 = g_dec_hash_blocks, l0 = g_lines;
+				g_line[0] = 0;
+				const u32 slices = dec_idle_hash(level, task != 0);
+				const u32 want = k.list == IDLE_LIST_OWN ? (level >= 1 ? 1 : 0)
+				               : k.list == IDLE_LIST_REICAST ? (level == 2 ? 1 : 0)
+				               : k.list == IDLE_LIST_TASK ? (task ? 3 : 0) : 0;
+				const u32 key = (u32)(level * 2 + task);
+				check(slices == want, "dec slices", k.addr, key);
+				check(g_dec_hash_blocks - n0 == (u32)(want != 0), "dec count", k.addr, key);
+				check(g_lines - l0 == (u32)(k.list != IDLE_LIST_NONE), "dec log", k.addr, key);
+				lines[k.list] += k.list != IDLE_LIST_NONE;
+				const char* name = k.list == IDLE_LIST_OWN ? "our list" : k.list == IDLE_LIST_TASK ? "the task list" : "Reicast's list";
+				const char* act = !want ? "log only" : want == 1 ? "ends the slice" : "skips the slices";
+				if (k.list != IDLE_LIST_NONE)
+					check(strstr(g_line, k.full) && strstr(g_line, act) && strstr(g_line, name), "dec log text", k.addr, key);
+			}
+	check(IDLE_TASK_SLICES == 3, "three task slices", IDLE_TASK_SLICES, 0);
 	block.opcodes = 0;
-	check(!dec_idle_hash(2), "dec no opcodes", 0, 0);
+	check(!dec_idle_hash(2, true), "dec no opcodes", 0, 0);
 	block.opcodes = IDLE_HASH_MAX_OPS + 1;
-	check(!dec_idle_hash(2), "dec over the limit", 0, 0);
+	check(!dec_idle_hash(2, true), "dec over the limit", 0, 0);
 
-	// 24 log lines per list: 100 more hits of Reicast's list leave ours its share (2 lines per block so far).
-	u32 own_lines = 0;
-	for (u32 i = 0; i < KNOWN_N; i++)
-		own_lines += k_known[i].list == IDLE_LIST_OWN ? 2 : 0;
-	for (u32 pass = 0; pass < 2; pass++)
+	// 24 log lines per list: 100 more hits of one list leave the others their lines so far.
+	check(lines[IDLE_LIST_REICAST] < 24 && lines[IDLE_LIST_OWN] < 24 && lines[IDLE_LIST_TASK] < 24, "log lines so far",
+	      lines[IDLE_LIST_REICAST], lines[IDLE_LIST_OWN]);
+	static const int k_order[3] = { IDLE_LIST_REICAST, IDLE_LIST_OWN, IDLE_LIST_TASK };
+	for (u32 pass = 0; pass < 3; pass++)
 		for (u32 i = 0; i < KNOWN_N; i++)
 		{
 			const Known& k = k_known[i];
-			if (k.list != (pass ? IDLE_LIST_OWN : IDLE_LIST_REICAST))
+			if (k.list != k_order[pass])
 				continue;
 			g_mem_base = k.addr;
 			load(k, g_mem);
@@ -161,8 +174,9 @@ static void test_dec()
 			block.opcodes = k.n;
 			const u32 n0 = g_dec_hash_blocks;
 			for (u32 r = 0; r < 100; r++)
-				dec_idle_hash(2);
-			check(g_lines == (pass ? 48u : 24u + own_lines) && g_dec_hash_blocks - n0 == 100, "dec log limit", g_lines, pass);
+				dec_idle_hash(2, true);
+			lines[k.list] = 24;
+			check(g_lines == lines[1] + lines[2] + lines[3] && g_dec_hash_blocks - n0 == 100, "dec log limit", g_lines, pass);
 			break;
 		}
 }
@@ -183,7 +197,8 @@ int main(int argc, char** argv)
 		}
 		char full[IDLE_HASH_STR];
 		const int list = idle_hash_listed(addr, n, code, full);
-		printf("%s  (%s)\n", full, list == IDLE_LIST_OWN ? "in our list" : list ? "in Reicast's list" : "in no list");
+		printf("%s  (%s)\n", full, list == IDLE_LIST_OWN ? "in our list" : list == IDLE_LIST_TASK ? "in the task list"
+		       : list ? "in Reicast's list" : "in no list");
 		return 0;
 	}
 	test_sha1();

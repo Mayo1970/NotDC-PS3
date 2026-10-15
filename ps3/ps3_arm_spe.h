@@ -27,5 +27,10 @@ void arm_spe_reset();      // armReset
 void arm_spe_flush();      // arm_FlushCode
 void arm_spe_stats(double wall_s);   // SPG stats block, once per second; prints [arm7spe] every ~5 s
 // Plan 6.6: the SH4 is about to write wave RAM byte addr of a marked page (src 1 = a G2 DMA). Asks the twin, and
-// waits when the sound SPU has yet to play that byte.
-void arm_spe_hz_hit(u32 addr, u32 src);
+// waits when the sound SPU has yet to play that byte. True (SPE AICA Defer): no wait; the store goes to arm_spe_defer.
+bool arm_spe_hz_hit(u32 addr, u32 src);
+// Bundle 21, SPE AICA Defer: a store the PPU writes once the ARM7 SPU stands at its HOLD SYNC (after: it only overlaps
+// one in flight); covers: a store or read that overlaps one in flight; flush: every store in flight goes out.
+void arm_spe_defer(u32 addr, u32 val, u32 size, bool after);
+bool arm_spe_defer_covers(u32 addr, u32 size);
+void arm_spe_defer_flush();

@@ -14,6 +14,8 @@ enum { ARM_CMD_MU = 1, ARM_CMD_WR, ARM_CMD_RD, ARM_CMD_CDDA, ARM_CMD_RESET, ARM_
 #define ARM_CFG_SYNC  1u   // "SPE AICA Sync": the hazard map marks the slots' play points
 #define ARM_CFG_BLOCK 2u   // + BLOCK SYNC: the first hit of a 64-sample block syncs with no test
 #define ARM_CFG_ALL   4u   // + SAMPLE SYNC: each sample with a hit syncs with no test
+// SYNC flags (bundle 21, SPE AICA Defer): the PPU still holds the SH4's store; the SPU waits at the SYNC until written
+#define ARM_SYNC_HOLD 1u
 
 // ArmEcho.hz_res after a SYNC: nothing to wait for; the sound SPU caught up; over the block's limit; sync is off
 enum { ARM_HZ_NONE, ARM_HZ_SYNCED, ARM_HZ_MISS, ARM_HZ_DEAD };
@@ -41,7 +43,8 @@ typedef struct
 {
 	volatile uint32_t head;   // commands written
 	volatile uint32_t quit;
-	uint32_t pad[30];
+	volatile uint32_t applied;   // bundle 21: the HOLD SYNCs whose stores the PPU wrote
+	uint32_t pad[29];
 } __attribute__((aligned(128))) ArmBell;
 
 // The SPU puts it after each batch of commands; the PPU only reads it.
@@ -64,7 +67,7 @@ typedef struct
 	// ARM7 Reset Fix; CA reads and clamps under CA Clamp
 	volatile uint32_t races, raises, resets, stale, ca_reads, ca_clamped;
 	volatile uint32_t hz_res;   // plan 6.6: ARM_HZ_* of the last SYNC command
-	uint32_t pad[1];
+	volatile uint32_t held;     // bundle 21: the HOLD SYNCs this SPU reached
 } __attribute__((aligned(128))) ArmEcho;
 
 // ArmSetup flags, set before boot: the Looney Tunes fixes (OPTIMIZATION_PLAN 6.5, P44, P31), then bundle 5

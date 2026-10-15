@@ -337,6 +337,7 @@ static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
 static const char* k_rdelay[]    = { "OFF", "ON", "FLYCAST", NULL };
 static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
+static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
@@ -468,6 +469,8 @@ static Option s_audio[] = {
 	  "Channel position reads stop at LEA-3 with SPE AICA too. Set before boot." },
 	{ "SPE AICA Sync",   &g_spe_aica_sync_preset, OPT_CHOICE, k_aicasync,  0, 0,0,0, NULL,
 	  "A wave RAM write waits for the sound SPE (6.6). + levels sync with no test. Live." },
+	{ "SPE AICA Defer",  &g_spe_aica_defer_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
+	  "ON: that write waits on the ARM7 SPE, not the SH4 (with SPE ARM7; bundle 21). Live." },
 	{ "DSP Ring RAM",    &g_dsp_ring_ram_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The SPE's DSP delay ring is shared with wave RAM, both ways (P20). Set before boot." },
 	{ "DSP Ring 64K",    &g_dsp_ring_64k_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -611,6 +614,10 @@ static Option s_jit[] = {
 	  "X3 BACKWARD: more frames in some games. AUTO: X3 BACKWARD, X30 when SPEED falls. Set before boot." },
 	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
 	  "A listed wait loop ends the timeslice (Looney Tunes, CvS2), as Reicast. Set before boot." },
+	{ "JIT X30 FORWARD", &g_jit_x30_fwd_preset,   OPT_CHOICE, k_x30fwd,    0, 0,0,0, NULL,
+	  "PLAIN: at X30 a forward branch bills its own cycles. AUTO: PLAIN or X30 by frames. Set before boot." },
+	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON: an idle SDK task-loop turn skips 3 timeslices (Sonic Shuffle, Border Down). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -1372,6 +1379,7 @@ static int* const k_live_opts[] = {
 	&g_ta_data_gate_preset, &g_pt_depth_preset, &g_tr_sort_depth_preset, &g_pt_blend_preset, &g_sprite_cull_preset,
 	&g_flat_shade_preset, &g_region_array_preset, &g_list_passes_preset, &g_tile_clip_preset, &g_ta_list_regs_preset,
 	&g_core_reset_preset, &g_tr_tri_sort_preset, &g_fog_preset, &g_spe_aica_sync_preset, &g_spe_aica_gain_preset,
+	&g_spe_aica_defer_preset,
 	&g_g2_dma_small_preset, &g_g2_dma_read_preset, &g_tmu_clock_preset, &g_spg_field_bit_preset,
 	&g_hblank_irq_preset, &g_rtt_readback_preset, &g_rtt_scaler_preset, &g_rtt_size_preset, &g_rtt_pack_preset,
 	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,

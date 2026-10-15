@@ -217,11 +217,207 @@ static void t_bill_word()
 	}
 }
 
+// Bundle 21, JIT X30 FORWARD AUTO: model windows by the choice now (1 = PLAIN), with the frames on screen.
+struct FWin { double secs, speed, sleep, fps; };
+struct FEvent { u32 at; int step, plain; u32 hold; };
+typedef FWin (*FModel)(u32 i, int plain);
+
+static std::vector<FEvent> frun(FModel m, u32 n)
+{
+	FwdAuto f;
+	fwd_auto_init(f);
+	std::vector<FEvent> ev;
+	for (u32 i = 1; i <= n; i++)
+	{
+		const FWin w = m(i, f.plain);
+		const int s = fwd_auto_step(f, w.secs, w.speed, w.sleep, w.fps);
+		if (s != FA_NONE)
+			ev.push_back({ i, s, f.plain, f.hold });
+	}
+	return ev;
+}
+
+static void fsame(const char* what, const std::vector<FEvent>& got, const std::vector<FEvent>& want)
+{
+	expect(got.size() == want.size(), "%s: %u steps, want %u", what, (u32)got.size(), (u32)want.size());
+	for (u32 i = 0; i < got.size() && i < want.size(); i++)
+		expect(got[i].at == want[i].at && got[i].step == want[i].step && got[i].plain == want[i].plain &&
+		       got[i].hold == want[i].hold, "%s: step %u at window %u: %d plain %d hold %u, want %u: %d plain %d hold %u",
+		       what, i + 1, got[i].at, got[i].step, got[i].plain, got[i].hold, want[i].at, want[i].step, want[i].plain,
+		       want[i].hold);
+}
+
+// SA2 with SPE AICA Defer: PLAIN keeps up, so no try.
+static FWin f_sa2(u32, int plain) { return plain ? FWin{ 1.0, 100.0, 0.2, 60.0 } : FWin{ 1.0, 100.0, 0.3, 46.0 }; }
+// Sonic Shuffle (HW runs 6, 7): PLAIN slow at 21 frames, X30 at full speed with room at 26.
+static FWin f_shuffle(u32, int plain) { return plain ? FWin{ 1.0, 66.0, 0.0, 21.0 } : FWin{ 1.0, 98.0, 0.5, 26.0 }; }
+// The Looney Tunes race at 28K: PLAIN at 90% with 54 frames, X30 at 97% with no room and 29.
+static FWin f_race(u32, int plain) { return plain ? FWin{ 1.0, 90.0, 0.0, 54.0 } : FWin{ 1.0, 97.0, 0.0, 29.0 }; }
+// Its boot video: PLAIN at 70% with 41 frames, X30 at full speed with 60 and little room.
+static FWin f_video(u32, int plain) { return plain ? FWin{ 1.0, 70.0, 0.0, 41.0 } : FWin{ 1.0, 100.0, 0.1, 60.0 }; }
+// A heavy scene to window 10, then a light one: X30 wins the first, PLAIN the second.
+static FWin f_scene(u32 i, int plain)
+{
+	if (plain)
+		return i <= 10 ? FWin{ 1.0, 80.0, 0.0, 20.0 } : FWin{ 1.0, 100.0, 0.4, 30.0 };
+	return { 1.0, 100.0, 0.5, 25.0 };
+}
+
+// A try that fails at window b with the hold h: the next try waits h windows and a run of 3, then fails 3 later.
+static void fails_from(std::vector<FEvent>& want, u32 b, u32 h, int at_try, u32 n)
+{
+	while (true)
+	{
+		const u32 t = b + h + 3;
+		if (t > n)
+			break;
+		want.push_back({ t, FA_TRY, at_try, h });
+		b = t + 3;
+		h = h * 2 > 160 ? 160 : h * 2;
+		if (b > n)
+			break;
+		want.push_back({ b, FA_BACK, !at_try, h });
+	}
+}
+
+static void t_fwd_models()
+{
+	fsame("SA2", frun(f_sa2, 600), {});
+	std::vector<FEvent> want = { { 3, FA_TRY, 0, 5 }, { 6, FA_KEEP, 0, 5 } };
+	fails_from(want, 6, 5, 1, 2000);
+	fsame("Sonic Shuffle", frun(f_shuffle, 2000), want);
+	want = { { 3, FA_TRY, 0, 5 }, { 6, FA_BACK, 1, 10 } };
+	fails_from(want, 6, 10, 0, 2000);
+	fsame("the race", frun(f_race, 2000), want);
+	fsame("the boot video", frun(f_video, 600), { { 3, FA_TRY, 0, 5 }, { 6, FA_KEEP, 0, 5 } });
+	fsame("a scene each", frun(f_scene, 600),
+	      { { 3, FA_TRY, 0, 5 }, { 6, FA_KEEP, 0, 5 }, { 14, FA_TRY, 1, 5 }, { 17, FA_KEEP, 1, 5 } });
+}
+
+static FwdAuto f_at(int plain)
+{
+	FwdAuto f;
+	fwd_auto_init(f);
+	f.plain = plain;
+	return f;
+}
+
+// n windows of one kind; the window of the first step that is not FA_NONE (1-based), or 0. *step gets it.
+static u32 ffeed(FwdAuto& f, u32 n, double secs, double speed, double sleep, double fps, int* step = 0)
+{
+	for (u32 i = 1; i <= n; i++)
+	{
+		const int s = fwd_auto_step(f, secs, speed, sleep, fps);
+		if (s != FA_NONE)
+		{
+			if (step)
+				*step = s;
+			return i;
+		}
+	}
+	return 0;
+}
+
+static void t_fwd_edges()
+{
+	FwdAuto f;
+	fwd_auto_init(f);
+	expect(f.plain == 1 && !f.trying && f.hold == 5 && !f.wait && !f.run && !f.n, "fwd init: plain %d hold %u", f.plain,
+	       f.hold);
+	expect(ffeed(f, 10, 1.0, 95.0, 0.0, 30.0) == 0, "PLAIN at 95.0%% is not slow");
+	f = f_at(1);
+	expect(ffeed(f, 10, 1.0, 94.99, 0.0, 30.0) == 3 && !f.plain && f.trying, "PLAIN at 94.99%% is slow");
+	f = f_at(0);
+	expect(ffeed(f, 10, 1.0, 98.0, 0.3, 30.0) == 3 && f.plain && f.trying, "X30 at 98.0%% with 30%% sleep tries PLAIN");
+	f = f_at(0);
+	expect(ffeed(f, 10, 1.0, 97.99, 0.9, 30.0) == 0, "X30 at 97.99%% tries nothing");
+	f = f_at(0);
+	expect(ffeed(f, 10, 1.0, 100.0, 0.2999, 30.0) == 0, "X30 with 29.99%% sleep tries nothing");
+	f = f_at(0);
+	expect(ffeed(f, 10, 2.0, 100.0, 0.5, 30.0) == 0, "a 2 s X30 window with 0.5 s sleep is 25%%: no try");
+	f = f_at(0);
+	expect(ffeed(f, 10, 2.0, 100.0, 0.6, 30.0) == 3, "a 2 s X30 window with 0.6 s sleep is 30%%: a try");
+
+	// The try's outcome: X30 needs more than 1.05 times PLAIN's frames, PLAIN keeps with 0.97 of X30's.
+	int s = 0;
+	f = f_at(1);
+	ffeed(f, 3, 1.0, 60.0, 0.0, 20.0);
+	expect(f.base == 20.0 && ffeed(f, 3, 1.0, 100.0, 0.0, 21.0, &s) == 3 && s == FA_BACK && f.plain && f.hold == 10 &&
+	       f.wait == 10, "an X30 try at 1.05 times goes back: step %d plain %d hold %u", s, f.plain, f.hold);
+	f = f_at(1);
+	ffeed(f, 3, 1.0, 60.0, 0.0, 20.0);
+	expect(ffeed(f, 3, 1.0, 100.0, 0.0, 21.01, &s) == 3 && s == FA_KEEP && !f.plain && f.hold == 5 && f.wait == 5 &&
+	       f.mean > 21.0, "an X30 try above 1.05 times stays: step %d plain %d", s, f.plain);
+	f = f_at(0);
+	ffeed(f, 3, 1.0, 100.0, 0.5, 100.0);
+	expect(f.base == 100.0 && ffeed(f, 3, 1.0, 80.0, 0.0, 97.0, &s) == 3 && s == FA_KEEP && f.plain,
+	       "a PLAIN try at 0.97 stays: step %d plain %d", s, f.plain);
+	f = f_at(0);
+	ffeed(f, 3, 1.0, 100.0, 0.5, 100.0);
+	expect(ffeed(f, 3, 1.0, 80.0, 0.0, 96.99, &s) == 3 && s == FA_BACK && !f.plain, "a PLAIN try under 0.97 goes back");
+
+	// A try's mean is over its own 3 windows, whatever their SPEED; the base is the mean of the run.
+	f = f_at(1);
+	ffeed(f, 2, 1.0, 60.0, 0.0, 10.0);
+	ffeed(f, 1, 1.0, 100.0, 0.0, 10.0);
+	expect(ffeed(f, 3, 1.0, 60.0, 0.0, 30.0) == 3 && f.base == 30.0, "a broken run starts again: base %.1f", f.base);
+	expect(ffeed(f, 2, 1.0, 100.0, 0.5, 40.0) == 0 && ffeed(f, 1, 1.0, 10.0, 0.0, 22.0, &s) == 1 && s == FA_KEEP &&
+	       f.mean > 33.9 && f.mean < 34.1, "the try's mean over its windows: %.2f", f.mean);
+	f = f_at(1);
+	ffeed(f, 1, 1.0, 60.0, 0.0, 10.0);
+	ffeed(f, 1, 1.0, 60.0, 0.0, 20.0);
+	expect(ffeed(f, 1, 1.0, 60.0, 0.0, 30.0) == 1 && f.base == 20.0, "the base is the run's mean: %.2f", f.base);
+
+	// The wait counts every window, then a run of 3.
+	f = f_at(1);
+	f.wait = 4;
+	expect(ffeed(f, 4, 1.0, 60.0, 0.0, 20.0) == 0 && !f.wait && !f.run, "the wait: wait %u run %u", f.wait, f.run);
+	expect(ffeed(f, 3, 1.0, 60.0, 0.0, 20.0) == 3, "the run after the wait");
+
+	// The hold doubles on each failed try up to 160, and a kept try sets it back to 5.
+	f = f_at(1);
+	u32 holds[8], k = 0;
+	for (u32 i = 0; i < 8; i++)
+	{
+		ffeed(f, 400, 1.0, 60.0, 0.0, 40.0);
+		ffeed(f, 3, 1.0, 100.0, 0.0, 20.0);
+		holds[k++] = f.hold;
+	}
+	expect(holds[0] == 10 && holds[1] == 20 && holds[3] == 80 && holds[4] == 160 && holds[7] == 160 && f.plain,
+	       "the holds: %u %u %u %u %u", holds[0], holds[1], holds[3], holds[4], holds[7]);
+	ffeed(f, 400, 1.0, 60.0, 0.0, 20.0);
+	expect(ffeed(f, 3, 1.0, 100.0, 0.0, 40.0, &s) == 3 && s == FA_KEEP && f.hold == 5 && !f.plain, "a kept try: hold %u",
+	       f.hold);
+
+	// A window of no time changes nothing.
+	f = f_at(1);
+	ffeed(f, 2, 1.0, 60.0, 0.0, 20.0);
+	FwdAuto g = f;
+	expect(fwd_auto_step(f, 0.0, 60.0, 0.0, 20.0) == FA_NONE && !memcmp(&f, &g, sizeof(f)), "a 0 s window");
+	expect(fwd_auto_step(f, -1.0, 60.0, 0.0, 20.0) == FA_NONE && !memcmp(&f, &g, sizeof(f)), "a -1 s window");
+
+	// A level switch of JIT IDLE RULE AUTO: a try goes back to its old level; the wait and hold stay.
+	f = f_at(1);
+	ffeed(f, 3, 1.0, 60.0, 0.0, 20.0);
+	ffeed(f, 1, 1.0, 100.0, 0.0, 30.0);
+	f.wait = 7;
+	fwd_auto_cancel(f);
+	expect(f.plain && !f.trying && !f.n && !f.run && f.try_fps == 0.0 && f.wait == 7 && f.hold == 5,
+	       "cancel in a try: plain %d trying %d n %u wait %u", f.plain, f.trying, f.n, f.wait);
+	f = f_at(0);
+	ffeed(f, 2, 1.0, 100.0, 0.5, 30.0);
+	fwd_auto_cancel(f);
+	expect(!f.plain && !f.run && f.run_fps == 0.0, "cancel in a run: plain %d run %u", f.plain, f.run);
+	expect(ffeed(f, 3, 1.0, 100.0, 0.5, 30.0) == 3, "a run after a cancel counts 3 new windows");
+}
+
 int main()
 {
 	t_models();
 	t_edges();
 	t_bill_word();
+	t_fwd_models();
+	t_fwd_edges();
 	printf("%s: idle auto: %u checks, %u failed\n", g_fails ? "FAIL" : "PASS", g_checks, g_fails);
 	return g_fails ? 1 : 0;
 }

@@ -12,7 +12,7 @@ enum BlockEndType { BET_StaticJump = 0, BET_DynamicRet = 12, BET_Cond_0 = 16, BE
 struct DecodedBlock
 {
 	u32 start, cycles, opcodes, BranchBlock;
-	u32 bill_x3, bill_x30;
+	u32 bill_x3, bill_x30, bill_x30p;
 	BlockEndType BlockType;
 	bool idle_loop;
 };
@@ -23,12 +23,13 @@ static struct
 	struct { bool has_readm, has_writem, has_fpu; } info;
 } state;
 
-static int g_pr_moves, g_rm_any, g_idle_rule, g_verify_fails;
+static int g_pr_moves, g_rm_any, g_idle_rule, g_x30_fwd, g_verify_fails;
 int g_interp_fix_preset;   // bundle 20: fneg joins the PR-free list with Interp Fixes FIXED
 static bool g_pure;
 extern "C" int get_jit_pr_moves_preset() { return g_pr_moves; }
 extern "C" int get_jit_rm_any_preset() { return g_rm_any; }
 extern "C" int get_jit_idle_rule() { return g_idle_rule; }
+extern "C" int get_jit_x30_fwd() { return g_x30_fwd; }
 static u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static bool idle_turn_is_pure(const DecodedBlock&) { return g_pure; }
 // The shape of types.h's macro: an if with a block, so an else after it does not parse.
@@ -132,12 +133,21 @@ static u32 reicast_cycles(u32 cycles, u32 max_cycles)
 	return min(cycles, max_cycles);
 }
 
+// The syscall-area factor alone: what a block bills with no idle-rule factor (bundle 21, JIT X30 FORWARD PLAIN).
+static u32 sys_cycles(u32 cycles, u32 max_cycles)
+{
+	if ((block.start & 0x1FFF0000) == 0x0C000000)
+		cycles *= (block.start & 0x8000) ? 15 : 5;
+	return min(cycles, max_cycles);
+}
+
 static void test_cycles()
 {
 	static const u32 starts[] = { 0x8C010000u, 0x8C19CC68u, 0x8C000100u, 0x8C008100u, 0x0C00F000u, 0xAC004000u };
 	static const BlockEndType types[] = { BET_Cond_0, BET_Cond_1, BET_StaticJump, BET_DynamicRet };
 	static const u32 plains[] = { 1, 3, 5, 8, 70, 223, 224, 230 };
 	const u32 max_cycles = 224;
+	for (g_x30_fwd = 0; g_x30_fwd < 2; g_x30_fwd++)
 	for (u32 flags = 0; flags < 16; flags++)
 	for (u32 opcodes = 1; opcodes <= 7; opcodes++)
 	for (u32 ti = 0; ti < 4; ti++)
@@ -168,13 +178,17 @@ static void test_cycles()
 		// X3 + WAITS X30: a small read block that branches back and repeats its turn bills as X30, the rest as X3.
 		const bool wait = state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && opcodes < 6 &&
 		                  (in.BlockType == BET_Cond_0 || in.BlockType == BET_Cond_1) && in.BranchBlock <= in.start && g_pure;
-		const u32 want = g_idle_rule == 0 || (g_idle_rule == 3 && wait) ? old.cycles
+		// JIT X30 FORWARD PLAIN: at X30 such a block whose branch goes forward bills as with no idle rule.
+		const bool fwd = state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && opcodes < 6 &&
+		                 (in.BlockType == BET_Cond_0 || in.BlockType == BET_Cond_1) && in.BranchBlock > in.start;
+		const u32 x30p = fwd ? sys_cycles(in.cycles, max_cycles) : old.cycles;
+		const u32 want = g_idle_rule == 0 ? (g_x30_fwd ? x30p : old.cycles) : g_idle_rule == 3 && wait ? old.cycles
 		               : g_idle_rule == 2 ? min(in.cycles, max_cycles) : reicast_cycles(in.cycles, max_cycles);
-		const u32 key = (flags << 24) | (opcodes << 16) | (ti << 12) | (rel << 8) | (si << 4) | pi;
+		const u32 key = (g_x30_fwd << 28) | (flags << 24) | (opcodes << 16) | (ti << 12) | (rel << 8) | (si << 4) | pi;
 		check(block.cycles == want, "cycles", key, block.cycles, want);
-		// JIT IDLE RULE AUTO's two bills at any level: X3 BACKWARD's and X30's.
-		check(block.bill_x3 == reicast_cycles(in.cycles, max_cycles) && block.bill_x30 == old.cycles, "auto bills", key,
-		      block.bill_x3, block.bill_x30);
+		// The AUTO bills at any level and choice: X3 BACKWARD's, X30's, and X30's with FORWARD PLAIN.
+		check(block.bill_x3 == reicast_cycles(in.cycles, max_cycles) && block.bill_x30 == old.cycles &&
+		      block.bill_x30p == x30p, "auto bills", key, block.bill_x3, block.bill_x30p);
 		// JIT IDLE SKIP's flag does not follow the rule.
 		check(block.idle_loop == old.idle_loop, "idle_loop", key, block.idle_loop, old.idle_loop);
 		check(g_dec_rule_blocks - n0 == (u32)(block.cycles > in.cycles), "billed count", key, block.cycles, in.cycles);
@@ -187,6 +201,8 @@ static void test_cycles()
 		{ BET_Cond_0, 0, { 90, 9, 3, 90, 9 } }, { BET_Cond_0, 2, { 90, 9, 3, 9, 9 } }, { BET_Cond_1, 0, { 90, 9, 3, 90, 9 } },
 		{ BET_Cond_1, 2, { 90, 3, 3, 3, 3 } }, { BET_Cond_0, 1, { 224, 90, 3, 224, 90 } },
 	};
+	// With JIT X30 FORWARD PLAIN (and in bill_x30p), X30 bills the two forward cases their own 3 cycles.
+	for (g_x30_fwd = 0; g_x30_fwd < 2; g_x30_fwd++)
 	for (u32 i = 0; i < 5; i++)
 		for (u32 col = 0; col < 5; col++)
 		{
@@ -201,10 +217,13 @@ static void test_cycles()
 			block.BranchBlock = block.start + (k[i].rel - 1) * 16;
 			block.idle_loop = false;
 			cycle_new(max_cycles);
-			check(block.cycles == k[i].want[col], "rule case", i, col, block.cycles);
-			check(block.bill_x30 == k[i].want[0] && block.bill_x3 == k[i].want[1], "rule case bills", i, block.bill_x30,
-			      block.bill_x3);
+			const u32 x30p = k[i].rel == 2 ? 3 : k[i].want[0];
+			const u32 x30 = g_x30_fwd ? x30p : k[i].want[0];
+			check(block.cycles == (col == 0 ? x30 : k[i].want[col]), "rule case", (g_x30_fwd << 8) | i, col, block.cycles);
+			check(block.bill_x30 == k[i].want[0] && block.bill_x30p == x30p && block.bill_x3 == k[i].want[1],
+			      "rule case bills", (g_x30_fwd << 8) | i, block.bill_x30, block.bill_x3);
 		}
+	g_x30_fwd = 0;
 }
 
 static void test_rm()

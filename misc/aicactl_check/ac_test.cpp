@@ -57,7 +57,10 @@ extern "C" int get_aica_mono_fix_preset() { return 0; }
 u8* g_aram_hz;
 bool g_aram_hz_stale;
 u32 g_aram_hz_dma, g_aram_ring_base, g_aram_ring_len;
-void aram_hz_hit(u32, u32) {}
+bool aram_hz_hit(u32, u32) { return false; }
+// Bundle 9 (6.8 ARM7 STR Align): not under test here, the old store path
+extern "C" int get_arm7_str_align_preset() { return 0; }
+void arm_unal_store(u32) {}
 void ps3aica_ring_wrote(u32) {}
 void g2dma_take(u32 out[9]) { for (int i = 0; i < 9; i++) out[i] = 0; }
 void arm_spe_fix_take(u32 out[6]) { for (int i = 0; i < 6; i++) out[i] = 0; }

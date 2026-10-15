@@ -159,6 +159,7 @@ int g_spe_arm7_preset      = 1;   // 1 = ARM7 and nullAICA's registers on an SPU
 // OPTIMIZATION_PLAN section 7, bundle 5: a row is off until it is cleared on hardware. SPE AICA Sync (6.6): 1 = a
 // wave RAM write waits for the SPU if a slot has yet to play that byte; 2, 3 = no test, per block or per sample (3: HW)
 int g_spe_aica_sync_preset = 3;
+int g_spe_aica_defer_preset = 0;   // 1 = a held wave RAM store waits on the ARM7 SPU, not the SH4 thread (bundle 21)
 int g_dsp_ring_ram_preset  = 1;   // 1 = the SPU's DSP ring mirrors wave RAM, both ways (P20 G2, HW)
 int g_dsp_ring_64k_preset  = 0;   // 1 = DSP writes of a 64K-word ring and TABLE writes reach wave RAM (P20 G3)
 int g_dsp_reg_read_preset  = 0;   // 1 = a read of TEMP, MEMS, MIXS or EFREG returns the DSP's value (P20 G4)
@@ -188,6 +189,10 @@ int g_jit_idle_rule_preset = 4;   // small read-and-branch blocks bill: 0 = x30,
 int g_jit_idle_rule_now    = 1;   // AUTO's level now (ps3_idle_auto.h); the decoder reads get_jit_idle_rule()
 int g_jit_idle_hash_preset = 1;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
 int g_jit_sq_copy_preset   = 0;   // 1 = SQ shape for stores whose block PREFs through a copy of their base register
+int g_jit_x30_fwd_preset   = 2;   // at X30 a block whose branch goes forward bills: 0 = x30, 1 = its own cycles,
+                                  // 2 = AUTO: 1 or 0 by the frames on screen (bundle 21; default AUTO, Matt 2026-10-15)
+int g_jit_x30_fwd_now      = 1;   // AUTO's choice now (ps3_idle_auto.h); the decoder reads get_jit_x30_fwd()
+int g_jit_task_idle_preset = 1;   // 1 = an idle SDK task-loop turn skips IDLE_TASK_SLICES timeslices (bundle 21; ON, Matt)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
@@ -400,6 +405,7 @@ static const CfgItem s_items[] = {
 	{ "SoundThread",   &g_sound_thread_preset },
 	{ "SpeArm7",       &g_spe_arm7_preset },
 	{ "SpeAicaSync",   &g_spe_aica_sync_preset },
+	{ "SpeAicaDefer",  &g_spe_aica_defer_preset },
 	{ "DspRingRam",    &g_dsp_ring_ram_preset },
 	{ "DspRing64K",    &g_dsp_ring_64k_preset },
 	{ "DspRegRead",    &g_dsp_reg_read_preset },
@@ -437,6 +443,8 @@ static const CfgItem s_items[] = {
 	{ "JitRmAny",      &g_jit_rm_any_preset },
 	{ "JitIdleRule",   &g_jit_idle_rule_preset },
 	{ "JitIdleHash",   &g_jit_idle_hash_preset },
+	{ "JitX30Fwd",     &g_jit_x30_fwd_preset },
+	{ "JitTaskIdle",   &g_jit_task_idle_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
 	{ "MapleDelay",    &g_maple_delay_preset },
 	{ "MapleSpeed",    &g_maple_speed_preset },
@@ -534,6 +542,7 @@ static const CfgItem s_snd_items[] = {
 	{ "SoundThread",   &g_sound_thread_preset },
 	{ "SpeArm7",       &g_spe_arm7_preset },
 	{ "SpeAicaSync",   &g_spe_aica_sync_preset },
+	{ "SpeAicaDefer",  &g_spe_aica_defer_preset },
 	{ "DspRingRam",    &g_dsp_ring_ram_preset },
 	{ "DspRing64K",    &g_dsp_ring_64k_preset },
 	{ "DspRegRead",    &g_dsp_reg_read_preset },
@@ -962,6 +971,7 @@ int get_aica_ca_clamp_preset() { return g_aica_ca_clamp_preset; }
 int get_arm7_str_align_preset() { return g_arm7_str_align_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 5. SPE AICA Sync is read at each MediumUpdate; the rest once in InitAica.
 int get_spe_aica_sync_preset() { return g_spe_aica_sync_preset; }
+int get_spe_aica_defer_preset() { return g_spe_aica_defer_preset; }
 int get_dsp_ring_ram_preset()  { return g_dsp_ring_ram_preset; }
 int get_dsp_ring_64k_preset()  { return g_dsp_ring_64k_preset; }
 int get_dsp_reg_read_preset()  { return g_dsp_reg_read_preset; }
@@ -988,6 +998,9 @@ int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
 int get_jit_idle_rule()        { return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
+int get_jit_x30_fwd_preset()   { return g_jit_x30_fwd_preset; }
+int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset==2 ? g_jit_x30_fwd_now : g_jit_x30_fwd_preset; }
+int get_jit_task_idle_preset() { return g_jit_task_idle_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
 int get_flash_defaults_preset() { return g_flash_defaults_preset; }
 int get_rtc_local_preset()     { return g_rtc_local_preset; }

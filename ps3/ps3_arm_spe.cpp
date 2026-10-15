@@ -2,6 +2,7 @@
 // command ring; the SPU answers in its echo line. CD-DA sectors and the audio pacing stay here, at nullAICA's samples.
 #include "ps3_arm_spe.h"
 #include "ps3_aica_spe.h"
+#include "ps3_aica_defer.h"
 #include "ps3_spe.h"
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +24,7 @@ extern "C" int get_arm7_reset_fix_preset();
 extern "C" int get_aica_ca_clamp_preset();
 extern "C" int get_spe_aica_dsp_preset();
 extern "C" int get_spe_aica_sync_preset();
+extern "C" int get_spe_aica_defer_preset();
 extern "C" int get_dsp_reg_read_preset();
 extern "C" int get_aica_lfore_preset();
 extern "C" int get_arm7_str_align_preset();
@@ -63,16 +65,47 @@ static u32 s_hz_ppu[6];   // this window: map hits by the SH4, by a G2 DMA, with
 static u32 s_hz_synced_at, s_hz_blk, s_hz_reqs, s_cfg_sent;
 static bool s_hz_ring;    // a DSP ring row is on: the SPU keeps the map even with SPE AICA Sync off
 
+// Bundle 21, SPE AICA Defer: the stores in flight, the last bell.applied, the sample of the last HOLD SYNC, wave RAM;
+// this window: HOLD SYNCs, stores held, flushes (a read or a full table), stores that went after one in flight.
+static DeferQ s_dq;
+static u32 s_applied, s_hz_hold_at;
+static u8* s_aram;
+static u32 s_def_syncs, s_def_words, s_def_flushes, s_def_after;
+
 // Section 7, bundle 9 (log only): the SPU's P49 census and unaligned-store counts
 static ArmCensus s_census;
 
 static inline const volatile ArmEcho* echo() { return &s_echo; }
+
+// A store as nullAICA makes it: DC byte a at host byte a ^ 3.
+static void aram_store_now(u32 addr, u32 val, u32 size)
+{
+	if (size == 1)
+		s_aram[addr ^ 3] = (u8)val;
+	else if (size == 2)
+		*(u16*)&s_aram[addr ^ 2] = (u16)val;
+	else
+		*(u32*)&s_aram[addr] = val;
+}
+
+// Bundle 21: the SPU stands at a HOLD SYNC: its stores go to wave RAM, then the bell store lets the SPU go on.
+static void defer_poll()
+{
+	const u32 held = echo()->held;
+	if (held == s_applied)
+		return;
+	defer_apply(s_dq, held, aram_store_now);
+	__asm__ volatile("lwsync" ::: "memory");
+	s_applied = held;
+	s_bell.applied = held;
+}
 
 static void spe_dead(const char* why)
 {
 	if (s_dead)
 		return;
 	s_dead = true;
+	defer_apply(s_dq, s_dq.k_pushed, aram_store_now);   // no SPU to wait for: the stores in flight go out now
 	s32 exit_st = 0;
 	const s32 rx = sysSpuThreadGetExitStatus(s_thread, &exit_st);
 	printf("[arm7spe] %s: SPU tail %u of %u, exit 0x%08X/%d; ARM7 and AICA stop (no sound)\n", why, echo()->tail, s_head,
@@ -89,6 +122,7 @@ static bool wait_tail(u32 n)
 	u64 moved = t0;
 	for (;;)
 	{
+		defer_poll();   // an SPU at a HOLD SYNC goes on only once its stores are out
 		const u32 x = echo()->tail;
 		if ((s32)(x - n) >= 0)
 			break;
@@ -113,6 +147,7 @@ static ArmCmd* cmd_slot()
 {
 	if (s_dead)
 		return &s_void;
+	defer_poll();
 	if (s_head - s_tail_seen >= LAG_MAX)
 	{
 		s_tail_seen = echo()->tail;
@@ -248,13 +283,20 @@ void arm_spe_write(u32 addr, u32 data, u32 size)
 		aica_sh4_irq_apply(echo()->irq != 0);
 }
 
-void arm_spe_hz_hit(u32 addr, u32 src)
+bool arm_spe_hz_hit(u32 addr, u32 src)
 {
 	s_hz_ppu[src]++;
 	if (g_aram_hz_stale)
 		s_hz_ppu[2]++;
-	if (s_dead || s_now == s_hz_synced_at)   // synced at this sample: the sound SPU has no sample left to play
-		return;
+	const bool defer = get_spe_aica_defer_preset() != 0;
+	if (!defer && defer_busy(s_dq))   // SPE AICA Defer went OFF: the stores in flight go first
+		arm_spe_defer_flush();
+	if (s_dead)
+		return false;
+	if (defer && s_now == s_hz_hold_at)   // this sample's HOLD SYNC: wait with it, or go now if the SPU passed it
+		return s_applied != s_dq.k_pushed;
+	if (s_now == s_hz_synced_at)   // synced at this sample: the sound SPU has no sample left to play
+		return false;
 	if ((s_now >> 6) != s_hz_blk)
 	{
 		s_hz_blk = s_now >> 6;
@@ -265,18 +307,26 @@ void arm_spe_hz_hit(u32 addr, u32 src)
 	if (s_hz_reqs >= AICA_HZ_TESTS && lvl < 3)
 	{
 		s_hz_ppu[4]++;
-		return;
+		return false;
 	}
 	s_hz_reqs = lvl == 2 ? AICA_HZ_TESTS : s_hz_reqs + 1;
 	s_hz_ppu[3]++;
 	const u64 t0 = gettime();
 	ArmCmd* c = cmd_slot();
 	c->op = ARM_CMD_SYNC;
+	c->flags = defer ? ARM_SYNC_HOLD : 0;   // a reused slot keeps the old command's flags
 	c->b = addr;
 	c->c = src;
 	cmd_push();
+	if (defer)
+	{
+		defer_sync(s_dq);
+		s_hz_hold_at = s_now;
+		s_def_syncs++;
+		return true;
+	}
 	if (!wait_tail(s_head))
-		return;
+		return false;
 	s_hz_ppu[5] += (u32)(gettime() - t0);
 	__asm__ volatile("lwsync" ::: "memory");
 	const u32 res = echo()->hz_res;
@@ -285,6 +335,51 @@ void arm_spe_hz_hit(u32 addr, u32 src)
 	else if (res == ARM_HZ_DEAD)   // the sound SPU did not answer the twin: no more requests
 		g_aram_hz = 0;
 	g_aram_hz_stale = g_aram_hz && s_now - *(volatile u32*)&s_hz.map_sample > AICA_HZ_STALE;
+	return false;
+}
+
+void arm_spe_defer(u32 addr, u32 val, u32 size, bool after)
+{
+	if (defer_full(s_dq))
+		arm_spe_defer_flush();
+	if (s_dead || s_applied == s_dq.k_pushed)   // no HOLD SYNC left to reach: nothing in flight, the store goes now
+	{
+		aram_store_now(addr, val, size);
+		return;
+	}
+	defer_add(s_dq, addr, val, size);
+	s_def_words++;
+	s_def_after += after;
+}
+
+bool arm_spe_defer_covers(u32 addr, u32 size)
+{
+	return defer_covers(s_dq, addr, size);
+}
+
+// Waits until every store in flight is out; the SPU must reach each HOLD SYNC (100 ms without one: the SPU is gone).
+void arm_spe_defer_flush()
+{
+	if (!defer_busy(s_dq))
+		return;
+	s_def_flushes++;
+	const u64 t0 = gettime();
+	u64 moved = t0;
+	u32 last = echo()->held;
+	while (defer_busy(s_dq) && !s_dead)
+	{
+		defer_poll();
+		const u32 h = echo()->held;
+		const u64 now = gettime();
+		if (h != last)
+		{
+			last = h;
+			moved = now;
+		}
+		else if (now - moved > ps3_timebase_hz / 10)
+			spe_dead("no HOLD SYNC reached in 100 ms");
+	}
+	s_wait_ticks += gettime() - t0;
 }
 
 void arm_spe_aram_all()
@@ -351,6 +446,11 @@ bool arm_spe_init(u8* aica_ram)
 	s_hz_reqs = 0;
 	s_head = s_tail_seen = s_rd_seq = 0;
 	s_dead = false;
+	defer_init(s_dq);
+	s_applied = 0;
+	s_hz_hold_at = ~0u;
+	s_aram = aica_ram;
+	s_def_syncs = s_def_words = s_def_flushes = s_def_after = 0;
 	g_arm_spe_dlo = 0xFFFF;
 	g_arm_spe_dhi = 0;
 
@@ -410,6 +510,7 @@ void arm_spe_term()
 	g_arm_spe = false;
 	g_aram_hz = 0;
 	g_aram_hz_stale = false;
+	defer_apply(s_dq, s_dq.k_pushed, aram_store_now);   // the SPU stops: the stores in flight go out first
 	__asm__ volatile("lwsync" ::: "memory");
 	s_bell.quit = 1;
 	if (!wait_state(ARM_SPE_STATE_EXITED, ps3_timebase_hz / 10))
@@ -455,14 +556,16 @@ void arm_spe_stats(double)
 	const double tw = (double)ps3_timebase_hz * w / 100.0;
 	printf("[arm7spe] per s: cmds %.0f runs %.0f ticks %.0f fiq %.0f | samples %.0f lag %d cmds (max %u) | recs %.0f"
 	       " checks %.0f mon %.0f | ARAM misses %.0f puts %.0f | map decodes %u evicts %u | spu busy %.1f%% wakes %.0f"
-	       " | sh4 reads %.0f writes %.0f wait %.2f%% lag-waits %u | log waits %u drops %u cdda-under %u\n",
+	       " | sh4 reads %.0f writes %.0f wait %.2f%% lag-waits %u | log waits %u drops %u cdda-under %u"
+	       " | defer syncs %.0f stores %.0f after %.0f flushes %u in flight %u\n",
 	       (c.cmds - l.cmds) / w, (c.runs - l.runs) / w, (double)(c.ticks - l.ticks) / w, (c.fiqs - l.fiqs) / w,
 	       (c.samples - l.samples) / w, (s32)(s_head - c.tail), s_lag_max, (c.recs - l.recs) / w,
 	       (c.checks - l.checks) / w, (c.mon_reads - l.mon_reads) / w, (c.misses - l.misses) / w, (c.puts - l.puts) / w,
 	       c.decodes - l.decodes, c.evicts - l.evicts, (c.busy - l.busy) * 100.0 / (79800000.0 * w),
 	       (c.wakes - l.wakes) / w, s_reads / w, s_writes / w, s_wait_ticks / tw, s_lag_waits, c.log_waits, c.log_drops,
-	       c.cdda_under);
+	       c.cdda_under, s_def_syncs / w, s_def_words / w, s_def_after / w, s_def_flushes, s_dq.head - s_dq.tail);
 	l = c;
+	s_def_syncs = s_def_words = s_def_flushes = s_def_after = 0;
 	s_reads = s_writes = s_lag_waits = s_lag_max = 0;
 	s_wait_ticks = 0;
 	ps3aica_hz_print(&s_hz, w, s_hz_ppu);

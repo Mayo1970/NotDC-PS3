@@ -8,7 +8,9 @@
 #define IDLE_HASH_MAX_OPS 64
 #define IDLE_HASH_STR 64
 
-enum { IDLE_LIST_NONE = 0, IDLE_LIST_OWN = 1, IDLE_LIST_REICAST = 2 };
+enum { IDLE_LIST_NONE = 0, IDLE_LIST_OWN = 1, IDLE_LIST_REICAST = 2, IDLE_LIST_TASK = 3 };
+// Bundle 21, JIT TASK IDLE: a task-list block drops the rest of the timeslice and 2 more, about what X30 bills its turn.
+#define IDLE_TASK_SLICES 3
 
 // Reicast's idle_hash without its two double entries. Each matches on a block's first half only (see below), so
 // "04:DB35BCA0" is any 4-opcode block that starts `add #8,r15; lds.l @r15+,PR`. The last one never matches there.
@@ -38,6 +40,13 @@ static const char idle_hash_own[] =
 	">:1:8C19D168:03:D81E7C3D:BBC0DA9E:01A57B05:239F0A0B:C4727FBC"
 	// Capcom vs. SNK 2 (JP): the tail of Kamui's vsync wait `do { hook(7); count--; } while (vbl == old && count);`.
 	">:1:8C21A2EE:04:0E313F0D:345E5DC5:A6CFFD76:91D47842:D22C2D1C";
+
+// Bundle 21, the task list: the idle turn of an SDK task loop, entered once a turn, in hash()'s full form.
+static const char idle_hash_task[] =
+	// Sonic Shuffle: the loop test of the 16-slot dispatch 8C01585C, entered by its `bra` once a call.
+	">:1:8C0158A0:04:63FE2E15:EC7B702E:174D24A7:DFD3298D:DB21BB3B"
+	// Border Down (Japan): the same SDK code.
+	">:1:8C04838C:04:63FE2E15:EC7B702E:174D24A7:DFD3298D:DB21BB3B";
 
 static inline u32 idle_rol(u32 x, u32 n)
 {
@@ -94,7 +103,7 @@ static void idle_hash_words(const u8* code, u32 opcodes, u32 h[5])
 	idle_sha1(msg, opcodes * 2, h);
 }
 
-// Which list holds the block (ours first). `full` (IDLE_HASH_STR chars) gets hash()'s full form, for the log.
+// Which list holds the block (ours, then the task list). `full` (IDLE_HASH_STR chars) gets hash()'s full form.
 static int idle_hash_listed(u32 addr, u32 opcodes, const u8* code, char* full)
 {
 	full[0] = 0;
@@ -109,6 +118,8 @@ static int idle_hash_listed(u32 addr, u32 opcodes, const u8* code, char* full)
 	         (unsigned)h[0], (unsigned)h[1], (unsigned)h[2], (unsigned)h[3], (unsigned)h[4]);
 	if (strstr(idle_hash_own, full))
 		return IDLE_LIST_OWN;
+	if (strstr(idle_hash_task, full))
+		return IDLE_LIST_TASK;
 	if (strstr(idle_hash_reicast, brief))
 		return IDLE_LIST_REICAST;
 	return IDLE_LIST_NONE;
