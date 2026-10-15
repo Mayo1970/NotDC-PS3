@@ -304,7 +304,7 @@ static const char* k_idle_skip[] = { "OLD", "SAFE", NULL };
 static const char* k_kyonb[]     = { "CLEARED ON END", "NEVER CLEARED", NULL };
 static const char* k_jit3[]      = { "OFF", "ON", "CHECK", NULL };
 static const char* k_cycle[]     = { "OLD", "COLD EXIT", "LOOPS ONLY", NULL };
-static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", "+ LA STEPS", NULL };
+static const char* k_sqmiss[]    = { "OFF", "SLOW PATH", "+ LOOK-AHEAD", "+ LA STEPS", "+ LA 16 OPS", NULL };
 static const char* k_fschg[]     = { "OFF", "ON", "+ NO BLOCK END", NULL };
 static const char* k_dynic[]     = { "OFF", "JSR/JMP", "+ RTS", NULL };
 static const char* k_ccache[]    = { "6 MB", "12 MB", "24 MB", NULL };
@@ -338,6 +338,8 @@ static const char* k_rdelay[]    = { "OFF", "ON", "FLYCAST", NULL };
 static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };
+static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };
+static const char* k_autochk[]   = { "OLD", "FRAMES", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
@@ -591,7 +593,7 @@ static Option s_jit[] = {
 	{ "JIT T COPY",      &g_jit_tcopy_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "bt.s/bf.s take T from the compare's register copy, not memory. Set before boot." },
 	{ "JIT SQ MISS",     &g_jit_sq_miss_preset,   OPT_CHOICE, k_sqmiss,    0, 0,0,0, NULL,
-	  "Missed SQ stores skip the table; LA STEPS looks past @-Rn stores. Set before boot." },
+	  "Missed SQ stores skip the table; LA STEPS looks past @-Rn stores, LA 16 OPS 16 ops on. Set before boot." },
 	{ "JIT SQ COPY",     &g_jit_sq_copy_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SQ stores stay inline when the PREF uses a copy of their register. Set before boot." },
 	{ "JIT MFOCRF",      &g_jit_mfocrf_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -616,8 +618,10 @@ static Option s_jit[] = {
 	  "A listed wait loop ends the timeslice (Looney Tunes, CvS2), as Reicast. Set before boot." },
 	{ "JIT X30 FORWARD", &g_jit_x30_fwd_preset,   OPT_CHOICE, k_x30fwd,    0, 0,0,0, NULL,
 	  "PLAIN: at X30 a forward branch bills its own cycles. AUTO: PLAIN or X30 by frames. Set before boot." },
-	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "ON: an idle SDK task-loop turn skips 3 timeslices (Sonic Shuffle, Border Down). Set before boot." },
+	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_taskidle,  0, 0,0,0, NULL,
+	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Sonic Shuffle, Border Down). Set before boot." },
+	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,
+	  "FRAMES: AUTO tries PLAIN when X30 drops frames, no X3 try in loading screens. Live." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -1392,6 +1396,7 @@ static int* const k_live_opts[] = {
 	&g_sprite_corner_preset, &g_offset_colour_preset, &g_colour_clamp_preset, &g_trilinear_preset,
 	&g_arm7_rate_preset, &g_arm7_interleave_preset,
 	&g_adpcm_loop_preset, &g_key_census_preset,
+	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
 

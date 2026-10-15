@@ -88,15 +88,16 @@ static inline int sqla_class(u32 op, u32 n, bool steps = false)
 }
 
 #define SQLA_SCAN_OPS 6
+#define SQLA_SCAN_LONG 16	// JIT SQ MISS + LA 16 OPS: Border Down 8C0273A2's PREF is 12-13 ops into the next block
 
-// From pc, up to SQLA_SCAN_OPS ops; a delayed branch's slot is the last op scanned. Main RAM only, so the
-// read has no side effect.
-static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32), bool steps = false)
+// From pc, up to ops ops; a delayed branch's slot is the last op scanned. Main RAM only, so the read has no side
+// effect.
+static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32), bool steps = false, int ops = SQLA_SCAN_OPS)
 {
 	if ((pc & 1) || (pc & 0x1C000000) != 0x0C000000)
 		return false;
 	bool slot = false;
-	for (int k = 0; k < SQLA_SCAN_OPS; k++, pc += 2)
+	for (int k = 0; k < ops; k++, pc += 2)
 	{
 		const int c = sqla_class(rd16(pc), n, steps);
 		if (c == SQLA_HIT)
@@ -110,7 +111,8 @@ static inline bool sqla_scan(u32 pc, u32 n, u32 (*rd16)(u32), bool steps = false
 
 // The store's base register keeps its value to the block end (steps by an immediate aside) and a static
 // successor PREFs through it. It only picks the shape: emit_sq_store still tests the address.
-static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u32), bool steps = false)
+static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u32), bool steps = false,
+                              int ops = SQLA_SCAN_OPS)
 {
 	const shil_opcode& st = block->oplist[i];
 	if (!st.rs1.is_r32i() || st.rs1._reg > reg_r15)
@@ -130,9 +132,9 @@ static inline bool sqla_guess(const DecodedBlock* block, size_t i, u32 (*rd16)(u
 	{
 	case BET_Cond_0:
 	case BET_Cond_1:
-		return sqla_scan(block->BranchBlock, n, rd16, steps) || sqla_scan(block->NextBlock, n, rd16, steps);
+		return sqla_scan(block->BranchBlock, n, rd16, steps, ops) || sqla_scan(block->NextBlock, n, rd16, steps, ops);
 	case BET_StaticJump:
-		return sqla_scan(block->BranchBlock, n, rd16, steps);
+		return sqla_scan(block->BranchBlock, n, rd16, steps, ops);
 	default:
 		return false;
 	}

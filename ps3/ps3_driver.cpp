@@ -361,6 +361,7 @@ extern "C" int get_jit_x30_fwd_preset();
 extern "C" int get_jit_x30_fwd();
 extern int g_jit_x30_fwd_now;
 extern "C" int get_jit_task_idle_preset();
+extern "C" int get_jit_auto_checks_preset();
 extern u32 g_dec_hash_blocks;
 
 // Plan 5.31 JIT GUARD REUSE: this block's plan (each memory op's check, then the roles); sites since boot.
@@ -508,7 +509,13 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 	// JIT IDLE HASH: a known wait loop's block drops the rest of the timeslice, so the next poll ends it. A task-loop
 	// entry drops more: each later poll pays one slice of the debt, and an event due still runs at its slice.
 	if (block->idle_hash)
-		ppc_li(ppc_cycles,(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());
+	{
+		const s32 slice=sh4_GetCpuTimeslice();
+		s32 debt=(1-(s32)block->idle_hash)*slice;
+		if (debt<-32768)
+			debt=-(32768/slice)*slice;	// TASK IDLE LONG above SH4 Clock 200: a sign-extended li holds 16 bits
+		ppc_li(ppc_cycles,debt);
+	}
 
 	// No GPR reload: pinned r14..r28 hold the SH4 GPRs across blocks, loaded once in the mainloop prologue and
 	// resynced only around shop_ifb and the canonical fallback.
@@ -2140,7 +2147,7 @@ static void idle_bills_patch(int rule,bool plain)
 
 // JIT IDLE RULE AUTO and X30 FORWARD AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every
 // compiled block, so the new level reaches all code without a recompile. fps: frames a second on screen.
-extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps)
+extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps,double vt_k)
 {
 	static IdleAuto s_ia;
 	static FwdAuto s_fa;
@@ -2155,7 +2162,14 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 		fwd_auto_init(s_fa);
 		s_ia_ready=true;
 	}
-	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s))
+	s_ia.frames=s_fa.frames=get_jit_auto_checks_preset();	// JIT AUTO CHECKS, live
+	static int s_frames_logged=-1;
+	if (s_fa.frames!=s_frames_logged)
+	{
+		printf("[idle-auto] JIT AUTO CHECKS %s\n",s_fa.frames ? "FRAMES" : "OLD");
+		s_frames_logged=s_fa.frames;
+	}
+	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s,vt_k))
 	{
 		g_jit_idle_rule_now=s_ia.rule;
 		if (fwd_auto)
@@ -2175,7 +2189,7 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 	}
 	if (!fwd_auto || get_jit_idle_rule()!=IA_X30)
 		return;
-	const int step=fwd_auto_step(s_fa,seconds,speed,sleep_s,fps);
+	const int step=fwd_auto_step(s_fa,seconds,speed,sleep_s,fps,vt_k);
 	if (step==FA_NONE)
 		return;
 	const char* const now=s_fa.plain ? "PLAIN" : "X30";
@@ -2189,6 +2203,9 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 	if (step==FA_TRY)
 		printf("[idle-auto] X30 FORWARD %s -> %s try: SPEED %.1f%%, sleep %.0f ms/s, %.1f frames/s (switch %u)\n",
 		       s_fa.plain ? "X30" : "PLAIN",now,speed,sleep_s*1000.0/seconds,s_fa.base,s_ia_switches);
+	else if (step==FA_VOID)
+		printf("[idle-auto] X30 FORWARD try void: %.1f frames/s at %.1fK against %.1f at %.1fK; back to %s (switch %u)\n",
+		       s_fa.mean,s_fa.mean_vt,s_fa.base,s_fa.base_vt,now,s_ia_switches);
 	else
 		printf("[idle-auto] X30 FORWARD back to %s: %.1f frames/s against %.1f; a run counts after %u s (switch %u)\n",
 		       now,s_fa.mean,s_fa.base,s_fa.hold,s_ia_switches);
@@ -3203,7 +3220,8 @@ static void gr_prepare(DecodedBlock* block)
 			k=GR_RAM;
 			if (o.op==shop_writem && get_jit_sq_store_preset() && (o.flags==4 || o.flags==8) &&
 			    (sq_store_guess(block,i) ||
-			     (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16,get_jit_sq_miss_preset()>=3)) ||
+			     (get_jit_sq_miss_preset()>=2 && sqla_guess(block,i,sqla_read16,get_jit_sq_miss_preset()>=3,
+			                                                 get_jit_sq_miss_preset()>=4 ? SQLA_SCAN_LONG : SQLA_SCAN_OPS)) ||
 			     (get_jit_sq_copy_preset() && sqcp_guess(block,i))))
 				k=GR_SQ;
 		}
@@ -3949,7 +3967,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					bool sq_guess=get_jit_sq_store_preset() && sq_size && sq_store_guess(block,i);
 					bool sq_la=false;
 					if (!sq_guess && sqm>=2 && get_jit_sq_store_preset() && sq_size)
-						sq_guess=sq_la=sqla_guess(block,i,sqla_read16,sqm>=3);
+						sq_guess=sq_la=sqla_guess(block,i,sqla_read16,sqm>=3,sqm>=4 ? SQLA_SCAN_LONG : SQLA_SCAN_OPS);
 					// JIT SQ COPY: the PREF goes through a copy of the base register.
 					bool sq_cp=false;
 					if (!sq_guess && get_jit_sq_copy_preset() && get_jit_sq_store_preset() && sq_size)
@@ -5221,9 +5239,9 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
-	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d x30fwd=%d taskidle=%d\n",
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d x30fwd=%d taskidle=%d autochk=%d\n",
 	       get_jit_idle_rule_preset(), get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(),
-	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset());
+	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset(), get_jit_auto_checks_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each
@@ -5378,6 +5396,15 @@ void ngen_mainloop()
 					ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);	// beq exit
 				}
 				reg_reload_all();
+				if (get_jit_task_idle_preset()>=2)
+				{
+					// JIT TASK IDLE LONG: an interrupt ends an idle turn's skip, so the slices left of it are dropped.
+					ppc_cmpi(ppc_cr0,ppc_cycles,0,0);
+					ppc_label* paid=ppc_CreateLabel();
+					ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge paid
+					ppc_li(ppc_cycles,0);
+					paid->MarkLabel();
+				}
 			}
 			no_intr->MarkLabel();
 			ppc_sh_load(ppc_next_pc,reg_nextpc);

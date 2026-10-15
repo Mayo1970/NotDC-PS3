@@ -66,7 +66,7 @@ void aica_arm7s_dump(double s) { (void)s; }
 void arm_jit_census_dump(double s) { (void)s; }
 extern "C" void ccall_census_dump(double s, double v) { (void)s; (void)v; }
 extern "C" void hotblocks_dump(double s, double v) { (void)s; (void)v; }
-extern "C" void jit_idle_auto(double s, double v, double z, double f) { (void)s; (void)v; (void)z; (void)f; }
+extern "C" void jit_idle_auto(double s, double v, double z, double f, double k) { (void)s; (void)v; (void)z; (void)f; (void)k; }
 extern "C" void ifb_probe_dump(double s) { (void)s; }
 extern "C" void ExitCombo_HostPoll() { tr("exitpoll"); }
 int msgboxf(const char* t, unsigned int k, ...) { (void)t; (void)k; return 0; }

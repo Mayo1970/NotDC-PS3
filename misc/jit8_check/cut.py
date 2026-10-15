@@ -32,7 +32,7 @@ put('cycle.inc', cut(dec, '\t//cycle tricks\n', '\n\tstatic int cc=0;', 'cycle b
 put('bill.inc', cut(dec, 'static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles,bool fwd_plain)\n', '\n}\n',
                      'dec_bill', True))
 put('rm.inc', cut(dec, '\t\tcpu.FSZ64=fpu_cfg.SZ;\n', '\t\t//what about fp/fs ?', 'RM setup'))
-put('hash_dec.inc', cut(dec, 'static u32 dec_idle_hash(int level,bool task)\n', '\n}\n', 'dec_idle_hash', True))
+put('hash_dec.inc', cut(dec, 'static u32 dec_idle_hash(int level,int task)\n', '\n}\n', 'dec_idle_hash', True))
 
 # hash8_check's references. SHA-1 from hashlib, over the first n bytes of a fixed stream.
 stream = bytes((i * 167 + 13) & 0xFF for i in range(128))
@@ -124,17 +124,27 @@ LINES = [
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }'),
     ('ps3/ps3_presets.cpp', 'JIT IDLE HASH defaults to ON (Matt 2026-10-15)', 'int g_jit_idle_hash_preset = 1;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }'),
-    ('ps3/ps3_presets.cpp', 'JIT TASK IDLE defaults to ON (Matt 2026-10-15)', 'int g_jit_task_idle_preset = 1;'),
+    ('ps3/ps3_presets.cpp', 'JIT TASK IDLE defaults to LONG (Matt 2026-10-15)', 'int g_jit_task_idle_preset = 2;'),
+    ('ps3/ps3_presets.cpp', 'JIT SQ MISS defaults to + LA 16 OPS (Matt 2026-10-15)', 'int g_jit_sq_miss_preset   = 4;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_task_idle_preset() { return g_jit_task_idle_preset; }'),
     ('ps3/ps3_presets.cpp', 'the key', '\t{ "JitTaskIdle",   &g_jit_task_idle_preset },\n'),
-    ('ps3/ps3_menu.cpp', 'the row', '\t{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_onoff,'),
-    ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: under its rows, with the level',
+    ('ps3/ps3_menu.cpp', 'the row', '\t{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_taskidle,'),
+    ('ps3/ps3_menu.cpp', 'the levels: LONG is 2', 'static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };'),
+    ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: under its rows, with the levels',
      '\tconst int idle_hash_level=get_jit_idle_hash_preset();\n'
-     '\tconst bool task_idle=get_jit_task_idle_preset()!=0;\n'
+     '\tconst int task_idle=get_jit_task_idle_preset();\n'
      '\tblock.idle_hash=(u8)((idle_hash_level || task_idle) && !g_jit_mmu ? dec_idle_hash(idle_hash_level,task_idle) : 0);\n'),
     ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: a new block starts unlisted', '\tidle_loop=false;\n\tidle_hash=false;\n'),
     ('ps3/ps3_driver.cpp', 'idle hash: a listed block drops the rest of the slice, a task entry more',
-     '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,(1-(s32)block->idle_hash)*sh4_GetCpuTimeslice());\n'),
+     '\tif (block->idle_hash)\n\t{\n\t\tconst s32 slice=sh4_GetCpuTimeslice();\n'
+     '\t\ts32 debt=(1-(s32)block->idle_hash)*slice;\n\t\tif (debt<-32768)\n\t\t\tdebt=-(32768/slice)*slice;'
+     '\t// TASK IDLE LONG above SH4 Clock 200: a sign-extended li holds 16 bits\n\t\tppc_li(ppc_cycles,debt);\n\t}\n'),
+    ('ps3/ps3_driver.cpp', 'task idle LONG: an interrupt drops the rest of the debt, at LONG only',
+     '\t\t\t\treg_reload_all();\n\t\t\t\tif (get_jit_task_idle_preset()>=2)\n\t\t\t\t{\n'
+     "\t\t\t\t\t// JIT TASK IDLE LONG: an interrupt ends an idle turn's skip, so the slices left of it are dropped.\n"
+     '\t\t\t\t\tppc_cmpi(ppc_cr0,ppc_cycles,0,0);\n\t\t\t\t\tppc_label* paid=ppc_CreateLabel();\n'
+     '\t\t\t\t\tppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);\t// bge paid\n\t\t\t\t\tppc_li(ppc_cycles,0);\n'
+     '\t\t\t\t\tpaid->MarkLabel();\n\t\t\t\t}\n\t\t\t}\n\t\t\tno_intr->MarkLabel();\n'),
     ('dc/sh4/sh4_registers.cpp', 'the host FPSCR follows RM and DN',
      '\tif ((old_rm!=fpscr.RM) || (old_dn!=fpscr.DN) || (old_rm==0xFF )|| (old_dn==0xFF))\n'),
 ]

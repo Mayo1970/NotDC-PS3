@@ -11,6 +11,8 @@
 enum { IDLE_LIST_NONE = 0, IDLE_LIST_OWN = 1, IDLE_LIST_REICAST = 2, IDLE_LIST_TASK = 3 };
 // Bundle 21, JIT TASK IDLE: a task-list block drops the rest of the timeslice and 2 more, about what X30 bills its turn.
 #define IDLE_TASK_SLICES 3
+// LONG: 16 slices a turn (a turn polls 16 times, so each pays its debt); an interrupt drops what is left of it.
+#define IDLE_TASK_LONG 16
 
 // Reicast's idle_hash without its two double entries. Each matches on a block's first half only (see below), so
 // "04:DB35BCA0" is any 4-opcode block that starts `add #8,r15; lds.l @r15+,PR`. The last one never matches there.

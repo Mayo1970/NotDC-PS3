@@ -171,6 +171,7 @@ extern int g_jit_sq_copy_preset;
 extern int g_jit_x30_fwd_preset;
 extern int g_jit_x30_fwd_now;
 extern int g_jit_task_idle_preset;
+extern int g_jit_auto_checks_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
 extern int g_stick_deadzone_preset;

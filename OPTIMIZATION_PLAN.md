@@ -684,6 +684,220 @@ of session 74d25a32: `cdi_extract.py`, `sh4dis.py`, `xref.py`).**
     18-22K at 74-92%. Proposed next (Matt picks): a JIT HOTBLOCKS ALL
     WINDOWS boot in Border Down's heavy part (no build), then way 4 (the
     inline TA flush). The rest of the saved order is in this block.
+  - Session c6aef597, 2026-10-15 evening. Matt committed bundle 21:
+    ff1733a (CvS2) and 6b65178 (heavy scenes, with the defaults above).
+    - Defaults (Matt: "Set the JIT SQ COPY to ON", "keep it [Defer] off by
+      default"): JIT SQ COPY ON in source, not packaged (his install has
+      ON); SPE AICA Defer stays OFF.
+    - New fact from `b21p_hw.txt` 79452-88852 (package of 17:50, Defer ON):
+      Crazy Taxi is still host-bound at 16-20K, 85-95% (SQ path 10-14%).
+    - HW run 10, no build (package of 19:51): listener PID 28856, log
+      `b21n_hw.txt` (scratchpad of session c6aef597). All games: JIT IDLE
+      RULE AUTO, JIT IDLE HASH ON, JIT X30 FORWARD AUTO, JIT TASK IDLE ON,
+      JIT SQ COPY ON, SPE AICA Defer OFF, JIT HOTBLOCKS OFF, Render Delay
+      FLYCAST, SH4 Clock 200, Texture Filter GAME. Order: Looney Tunes
+      (boot videos, then a race: the X30 FORWARD AUTO safety net), Ecco the
+      Dolphin and Tomb Raider: The Last Revelation (their X30 frame drops),
+      then Border Down with JIT HOTBLOCKS ALL WINDOWS in its 10-15K part.
+      With Defer OFF, `[aram-hz]` shows each game's sound wait.
+    - Game 1, Looney Tunes (`b21n_hw.txt` 1-9771; Matt: "Space Race is
+      capped at 30. But the framerate wasn't very stable."). Defer was ON
+      (the boot line); the game has few sound syncs. Tools: `win2.py`,
+      `bands2.py` (same scratchpad).
+      - Boot videos: PLAIN at 64-69% for 3 windows, then the X30 try was
+        kept (60.0 against 39.9 frames): 96-106%. The safety net works,
+        after about 5 slow seconds.
+      - Race (30 fps, t 213-348): X30 FORWARD AUTO ran X30 for 114
+        windows, PLAIN for 19. At X30 the game drops frames in game time
+        in every band: 29.1 / 29.3 / 28.0 / 27.1 / 26.1 frames per
+        emulated second at under 15 / 15-20 / 20-25 / 25-30 / 30K+, also
+        with 20% sleep (24 frames at 14K, t 259-262). At PLAIN: 30.0 in
+        game time; on screen 30.6 / 29.4 / 28.1 / 26.9 / 24.4 (SPEED 81-89%
+        at 25K+, the host limit).
+      - Cause: the second X30 try (t 238-240) ran at 14-26K against a
+        PLAIN base at 21-28K, so it won 29.6 to 27.7 and was kept. A PLAIN
+        try needs 98% SPEED and 30% sleep at X30; the race at X30 slept at
+        most 21%, so no PLAIN try came.
+      - Correction to HW run 6: its "race 20-25K ... 60 frames" was the
+        attract demo (60 fps). The race there ran at PLAIN: 30 frames in
+        game time, 23-31 on screen.
+      - Ways (Matt picks after the other games): X30 FORWARD AUTO tries
+        PLAIN when X30 drops frames in game time with host time to spare,
+        and a try counts only at a similar load; above 25K, the inline TA
+        flush.
+    - SPE AICA Defer defaults to ON in source since then (Matt asked what
+      it does, then: "I'd like it on."). Not packaged; his install has ON.
+    - Game 2, Ecco the Dolphin (`b21n_hw.txt` 9772-19900, Defer ON; Matt:
+      "Ecco the Dolphin's done.", no verdict). About 4 minutes of play.
+      - X3 runs it at 43-49%; AUTO went to X30, and X30 FORWARD AUTO kept
+        PLAIN: all 5 X30 tries lost (X30 drops frames in game time: 21-29
+        a game second).
+      - At PLAIN: 33 frames a game second in every band. On screen: 5-10K
+        32.3 (SPEED 97.5%), 10-15K 28.0 (84.4%), 15-20K 27.6 (82.8%), 20K+
+        25.2 (72.3%). The old X30 run (2026-10-12): 17.8-33.9, mean 25.4.
+        Above 10K the host is short; Ecco's game code is heavy (no profile).
+      - Each level start ran about 3 s at 44-56% (t 99-101, 130-132,
+        172-174): AUTO tried X3 in the loading screen before it (sleep
+        580-760 ms/s), and a try that lasts the loading screen counts as
+        held, so the hold stays at 5.
+      - Sound: 130-216 HOLD SYNCs a second (G2 DMA hits), SH4 sound wait
+        0.00%: without Defer the SH4 would wait at each one.
+    - Game 3, Tomb Raider: The Last Revelation (`b21n_hw.txt` 19700-25641,
+      Defer ON, MMU ASID JTC ON as in its old boots; Matt: "Tomb Raider is
+      done.", no verdict).
+      - Play (t 103-151): X30 all the time, SPEED 99-100% with 86-171 ms/s
+        sleep, but 17.5 frames a second at 4-7K and 12.2 at 7K+ (game time
+        = screen): the X30 bill, as in its old boots (about 12).
+      - X30 FORWARD AUTO never tried PLAIN in play: play sleeps 7-19%, the
+        try needs 30% (the Looney Tunes flaw). Its two PLAIN tries came in
+        loading screens and a video and lost (PLAIN 66-76% there). One X30
+        try at boot compared windows with no frames (0.7 against 0.0) and
+        was kept.
+      - Videos at X30: 68-81%, host-bound, no TA vertices (the game draws
+        them itself; YUV Block Decode cannot act).
+      - Open: does PLAIN give play more frames? No-build check: JIT IDLE
+        RULE X30 and JIT X30 FORWARD PLAIN by hand, the same play.
+    - Game 4, Border Down, JIT HOTBLOCKS ALL WINDOWS (`b21n_hw.txt`
+      25642-36677; Matt: "The run's done"). The heavy part is short: t
+      173-200, 12-15K at SPEED 76-83% (X3, then X30 + PLAIN; one X30 try
+      lost 46.2 to 47.8). Censuses 12-13 cover it; the 128 dumps were used
+      up in the menus, so its hot game blocks have no dump (code read from
+      the disc, `img_bd/1ST_READ.BIN` of session 77328546).
+      - Game vertex code, about 62% of the census weight: 8C0273A2 + 8C0273CC
+        (ftrv + fdiv transform, 8 SQ stores a vertex, 13.5%), 8C0276C0 (two
+        ftrv + fipr, 9.0-9.8%), the 2D strip builder 8C023A98-8C023B88 and
+        its copy at 8C027170-8C02728E (mov.w + `lds/float FPUL`: 11-19 LHS
+        a run; about 35%).
+      - The SDK idle task, about 18%: 22K turns a second with JIT TASK IDLE
+        ON, each a 16-slot walk (8C048358/8C048386, 351K entries/s) and a
+        full fiber switch (8C0452BC-8C045490). Each turn skips only 3
+        slices, so about 60% of the game's emulated time is idle turns.
+      - SQ path 7.7-10.9% of the thread: 1.1-1.4M flushes a second, 0.41-
+        0.55M to the TA, 0.70-0.81M to main RAM (then ch2 DMA to the TA).
+      - 8C0273A2's 4 SQ stores a vertex go out of line: 1.48M cold entries
+        a second. Its PREF is in the next block, 12-13 ops in;
+        `SQLA_SCAN_OPS` (`ps3/ps3_jit_sqla.h`) is 6.
+    - Proposed after the 4 games (Matt picks; nothing built):
+      1. AUTO rule fixes: X30 FORWARD AUTO tries PLAIN when X30 drops game
+         frames with spare time (not only at 30% sleep); tries and their
+         base count only windows with frames and a similar load; JIT IDLE
+         RULE AUTO makes no X3 try from a window with no frames.
+      2. JIT TASK IDLE: more emulated time per idle turn (3 slices now; up
+         to the next event). Up to about 18% of the JIT time in Border
+         Down's heavy part, also Sonic Shuffle.
+      3. `SQLA_SCAN_OPS` 6 -> 16 (the guess only picks the shape; the store
+         still tests its address). Removes the 1.48M cold entries.
+      4. Later: the inline TA flush (way 4). No-build checks: Tomb Raider
+         with PLAIN by hand; an Ecco profile (host-bound from 10K).
+    - Items 1-3 built (Matt: "Go with 1, 2 and 3 then."), each on its own row
+      or level, every default at the old path. Not committed. Source also
+      has the two new defaults (JIT SQ COPY ON, SPE AICA Defer ON).
+      1. Row JIT AUTO CHECKS (JIT SPEED, OLD / FRAMES, live, key
+         `JitAutoChecks`). FRAMES (`ps3/ps3_idle_auto.h`): an X30 run of 3
+         windows at 98%+ SPEED with 5%+ sleep tries PLAIN when its frames
+         per emulated second fall under 0.97 of the best of the last 10
+         windows; a run window needs 2+ frames a second on screen; a try
+         whose K vertices a frame differ from its run's by 20% and 0.5K, or
+         with under 2 frames a second, is void (back, hold unchanged); JIT
+         IDLE RULE AUTO tries X3 only from windows with 1K+ vertices a frame.
+         `jit_idle_auto` takes the window's vertices a frame (SPG.cpp). Log:
+         `[idle-auto] JIT AUTO CHECKS FRAMES|OLD` at each change,
+         `[idle-auto] X30 FORWARD try void: ...`, `[jitcfg] autochk=`.
+      2. JIT TASK IDLE level LONG (OFF / ON / LONG, set before boot): a
+         task-list turn skips 16 slices (`IDLE_TASK_LONG`), capped to li's
+         16 bits above SH4 Clock 200; at LONG the main loop's interrupt path
+         sets a negative cycle count to 0 (the unpaid skip is dropped).
+      3. JIT SQ MISS level + LA 16 OPS (value 4, set before boot): the
+         look-ahead scans 16 ops of the static successors
+         (`SQLA_SCAN_LONG`), not 6. Both call sites pass the same count.
+      - Package of 21:58 (`build/notdc_ps3.pkg`, 1760688 bytes) = the package
+        of 19:51 + the two defaults + items 1-3. `.got` 0xFA70 (0x590 left),
+        0 `r2off`. A first build failed: the driver has its own `ppc_li`,
+        which zero-extends a 32-bit negative value, so the LONG debt is
+        capped to 16 bits instead.
+      - PC checks (WSL), all PASS: idleauto (223 checks, 43 source lines; new
+        FRAMES tests: Ecco loading screens, the Looney Tunes race try, the
+        void, the peak), jit8 (idle hash 720 checks, task levels 0-2, 24
+        source lines), sqla (Border Down successors, 16-op fuzz), flash,
+        fullmmu, glpath, interp, maple, mmu, pad, rend4, rtt, screen, sys20,
+        timebase, ta4, chd, clock, constprop, div32, exit, sqstore, sysgate,
+        tcopy, fschg. Mutants: idleauto 180 of 180, jit8 "task idle" 21 of
+        21 and "idle hash" 35 of 35, sqla 59 of 59 (7 new + LA 16 OPS ones).
+      - HW steps (listener of HW run 10 still up, same log): install; rows as
+        in HW run 10 (Defer ON). 1. Looney Tunes race, JIT AUTO CHECKS FRAMES.
+        2. Border Down heavy part, AUTO CHECKS OLD: boot A JIT TASK IDLE LONG,
+        boot B also JIT SQ MISS + LA 16 OPS (HW run 9: 10-15K about 91%). 3.
+        Sonic Shuffle 18-22K with both. 4. Ecco and Tomb Raider with FRAMES.
+    - HW run 11, game 1, Looney Tunes (`b21n_hw.txt` 36678-43620; Matt:
+      "Looney Tunes is done."). Rows: JIT AUTO CHECKS FRAMES, and also JIT
+      TASK IDLE LONG and JIT SQ MISS + LA 16 OPS (`[jitcfg] sqmiss=4
+      taskidle=2 autochk=1`). Clean run, normal exit.
+      - Race (t 227-277): PLAIN for 41 of 50 windows; 3 X30 tries went back
+        (24.5 against 25.8; 28.4 against 28.1; the last cut by the exit).
+        One try in the attract demo ran into a menu and was void (14.6
+        frames at 0.1K against 42.6 at 25.2K), as designed.
+      - At PLAIN 29.4-31.1 frames per emulated second in every band; on
+        screen up to 15K 30.1, 15-20K 28.1 (91.5%), 20-25K 27.3 (91.5%),
+        25-30K 25.9 (86.7%), 30K+ 24.1 (80.0%). HW run 10 (mostly X30):
+        similar means, but 26-29 game frames with swings.
+      - Boot videos as before: X30 after 3 slow windows (59.7 against 39.5).
+    - HW run 11, game 2, Border Down (`b21n_hw.txt` 43621-48755; Matt: "Run
+      done for Border Down."). One boot with all three rows (`sqmiss=4
+      taskidle=2 autochk=1`), not the two boots asked; no X30 FORWARD try
+      came, so FRAMES had no part in it. Clean, normal exit.
+      - 12K+ vertices: X30 + PLAIN 99.3% (19 windows, 59.5 frames, sleep 20
+        ms/s), X3 95.6% (57.3). HW run 9 at 12K+: X3 91.2% (54.6), X30 87.7%
+        (52.6), X30 + PLAIN 79.2% (47.4). 10-12K: 99.6-100.8% (run 9 95.5-
+        98.6%).
+      - The task-loop test 8C04838C: about 5K turns a second at 12K (HW run
+        10: 22K); look-ahead SQ sites `sqla=32` (HW run 10: 21). The split
+        between the two rows is not measured.
+    - HW run 11, game 3, Sonic Shuffle (`b21n_hw.txt` 48756-53636; Matt:
+      "Sonic Shuffle is done, too."), the same three rows. Clean.
+      - AUTO stayed at X3 BACKWARD all boot (no switch). 15-18K: 99.6% (43
+        windows), 29.8 frames, sleep 177 ms/s; HW run 9 there: 95.4%, 28.2,
+        3 ms/s. The dispatch test 8C0158A0: 4.1-4.4K turns a second (run 9:
+        17.8-21.4K).
+      - 18K+ only 2 windows (17.7K 84.3%, 19.3K 95.8%, disc reads in them):
+        the 18-22K part of run 9 (74-92%) was not played; no verdict there.
+    - HW run 11, game 4, Ecco (`b21n_hw.txt` 53637-60829; Matt: "Ecco's run
+      is done!"), the same rows, FRAMES.
+      - One level switch only (the boot's X3 to X30). The loading screen at
+        t 100-112 (no 3D, much sleep) made no X3 try; the next level began
+        at X30 + PLAIN, 64.3% then 83-84% (HW run 10: 44-56% at X3 for 3 s).
+      - X30 FORWARD: 5 tries in play (1 void at 11.8K against 17.0K, 4 back
+        to PLAIN); each try is 3 windows at 20-27 frames against PLAIN's
+        29-34, the wait doubling after each (also so with OLD in run 10).
+      - Play at PLAIN: 4-7K 33-34 frames at full speed; 8-10K 29-31 (86-
+        90%); 11-14K 24-29 (71-86%): Ecco's own code, as in run 10.
+    - HW run 11, game 5, Tomb Raider: The Last Revelation (`b21n_hw.txt`
+      60830-68012; Matt: "Tomb Raider is done."), the same rows, FRAMES.
+      - One level switch only (boot X3 to X30); no X3 try in its loading
+        screens (HW run 10: two, at 47-74%).
+      - In play, two PLAIN tries (t 304-307, 320-323): 30 frames per
+        emulated second, but SPEED 35-40%, 11-12 frames on screen against
+        X30's 17-20; both went back to X30 (wait 10, then 20). So PLAIN does
+        not help its play: X30 is right for it.
+      - Weak spot: a PLAIN try in a menu (sleep 535 ms/s) was kept, and the
+        next play start ran 3 windows at PLAIN at 40% before an X30 try won.
+      - Play at X30 as before: 17-20 frames at 2.5-6.8K, 11-13 at 8-10K;
+        videos 78-85%.
+    - Summary for Matt's verdict: FRAMES keeps the Looney Tunes race at
+      PLAIN (steady 30 game frames), removes the X3 dips at level starts
+      (Ecco, Tomb Raider), tests PLAIN in Tomb Raider's play and goes back;
+      each FORWARD try still costs 3 s. LONG: Border Down 12K+ 79-91% to
+      99%, Sonic Shuffle 15-18K 95% to 99.6% with sleep. + LA 16 OPS: clean
+      in all five games, its own gain not measured.
+    - HW run 11, extra game, Crazy Taxi (`b21n_hw.txt` 68013-74366; Matt: "I
+      also made an extra run on Crazy Taxi"), the same rows. Clean; speed as
+      before (10-14K 99-100%, 14-18K 90-94%, 18K+ at X3 88%); one X30 try
+      went back to PLAIN (56.1 against 55.7).
+    - VERDICT, Matt 2026-10-15: "I'll go with your recommendation" (all three
+      as defaults). In source since then, not packaged: JIT AUTO CHECKS
+      FRAMES (1), JIT TASK IDLE LONG (2), JIT SQ MISS + LA 16 OPS (4). PC
+      checks of the defaults PASS (idleauto and jit8 pin them; their default
+      mutants 10 of 10 and 6 of 6), and the 12 checks that read the presets.
+      Not built: the weak-spot fix (no X30 -> PLAIN try without 1K vertices).
 
 **JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
 to no left-out seconds and a shorter hold, now that a switch costs about

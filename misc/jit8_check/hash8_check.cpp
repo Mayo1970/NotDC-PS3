@@ -119,17 +119,17 @@ static void test_known()
 }
 
 // dec_idle_hash(): the timeslices a block drops. Level 1 acts on our list and logs Reicast's, level 2 acts on both;
-// JIT TASK IDLE acts on the task list (IDLE_TASK_SLICES). 24 log lines per list.
+// JIT TASK IDLE acts on the task list (ON 3 slices, LONG 16). 24 log lines per list.
 static void test_dec()
 {
 	u32 lines[4] = {};
 	for (int level = 0; level <= 2; level++)
-		for (int task = 0; task <= 1; task++)
+		for (int task = 0; task <= 2; task++)
 			for (u32 i = 0; i < KNOWN_N; i++)
 			{
 				const Known& k = k_known[i];
-				// Reicast's list is long: its log share is kept for the limit test below.
-				if (k.list == IDLE_LIST_REICAST && (level == 0 || task))
+				// Reicast's list is long: its log share is kept for the limit test below. LONG tests the task list.
+				if ((k.list == IDLE_LIST_REICAST && (level == 0 || task)) || (task == 2 && k.list != IDLE_LIST_TASK))
 					continue;
 				memset(g_mem, 0xEE, sizeof(g_mem));
 				g_mem_base = k.addr;
@@ -138,11 +138,11 @@ static void test_dec()
 				block.opcodes = k.n;
 				const u32 n0 = g_dec_hash_blocks, l0 = g_lines;
 				g_line[0] = 0;
-				const u32 slices = dec_idle_hash(level, task != 0);
+				const u32 slices = dec_idle_hash(level, task);
 				const u32 want = k.list == IDLE_LIST_OWN ? (level >= 1 ? 1 : 0)
 				               : k.list == IDLE_LIST_REICAST ? (level == 2 ? 1 : 0)
-				               : k.list == IDLE_LIST_TASK ? (task ? 3 : 0) : 0;
-				const u32 key = (u32)(level * 2 + task);
+				               : k.list == IDLE_LIST_TASK ? (task == 2 ? 16 : task ? 3 : 0) : 0;
+				const u32 key = (u32)(level * 3 + task);
 				check(slices == want, "dec slices", k.addr, key);
 				check(g_dec_hash_blocks - n0 == (u32)(want != 0), "dec count", k.addr, key);
 				check(g_lines - l0 == (u32)(k.list != IDLE_LIST_NONE), "dec log", k.addr, key);
@@ -153,6 +153,7 @@ static void test_dec()
 					check(strstr(g_line, k.full) && strstr(g_line, act) && strstr(g_line, name), "dec log text", k.addr, key);
 			}
 	check(IDLE_TASK_SLICES == 3, "three task slices", IDLE_TASK_SLICES, 0);
+	check(IDLE_TASK_LONG == 16, "sixteen LONG task slices", IDLE_TASK_LONG, 0);
 	block.opcodes = 0;
 	check(!dec_idle_hash(2, true), "dec no opcodes", 0, 0);
 	block.opcodes = IDLE_HASH_MAX_OPS + 1;

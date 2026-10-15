@@ -411,6 +411,214 @@ static void t_fwd_edges()
 	expect(ffeed(f, 3, 1.0, 100.0, 0.5, 30.0) == 3, "a run after a cancel counts 3 new windows");
 }
 
+// JIT AUTO CHECKS FRAMES, the level: an X3 try needs 1K vertices a frame in each of its 3 spare windows.
+static u32 feedv(IdleAuto& a, u32 n, double speed, double sleep, double vt)
+{
+	for (u32 i = 1; i <= n; i++)
+		if (idle_auto_step(a, 1.0, speed, sleep, vt))
+			return i;
+	return 0;
+}
+
+static IdleAuto at_x30_frames()
+{
+	IdleAuto a = at_x30();
+	a.frames = 1;
+	return a;
+}
+
+// Ecco: play at X30 with a little sleep; a loading screen (no 3D) with much sleep between levels.
+static Win m_ecco(u32 i, int rule)
+{
+	const bool loading = (i % 40) >= 30;
+	if (rule)
+		return loading ? Win{ 1.0, 100.0, 0.6 } : Win{ 1.0, 45.0, 0.0 };
+	return loading ? Win{ 1.0, 100.0, 0.7 } : Win{ 1.0, 100.0, 0.2 };
+}
+
+static std::vector<Event> runv(Model m, u32 n, int frames)
+{
+	IdleAuto a;
+	idle_auto_init(a);
+	a.frames = frames;
+	std::vector<Event> ev;
+	for (u32 i = 1; i <= n; i++)
+	{
+		const Win w = m(i, a.rule);
+		const double vt = (i % 40) >= 30 ? 0.0 : 9.0;
+		if (idle_auto_step(a, w.secs, w.speed, w.sleep, vt))
+			ev.push_back({ i, a.rule, a.hold });
+	}
+	return ev;
+}
+
+static void t_frames_level()
+{
+	IdleAuto a = at_x30_frames();
+	expect(feedv(a, 10, 100.0, 0.6, 0.0) == 0, "FRAMES: a loading screen tries no X3");
+	a = at_x30_frames();
+	expect(feedv(a, 10, 100.0, 0.6, 0.99) == 0, "FRAMES: 0.99K a frame tries no X3");
+	a = at_x30_frames();
+	expect(feedv(a, 10, 100.0, 0.6, 1.0) == 3 && a.rule == IA_X3, "FRAMES: 1.0K a frame tries X3");
+	a = at_x30();
+	expect(feedv(a, 10, 100.0, 0.6, 0.0) == 3, "OLD: a loading screen tries X3");
+	// A loading window breaks the run; the X3 side keeps its rule.
+	a = at_x30_frames();
+	expect(feedv(a, 2, 100.0, 0.6, 5.0) == 0 && feedv(a, 1, 100.0, 0.6, 0.0) == 0 &&
+	       feedv(a, 2, 100.0, 0.6, 5.0) == 0 && feedv(a, 1, 100.0, 0.6, 5.0) == 1, "FRAMES: a run broken by a loading window");
+	IdleAuto b;
+	idle_auto_init(b);
+	b.frames = 1;
+	expect(feedv(b, 10, 60.0, 0.0, 0.0) == 3 && b.rule == IA_X30, "FRAMES: slow X3 windows with no 3D still go to X30");
+	// Ecco: OLD tries X3 in each loading screen and the level start pays for it; FRAMES stays at X30.
+	const std::vector<Event> old = runv(m_ecco, 400, 0), fr = runv(m_ecco, 400, 1);
+	expect(old.size() >= 9, "Ecco OLD: %u switches, want 9 or more", (u32)old.size());
+	same("Ecco FRAMES", fr, { { 3, IA_X30, 5 } });
+}
+
+// JIT AUTO CHECKS FRAMES, X30 FORWARD AUTO: windows with their K vertices a frame.
+struct VWin { double secs, speed, sleep, fps, vt; };
+
+static FwdAuto f_fr(int plain)
+{
+	FwdAuto f = f_at(plain);
+	f.frames = 1;
+	return f;
+}
+
+static u32 vfeed(FwdAuto& f, u32 n, double speed, double sleep, double fps, double vt, int* step = 0)
+{
+	for (u32 i = 1; i <= n; i++)
+	{
+		const int s = fwd_auto_step(f, 1.0, speed, sleep, fps, vt);
+		if (s != FA_NONE)
+		{
+			if (step)
+				*step = s;
+			return i;
+		}
+	}
+	return 0;
+}
+
+static void t_fwd_frames()
+{
+	int s = 0;
+	// A run window needs 2 frames a second on screen.
+	FwdAuto f = f_fr(1);
+	expect(vfeed(f, 10, 50.0, 0.0, 0.0, 0.0) == 0, "FRAMES: PLAIN slow with no frames tries nothing");
+	f = f_fr(1);
+	expect(vfeed(f, 10, 50.0, 0.0, 1.99, 1.0) == 0, "FRAMES: 1.99 frames a second tries nothing");
+	f = f_fr(1);
+	expect(vfeed(f, 10, 50.0, 0.0, 2.0, 1.0, &s) == 3 && s == FA_TRY && !f.plain, "FRAMES: 2 frames a second count");
+	f = f_at(1);
+	expect(vfeed(f, 10, 50.0, 0.0, 0.0, 0.0, &s) == 3 && s == FA_TRY, "OLD: PLAIN slow with no frames tries X30");
+	f = f_fr(1);
+	expect(vfeed(f, 10, 95.0, 0.0, 30.0, 9.0) == 0, "FRAMES: PLAIN at 95.0%% is not slow");
+
+	// X30 tries PLAIN when its run's frames per emulated second fall under 0.97 of the peak, with 5% sleep.
+	f = f_fr(0);
+	expect(vfeed(f, 20, 100.0, 0.1, 60.0, 0.0) == 0, "FRAMES: a steady video at X30 tries nothing");
+	f = f_fr(0);
+	expect(vfeed(f, 1, 100.0, 0.15, 30.0, 9.0) == 0 && vfeed(f, 1, 100.0, 0.15, 24.0, 9.0) == 0 &&
+	       vfeed(f, 1, 100.0, 0.15, 24.0, 9.0, &s) == 1 && s == FA_TRY && f.plain && f.trying,
+	       "FRAMES: X30 dropping frames tries PLAIN");
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.15, 30.0, 9.0);
+	expect(vfeed(f, 2, 100.0, 0.15, 28.7, 9.0) == 0 && vfeed(f, 5, 100.0, 0.15, 29.2, 9.0) == 0,
+	       "FRAMES: a run at 29.13 of 30 a game second is no drop (0.97: 29.1)");
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.15, 30.0, 9.0);
+	expect(vfeed(f, 2, 100.0, 0.15, 28.6, 9.0) == 2, "FRAMES: a run at 29.07 of 30 is a drop");
+	f = f_fr(0);
+	expect(vfeed(f, 1, 100.0, 0.049, 30.0, 9.0) == 0 && vfeed(f, 5, 100.0, 0.049, 24.0, 9.0) == 0,
+	       "FRAMES: X30 with 4.9%% sleep tries nothing");
+	f = f_fr(0);
+	expect(vfeed(f, 1, 100.0, 0.05, 30.0, 9.0) == 0 && vfeed(f, 2, 100.0, 0.05, 24.0, 9.0) == 2,
+	       "FRAMES: X30 with 5%% sleep tries PLAIN");
+	f = f_fr(0);
+	expect(vfeed(f, 1, 97.99, 0.15, 30.0, 9.0) == 0 && vfeed(f, 5, 97.99, 0.15, 24.0, 9.0) == 0,
+	       "FRAMES: X30 at 97.99%% tries nothing");
+	f = f_at(0);
+	expect(vfeed(f, 1, 100.0, 0.15, 30.0, 9.0) == 0 && vfeed(f, 5, 100.0, 0.15, 24.0, 9.0) == 0,
+	       "OLD: X30 with 15%% sleep tries nothing");
+	// The peak: the best of the last 10 windows, frames per emulated second, windows with frames only.
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.0, 30.0, 9.0);
+	vfeed(f, 6, 100.0, 0.0, 25.0, 9.0);
+	expect(vfeed(f, 3, 100.0, 0.15, 25.0, 9.0) == 3, "FRAMES: a peak 9 windows back counts");
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.0, 30.0, 9.0);
+	vfeed(f, 7, 100.0, 0.0, 25.0, 9.0);
+	expect(vfeed(f, 3, 100.0, 0.15, 25.0, 9.0) == 0, "FRAMES: a peak 10 windows back is gone");
+	f = f_fr(0);
+	vfeed(f, 1, 1.0, 0.0, 1.0, 0.0);	// 100 frames per emulated second, but under 2 on screen
+	expect(vfeed(f, 3, 100.0, 0.15, 30.0, 9.0) == 0, "FRAMES: a window with no frames sets no peak");
+	f = f_fr(0);
+	vfeed(f, 1, 50.0, 0.0, 15.0, 9.0);	// 30 frames per emulated second at half speed
+	expect(vfeed(f, 3, 100.0, 0.15, 26.0, 9.0) == 3, "FRAMES: the peak in frames per emulated second");
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.0, 30.0, 9.0);
+	expect(vfeed(f, 3, 110.0, 0.15, 31.9, 9.0) == 3, "FRAMES: the drop in frames per emulated second (31.9 at 110%%)");
+	f = f_fr(0);
+	vfeed(f, 1, 100.0, 0.0, 30.0, 9.0);
+	FwdAuto g = f;
+	expect(fwd_auto_step(f, 0.0, 100.0, 0.0, 30.0, 9.0) == FA_NONE && !memcmp(&f, &g, sizeof(f)), "FRAMES: a 0 s window");
+	f.trying = 0;
+	fwd_auto_cancel(f);
+	expect(fa_peak(f) == 0.0 && f.run_vt == 0.0 && f.run_efps == 0.0, "FRAMES: a cancel clears the peak and the run");
+
+	// A try at another load (20% and 0.5K off its run's) or with no frames is void: back, the hold kept.
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 40.0, 15.9, &s) == 3 && s == FA_VOID && f.plain && !f.trying && f.hold == 5 &&
+	       f.wait == 5, "FRAMES: a try at 15.9K against 20K is void: step %d plain %d hold %u", s, f.plain, f.hold);
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 40.0, 16.1, &s) == 3 && s == FA_KEEP && !f.plain, "FRAMES: 16.1K against 20K counts");
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 1.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 40.0, 0.55, &s) == 3 && s == FA_KEEP, "FRAMES: 0.45K off is under the 0.5K floor");
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 1.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 40.0, 0.45, &s) == 3 && s == FA_VOID, "FRAMES: 0.55K and 55%% off is void");
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 1.99, 20.0, &s) == 3 && s == FA_VOID && f.plain, "FRAMES: a try with no frames is void");
+	f = f_at(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	expect(vfeed(f, 3, 100.0, 0.0, 40.0, 10.0, &s) == 3 && s == FA_KEEP, "OLD: no void");
+	f = f_fr(1);
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	vfeed(f, 2, 100.0, 0.0, 40.0, 20.0);
+	expect(vfeed(f, 1, 100.0, 0.0, 40.0, 15.0, &s) == 1 && s == FA_KEEP, "FRAMES: the try's load is its mean");
+	// A void keeps the hold: the next failed try doubles it from there.
+	f = f_fr(1);
+	f.hold = 20;
+	vfeed(f, 3, 80.0, 0.0, 27.7, 20.0);
+	vfeed(f, 3, 100.0, 0.0, 40.0, 10.0, &s);
+	expect(s == FA_VOID && f.hold == 20 && f.wait == 20, "FRAMES: a void keeps the hold %u", f.hold);
+	vfeed(f, 20, 80.0, 0.0, 27.7, 20.0);
+	expect(vfeed(f, 3, 80.0, 0.0, 27.7, 20.0, &s) == 3 && s == FA_TRY, "FRAMES: the next try after the hold");
+	expect(vfeed(f, 3, 100.0, 0.0, 27.7, 20.0, &s) == 3 && s == FA_BACK && f.hold == 40, "FRAMES: then a failed try: %u",
+	       f.hold);
+
+	// The Looney Tunes race (HW run 10): an X30 try that ran into a lighter scene kept X30 (29.6 against 27.7).
+	const VWin base[3] = { { 1, 94.2, 0, 28.7, 21.3 }, { 1, 91.8, 0, 27.5, 23.6 }, { 1, 89.8, 0, 26.9, 28.5 } };
+	const VWin tried[3] = { { 1, 98.0, 0, 26.9, 25.8 }, { 1, 105.0, 0, 32.0, 16.4 }, { 1, 101.1, 0.07, 29.8, 14.4 } };
+	for (int frames = 0; frames <= 1; frames++)
+	{
+		f = frames ? f_fr(1) : f_at(1);
+		s = FA_NONE;
+		for (const VWin& w : base)
+			s = fwd_auto_step(f, w.secs, w.speed, w.sleep, w.fps, w.vt);
+		expect(s == FA_TRY, "race %d: the X30 try", frames);
+		for (const VWin& w : tried)
+			s = fwd_auto_step(f, w.secs, w.speed, w.sleep, w.fps, w.vt);
+		expect(frames ? s == FA_VOID && f.plain : s == FA_KEEP && !f.plain, "race %d: step %d plain %d", frames, s, f.plain);
+	}
+}
+
 int main()
 {
 	t_models();
@@ -418,6 +626,8 @@ int main()
 	t_bill_word();
 	t_fwd_models();
 	t_fwd_edges();
+	t_frames_level();
+	t_fwd_frames();
 	printf("%s: idle auto: %u checks, %u failed\n", g_fails ? "FAIL" : "PASS", g_checks, g_fails);
 	return g_fails ? 1 : 0;
 }

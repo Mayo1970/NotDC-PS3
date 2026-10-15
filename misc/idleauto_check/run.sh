@@ -23,9 +23,20 @@ D=ps3/ps3_driver.cpp
 has $D '	const bool rule_auto=get_jit_idle_rule_preset()==4, fwd_auto=get_jit_x30_fwd_preset()==2;
 	if ((!rule_auto && !fwd_auto) || !s_jit_in_loop)
 		return;' 'AUTO acts only at its levels and in the main loop'
-has $D '	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s))
+has $D '	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s,vt_k))
 	{
 		g_jit_idle_rule_now=s_ia.rule;' 'a switch sets the level the decoder reads'
+has $D '	s_ia.frames=s_fa.frames=get_jit_auto_checks_preset();	// JIT AUTO CHECKS, live' \
+	'JIT AUTO CHECKS reaches both steps each window'
+has $D '	if (s_fa.frames!=s_frames_logged)
+	{
+		printf("[idle-auto] JIT AUTO CHECKS %s\n",s_fa.frames ? "FRAMES" : "OLD");
+		s_frames_logged=s_fa.frames;
+	}' 'a change of JIT AUTO CHECKS goes to the log'
+has $D '	else if (step==FA_VOID)
+		printf("[idle-auto] X30 FORWARD try void: %.1f frames/s at %.1fK against %.1f at %.1fK; back to %s (switch %u)\n",
+		       s_fa.mean,s_fa.mean_vt,s_fa.base,s_fa.base_vt,now,s_ia_switches);
+	else' 'a void try goes back like a failed one'
 has $D '		if (fwd_auto)
 		{
 			fwd_auto_cancel(s_fa);
@@ -37,7 +48,7 @@ has $D '			       speed,sleep_s*1000.0/seconds,s_ia_switches);
 	}' 'a level switch patches every bill, PLAIN as chosen'
 has $D '	if (!fwd_auto || get_jit_idle_rule()!=IA_X30)
 		return;
-	const int step=fwd_auto_step(s_fa,seconds,speed,sleep_s,fps);
+	const int step=fwd_auto_step(s_fa,seconds,speed,sleep_s,fps,vt_k);
 	if (step==FA_NONE)
 		return;' 'X30 FORWARD AUTO steps only at the X30 level'
 has $D '		printf("[idle-auto] X30 FORWARD %s kept: %.1f frames/s against %.1f\n",now,s_fa.mean,s_fa.base);
@@ -94,8 +105,9 @@ has $S '        const double t0 = now;
         now = os_GetSeconds();
         g_pace_sleep_s += now - t0;' 'the pacer sums its sleep'
 has $S '                g_pace_sleep_s = 0.0;' 'the sum starts again each window'
-has $S '                jit_idle_auto(tdiff, spd_cpu * 100.0 / clk_mhz, pace_sleep, spd_fps);' \
-	'one step a window, SPEED in %, the frames on screen'
+has $S '                jit_idle_auto(tdiff, spd_cpu * 100.0 / clk_mhz, pace_sleep, spd_fps,
+                              spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0);' \
+	'one step a window, SPEED in %, the frames on screen, the K vertices a frame'
 P=ps3/ps3_presets.cpp
 has $P 'int get_jit_idle_rule()        { return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }' \
 	'the getter: AUTO gives the level of now'
@@ -106,6 +118,14 @@ has $P 'int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset==2 ? g_jit_
 has $P 'int g_jit_x30_fwd_now      = 1;' 'X30 FORWARD AUTO starts at PLAIN'
 has $P 'int g_jit_x30_fwd_preset   = 2;' 'X30 FORWARD defaults to AUTO (Matt 2026-10-15)'
 has ps3/ps3_menu.cpp 'static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };' 'the FORWARD row: AUTO is 2'
+has ps3/ps3_menu.cpp 'static const char* k_autochk[]   = { "OLD", "FRAMES", NULL };' 'the CHECKS row: FRAMES is 1'
+has ps3/ps3_menu.cpp '	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,' 'the CHECKS row'
+has ps3/ps3_menu.cpp '	&g_jit_auto_checks_preset,
+	&g_fb_reads_preset, &g_keep_frame_preset,
+};' 'JIT AUTO CHECKS is live'
+has $P 'int g_jit_auto_checks_preset = 1;' 'JIT AUTO CHECKS defaults to FRAMES (Matt 2026-10-15)'
+has $P 'int get_jit_auto_checks_preset() { return g_jit_auto_checks_preset; }' 'the CHECKS getter'
+has $P '	{ "JitAutoChecks", &g_jit_auto_checks_preset },' 'the CHECKS key'
 has ps3/ps3_menu.cpp 'static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };' \
 	'the row: AUTO is level 4'
 has dc/sh4/rec_v2/decoder.cpp '		block.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles,get_jit_x30_fwd()!=0);' \

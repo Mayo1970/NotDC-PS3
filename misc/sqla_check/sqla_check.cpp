@@ -49,12 +49,12 @@ static void put(u32 a, std::initializer_list<u16> words)
 }
 
 // The scan rule with the reference's opcode meanings.
-static bool ref_scan(u32 pc, u32 n, bool steps = false)
+static bool ref_scan(u32 pc, u32 n, bool steps = false, int ops = SQLA_SCAN_OPS)
 {
 	if ((pc & 1) || (pc & 0x1C000000) != 0x0C000000)
 		return false;
 	bool slot = false;
-	for (int k = 0; k < SQLA_SCAN_OPS; k++, pc += 2)
+	for (int k = 0; k < ops; k++, pc += 2)
 	{
 		const u32 op = rd16(pc);
 		if (ref_hit(op, n))
@@ -197,7 +197,20 @@ static void directed_scan()
 	CHECK(!sqla_scan(0x05000000, 6, rd16));
 	CHECK(!sqla_scan(0xE0000000, 6, rd16));
 	CHECK(!sqla_scan(0x0C081D73, 6, rd16));
+	CHECK(!sqla_scan(0xA0000000, 6, rd16, true, SQLA_SCAN_LONG));
 	CHECK(g_reads == before);
+
+	// JIT SQ MISS + LA 16 OPS: the PREF as the 16th op, then as the 17th.
+	CHECK(SQLA_SCAN_LONG == 16);
+	put(0x0C100100, { 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009,
+	                  0x0009, 0x0009, 0x0009, 0x0683 });
+	CHECK(sqla_scan(0x0C100100, 6, rd16, false, SQLA_SCAN_LONG));
+	CHECK(!sqla_scan(0x0C100100, 6, rd16, false, 15));
+	CHECK(!sqla_scan(0x0C100100, 6, rd16));
+	put(0x0C100140, { 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009, 0x0009,
+	                  0x0009, 0x0009, 0x0009, 0x0009, 0x0683 });
+	CHECK(!sqla_scan(0x0C100140, 6, rd16, true, SQLA_SCAN_LONG));
+	CHECK(sqla_scan(0x0C100140, 6, rd16, true, 17));
 }
 
 static shil_param FR(u32 n) { return R(reg_fr_0 + n); }
@@ -542,7 +555,7 @@ static u16 rand_op(std::mt19937& g)
 	}
 }
 
-static u32 fuzz_scan(u32 seed, u32 iters, bool steps)
+static u32 fuzz_scan(u32 seed, u32 iters, bool steps, int ops = SQLA_SCAN_OPS)
 {
 	std::mt19937 g(seed);
 	u32 bad = 0, hits = 0, missed = 0;
@@ -550,11 +563,11 @@ static u32 fuzz_scan(u32 seed, u32 iters, bool steps)
 	{
 		g_mem.clear();
 		const u32 pc = 0x0C200000 + (g() & 0xFFFE);
-		const u32 len = 1 + g() % 9;
+		const u32 len = 1 + g() % (u32)(ops + 3);
 		for (u32 k = 0; k < len; k++)
 			g_mem[fold(pc + 2 * k)] = rand_op(g);
 		const u32 n = g() & 15;
-		const bool got = sqla_scan(pc, n, rd16, steps), want = ref_scan(pc, n, steps);
+		const bool got = sqla_scan(pc, n, rd16, steps, ops), want = ref_scan(pc, n, steps, ops);
 		hits += got;
 		missed += want && !got;
 		if (got && !want && bad++ < 8)
@@ -565,9 +578,74 @@ static u32 fuzz_scan(u32 seed, u32 iters, bool steps)
 			printf("\n");
 		}
 	}
-	printf("scan fuzz%s: %u sequences, %u hits, %u reference hits not taken, %u wrong\n", steps ? " + steps" : "",
-	       iters, hits, missed, bad);
-	return bad;
+	printf("scan fuzz%s, %d ops: %u sequences, %u hits, %u reference hits not taken, %u wrong\n",
+	       steps ? " + steps" : "", ops, iters, hits, missed, bad);
+	return bad + (hits < iters / 1000);
+}
+
+// Border Down 8C0273A2, HW run 10 of bundle 21: four stores through R2 (@-R2), then `bt 8C0273CC`; both paths reach
+// `pref @R2` 12-13 ops on.
+static void load_border_down()
+{
+	put(0x0C0273CA, { 0x7601, 0xF582, 0xF28B, 0xF482, 0x0793, 0xF530, 0xF25B, 0xF420, 0xF24B, 0x7720, 0x4110, 0xF26B,
+	                  0x0283, 0x8FDD, 0x7220 });
+}
+
+static void directed_long()
+{
+	load_border_down();
+	CHECK(!sqla_scan(0x0C0273CC, 2, rd16, true));
+	CHECK(sqla_scan(0x0C0273CC, 2, rd16, true, SQLA_SCAN_LONG));
+	CHECK(sqla_scan(0x0C0273CA, 2, rd16, true, SQLA_SCAN_LONG));
+	CHECK(sqla_scan(0x0C0273CC, 2, rd16, true, 12) && !sqla_scan(0x0C0273CC, 2, rd16, true, 11));
+	CHECK(sqla_scan(0x0C0273CA, 2, rd16, true, 13) && !sqla_scan(0x0C0273CA, 2, rd16, true, 12));
+	CHECK(!sqla_scan(0x0C0273CC, 2, rd16, false, SQLA_SCAN_LONG));	// @-R2 needs the steps
+	CHECK(!sqla_scan(0x0C0273CC, 7, rd16, true, SQLA_SCAN_LONG));	// no pref @R7 in reach
+	CHECK(!sqla_scan(0x0C0273CC, 1, rd16, true, SQLA_SCAN_LONG));	// dt R1 writes R1
+}
+
+// The block 8C0273A2 as the decoder builds it: each fmov FRm,@-R2 is a step and a store.
+static DecodedBlock loop_bd()
+{
+	DecodedBlock b = mkblk(BET_Cond_1);
+	b.start = 0x0C0273A2;
+	b.BranchBlock = 0x0C0273CC;
+	b.NextBlock = 0x0C0273CA;
+	b.oplist = {
+		OP(shop_readm, FR(4), R(reg_r3), P(), 4), OP(shop_add, R(reg_r3), R(reg_r3), I(4)),
+		OP(shop_add, R(reg_r2), R(reg_r2), I(32)),
+		OP(shop_sub, R(reg_r2), R(reg_r2), I(4)), OP(shop_writem, P(), R(reg_r2), FR(5), 4),
+		OP(shop_fmul, FR(5), FR(5), FR(1)),
+		OP(shop_sub, R(reg_r2), R(reg_r2), I(4)), OP(shop_writem, P(), R(reg_r2), FR(4), 4),
+		OP(shop_sub, R(reg_r2), R(reg_r2), I(4)), OP(shop_writem, P(), R(reg_r2), FR(9), 4),
+		OP(shop_sub, R(reg_r2), R(reg_r2), I(4)), OP(shop_writem, P(), R(reg_r2), R(reg_r4), 4),
+		OP(shop_jcond, R(reg_pc_dyn), R(reg_sr_T)),
+	};
+	return b;
+}
+
+static void directed_guess_long()
+{
+	load_border_down();
+	load_crazy_taxi();
+	const DecodedBlock b = loop_bd();
+	CHECK(stores(b).size() == 4);
+	for (size_t i : stores(b))
+	{
+		CHECK(!sqla_guess(&b, i, rd16, true));
+		CHECK(sqla_guess(&b, i, rd16, true, SQLA_SCAN_LONG));
+		CHECK(!sqla_guess(&b, i, rd16, false, SQLA_SCAN_LONG));
+	}
+	DecodedBlock t = b;					// each path alone reaches the PREF
+	t.NextBlock = 0x0C0820E4;
+	CHECK(sqla_guess(&t, 4, rd16, true, SQLA_SCAN_LONG) && !sqla_guess(&t, 4, rd16, true));
+	t = b;
+	t.BranchBlock = 0x0C0820E4;
+	CHECK(sqla_guess(&t, 4, rd16, true, SQLA_SCAN_LONG) && !sqla_guess(&t, 4, rd16, true));
+	t.BranchBlock = 0x0C0273CC;				// a static jump scans the branch target only
+	t.NextBlock = 0x0C0820E4;
+	t.BlockType = BET_StaticJump;
+	CHECK(sqla_guess(&t, 4, rd16, true, SQLA_SCAN_LONG) && !sqla_guess(&t, 4, rd16, true));
 }
 
 int main(int argc, char** argv)
@@ -584,12 +662,16 @@ int main(int argc, char** argv)
 		directed_scan();
 		directed_guess();
 		directed_copy();
+		directed_long();
+		directed_guess_long();
 		printf("directed tests: ok\n");
 	}
 	bad += check_class(false);
 	bad += check_class(true);
 	bad += fuzz_scan(seed, iters, false);
 	bad += fuzz_scan(seed, iters, true);
+	bad += fuzz_scan(seed + 1, iters / 2, false, SQLA_SCAN_LONG);
+	bad += fuzz_scan(seed + 1, iters / 2, true, SQLA_SCAN_LONG);
 	bad += fuzz_copy(seed, iters / 4);
 	printf("%s\n", bad ? "FAIL" : "PASS");
 	return bad != 0;

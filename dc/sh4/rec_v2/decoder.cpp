@@ -1281,8 +1281,8 @@ int stuffcmp(const void* p1,const void* p2)
 }
 
 // JIT IDLE HASH: the timeslices this block drops (0 = none). Level 1 acts on our list and only logs a block of
-// Reicast's list; level 2 acts on both. JIT TASK IDLE acts on the task list. The first hits go to the log.
-static u32 dec_idle_hash(int level,bool task)
+// Reicast's list; level 2 acts on both. JIT TASK IDLE (task 1, 2 = LONG) acts on the task list. Hits go to the log.
+static u32 dec_idle_hash(int level,int task)
 {
 	if (block.opcodes==0 || block.opcodes>IDLE_HASH_MAX_OPS)
 		return 0;
@@ -1293,7 +1293,7 @@ static u32 dec_idle_hash(int level,bool task)
 	const int list=idle_hash_listed(block.start,block.opcodes,code,full);
 	if (list==IDLE_LIST_NONE)
 		return 0;
-	const u32 slices=list==IDLE_LIST_TASK ? (task ? IDLE_TASK_SLICES : 0)
+	const u32 slices=list==IDLE_LIST_TASK ? (task>=2 ? IDLE_TASK_LONG : task ? IDLE_TASK_SLICES : 0)
 	                : (list==IDLE_LIST_OWN && level>=1) || level>=2 ? 1 : 0;
 	// A log share per list: Reicast's entries hit dozens of blocks in a boot and must not hide ours.
 	static u32 logged[4];
@@ -1458,7 +1458,7 @@ _end:
 	block.BlockType=state.BlockType;
 	block.has_store=idle_block_stores(block);
 	const int idle_hash_level=get_jit_idle_hash_preset();
-	const bool task_idle=get_jit_task_idle_preset()!=0;
+	const int task_idle=get_jit_task_idle_preset();
 	block.idle_hash=(u8)((idle_hash_level || task_idle) && !g_jit_mmu ? dec_idle_hash(idle_hash_level,task_idle) : 0);
 	block.bill_plain=block.cycles;
 
