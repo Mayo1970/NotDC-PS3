@@ -25,6 +25,8 @@ void jmmu_wr8(u32 va, u32 v);
 void jmmu_wr16(u32 va, u32 v);
 void jmmu_wr32(u32 va, u32 v);
 void jmmu_wr64(u32 va, u64 v);
+// Row MMU Pref JIT: a block's pref (jx_pref), 0 or its fault in g_jmmu_fault.
+u32 jmmu_pref(u32 dest);
 // An op on the MMU interpreter (jx_ifb), with the JTC checks after it: 1 = it raised an exception, now taken.
 u32 jmmu_ifb(u32 op, u32 epc, u32 slot);
 
@@ -36,11 +38,11 @@ u32 jmmu_raise(u32 epc);
 // The [jmmu] line, once a second (ps3_driver.cpp hotblocks_dump).
 void jmmu_stats(double seconds);
 
-// Row MMU Block Cache: the main loop's cache of the next block (ps3_jit_mmu.h emit_jmmu_dispatch has the hash). An
-// entry holds while g_jdgen holds; jmmu_lookup fills it. key = jmmu_dkey(): jmmu_cfg() | PTEH.ASID << 8.
-#define JDISP_N 4096
+// Row MMU Block Cache: the main loop's cache of the next block, 2 ways a set (ps3_jit_mmu.h emit_jmmu_dispatch has the
+// hash). An entry holds while g_jdgen holds; jmmu_lookup fills it. key = jmmu_dkey(): jmmu_cfg() | PTEH.ASID << 8.
+#define JDISP_SETS 4096
 struct JDisp { u32 pc, key, gen, code; };
-extern JDisp g_jdisp[JDISP_N];
+extern JDisp g_jdisp[JDISP_SETS][2];
 extern u32 g_jdgen;
 u32 jmmu_dkey();
 // ps3_driver.cpp ngen_ResetBlocks: the code cache was cleared.

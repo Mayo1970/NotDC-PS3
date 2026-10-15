@@ -9,9 +9,18 @@ TMP = {'g': '/tmp/gdmut/gdromv3.cpp', 'a': '/tmp/gdmut/ps3_gdasync.cpp'}
 
 MUTANTS = [
     ('DMA not held while a fill is in flight', 'g',
-     [("\t// P3: read_buff is the worker's until its fill lands; the DMA goes on at a later update.\n"
-       "\tif (gda_busy())\n\t\treturn;\n", '')]),
-    ('DMA loop goes on after the kick', 'g', [('\t\t\t\tif (gda_busy())\n\t\t\t\t\tbreak;\n', '')]),
+     [('\tif (gda_busy())\n\t{\n\t\tif (!get_gd_timing_preset())\n\t\t\treturn;\n\t\tgda_wait();\n\t}\n', '')]),
+    ('DMA loop goes on after the kick', 'g',
+     [('\t\t\t\tif (gda_busy())\n\t\t\t\t{\n\t\t\t\t\tif (!get_gd_timing_preset())\n\t\t\t\t\t\tbreak;\n'
+       '\t\t\t\t\tgda_wait();\n\t\t\t\t}\n', '')]),
+    ('FIXED: no wait at the update', 'g',
+     [('\t\tif (!get_gd_timing_preset())\n\t\t\treturn;\n\t\tgda_wait();\n\t}', '\t\treturn;\n\t}')]),
+    ('FIXED: no wait in the loop', 'g',
+     [('\t\t\t\t\tif (!get_gd_timing_preset())\n\t\t\t\t\t\tbreak;\n\t\t\t\t\tgda_wait();',
+       '\t\t\t\t\tbreak;')]),
+    ('HOST waits as FIXED', 'g',
+     [('\t\tif (!get_gd_timing_preset())\n\t\t\treturn;\n\t\tgda_wait();\n\t}',
+       '\t\tif (false)\n\t\t\treturn;\n\t\tgda_wait();\n\t}')]),
     ('all of len counted as moved', 'g', [('const u32 moved=len_backup-len;', 'const u32 moved=len_backup;')]),
     ('no wait at SPI_CD_READ', 'g',
      [('\t\t\tgda_wait();   // P3: a fill still in flight (an aborted read) lands before read_buff is armed again\n',

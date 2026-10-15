@@ -48,8 +48,8 @@ void Sh4_ApplyAccuracyPreset() {}
 s32 sh4_GetCpuTimeslice() { return 1; }
 s32 sh4_GetCpuRatio() { return 1; }
 // The JIT form's side (sh4_mmu_jit.cpp): what the engine calls, recorded.
-int g_mmu_jit_preset, g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset;
-bool g_jmmu_bcache, g_jmmu_sq;
+int g_mmu_jit_preset, g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset, g_mmu_pref_preset, g_mmu_asidjtc_preset;
+bool g_jmmu_bcache, g_jmmu_sq, g_jmmu_pref, g_jmmu_asidjtc;
 static bool g_can_jit;
 static int g_jit_selects, g_jit_selected;
 static u32 g_utlb_hooks, g_utlb_hook_last, g_fast_changes;
@@ -1346,6 +1346,96 @@ static void t_fast()
 	CHECK(!g_mmu_fast, "FAST with the row FULL");
 }
 
+// ---- MMU JIT speed 2: the JIT's pref, the translations that need no setjmp, the halfword peek ----
+static void t_fast_jit2()
+{
+	u32 pa;
+	int ent;
+	fast_fresh("FAST: the JIT's pref through the table; absent, misaligned, SQMD, AT 0", AT);
+	load(20, 0xE0000000, 0x0C600000, SZ_1M, 3);
+	load(21, 0x00900000, 0x0C900000, SZ_4K, 3);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_PRIV);
+	for (u32 i = 0; i < 8; i++)
+		mem_wr<u32>(0xE0000000 + i * 4, 0x10101010 * (i + 1));
+	CHECK(jx_pref(0xE000000C) == 0 && ram32(0x0C600000) == 0x10101010 && ram32(0x0C60001C) == 0x80808080,
+	      "RAM %08X %08X", ram32(0x0C600000), ram32(0x0C60001C));
+	for (u32 i = 0; i < 8; i++)
+		mem_wr<u32>(0xE0000020 + i * 4, 0x01010101 * (i + 1));
+	CHECK(jx_pref(0xE0000024) == 0 && ram32(0x0C600020) == 0x01010101 && ram32(0x0C60003C) == 0x08080808,
+	      "SQ1: RAM %08X %08X", ram32(0x0C600020), ram32(0x0C60003C));
+	CHECK(jx_pref(0xE0100000) == 0x040 && CCN_TEA == 0xE0100000, "an absent page: TEA %08X", CCN_TEA);
+	CHECK(jx_pref(0xE0000002) == 0x0E0, "a misaligned pref");
+	CHECK(jx_pref(0x00900000) == 0 && g_ta.empty() && ram32(0x0C900000) == 0,
+	      "a pref outside the store queues did something");
+	CCN_MMUCR.reg_data = AT | 0x200;
+	set_sr(SR_USER);
+	CHECK(jx_pref(0xE0000000) == 0x0E0, "SQMD 1 in user mode");
+	CCN_MMUCR.reg_data = AT;
+	CHECK(jx_pref(0xE0000000) == 0, "SQMD 0 in user mode");
+	CCN_MMUCR.reg_data = 0;
+	g_sqw_calls = 0;
+	CHECK(jx_pref(0xE0000000) == 0 && g_sqw_calls == 1, "AT 0: %u plain flushes", g_sqw_calls);
+	CHECK(g_exc.empty(), "an exception was taken");
+
+	fresh("FULL: the JIT's pref through the UTLB", AT);
+	g_mmu_fast_preset = 0;
+	sh4_fullmmu_select();
+	map(20, 0xE0000000, 0x0C600000, SZ_1M, 3);
+	set_sr(SR_PRIV);
+	mem_wr<u32>(0xE0000020, 0x77777777);
+	CHECK(jx_pref(0xE0000020) == 0 && ram32(0x0C600020) == 0x77777777, "RAM %08X", ram32(0x0C600020));
+	CHECK(jx_pref(0xE0200000) == 0x040, "an unmapped page");
+
+	fast_fresh("FAST: a JIT data access without its slow path: P4, misaligned, user P1; P1, AT 0 as they are", AT);
+	load(34, 0x00600000, 0x1F000000, SZ_4K, 3);
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_USER);
+	CHECK(jx_data_xlat(0x00600010, 4, 0, &pa, &ent) == 0 && pa == 0xFF000010 && ent == 64, "P4: pa %08X entry %d", pa,
+	      ent);
+	CHECK(jx_data_xlat(0x00400FFE, 2, 1, &pa, &ent) == 0 && pa == 0x0C400FFE && ent == 64, "pa %08X entry %d", pa, ent);
+	CHECK(jx_data_xlat(0x00400FFE, 4, 0, &pa, &ent) == 0x0E0, "a misaligned read");
+	CHECK(jx_data_xlat(0x8C000000, 4, 0, &pa, &ent) == 0x0E0, "P1 in user mode");
+	CHECK(jx_data_xlat(0x00410000, 4, 1, &pa, &ent) == 0x060 && CCN_TEA == 0x00410000, "an absent page: TEA %08X",
+	      CCN_TEA);
+	load(6, 0x8C100000, 0x0C700000, SZ_4K, 3);
+	set_sr(SR_PRIV);
+	CHECK(jx_data_xlat(0x8C100010, 4, 0, &pa, &ent) == 0 && pa == 0x8C100010 && ent == -1, "P1 by the table: pa %08X",
+	      pa);
+	CCN_MMUCR.reg_data = 0;
+	CHECK(jx_data_xlat(0x00600010, 4, 0, &pa, &ent) == 0 && pa == 0x00600010 && ent == -1, "AT 0: pa %08X", pa);
+
+	fast_fresh("FAST: a JIT fetch of an odd pc takes the slow path", AT);
+	load(63, CODE_VA, CODE_PA, SZ_4K, 2);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_USER);
+	CHECK(jx_fetch(CODE_VA + 1, &pa) == 0x0E0, "an odd pc");
+	CHECK(jx_fetch(CODE_VA + 2, &pa) == 0 && pa == CODE_PA + 2, "pa %08X", pa);
+
+	fast_fresh("the halfword peek: the table, the UTLB, no exception, RAM only", AT);
+	load(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	load(5, 0x00700000, 0x0C700000, SZ_4K, 3);	// only the table has the first page now
+	load(34, 0x00600000, 0x1F000000, SZ_4K, 3);
+	mem_wr<u16>(0x0C400ABC, 0x1234);
+	CCN_PTEH.reg_data = 0;
+	set_sr(SR_USER);
+	u16 v = 0;
+	CHECK(jx_peek16(0x00400ABC, v) && v == 0x1234, "FAST: %04X", v);
+	CHECK(!jx_peek16(0x00500000, v) && !jx_peek16(0x00600000, v), "an absent page or registers read");
+	CHECK(g_exc.empty() && CCN_TEA == 0, "a peek raised: TEA %08X", CCN_TEA);
+	CCN_MMUCR.reg_data = 0;
+	CHECK(jx_peek16(0x0C400ABC, v) && v == 0x1234, "AT 0: %04X", v);
+	fresh("the halfword peek with FULL: the UTLB", AT);
+	g_mmu_fast_preset = 0;
+	sh4_fullmmu_select();
+	map(5, 0x00400000, 0x0C400000, SZ_4K, 3);
+	mem_wr<u16>(0x0C400ABC, 0x5678);
+	CHECK(jx_peek16(0x00400ABC, v) && v == 0x5678, "FULL: %04X", v);
+	g_mmu_fast_preset = 0;
+	sh4_fullmmu_select();
+}
+
 int main(int argc, char** argv)
 {
 	FILE* f = fopen(argc > 1 ? argv[1] : "misc/fsca-table.bin", "rb");
@@ -1385,6 +1475,7 @@ int main(int argc, char** argv)
 	t_jit_take();
 	t_select();
 	t_fast();
+	t_fast_jit2();
 	CHECK(g_plain_slots == 0, "the plain delay slot ran %u times", g_plain_slots);
 	ok = ok && g_fails == 0;
 	printf("%s: %u op test checks with AT 0 and 1, %u MMU programs, %d failed\n", ok ? "PASS" : "FAIL", checks, g_tests,

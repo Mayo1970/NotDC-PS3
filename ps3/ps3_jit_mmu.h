@@ -244,19 +244,25 @@ static inline void emit_jmmu_fd_exit(const JmmuCold& c)
 	ppc_bx(c.stub, 0);
 }
 
-// Row MMU Block Cache: the next block from g_jdisp (sh4_mmu_jit.h), for the pc in r3 (junk above its low word allowed).
-// A hit enters it by bctr; a miss goes on after the code emitted here. Scratch r0, r10-r12; tbl, gen, pteh below 2 GB.
+// Row MMU Block Cache: the next block from g_jdisp (sh4_mmu_jit.h, 2 ways a set) for the pc in r3 (junk above its low
+// word allowed). A hit enters it by bctr; a miss goes on after this code. Scratch r0, r10-r12; tbl, gen, pteh below 2 GB.
 static inline void emit_jmmu_dispatch(u32 tbl, u32 gen, u32 pteh, u32 ctx, u32 sr_ofs, u32 fpscr_ofs)
 {
 	const s32 lo = (s16)(tbl & 0xFFFF), glo = (s16)(gen & 0xFFFF), plo = (s16)(pteh & 0xFFFF);
 	ppc_rlwinmx(ppc_r11, ppc_r3, 20, 12, 31, 0);		// pc >> 12
 	ppc_xorx(ppc_r11, ppc_r11, ppc_r3, 0);
-	ppc_rlwinmx(ppc_r11, ppc_r11, 3, 16, 27, 0);		// (((pc ^ pc >> 12) >> 1) & 4095) * 16
+	ppc_rlwinmx(ppc_r11, ppc_r11, 4, 15, 26, 0);		// (((pc ^ pc >> 12) >> 1) & 4095) * 32
 	ppc_addis(ppc_r11, ppc_r11, (tbl - (u32)lo) >> 16);
-	ppc_lwz(ppc_r12, ppc_r11, (u32)lo);			// the entry's pc
+	ppc_lwz(ppc_r12, ppc_r11, (u32)lo);			// way 0's pc
+	ppc_cmpl(ppc_cr0, ppc_r12, ppc_r3, 0);
+	ppc_label* way0 = ppc_CreateLabel();
+	ppc_bcx(BO_TRUE, BI_CR0_EQ, 0, 0, 0);
+	ppc_lwz(ppc_r12, ppc_r11, (u32)(lo + 16));		// way 1's pc
 	ppc_cmpl(ppc_cr0, ppc_r12, ppc_r3, 0);
 	ppc_label* miss_pc = ppc_CreateLabel();
 	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	ppc_addi(ppc_r11, ppc_r11, 16);
+	way0->MarkLabel();
 	// The key, as jmmu_dkey(): SR.MD 1, FPSCR.PR 4, SZ 8, RM 1 16, PTEH.ASID << 8.
 	ppc_lwz(ppc_r12, ctx, sr_ofs);
 	ppc_lwz(ppc_r0, ctx, fpscr_ofs);
@@ -288,6 +294,35 @@ static inline void emit_jmmu_dispatch(u32 tbl, u32 gen, u32 pteh, u32 ctx, u32 s
 	miss_pc->MarkLabel();
 	miss_key->MarkLabel();
 	miss_gen->MarkLabel();
+}
+
+// Row MMU Pref JIT: a block's pref @areg. A store queue address calls fn (jmmu_pref: 0, or a fault left in the fault
+// word); any other does nothing. Returns the bne of a fault. Scratch r0; the call clobbers the volatile GPRs.
+static inline ppc_label* emit_jmmu_pref(const JmmuCold& c, u32 areg, void* fn)
+{
+	ppc_rlwinmx(ppc_r0, areg, 6, 26, 31, 0);
+	ppc_cmpli(ppc_cr0, ppc_r0, 0x38, 0);
+	ppc_label* skip = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	if (areg != ppc_r3)
+		ppc_ori(ppc_r3, areg, 0);
+	jm_rldicl(ppc_r3, ppc_r3, 0, 32);
+	if (c.cyc_ofs)
+		ppc_stw(29, c.ctx, c.cyc_ofs);
+	ppc_call_c(fn);
+	ppc_cmpi(ppc_cr0, ppc_r3, 0, 0);
+	ppc_label* exc = ppc_CreateLabel();
+	ppc_bcx(BO_FALSE, BI_CR0_EQ, 0, 0, 0);
+	skip->MarkLabel();
+	return exc;
+}
+
+// The exit of the fault a C call left in the fault word: r3 = epc (the stub clears the upper half), b stub.
+static inline void emit_jmmu_raise(const JmmuCold& c)
+{
+	ppc_addis(ppc_r3, 0, c.epc >> 16);
+	ppc_ori(ppc_r3, ppc_r3, c.epc & 0xFFFF);
+	ppc_bx(c.stub, 0);
 }
 
 // Row MMU SQ Stores: a JTC miss of a 32-bit or pair store into the store queues, written to sq_base here: the area's

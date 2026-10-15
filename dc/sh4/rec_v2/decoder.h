@@ -36,6 +36,7 @@ public:
 
 	u32 start;	//entry point, the block may be non-linear in memory
 	u32 cycles;
+	u32 bill_x3, bill_x30;	// JIT IDLE RULE AUTO: the cycles at X3 BACKWARD and at X30, for a switch's patch
 	u32 opcodes;
 	u32 sh4_code_size;	//bytes of SH4 source consumed, for the block-check guard
 

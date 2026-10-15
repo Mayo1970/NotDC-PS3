@@ -117,6 +117,7 @@ extern int g_gd_scd_q_preset;
 extern int g_cdda_rules_preset;
 extern int g_toc_fields_preset;
 extern int g_gd_speed_preset;
+extern int g_gd_timing_preset;
 extern int g_gd_dma_fix_preset;
 extern int g_cdda_miss_preset;
 extern int g_gd_cmd_fix_preset;
@@ -163,6 +164,7 @@ extern int g_jit_bcache_preset;
 extern int g_jit_pr_moves_preset;
 extern int g_jit_rm_any_preset;
 extern int g_jit_idle_rule_preset;
+extern int g_jit_idle_rule_now;
 extern int g_jit_idle_hash_preset;
 extern int g_jit_sq_copy_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
@@ -224,7 +226,7 @@ extern int g_reg_size_preset;
 extern int g_elf_loader_preset;
 extern int g_full_mmu_preset;
 extern int g_mmu_jit_preset;
-extern int g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset;
+extern int g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset, g_mmu_pref_preset, g_mmu_asidjtc_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

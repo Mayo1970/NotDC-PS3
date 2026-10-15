@@ -12,6 +12,7 @@ enum BlockEndType { BET_StaticJump = 0, BET_DynamicRet = 12, BET_Cond_0 = 16, BE
 struct DecodedBlock
 {
 	u32 start, cycles, opcodes, BranchBlock;
+	u32 bill_x3, bill_x30;
 	BlockEndType BlockType;
 	bool idle_loop;
 };
@@ -27,7 +28,7 @@ int g_interp_fix_preset;   // bundle 20: fneg joins the PR-free list with Interp
 static bool g_pure;
 extern "C" int get_jit_pr_moves_preset() { return g_pr_moves; }
 extern "C" int get_jit_rm_any_preset() { return g_rm_any; }
-extern "C" int get_jit_idle_rule_preset() { return g_idle_rule; }
+extern "C" int get_jit_idle_rule() { return g_idle_rule; }
 static u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 static bool idle_turn_is_pure(const DecodedBlock&) { return g_pure; }
 // The shape of types.h's macro: an if with a block, so an else after it does not parse.
@@ -41,6 +42,8 @@ static bool pr_gate(u32 op)
 #include "pr_gate.inc"
 	return true;
 }
+
+#include "bill.inc"
 
 static void cycle_new(u32 max_cycles)
 {
@@ -141,7 +144,7 @@ static void test_cycles()
 	for (u32 rel = 0; rel < 3; rel++)
 	for (u32 si = 0; si < 6; si++)
 	for (u32 pi = 0; pi < 8; pi++)
-	for (g_idle_rule = 0; g_idle_rule < 3; g_idle_rule++)
+	for (g_idle_rule = 0; g_idle_rule < 4; g_idle_rule++)
 	{
 		state.info.has_readm = flags & 1;
 		state.info.has_writem = (flags & 2) != 0;
@@ -162,24 +165,33 @@ static void test_cycles()
 		block = in;
 		const u32 n0 = g_dec_rule_blocks;
 		cycle_new(max_cycles);
-		const u32 want = g_idle_rule == 0 ? old.cycles : g_idle_rule == 1 ? reicast_cycles(in.cycles, max_cycles)
-		                                                                 : min(in.cycles, max_cycles);
+		// X3 + WAITS X30: a small read block that branches back and repeats its turn bills as X30, the rest as X3.
+		const bool wait = state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && opcodes < 6 &&
+		                  (in.BlockType == BET_Cond_0 || in.BlockType == BET_Cond_1) && in.BranchBlock <= in.start && g_pure;
+		const u32 want = g_idle_rule == 0 || (g_idle_rule == 3 && wait) ? old.cycles
+		               : g_idle_rule == 2 ? min(in.cycles, max_cycles) : reicast_cycles(in.cycles, max_cycles);
 		const u32 key = (flags << 24) | (opcodes << 16) | (ti << 12) | (rel << 8) | (si << 4) | pi;
 		check(block.cycles == want, "cycles", key, block.cycles, want);
+		// JIT IDLE RULE AUTO's two bills at any level: X3 BACKWARD's and X30's.
+		check(block.bill_x3 == reicast_cycles(in.cycles, max_cycles) && block.bill_x30 == old.cycles, "auto bills", key,
+		      block.bill_x3, block.bill_x30);
 		// JIT IDLE SKIP's flag does not follow the rule.
 		check(block.idle_loop == old.idle_loop, "idle_loop", key, block.idle_loop, old.idle_loop);
 		check(g_dec_rule_blocks - n0 == (u32)(block.cycles > in.cycles), "billed count", key, block.cycles, in.cycles);
 		check(block.start == in.start && block.opcodes == in.opcodes && block.BranchBlock == in.BranchBlock &&
 		      block.BlockType == in.BlockType, "block kept", key, 0, 0);
 	}
-	// The rule's own cases: the Looney Tunes loop tail (P71) at each level, and a wait loop on itself.
-	static const struct { BlockEndType t; int rel; u32 want[3]; } k[] = {
-		{ BET_Cond_0, 0, { 90, 9, 3 } }, { BET_Cond_0, 2, { 90, 9, 3 } }, { BET_Cond_1, 0, { 90, 9, 3 } },
-		{ BET_Cond_1, 2, { 90, 3, 3 } }, { BET_Cond_0, 1, { 224, 90, 3 } },
+	// The rule's own cases: the Looney Tunes loop tail (P71) at each level, and a wait loop on itself. The last two
+	// columns are level 3 with a pure turn, then with one that is not.
+	static const struct { BlockEndType t; int rel; u32 want[5]; } k[] = {
+		{ BET_Cond_0, 0, { 90, 9, 3, 90, 9 } }, { BET_Cond_0, 2, { 90, 9, 3, 9, 9 } }, { BET_Cond_1, 0, { 90, 9, 3, 90, 9 } },
+		{ BET_Cond_1, 2, { 90, 3, 3, 3, 3 } }, { BET_Cond_0, 1, { 224, 90, 3, 224, 90 } },
 	};
 	for (u32 i = 0; i < 5; i++)
-		for (g_idle_rule = 0; g_idle_rule < 3; g_idle_rule++)
+		for (u32 col = 0; col < 5; col++)
 		{
+			g_idle_rule = col < 4 ? (int)col : 3;
+			g_pure = col != 4;
 			state.info.has_readm = true;
 			state.info.has_writem = state.info.has_fpu = false;
 			block.start = 0x8C19CC68u;
@@ -187,8 +199,11 @@ static void test_cycles()
 			block.opcodes = 3;
 			block.BlockType = k[i].t;
 			block.BranchBlock = block.start + (k[i].rel - 1) * 16;
+			block.idle_loop = false;
 			cycle_new(max_cycles);
-			check(block.cycles == k[i].want[g_idle_rule], "rule case", i, (u32)g_idle_rule, block.cycles);
+			check(block.cycles == k[i].want[col], "rule case", i, col, block.cycles);
+			check(block.bill_x30 == k[i].want[0] && block.bill_x3 == k[i].want[1], "rule case bills", i, block.bill_x30,
+			      block.bill_x3);
 		}
 }
 

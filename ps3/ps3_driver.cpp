@@ -35,6 +35,7 @@
 #include "ps3/ps3_jit_gate.h"
 #include "ps3/ps3_jit_link.h"
 #include "ps3/ps3_jit_mmu.h"
+#include "ps3/ps3_idle_auto.h"
 #include "dc/sh4/sys_gate.h"
 #include "dc/sh4/sh4_fullmmu.h"
 #include "dc/sh4/sh4_mmu_jit.h"
@@ -392,6 +393,15 @@ void reg_reload_all_fpu();
 
 // ---- Block begin/end ----
 
+// JIT IDLE RULE AUTO: each compiled block's bill word and both of its bills, so a switch patches the blocks in place.
+// The table goes with the code cache; once full, a switch clears the cache instead.
+struct IdleBill { u32 insn; u16 x3, x30; };
+#define IDLE_BILL_MAX 131072
+static IdleBill* s_bills;
+static u32 s_bills_n;
+static bool s_bills_full;
+static u32* s_bill_insn;	// ngen_Begin: where this block's bill word went
+
 void ngen_Begin(DecodedBlock* block,bool force_checks)
 {
 	compile_state.Reset();
@@ -460,6 +470,7 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 
 	const int cc=get_jit_cycle_check_preset();
 	s_cycle_exit=0;
+	s_bill_insn=(u32*)emit_GetCCPtr();	// JIT IDLE RULE AUTO: the bill word each path below starts with
 	if (cc>=2 && !cycle_poll_needed(block))
 	{
 		ppc_addi(ppc_cycles,ppc_cycles,-block->cycles);
@@ -1694,6 +1705,7 @@ static bool s_hb_failed = false;
 static u32 s_hb_n = 0;
 static u32 s_hb_overflow = 0;
 static u32 s_hb_dense_n = 0;	// dense windows summed since boot or the last cache clear
+static u32 s_hb_sum_n = 0;	// of them, the windows in the sums now (ALL WINDOWS clears the sums at each census)
 static double s_hb_dense_s = 0.0;
 static u32 s_hb_census_n = 0;
 
@@ -1801,7 +1813,7 @@ static void hot_census(const char* why)
 	const double s=s_hb_dense_s, all_w=tot[HC_INSN];
 	o.line("[HOTC] census %u (%s): %u dense windows %.1f s, %u blocks, entries/s %.0f, hot insn/entry %.2f,"
 	       " cold entries/s %.0f, %u dumped = %.1f%% of the weight\n",
-	       ++s_hb_census_n, why, s_hb_dense_n, s, s_hb_n, hits/s, all_w/hits, cold/s,
+	       ++s_hb_census_n, why, s_hb_sum_n, s, s_hb_n, hits/s, all_w/hits, cold/s,
 	       s_hb_dumped_n, all_w>0.0 ? dumped_w*100.0/all_w : 0.0);
 
 	char buf[512];
@@ -1835,6 +1847,17 @@ static void hot_census(const char* why)
 	fflush(stdout);
 }
 
+static void hot_sums_clear()
+{
+	for (u32 i=0;i<s_hb_n;i++)
+	{
+		s_hb[i].dense_hits=0;
+		s_hb[i].dense_cold=0;
+	}
+	s_hb_sum_n=0;
+	s_hb_dense_s=0.0;
+}
+
 // Called from recSh4_ClearCache (dc/sh4/rec_v2/driver.cpp): the code these entries describe is gone.
 extern "C" void hotblocks_reset()
 {
@@ -1843,6 +1866,7 @@ extern "C" void hotblocks_reset()
 	s_hb_n = 0;
 	s_hb_overflow = 0;
 	s_hb_dense_n = 0;
+	s_hb_sum_n = 0;
 	s_hb_dense_s = 0.0;
 }
 
@@ -1972,10 +1996,96 @@ static void idle_dump(double seconds)
 		for (u32 k=0;k<2;k++)
 			for (u32 pc=rng[k][0];pc<rng[k][1];pc+=2)
 			{
-				const u16 op=ReadMem16(pc);
+				// MMU JIT: the code at its virtual address, through the TLB (0 where it has no page).
+				u16 op=0;
+				if (!g_jit_mmu)
+					op=ReadMem16(pc);
+				else if (!jx_peek16(pc,op))
+					op=0;
 				o.line("[idle]  %08X %04X %s\n",pc,op,OpDesc[op]->diss);
 			}
 	}
+}
+
+void recSh4_ClearCache();
+extern int g_jit_idle_rule_now;	// ps3_presets.cpp: the level the decoder bills under AUTO
+static bool s_jit_in_loop;	// the main loop runs: JIT IDLE RULE AUTO acts only then
+
+// ngen_Compile, for each block compiled under AUTO: its bill word and both bills.
+static void idle_bill_note(const DecodedBlock* block)
+{
+	if (s_bills_full)
+		return;
+	if (!s_bills)
+		s_bills=(IdleBill*)malloc(sizeof(IdleBill)*IDLE_BILL_MAX);
+	if (!s_bills || s_bills_n>=IDLE_BILL_MAX || block->bill_x3>0xFFFF || block->bill_x30>0xFFFF)
+	{
+		s_bills_full=true;
+		return;
+	}
+	IdleBill& b=s_bills[s_bills_n++];
+	b.insn=(u32)(uintptr_t)s_bill_insn;
+	b.x3=(u16)block->bill_x3;
+	b.x30=(u16)block->bill_x30;
+}
+
+// A switch: each noted block bills rule's cycles from now on. With no table or a full one, every block goes instead.
+static void idle_bills_patch(int rule)
+{
+	if (!s_bills || s_bills_full)
+	{
+		recSh4_ClearCache();
+		printf("[idle-auto] no room for every bill: the code cache is cleared\n");
+		return;
+	}
+	const u64 t0=gettime();
+	u32 moved=0,odd=0;
+	for (u32 i=0;i<s_bills_n;i++)
+	{
+		u32* const p=(u32*)(uintptr_t)s_bills[i].insn;
+		u32 w=*p;
+		// A word that is no bill of the cycle register is left as it is (it cannot be, while the table holds).
+		if (((w>>16)&31)!=(u32)ppc_cycles || !idle_bill_word(w,rule==IA_X3 ? s_bills[i].x3 : s_bills[i].x30))
+		{
+			odd++;
+			continue;
+		}
+		if (w!=*p)
+		{
+			*p=w;
+			ps3_jit_icache_sync(p,4);
+			moved++;
+		}
+	}
+	printf("[idle-auto] %u of %u blocks billed again in %.2f ms (%u words no bill)\n",moved,s_bills_n,
+	       ticks_to_microsecs(gettime()-t0)/1000.0,odd);
+}
+
+// JIT IDLE RULE AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every compiled block, so the
+// new level reaches all code without a recompile.
+extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s)
+{
+	static IdleAuto s_ia;
+	static bool s_ia_ready;
+	static u32 s_ia_switches;
+	if (get_jit_idle_rule_preset()!=4 || !s_jit_in_loop)
+		return;
+	if (!s_ia_ready)
+	{
+		idle_auto_init(s_ia);
+		s_ia_ready=true;
+	}
+	if (!idle_auto_step(s_ia,seconds,speed,sleep_s))
+		return;
+	g_jit_idle_rule_now=s_ia.rule;
+	s_ia_switches++;
+	if (s_ia.rule==IA_X30)
+		printf("[idle-auto] X3 BACKWARD -> X30: SPEED %.1f%%, sleep %.0f ms/s; an X3 try after %u s (switch %u)\n",
+		       speed,sleep_s*1000.0/seconds,s_ia.hold,s_ia_switches);
+	else
+		printf("[idle-auto] X30 -> X3 BACKWARD: SPEED %.1f%%, sleep %.0f ms/s (switch %u)\n",
+		       speed,sleep_s*1000.0/seconds,s_ia_switches);
+	idle_bills_patch(s_ia.rule);
 }
 
 // Stats window (SPG.cpp, once a second, SH4 thread): one line per window; dense windows add to the census.
@@ -2038,7 +2148,9 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	if (!get_hotblocks_preset() || !s_hb || s_hb_n==0 || seconds<=0.0)
 		return;
 
-	const bool dense = vt_k > 3.0;
+	// JIT HOTBLOCKS ALL WINDOWS: every second counts, also the ones with few vertices (an FMV, a menu).
+	const bool all = get_hotblocks_preset()==2;
+	const bool dense = all || vt_k > 3.0;
 	double hits=0.0, insn=0.0, cold=0.0;
 	for (u32 i=0;i<s_hb_n;i++)
 	{
@@ -2064,6 +2176,7 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	if (dense)
 	{
 		s_hb_dense_n++;
+		s_hb_sum_n++;
 		s_hb_dense_s+=seconds;
 		if (s_hb_dense_n>=HOT_DUMP_AFTER && s_hb_dumped_n<HOT_DUMP_MAX)
 		{
@@ -2076,7 +2189,12 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 			}
 		}
 		if (s_hb_dense_n%HOT_CENSUS_EVERY==0)
+		{
 			hot_census("periodic");
+			// With ALL WINDOWS a census holds only its own 10 windows, so a boot's phases (logos, FMV, play) stay apart.
+			if (all)
+				hot_sums_clear();
+		}
 	}
 
 	fflush(stdout);
@@ -2372,7 +2490,7 @@ static ppc_label* emit_vmem_tier(const ColdFrag& c)
 
 
 // MMU JIT (P38): a JTC miss's C call (kinds 4-7), the FPU-disabled exit (8), an ifb's exception exit (9: next_pc
-// is the vector already). P11's cycle store rides in the call words.
+// is the vector already), a pref's fault (10). P11's cycle store rides in the call words.
 static void flush_mmu_cold(const ColdFrag& c)
 {
 	JmmuCold j;
@@ -2414,6 +2532,9 @@ static void flush_mmu_cold(const ColdFrag& c)
 		break;
 	case 8:
 		emit_jmmu_fd_exit(j);
+		break;
+	case 10:
+		emit_jmmu_raise(j);
 		break;
 	default:
 		ppc_lwz(ppc_rarg0,ppc_contex,Sh4cntx.offset(reg_nextpc));
@@ -4676,6 +4797,23 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// pref: only SQ addresses ((addr>>26) == 0x38) flush the store queue; else a no-op, or with JIT PREFETCH
 		// (plan 5.30) a host prefetch of the RAM line. MMU or not is chosen at compile time from MMUCR.AT.
 		case shop_pref:
+			// Row MMU Pref JIT: an MMU block with AT on flushes through jmmu_pref; a fault leaves by the cold exit.
+			if (s_jm_at && g_jmmu_pref)
+			{
+				ppc_ireg ap=op->rs1.is_reg() ? GetIntReg(op->rs1._reg) : ppc_rinvalid;
+				if (ap==ppc_rinvalid)
+				{
+					ppc_sh_load(ppc_rarg0,op->rs1);
+					ap=ppc_rarg0;
+				}
+				JmmuCold jc={ ppc_contex, 0, 0, op->guest_pc, s_fine_tcnt ? (u32)offsetof(Sh4Context,jit_cycles) : 0u,
+				              jmmu_exc_stub, 0 };
+				ColdFrag& c=cold_new();
+				c.beq=emit_jmmu_pref(jc,(u32)ap,(void*)jmmu_pref);
+				c.kind=10;
+				c.epc=op->guest_pc;
+				break;
+			}
 			{
 				ppc_sh_load(ppc_rarg0,op->rs1);
 				ppc_clrldi32(ppc_rarg0,ppc_rarg0);		// ELFv1: caller extends u32
@@ -4808,6 +4946,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		             (uintptr_t)CodeCache, (uintptr_t)CodeCache+CODE_SIZE, h.cls);
 	}
 
+	if (get_jit_idle_rule_preset()==4)
+		idle_bill_note(block);
+
 	return rv;
 }
 
@@ -4818,6 +4959,8 @@ void ngen_ResetBlocks()
 	// Block-cache clear: patched fastmem sites died with their blocks, so drop their trampolines too.
 	rec_fastmem_reset_pool();
 	jmmu_code_cleared();	// row MMU Block Cache: its entries name the blocks that went
+	s_bills_n=0;	// JIT IDLE RULE AUTO: the noted bill words went with their blocks
+	s_bills_full=false;
 }
 
 // The `bl` word DoStatic() emitted in slot 2 of a static site, recomputed for a
@@ -5199,7 +5342,7 @@ void ngen_mainloop()
 
 		// MMU JIT (P38): each block end of an MMU boot, by loop_no_update's first word; row MMU Block Cache enters at
 		// loop_mmu_bc (its cache, then this C lookup). A pending exception is taken, then its vector looked up.
-		verify((uintptr_t)&g_jdisp[JDISP_N] < 0x7FFF8000u && (uintptr_t)&g_jdgen < 0x7FFF8000u &&
+		verify((uintptr_t)&g_jdisp[JDISP_SETS][0] < 0x7FFF8000u && (uintptr_t)&g_jdgen < 0x7FFF8000u &&
 		       (uintptr_t)&CCN_PTEH < 0x7FFF8000u && (uintptr_t)CodeCache + CODE_SIZE <= 0xFFFFFFFFu);
 		loop_mmu_bc=emit_GetCCPtr();
 		emit_jmmu_dispatch((u32)(uintptr_t)&g_jdisp[0],(u32)(uintptr_t)&g_jdgen,(u32)(uintptr_t)&CCN_PTEH,ppc_contex,
@@ -5224,7 +5367,7 @@ void ngen_mainloop()
 			reg_flush_all();
 			ppc_call_c(&jmmu_raise);
 			reg_reload_all();
-			ppc_jump(loop_mmu);
+			ppc_jump(loop_mmu_bc);	// the vector through the block cache (an empty cache misses into loop_mmu)
 		}
 		s_lnu_word=*(u32*)loop_no_update;
 
@@ -5250,7 +5393,9 @@ void ngen_mainloop()
 	}
 
 	g_jit_exit_on=s_jit_exit;
+	s_jit_in_loop=true;
 	ppc_enter_code((void*)loop_code);
+	s_jit_in_loop=false;
 
 	// JIT EXIT: back in C after a stop request, with the guest's rounding mode still in the FPSCR.
 	g_jit_exit_on=false;

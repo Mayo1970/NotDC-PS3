@@ -97,6 +97,17 @@ MUTANTS = [
     ('the wait of an old transfer stays', '\t\tgd_dma_wait=0;\n\t\tif (get_gd_speed_preset())', '\t\tif (get_gd_speed_preset())'),
     ('REAL chunks do not wait', '\tif (real && gd_dma_wait>0)\n\t\treturn;\n', ''),
     ('FAST paced too', 'len=min(len,(u32)(real ? GD_DMA_CHUNK : 32000));', 'len=min(len,(u32)GD_DMA_CHUNK);'),
+    # GD-ROM Timing
+    ('SEEK: no wait set', '\t\t\t\tgd_seek_wait=(s64)(SH4_CLOCK_EFF/1000)*seek_ms;', '\t\t\t\tgd_seek_wait=0;'),
+    ('SEEK: the update does not wait', '\t// GD-ROM Timing SEEK: the head is still on its way.\n\tif (gd_seek_wait>0)\n\t\treturn;\n', ''),
+    ('SEEK: the wait does not count down', '\tif (gd_seek_wait>0)\n\t\tgd_seek_wait-=cycles;\n', ''),
+    ('SEEK: 100 ms at both levels', 'const u32 seek_ms=timing==2 ? 100 : 330;', 'const u32 seek_ms=100;'),
+    ('SEEK: a read that goes on seeks too', ' && start_sector!=gd_head_fad)', ')'),
+    ('SEEK: the head stays', '\t\t\tgd_head_fad=start_sector+sector_count;\n', ''),
+    ('SEEK: the head at the read start', 'gd_head_fad=start_sector+sector_count;', 'gd_head_fad=start_sector;'),
+    ('SEEK: a reset keeps the head', '\tgd_head_fad=0xFFFFFFFF;\n\t//Reset the drive', '\t//Reset the drive'),
+    ('SEEK at HOST', 'if (timing>=2 && Features.CDRead.DMA==1', 'if (timing>=0 && Features.CDRead.DMA==1'),
+    ('SEEK at FIXED', 'if (timing>=2 && Features.CDRead.DMA==1', 'if (timing>=1 && Features.CDRead.DMA==1'),
     # CD-DA Miss
     ('no read-ahead call at CD_PLAY', '\t\t\t\tif (next==GD_PLAY && get_cdda_miss_preset())\n\t\t\t\t\tgda_cdda_seek(cdda.CurrAddr.FAD);\n', ''),
     ('read-ahead call with the miss option off', 'if (next==GD_PLAY && get_cdda_miss_preset())', 'if (next==GD_PLAY)'),

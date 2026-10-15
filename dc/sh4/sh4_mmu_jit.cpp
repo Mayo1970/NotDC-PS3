@@ -15,10 +15,10 @@
 #include "ps3_timebase.h"
 
 bool g_jit_mmu;
-bool g_jmmu_bcache, g_jmmu_sq;
+bool g_jmmu_bcache, g_jmmu_sq, g_jmmu_pref, g_jmmu_asidjtc;
 volatile u32 g_jmmu_fault;
 JtcEntry g_jtc[4][JTC_N] __attribute__((aligned(128)));
-JDisp g_jdisp[JDISP_N] __attribute__((aligned(128)));
+JDisp g_jdisp[JDISP_SETS][2] __attribute__((aligned(128)));
 u32 g_jdgen = 1;
 
 void recSh4_Run();
@@ -27,12 +27,12 @@ void recSh4_ClearCache();
 static struct
 {
 	u32 lookups, fetch_exc, compiles, stale, fd_compile, fills, slow_r, slow_w, data_exc, raises, ifb_exc, ldtlb,
-	    drops, flushes, epochs, hashed, changed, at_edges, bc_fills;
+	    drops, flushes, epochs, hashed, changed, at_edges, bc_fills, bc_evicts, asid, asid_restores, prefs;
 } s_js, s_js_last;
 
 // The [jmmu] ms line: one call in 16 timed (two mftb) and counted 16 times; a compile always, and not in its lookup.
 static u32 s_tick, s_jdgen_last;
-static struct { u64 lookup, compile, rd, wr, ifb, raise; } s_jt, s_jt_last;
+static struct { u64 lookup, compile, rd, wr, ifb, raise, pref; } s_jt, s_jt_last;
 struct JtScope
 {
 	u64* acc;
@@ -47,6 +47,49 @@ struct JtScope
 			*acc += d << 4;
 	}
 };
+
+// The [jmmu] hot line: the top values of a second among the timed calls (the slow reads' physical addresses, the C
+// lookups' pcs): what a poll loop reads, which blocks the block cache misses.
+struct JHot { u32 v, n; };
+static JHot s_hot[2][64];
+static void hot_add(u32 t, u32 v)
+{
+	u32 h = (v * 2654435761u) >> 26;
+	for (u32 k = 0; k < 8; k++, h = (h + 1) & 63)
+		if (!s_hot[t][h].n || s_hot[t][h].v == v)
+		{
+			s_hot[t][h].v = v;
+			s_hot[t][h].n++;
+			return;
+		}
+}
+
+static int hot_top(u32 t, char* out, int size)
+{
+	u32 total = 0, best[4] = {}, at[4] = {};
+	for (u32 i = 0; i < 64; i++)
+	{
+		const u32 n = s_hot[t][i].n;
+		total += n;
+		for (u32 k = 0; k < 4; k++)
+			if (n > best[k])
+			{
+				for (u32 j = 3; j > k; j--)
+				{
+					best[j] = best[j - 1];
+					at[j] = at[j - 1];
+				}
+				best[k] = n;
+				at[k] = i;
+				break;
+			}
+	}
+	int m = 0;
+	for (u32 k = 0; k < 4 && best[k] && m < size; k++)
+		m += snprintf(out + m, size - m, " %08X %u%%", s_hot[t][at[k]].v, best[k] * 100 / total);
+	memset(s_hot[t], 0, sizeof(s_hot[t]));
+	return m;
+}
 
 bool jmmu_at() { return MMUCR_AT(CCN_MMUCR.reg_data) != 0; }
 
@@ -98,12 +141,64 @@ static void jtc_drop_owned()
 			jtc_drop(e);
 }
 
+// Row MMU ASID JTC (MMU Model FAST): the JTC of each recent ASID kept, so a process switch and its return keep the pages
+// of both. A copy holds while s_jtc_tgen holds: a change of FAST's table, MMUCR.SV, an AT edge, the choice.
+#define JTC_SAVES 8
+struct JtcSave { u32 asid, tgen, used; JtcEntry jtc[4][JTC_N]; };
+static JtcSave s_jsave[JTC_SAVES];
+static u32 s_jtc_tgen = 1, s_jsave_clock;
+
+static void jtc_switch(u32 to)
+{
+	JtcSave* in = nullptr;
+	JtcSave* out = nullptr;
+	for (u32 i = 0; i < JTC_SAVES; i++)
+		if (s_jsave[i].used && s_jsave[i].asid == to && s_jsave[i].tgen == s_jtc_tgen)
+			in = &s_jsave[i];
+	// The old ASID's copy, else the least recently used one; never the copy that comes back.
+	for (u32 i = 0; i < JTC_SAVES; i++)
+	{
+		JtcSave& c = s_jsave[i];
+		if (&c == in)
+			continue;
+		if (c.used && c.asid == s_jtc_asid)
+		{
+			out = &c;
+			break;
+		}
+		if (!out || c.used < out->used)
+			out = &c;
+	}
+	out->asid = s_jtc_asid;
+	out->tgen = s_jtc_tgen;
+	out->used = ++s_jsave_clock;
+	memcpy(out->jtc, g_jtc, sizeof(g_jtc));
+	if (in)
+	{
+		memcpy(g_jtc, in->jtc, sizeof(g_jtc));
+		in->used = ++s_jsave_clock;
+		s_js.asid_restores++;
+	}
+	else
+	{
+		memset(g_jtc, 0xFF, sizeof(g_jtc));
+		s_js.flushes++;
+	}
+	// The restored slots are not listed: a drop of owner 64 flushes every table.
+	memset(s_own_n, 0, sizeof(s_own_n));
+	s_own_n[64] = JTC_OWN + 1;
+}
+
 static void jtc_asid_check()
 {
 	if (CCN_PTEH.ASID != s_jtc_asid)
 	{
+		s_js.asid++;
+		if (g_jmmu_asidjtc)
+			jtc_switch(CCN_PTEH.ASID);
+		else
+			jtc_drop_owned();
 		s_jtc_asid = CCN_PTEH.ASID;
-		jtc_drop_owned();
 	}
 }
 
@@ -204,6 +299,7 @@ static void mmucr_written(u32 v)
 		{
 			jtc_drop_owned();
 			g_jdgen++;
+			s_jtc_tgen++;
 		}
 	}
 	s_last_sv = sv;
@@ -260,10 +356,21 @@ template<u32 sz> static inline bool jmmu_xlat(u32 va, u32 w, u32& pa)
 	return true;
 }
 
-u32 jmmu_rd8(u32 va)  { JtScope ts(s_jt.rd); u32 pa; return jmmu_xlat<1>(va, 0, pa) ? _vmem_ReadMem8(pa) : 0; }
-u32 jmmu_rd16(u32 va) { JtScope ts(s_jt.rd); u32 pa; return jmmu_xlat<2>(va, 0, pa) ? _vmem_ReadMem16(pa) : 0; }
-u32 jmmu_rd32(u32 va) { JtScope ts(s_jt.rd); u32 pa; return jmmu_xlat<4>(va, 0, pa) ? _vmem_ReadMem32(pa) : 0; }
-u64 jmmu_rd64(u32 va) { JtScope ts(s_jt.rd); u32 pa; return jmmu_xlat<8>(va, 0, pa) ? _vmem_ReadMem64(pa) : 0; }
+template<u32 sz> static inline u64 jmmu_rd(u32 va)
+{
+	JtScope ts(s_jt.rd);
+	u32 pa;
+	if (!jmmu_xlat<sz>(va, 0, pa))
+		return 0;
+	if (ts.acc)
+		hot_add(0, pa);
+	return sz == 1 ? _vmem_ReadMem8(pa) : sz == 2 ? _vmem_ReadMem16(pa) : sz == 4 ? _vmem_ReadMem32(pa) : _vmem_ReadMem64(pa);
+}
+
+u32 jmmu_rd8(u32 va)  { return (u32)jmmu_rd<1>(va); }
+u32 jmmu_rd16(u32 va) { return (u32)jmmu_rd<2>(va); }
+u32 jmmu_rd32(u32 va) { return (u32)jmmu_rd<4>(va); }
+u64 jmmu_rd64(u32 va) { return jmmu_rd<8>(va); }
 
 void jmmu_wr8(u32 va, u32 v)
 {
@@ -309,6 +416,20 @@ void jmmu_wr64(u32 va, u64 v)
 	}
 }
 
+// Row MMU Pref JIT: a block's pref to the store queues; a fault is left as for a data access.
+u32 jmmu_pref(u32 dest)
+{
+	JtScope ts(s_jt.pref);
+	s_js.prefs++;
+	const u32 code = jx_pref(dest);
+	if (code)
+	{
+		g_jmmu_fault = code;
+		s_js.data_exc++;
+	}
+	return code;
+}
+
 u32 jmmu_ifb(u32 op, u32 epc, u32 slot)
 {
 	JtScope ts(s_jt.ifb);
@@ -340,6 +461,7 @@ void jmmu_fast_changed()
 		return;
 	jtc_drop(64);
 	g_jdgen++;
+	s_jtc_tgen++;
 }
 
 void jmmu_code_cleared() { g_jdgen++; }
@@ -347,18 +469,27 @@ void jmmu_code_cleared() { g_jdgen++; }
 // ---- the main loop's lookup ----
 static u32 s_last_at;
 
-static inline u32 jdisp_index(u32 pc) { return ((pc ^ (pc >> 12)) >> 1) & (JDISP_N - 1); }
+static inline u32 jdisp_index(u32 pc) { return ((pc ^ (pc >> 12)) >> 1) & (JDISP_SETS - 1); }
 
 // Row MMU Block Cache: an entry for the block found. With AT on only MMU Model FAST keeps a translation for a while.
+// 2 ways: the way of the same pc, else a stale way, else way 0 moves to way 1 (the newest stays in way 0).
 static void jdisp_fill(u32 pc, u32 cfg, u32 at, void* code)
 {
 	if (!g_jmmu_bcache || (at && !g_mmu_fast))
 		return;
-	JDisp& d = g_jdisp[jdisp_index(pc)];
-	d.pc = pc;
-	d.key = cfg | (CCN_PTEH.reg_data & 0xFF) << 8;
-	d.gen = g_jdgen;
-	d.code = (u32)(uintptr_t)code;
+	JDisp* set = g_jdisp[jdisp_index(pc)];
+	JDisp* d = set[0].pc == pc ? &set[0] : set[1].pc == pc ? &set[1] : set[0].gen != g_jdgen ? &set[0] :
+	           set[1].gen != g_jdgen ? &set[1] : nullptr;
+	if (!d)
+	{
+		set[1] = set[0];
+		d = &set[0];
+		s_js.bc_evicts++;
+	}
+	d->pc = pc;
+	d->key = cfg | (CCN_PTEH.reg_data & 0xFF) << 8;
+	d->gen = g_jdgen;
+	d->code = (u32)(uintptr_t)code;
 	s_js.bc_fills++;
 }
 
@@ -367,6 +498,8 @@ void* jmmu_lookup(u32 pc)
 	JtScope ts(s_jt.lookup);
 	next_pc = pc;
 	s_js.lookups++;
+	if (ts.acc)
+		hot_add(1, pc);
 	// An AT edge: the blocks of before compiled their accesses for the other state (MMUCR Bits OLD has no clear).
 	const u32 at = MMUCR_AT(CCN_MMUCR.reg_data);
 	if (at != s_last_at)
@@ -376,6 +509,7 @@ void* jmmu_lookup(u32 pc)
 		jtc_flush_all();
 		recSh4_ClearCache();
 		g_jdgen++;
+		s_jtc_tgen++;
 	}
 	u32 pa;
 	const u32 code = jx_fetch(pc, &pa);
@@ -443,8 +577,11 @@ void jmmu_select(bool on)
 {
 	g_jit_mmu = on;
 	if (!on)
-		g_jmmu_bcache = g_jmmu_sq = false;
+		g_jmmu_bcache = g_jmmu_sq = g_jmmu_pref = g_jmmu_asidjtc = false;
 	jtc_flush_all();
+	memset(s_jsave, 0, sizeof(s_jsave));
+	s_jtc_tgen = 1;
+	memset(s_hot, 0, sizeof(s_hot));
 	memset(s_jpage, 0, sizeof(s_jpage));
 	s_jepoch = 1;
 	memset(g_jdisp, 0, sizeof(g_jdisp));
@@ -464,8 +601,9 @@ void jmmu_select(bool on)
 		sh4_cpu.ResetCache = jmmu_reset_cache;
 		printf("[fullmmu] MMU JIT: blocks by (vaddr, paddr, mode) in 1 KB pages, JTC %u x 4, JIT RM 2/3 ACCEPT; AT 1 blocks"
 		       " without fastmem, SQ shapes, constprop, DVE, DYN_IC and BCACHE\n", (u32)JTC_N);
-		printf("[fullmmu] MMU JIT rows: block cache %s (%u entries), SQ stores %s\n", g_jmmu_bcache ? "ON" : "OFF",
-		       (u32)JDISP_N, g_jmmu_sq ? "INLINE" : "C");
+		printf("[fullmmu] MMU JIT rows: block cache %s (%u x 2 entries), SQ stores %s, pref %s, ASID JTC %s\n",
+		       g_jmmu_bcache ? "ON" : "OFF", (u32)JDISP_SETS, g_jmmu_sq ? "INLINE" : "C", g_jmmu_pref ? "JIT" : "IFB",
+		       g_jmmu_asidjtc ? "ON" : "OFF");
 	}
 	else if (sh4_cpu.ResetCache == jmmu_reset_cache)
 		sh4_cpu.ResetCache = recSh4_ClearCache;
@@ -488,9 +626,14 @@ void jmmu_stats(double seconds)
 	       D(ifb_exc), D(raises), D(ldtlb), D(drops), D(flushes), D(epochs), D(hashed), D(changed), D(at_edges));
 	const double ms = 1000.0 / (double)ps3_timebase_hz / seconds;
 #define T(f) ((double)(s_jt.f - s_jt_last.f) * ms)
-	printf("[jmmu] ms/s: lookup %.1f, compile %.1f, slow r %.1f w %.1f, ifb %.1f, exc %.1f | block cache %s: fills %u,"
-	       " gen +%u\n", T(lookup), T(compile), T(rd), T(wr), T(ifb), T(raise), g_jmmu_bcache ? "ON" : "OFF", D(bc_fills),
-	       g_jdgen - s_jdgen_last);
+	printf("[jmmu] ms/s: lookup %.1f, compile %.1f, slow r %.1f w %.1f, ifb %.1f, exc %.1f, pref %.1f | block cache %s:"
+	       " fills %u, evicts %u, gen +%u\n", T(lookup), T(compile), T(rd), T(wr), T(ifb), T(raise), T(pref),
+	       g_jmmu_bcache ? "ON" : "OFF", D(bc_fills), D(bc_evicts), g_jdgen - s_jdgen_last);
+	char hr[160], hl[160];
+	hr[hot_top(0, hr, sizeof(hr))] = 0;
+	hl[hot_top(1, hl, sizeof(hl))] = 0;
+	printf("[jmmu] prefs %u, ASID switches %u (restored %u) | hot slow r:%s | hot lookups:%s\n", D(prefs), D(asid),
+	       D(asid_restores), hr, hl);
 #undef T
 #undef D
 	s_js_last = s_js;

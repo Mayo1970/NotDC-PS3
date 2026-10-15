@@ -3,7 +3,7 @@
 // fills, 2 also a CD-DA read-ahead. Only the lock is for any thread; the rest is for the SH4 thread.
 #include <stdint.h>   // not types.h: ImgReader.h has its own verify
 
-enum { GDR_DMA, GDR_PIO, GDR_CDDA, GDR_N };   // who read on the SH4 thread, for the [gdr] line
+enum { GDR_DMA, GDR_PIO, GDR_CDDA, GDR_SEEK, GDR_N };   // who read on the SH4 thread, and GD-ROM Timing's seeks
 
 void gda_start();   // after the drive opened: reads the preset, starts the worker
 void gda_stop();    // joins the worker; before the drive closes or the process exits

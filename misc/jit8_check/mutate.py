@@ -20,10 +20,17 @@ BNE = 'ppc_bcx(BO_FALSE, BI_CR0_EQ, 4, 0, 0);'
 LIST = '(lo>=6 && lo<=0xC) || (op&0xEF)==0x0D || (g_interp_fix_preset && (op&0xFF)==0x4D);'
 FNEG = ' || (g_interp_fix_preset && (op&0xFF)==0x4D)'
 GATE = 'if (!get_jit_pr_moves_preset() || !dec_is_pr_free(op))'
-L1 = 'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'
-SELF = 'if (block.BranchBlock==block.start && idle_rule<2)'
-SYSC = 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)'
+L0 = 'if (idle_rule==0 || (idle_rule==3 && block.idle_loop))'
+L1 = 'else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'
+SELF = 'if (block.BranchBlock==block.start && idle_rule!=2)'
+SYSC = 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule!=2)'
 PURE = 'block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);'
+FLAG = ('\t\t// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice. Set at every level.\n'
+        '\t\tif (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6 &&\n'
+        '\t\t    (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1))\n\t\t\t' + PURE + '\n')
+BILL = ('\t\tblock.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles);\n'
+        '\t\t// JIT IDLE RULE AUTO: both of its bills, so a switch patches the compiled block in place (ps3_driver.cpp).\n'
+        '\t\tblock.bill_x3=dec_bill(1,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(0,plain_cycles,max_cycles);\n')
 RMV = '\t\tif (!get_jit_rm_any_preset())\n\t\t{\n\t\t\tverify(fpu_cfg.RM<2);\n\t\t}\n\t\telse if (fpu_cfg.RM>=2)\n'
 
 MUTANTS = [
@@ -82,24 +89,41 @@ MUTANTS = [
     (DEC, 'RM 2 and 3 round to zero', 'cpu.RoundToZero=fpu_cfg.RM==1;', 'cpu.RoundToZero=fpu_cfg.RM>=1;'),
     (DEC, 'RM 2 not counted', 'else if (fpu_cfg.RM>=2)', 'else if (fpu_cfg.RM>=3)'),
 
-    (DEC, 'idle rule X30 bills x3', 'block.cycles*=30;', 'block.cycles*=3;'),
-    (DEC, 'idle rule X3 bills x30', 'block.cycles*=3;', 'block.cycles*=30;'),
-    (DEC, 'idle rule X3 bills every bt block', L1, 'else if (idle_rule==1)'),
-    (DEC, 'idle rule X3 bills bf only when backward', L1, 'else if (idle_rule==1 && block.BranchBlock<=block.start)'),
+    (DEC, 'idle rule X30 bills x3', '\t\t\t\tcycles*=30;', '\t\t\t\tcycles*=3;'),
+    (DEC, 'idle rule X3 bills x30', '\t\t\t\tcycles*=3;', '\t\t\t\tcycles*=30;'),
+    (DEC, 'idle rule X3 bills every bt block', L1, 'else if (idle_rule==1 || idle_rule==3)'),
+    (DEC, 'idle rule X3 bills bf only when backward', L1,
+     'else if ((idle_rule==1 || idle_rule==3) && block.BranchBlock<=block.start)'),
     (DEC, 'idle rule X3 leaves a bt self-loop out', L1,
-     'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<block.start))'),
+     'else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_0 || block.BranchBlock<block.start))'),
     (DEC, 'idle rule X3 bills bt, not bf', L1,
-     'else if (idle_rule==1 && (block.BlockType==BET_Cond_1 || block.BranchBlock<=block.start))'),
+     'else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_1 || block.BranchBlock<=block.start))'),
     (DEC, 'idle rule OFF keeps the self-loop x10', SELF, 'if (block.BranchBlock==block.start)'),
     (DEC, 'idle rule X3 drops the self-loop x10', SELF, 'if (block.BranchBlock==block.start && idle_rule<1)'),
     (DEC, 'idle rule OFF keeps the syscall bill', SYSC, 'if ((block.start&0x1FFF0000)==0x0C000000)'),
     (DEC, 'idle rule X3 drops the syscall bill', SYSC, 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<1)'),
-    (DEC, 'idle_loop only at X30', PURE, 'block.idle_loop=idle_rule==0 && block.BranchBlock<=block.start && idle_turn_is_pure(block);'),
+    (DEC, 'X3 + WAITS bills a wait loop x3', L0, 'if (idle_rule==0)'),
+    (DEC, 'X3 + WAITS bills every bt and bf block x30', L0, 'if (idle_rule==0 || idle_rule==3)'),
+    (DEC, 'X3 + WAITS bills the rest x1', L1,
+     'else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))'),
+    (DEC, 'X3 + WAITS drops the self-loop x10', SELF, 'if (block.BranchBlock==block.start && idle_rule<2)'),
+    (DEC, 'X3 + WAITS drops the syscall bill', SYSC, 'if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)'),
+    (DEC, 'X3 + WAITS reads the flag before it is set', FLAG + BILL, BILL + FLAG),
+    (DEC, 'idle_loop only at X30', PURE,
+     'block.idle_loop=get_jit_idle_rule()==0 && block.BranchBlock<=block.start && idle_turn_is_pure(block);'),
+    (DEC, 'idle_loop also for a block that writes',
+     'if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6 &&\n\t\t    (block',
+     'if (state.info.has_readm && !state.info.has_fpu && block.opcodes<6 &&\n\t\t    (block'),
+    (DEC, 'AUTO X3 bill at level 3', 'block.bill_x3=dec_bill(1,', 'block.bill_x3=dec_bill(3,'),
+    (DEC, 'AUTO X30 bill at the level of now', 'block.bill_x30=dec_bill(0,', 'block.bill_x30=dec_bill(get_jit_idle_rule(),'),
+    (DEC, 'AUTO bills swapped', 'block.bill_x3=dec_bill(1,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(0,',
+     'block.bill_x3=dec_bill(0,plain_cycles,max_cycles);\n\t\tblock.bill_x30=dec_bill(1,'),
+    (DEC, 'AUTO X3 bill from the billed cycles', 'block.bill_x3=dec_bill(1,plain_cycles,', 'block.bill_x3=dec_bill(1,block.cycles,'),
+    (DEC, 'the bill at a fixed level', 'block.cycles=dec_bill(get_jit_idle_rule(),', 'block.cycles=dec_bill(0,'),
     (DEC, 'idle_loop without the purity test', PURE, 'block.idle_loop=block.BranchBlock<=block.start;'),
-    (DEC, 'cycle cap dropped', '\t\tblock.cycles=min(block.cycles,max_cycles);\n\t\tif (block.cycles>plain_cycles)',
-     '\t\tif (block.cycles>plain_cycles)'),
+    (DEC, 'cycle cap dropped', '\treturn min(cycles,max_cycles);', '\treturn cycles;'),
     (DEC, 'billed count takes equal cycles', 'if (block.cycles>plain_cycles)', 'if (block.cycles>=plain_cycles)'),
-    (DEC, 'ip.bin bill changed', 'block.cycles*=15;', 'block.cycles*=5;'),
+    (DEC, 'ip.bin bill changed', 'cycles*=15;', 'cycles*=5;'),
 
     (REG, 'nearest sets NI', '"mtfsfi 7,0"', '"mtfsfi 7,4"'),
     (REG, 'round to zero sets NI', '"mtfsfi 7,1"', '"mtfsfi 7,5"'),

@@ -56,7 +56,7 @@ void DecodedBlock::Setup(u32 rpc)
 
 // MMU JIT (P38, sh4_mmu_jit.cpp): a block stops at its 1 KB page and reads its code there at the physical address
 // (rdv_CompilePCMmu sets the delta); SR.FD with an FPU op in the block stops the decode, so FPSCR comes first.
-extern bool g_jit_mmu;
+extern bool g_jit_mmu, g_jmmu_pref;
 bool jx_fpu_op(u32 op);
 u32 g_dec_code_delta;
 bool g_dec_fpu_disabled;
@@ -64,10 +64,10 @@ static inline u32 dec_read16(u32 pc) { return ReadMem16(pc + g_dec_code_delta); 
 
 DecodedBlock block;
 
-// Plan section 7, bundle 8. JIT RM 2/3 (P57), JIT PR MOVES (5.39), JIT IDLE RULE (P71): 0 x30, 1 Reicast's x3, 2 none.
+// Plan section 7, bundle 8. JIT RM 2/3 (P57), JIT PR MOVES (5.39), JIT IDLE RULE (P71, levels in ps3_presets.cpp).
 extern "C" int get_jit_rm_any_preset();
 extern "C" int get_jit_pr_moves_preset();
-extern "C" int get_jit_idle_rule_preset();
+extern "C" int get_jit_idle_rule();	// the level billed now: AUTO gives 1 or 0
 // Since boot, for the [jit8] line: PR=1 moves kept native, blocks the idle rule billed, blocks with RM 2 or 3.
 u32 g_dec_pr_moves, g_dec_rule_blocks, g_dec_rm23_blocks;
 // JIT IDLE HASH (bundle 8, way B): 0 off, 1 our list, 2 also Reicast's. Blocks that end the slice, since boot.
@@ -1306,6 +1306,45 @@ static bool dec_idle_hash(int level)
 	return act;
 }
 
+// P71 JIT IDLE RULE: the cycles this block bills at a level. 1 = Reicast's x3 (a bt block only when it branches back),
+// 2 = no cycle trick (Flycast), 3 = as 1, a pure wait loop as 0. AUTO bills 1 or 0 (ps3/ps3_idle_auto.h).
+static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles)
+{
+	//Small-n-simple idle loop detector :p
+	if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6)
+	{
+		if (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1)
+		{
+			if (idle_rule==0 || (idle_rule==3 && block.idle_loop))
+				cycles*=30;
+			else if ((idle_rule==1 || idle_rule==3) && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))
+				cycles*=3;
+		}
+
+		if (block.BranchBlock==block.start && idle_rule!=2)
+		{
+			cycles*=10;
+		}
+	}
+
+	//if in syscalls area (ip.bin etc) skip fast :p
+	if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule!=2)
+	{
+		if (block.start&0x8000)
+		{
+			//ip.bin (boot loader/img etc)
+			cycles*=15;
+		}
+		else
+		{
+			//syscalls
+			cycles*=5;
+		}
+	}
+	//make sure we don't use wayy-too-many cycles ;p
+	return min(cycles,max_cycles);
+}
+
 DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 {
 	block.Setup(startpc);
@@ -1357,9 +1396,9 @@ DecodedBlock* dec_DecodeBlock(u32 startpc,fpscr_type fpu_cfg,u32 max_cycles)
 					// JitIfbMask bisect: a whole top-nibble group to the interpreter, block ends untouched (unlike JitSafe
 					// and JitDynEnds). JitIfbGroup + JitIfbLoMask sub-bisect one group by low nibble.
 					const u32 hi=op>>12;
-					// MMU JIT: rte (its slot runs with the new SR), pref (the UTLB) and a branch whose slot is in the next
-					// page run on the MMU interpreter.
-					const bool mmu_ifb=g_jit_mmu && (op==0x002B || (op&0xF0FF)==0x0083 ||
+					// MMU JIT: rte (its slot runs with the new SR), pref (the UTLB; row MMU Pref JIT compiles it) and a
+					// branch whose slot is in the next page run on the MMU interpreter.
+					const bool mmu_ifb=g_jit_mmu && (op==0x002B || ((op&0xF0FF)==0x0083 && !g_jmmu_pref) ||
 					    (OpDesc[op]->SetPC() && ((state.cpu.rpc+2)&0x3FF)==0));
 					const bool force_ifb=((get_jit_ifb_mask()>>hi)&1)
 					    || ((int)hi==get_jit_ifb_group()
@@ -1417,47 +1456,15 @@ _end:
 
 	//cycle tricks
 	{
-		// P71 JIT IDLE RULE: the x30 also bills work blocks. 1 = Reicast's x3 (a bt block only when it branches
-		// back), 2 = no cycle trick at all (Flycast). idle_loop is set at every level, for JIT IDLE SKIP.
-		const int idle_rule=get_jit_idle_rule_preset();
 		const u32 plain_cycles=block.cycles;
-
-		//Small-n-simple idle loop detector :p
-		if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6)
-		{
-			if (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1)
-			{
-				if (idle_rule==0)
-					block.cycles*=30;
-				else if (idle_rule==1 && (block.BlockType==BET_Cond_0 || block.BranchBlock<=block.start))
-					block.cycles*=3;
-				// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice.
-				block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);
-			}
-
-			if (block.BranchBlock==block.start && idle_rule<2)
-			{
-				block.cycles*=10;
-			}
-		}
-
-		//if in syscalls area (ip.bin etc) skip fast :p
-		if ((block.start&0x1FFF0000)==0x0C000000 && idle_rule<2)
-		{
-			if (block.start&0x8000)
-			{
-				//ip.bin (boot loader/img etc)
-				block.cycles*=15;
-			}
-			else
-			{
-				//syscalls
-				block.cycles*=5;
-			}
-			
-		}
-		//make sure we don't use wayy-too-many cycles ;p
-		block.cycles=min(block.cycles,max_cycles);
+		// Plan 5.25: with JIT IDLE SKIP, this backward branch may end the timeslice. Set at every level.
+		if (state.info.has_readm && !state.info.has_writem && !state.info.has_fpu && block.opcodes<6 &&
+		    (block.BlockType==BET_Cond_0 || block.BlockType==BET_Cond_1))
+			block.idle_loop=block.BranchBlock<=block.start && idle_turn_is_pure(block);
+		block.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles);
+		// JIT IDLE RULE AUTO: both of its bills, so a switch patches the compiled block in place (ps3_driver.cpp).
+		block.bill_x3=dec_bill(1,plain_cycles,max_cycles);
+		block.bill_x30=dec_bill(0,plain_cycles,max_cycles);
 		if (block.cycles>plain_cycles)
 			g_dec_rule_blocks++;
 	}

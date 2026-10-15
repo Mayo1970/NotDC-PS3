@@ -420,12 +420,13 @@ void gda_stats(double secs)
 		// Per window: reads/sectors total ms(longest ms). lh: sectors the loop head gave (+ LOOP AHEAD).
 		const Count* s = st_sh4;
 		printf("[gdr] %.2f s async=%d sh4: dma %u/%u %.1f(%.1f) pio %u/%u %.1f(%.1f) cdda %u/%u %.1f(%.1f)"
-		       " wait %u %.1f(%.1f) | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u lh %u\n",
+		       " wait %u %.1f(%.1f) seek %u %.1f | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u"
+		       " lh %u\n",
 		       secs, s_level,
 		       s[GDR_DMA].n, s[GDR_DMA].sec, ms(s[GDR_DMA].ticks), ms(s[GDR_DMA].max),
 		       s[GDR_PIO].n, s[GDR_PIO].sec, ms(s[GDR_PIO].ticks), ms(s[GDR_PIO].max),
 		       s[GDR_CDDA].n, s[GDR_CDDA].sec, ms(s[GDR_CDDA].ticks), ms(s[GDR_CDDA].max),
-		       st_wait.n, ms(st_wait.ticks), ms(st_wait.max),
+		       st_wait.n, ms(st_wait.ticks), ms(st_wait.max), s[GDR_SEEK].n, ms(s[GDR_SEEK].ticks),
 		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss, st_lh);
 	}
 	memset(st_sh4, 0, sizeof(st_sh4));

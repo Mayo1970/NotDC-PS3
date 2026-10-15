@@ -14,7 +14,8 @@
 uint64_t ps3_timebase_hz = 1000000000ull;
 
 // ---- the options ----
-static int o_status, o_position, o_scd_q, o_rules, o_speed, o_dma_fix, o_miss, o_cmd_fix, o_set_mode, o_swap, o_holly;
+static int o_status, o_position, o_scd_q, o_rules, o_speed, o_dma_fix, o_miss, o_cmd_fix, o_set_mode, o_swap, o_holly,
+           o_timing;
 extern "C" {
 int g_jit_ccalls_preset = 0;
 int get_debug_loop() { return 0; }
@@ -25,6 +26,7 @@ int get_gd_position_preset() { return o_position; }
 int get_gd_scd_q_preset() { return o_scd_q; }
 int get_cdda_rules_preset() { return o_rules; }
 int get_gd_speed_preset() { return o_speed; }
+int get_gd_timing_preset() { return o_timing; }
 int get_gd_dma_fix_preset() { return o_dma_fix; }
 int get_cdda_miss_preset() { return o_miss; }
 int get_gd_cmd_fix_preset() { return o_cmd_fix; }
@@ -1056,6 +1058,56 @@ static void m_speed()
 	eq("FAST again: inside the start write", SB_GDST & 1, 0);
 }
 
+// GD-ROM Timing: SEEK holds a DMA read that does not go on from the last one for 100 or 330 ms; HOST and FIXED do
+// not (no worker here: misc/gdasync_check tests FIXED's wait). A PIO read moves the head with no wait; a reset forgets it.
+static u64 ticks_to_end()
+{
+	const u64 t0 = g_cycles;
+	for (u32 i = 0; (SB_GDST & 1) && i < 30000; i++)
+		tick();
+	return g_cycles - t0;
+}
+
+static void m_timing()
+{
+	boot();
+	for (int t = 0; t <= 1; t++)
+	{
+		o_timing = t;
+		cmd_read(SPI_CD_READ, 50000 + t * 100, 2, 2048, true);
+		dma_start(0x100000, 4096);
+		eq("HOST, FIXED: the data is inside the start write", SB_GDST & 1, 0);
+	}
+	const u32 ms[2] = { 100, 330 };
+	for (int t = 2; t <= 3; t++)
+	{
+		o_timing = t;
+		const u32 fad = 60000 + t * 1000;
+		cmd_read(SPI_CD_READ, fad, 2, 2048, true);
+		dma_start(0x100000, 4096);
+		eq("SEEK: nothing moves in the start write", SB_GDLEND, 0);
+		const u64 took = ticks_to_end(), want = (u64)200000 * ms[t - 2];
+		if (took < want || took > want + 2 * SLOW)
+			fail("SEEK: cycles until the data moves", took, want);
+		eq("SEEK: data", ram_is(0x100000, fad, 2, 2048), 1);
+		cmd_read(SPI_CD_READ, fad + 2, 2, 2048, true);
+		dma_start(0x100000, 4096);
+		eq("SEEK: a read that goes on from the last one is inside the write", SB_GDST & 1, 0);
+	}
+	pio_sector(80000);
+	cmd_read(SPI_CD_READ, 80001, 2, 2048, true);
+	dma_start(0x100000, 4096);
+	eq("SEEK: a DMA read that goes on from a PIO read", SB_GDST & 1, 0);
+	ata(ATA_SOFT_RESET);
+	cmd_read(SPI_CD_READ, 80003, 2, 2048, true);
+	dma_start(0x100000, 4096);
+	eq("SEEK: after a reset the head is not known", SB_GDST & 1, 1);
+	const u64 took = ticks_to_end();
+	if (took < (u64)200000 * 330)
+		fail("SEEK: cycles after a reset", took, (u64)200000 * 330);
+	o_timing = 0;
+}
+
 // CD-DA Miss PLAY AHEAD: the worker is told at the command.
 static void m_miss()
 {
@@ -1242,7 +1294,7 @@ int main(int argc, char** argv)
 	static const struct { const char* name; void (*fn)(); } k_models[] = {
 		{ "p21s1", m_p21s1 }, { "p21s2", m_p21s2 }, { "p47", m_p47 }, { "p62", m_p62 }, { "p61", m_p61 },
 		{ "cmd", m_cmd }, { "p48", m_p48 }, { "dma", m_dma }, { "speed", m_speed }, { "miss", m_miss },
-		{ "swap", m_swap }, { "p82", m_p82 }, { "p68", m_p68 },
+		{ "swap", m_swap }, { "p82", m_p82 }, { "p68", m_p68 }, { "timing", m_timing },
 	};
 	if (!strcmp(mode, "model") && argc > 2)
 		for (u32 i = 0; i < sizeof(k_models) / sizeof(k_models[0]); i++)

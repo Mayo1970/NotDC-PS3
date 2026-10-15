@@ -130,7 +130,7 @@ bool g_stall_on;
 void stall_push_on(int) {}
 void stall_pop_on() {}
 
-static int g_level, g_miss, g_dma_fix, g_speed;
+static int g_level, g_miss, g_dma_fix, g_speed, g_timing;
 extern "C" {
 int get_gd_async_preset() { return g_level; }
 int get_debug_loop() { return 0; }
@@ -143,6 +143,7 @@ int get_gd_position_preset() { return 0; }
 int get_gd_scd_q_preset() { return 0; }
 int get_cdda_rules_preset() { return 0; }
 int get_gd_speed_preset() { return g_speed; }
+int get_gd_timing_preset() { return g_timing; }
 int get_gd_dma_fix_preset() { return g_dma_fix; }
 int get_gd_cmd_fix_preset() { return 0; }
 int get_gd_set_mode_preset() { return 0; }
@@ -669,6 +670,58 @@ static void phase_cap()
 	printf("  cap: %u held, then %u SH4 read\n", g_held - h0, g_cdda_reads - r0);
 }
 
+// GD-ROM Timing: the updates a DMA takes. FIXED: the same whatever the disc's time (the SH4 waits in UpdateGDRom);
+// HOST: the DMA waits for the disc, update by update.
+static u32 dma_updates(u32 fad, u32 count, u32 delay)
+{
+	g_delay_us = delay;
+	const u32 dst = 0x100000;
+	cmd_read(fad, count, 2048);
+	dma_regs(dst, count * 2048);
+	u32 n = 0;
+	const u64 t0 = gettime();
+	while (SB_GDST & 1)
+	{
+		UpdateGDRom();
+		gdrom_spinup_tick(14336);
+		n++;
+		if (gettime() - t0 > 20000000000ull)
+		{
+			err("GD-ROM Timing: DMA never ends", fad, count);
+			break;
+		}
+	}
+	for (u32 i = 0; i < count * 2048; i++)
+		if (g_ram[dst + i] != pat(fad + i / 2048, 2048, i % 2048))
+		{
+			err("GD-ROM Timing: byte wrong", fad + i / 2048, i % 2048);
+			break;
+		}
+	return n;
+}
+
+static void phase_timing()
+{
+	u32 fixed_diff = 0, host_more = 0, fixed_extra = 0;
+	for (u32 k = 0; k < 12; k++)
+	{
+		const u32 fad = 150 + rnd() % 400000, count = 33 + rnd() % 64;
+		const u32 fast = dma_updates(fad, count, 0), slow = dma_updates(fad, count, 3000);
+		fixed_diff += fast != slow;
+		host_more += slow > fast;
+		// FIXED at GD-ROM Speed FAST: the start write moves 32000 bytes, then each update 32000, fills or not.
+		const u32 total = count * 2048, want = total > 32000 ? (total - 32000 + 31999) / 32000 : 0;
+		fixed_extra += g_timing == 1 && !g_speed && (fast != want || slow != want);
+	}
+	printf("  timing: %u of 12 reads took other updates with a slow disc\n", host_more + (g_timing ? fixed_diff : 0));
+	if (g_timing && fixed_diff)
+		err("FIXED: the updates depend on the disc's time", fixed_diff, 0);
+	if (fixed_extra)
+		err("FIXED: updates past GD-ROM Speed's", fixed_extra, 0);
+	if (!g_timing && !host_more)
+		err("HOST: no DMA waited for a slow disc", 0, 0);
+}
+
 // P22 with the worker: SB_GDLEN 0 on an empty buffer. The fill is in flight, nothing moves, and the DMA must not end.
 static void phase_len0()
 {
@@ -814,6 +867,7 @@ int main(int argc, char** argv)
 	g_seed = argc > 3 ? (u64)atoll(argv[3]) * 2654435761ull + 1 : 1;
 	g_miss = argc > 4 ? atoi(argv[4]) : 0;
 	g_speed = argc > 5 ? atoi(argv[5]) : 0;
+	g_timing = argc > 6 ? atoi(argv[6]) : 0;
 	g_main = pthread_self();
 
 	gdrom_reg_Init();
@@ -838,11 +892,13 @@ int main(int argc, char** argv)
 			phase_cap();
 		}
 	}
+	if (g_level >= 1)
+		phase_timing();
 	phase_len0();
 	phase_swap();
 	gda_stop();
 
-	printf("%s: level %d, miss %d, speed %d, %u reads, %u CD-DA sectors (%u held), %d errors\n",
-	       g_errors ? "FAIL" : "PASS", g_level, g_miss, g_speed, g_reads, g_pulls, g_held, g_errors.load());
+	printf("%s: level %d, miss %d, speed %d, timing %d, %u reads, %u CD-DA sectors (%u held), %d errors\n",
+	       g_errors ? "FAIL" : "PASS", g_level, g_miss, g_speed, g_timing, g_reads, g_pulls, g_held, g_errors.load());
 	return g_errors ? 1 : 0;
 }

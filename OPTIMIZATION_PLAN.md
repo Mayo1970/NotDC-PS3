@@ -28,13 +28,411 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**JIT IDLE RULE AUTO: a switch patches the bills, built 2026-10-15 (Matt
+asked "Can we delegate the cached code to RAM?" for the stutter at each
+switch; to the patch below: "Yes!"). Package of 03:26
+(`build/notdc_ps3.pkg`, 1755504 bytes) = the package of 03:05 + this. No
+HW run. Not committed. `.got` 0xF8C8 of 0x10000 (1.8 KB left), 0
+`r2off`.**
+- Why not RAM: the PS3 runs JIT code only from the `.text` array (HW probe
+  2026-09-20: code in `.bss`, `malloc` and lv2 memory faulted). A RAM copy
+  to restore at a switch would not help either: Donald Duck flushes its
+  I-cache at each load, which clears all code before the second switch.
+- What changed: a switch no longer clears the code cache. A block bills
+  its cycles with one word at its start (`addi` or `addic.` of r29 to
+  itself, the cycles as the immediate); the code around it does not
+  depend on the idle rule (`cycle_poll_needed` reads only the block end).
+  - The decoder's bill is a function now, `dec_bill(rule, cycles, max)`
+    (the same code as before). It also gives each block both AUTO bills,
+    `bill_x3` and `bill_x30` (`dc/sh4/rec_v2/decoder.h`).
+  - Under AUTO, `ngen_Compile` notes each compiled block: the address of
+    its bill word (`s_bill_insn`, taken in `ngen_Begin`) and both bills.
+    A table of 131072 entries (1 MB, allocated at the first note); a code
+    cache clear empties it.
+  - A switch rewrites the immediate of each noted word
+    (`idle_bill_word`: only an `addi`/`addic.` of a register to itself;
+    the driver also wants r29), then syncs that line to the I-cache. A
+    full table falls back to the cache clear.
+  - Log: `[idle-auto] N of M blocks billed again in X ms (K words no
+    bill)` after each switch line.
+- PC checks (WSL), all PASS: `misc/idleauto_check` 67 checks (13 new:
+  the emitter's two bill words, and the patch on bill and other words),
+  25 source lines, `mutate.py` 62 of 62; `misc/jit8_check` decoder
+  1339474 checks (both bills of every case against Reicast's rule and the
+  frozen X30 code), the bill and idle rule mutants 29 of 29; fschg,
+  interp, constprop, div32, clock, exit, mmu, sqstore, sysgate, tcopy,
+  timebase.
+- HW steps (package of 03:26): the steps of the AUTO block below (JIT IDLE
+  RULE AUTO, JIT HOTBLOCKS OFF, SH4 Clock 200; Donald Duck, then Tomb
+  Raider). What to read: the stutter at the two switches, and the
+  `[idle-auto] ... billed again in X ms` lines (expected: about 10K blocks
+  in a few ms).
+
+**JIT IDLE RULE AUTO built 2026-10-15 (Matt: "Yes, do it. Thanks."). Package
+of 03:05 (`build/notdc_ps3.pkg`, 1754864 bytes) = the package of 02:31 +
+this. The default stays X30. HW run 1 2026-10-15 (Donald Duck): it works
+(Matt: "Donald Duck ran fine! Nice."; below the HW steps). Not committed.
+`.got` 0xF898 of 0x10000 (1.9 KB left), 0 `r2off`.**
+- Why: Donald Duck needs X3 BACKWARD in play and X30 in its intro video;
+  Tomb Raider: The Last Revelation needs X30 (X3: SPEED 37%). The cause
+  of the video's cost is in the HOTBLOCKS ALL WINDOWS block below.
+- The level (row JIT IDLE RULE, 5th value AUTO, `JitIdleRule=4`, set
+  before boot): the decoder bills X3 BACKWARD or X30, the level of now
+  (`get_jit_idle_rule()`, `g_jit_idle_rule_now`). It starts at X3
+  BACKWARD. One step a stats window (`ps3/ps3_idle_auto.h`):
+  - X3 BACKWARD to X30: 3 windows in a row under SPEED 95%.
+  - X30 to X3 BACKWARD: after a hold of 10 windows, 3 windows in a row at
+    SPEED 98% or more, with the pacer asleep for 30% of the window or
+    more.
+  - An X3 try that goes back to X30 within 20 X3 windows doubles the hold
+    (up to 320); a try that held longer sets it back to 10. The boot is
+    not a try.
+  - The 2 windows after a switch count for nothing (the code cache fills
+    again).
+  - A switch drops every compiled block (`recSh4_ClearCache`, as an
+    I-cache flush does; safe inside a block), so the new bill reaches all
+    code. AUTO acts only while the JIT's main loop runs.
+- Log: `[idle-auto] X3 BACKWARD -> X30: SPEED N%, sleep N ms/s; an X3 try
+  after N s (switch N)` and `[idle-auto] X30 -> X3 BACKWARD: ...`. The
+  `[pace]` line has `sleep=N ms` now (the pacer's sleep in the window).
+- Code: `ps3/ps3_idle_auto.h` (new), `ps3/ps3_driver.cpp`
+  (`jit_idle_auto`, `s_jit_in_loop`), `plugs/drkPvr/SPG.cpp`
+  (`g_pace_sleep_s`, the step), `ps3/ps3_presets.cpp`
+  (`g_jit_idle_rule_now`, `get_jit_idle_rule`), `ps3/ps3_presets.h`,
+  `ps3/ps3_menu.cpp`, `dc/sh4/rec_v2/decoder.cpp`,
+  `misc/sysgate_check/stubs.inc` (a stub).
+- PC checks (WSL), all PASS:
+  - New `misc/idleauto_check`: 54 checks on host models (Donald Duck,
+    Tomb Raider, tries that fail or hold, the thresholds, the hold cap);
+    13 source lines; `mutate.py` 44 of 44.
+  - jit8 (its idle rule mutants again: 19 of 19), fschg, interp, clock,
+    rtt, screen, sysgate, timebase, chd, flash, glpath, maple, mmu, pad,
+    sys20, fullmmu, constprop, div32, exit, sqstore, tcopy.
+- HW steps (package of 03:05):
+  1. UDP listener on port 18194 (it runs).
+  2. JIT SPEED page: JIT IDLE RULE AUTO. VIDEO / DEBUG page: JIT
+     HOTBLOCKS OFF. EMULATION page: SH4 Clock 200 MHz.
+  3. Boot 1: Donald Duck, the intro video, then play for 60 s or more.
+  4. Boot 2: Tomb Raider: The Last Revelation, play for 60 s or more.
+  5. What to read: the `[idle-auto]` lines, SPEED and frames a second per
+     phase, and `[pace] sleep`.
+- Risk: X30 to X3 is a guess from the sleep. If Donald Duck's play at X30
+  sleeps less than 30% of each second, AUTO stays at X30 there; the
+  `[pace] sleep` values then show where `IA_SPARE` must go.
+- HW run 1 2026-10-15, Donald Duck (AUTO, SH4 Clock 200, 116 s), 2
+  switches. X3 BACKWARD to X30 at the video's third slow second (SPEED
+  58.5%); the video then ran at 100%, 60 frames a second, sleep 22-375
+  ms/s. X30 to X3 BACKWARD at the start of play (sleep 616-733 ms/s at
+  X30); play then ran at 30 frames a second, SPEED 100%, sleep 330-650
+  ms/s, to the end (windows 51-116). Matt: "Donald Duck ran fine! Nice. I
+  felt the stutter, but we may work on that another way."
+  - The stutter: the second after each switch recompiles 1.5-2.9 MB
+    (window 21: SPEED 97.6%, 1546 KB/s; window 50: 92.7%, 2852 KB/s).
+  - A near miss: two video seconds at X30 slept 37% (windows 33-34). A
+    third one would have tried X3 in the video (a failed try costs about
+    5 s at ~60%).
+  - The next boot (Tomb Raider, AUTO) went to X30 at SPEED 43.5%; its
+    run was in progress when this was written.
+
+**JIT HOTBLOCKS ALL WINDOWS built 2026-10-15 (Matt: "Yes, do it."), to
+find the cost of Donald Duck's intro video at X3 BACKWARD. Package of 02:31
+(`build/notdc_ps3.pkg`, 1754160 bytes) = the package of 02:15 + this. HW
+run 2026-10-15: it works, the cause is found (below the HW steps). Not
+committed. `.got` 0xF830 of 0x10000, 0 `r2off`.**
+- Why: the `[HOTC]` census and the code dumps count only the windows with
+  more than 3K vertices a frame. The video has 0.00K, so the HOTBLOCKS ON
+  boot of 2026-10-15 gave only totals (block below).
+- Row JIT HOTBLOCKS (`JitHotblocks`, set before boot): OFF / ON / ALL
+  WINDOWS. ON is as before. ALL WINDOWS counts every window. Its census
+  (every 10 windows) holds only those 10 windows, then the sums start
+  again, so the logos, the video and the play stay apart. The dumps are
+  as with ON: from the 5th window, 4 a window, 128 at most.
+- Log: `[HOTC] census N (periodic): 10 dense windows 10.0 s, ...`, then the
+  top 64 blocks; `[HOT] --- dump pc=...` for the code.
+- Code: `ps3/ps3_driver.cpp` (`hotblocks_dump`, `hot_sums_clear`,
+  `s_hb_sum_n`), `ps3/ps3_menu.cpp` (`k_hotblocks`, the help),
+  `ps3/ps3_presets.cpp` (comment).
+- PC checks (WSL), all PASS: jit8, clock, constprop, div32, exit, mmu,
+  sqstore, sysgate, tcopy, timebase, chd, flash, glpath, maple, pad, rtt,
+  screen, sys20, fullmmu. No PC check reads the HOTBLOCKS code.
+- HW steps (package of 02:31):
+  1. UDP listener on port 18194 (it runs).
+  2. JIT SPEED page: JIT IDLE RULE X3 BACKWARD. VIDEO / DEBUG page: JIT
+     HOTBLOCKS ALL WINDOWS. EMULATION page: SH4 Clock 200 MHz.
+  3. Boot Donald Duck. Let the intro video play to its end (about 40 s).
+  4. What to read: the census in the video (its SPEED 58-60% at X3
+     BACKWARD): the top blocks, their entries a second and their code.
+- HW run 2026-10-15, Donald Duck (Matt set X3 + WAITS X30, the same as X3
+  BACKWARD in this video; SH4 Clock 200): the video at SPEED 58-61%.
+  Censuses 5-7 (windows 26-55) are video only: 14.2-15.1M block entries a
+  second, the top 64 blocks 46-51% of the weight, 128 dumps.
+  - The decoder library (8C12xxxx: 8C1219F0 6.5%, 8C121432 5.0%, ...) is
+    at least 31% of census 5's weight. Its output per emulated second is the
+    same at X30 and X3: YUV DMA 3370 KB an emulated second in both (dd2
+    X30 3372 KB/s at 100%, dd1 X3 2204 KB/s at 65%). So X30 does not drop
+    video frames.
+  - The rest is the game's main loop while it waits for the next video
+    frame: a task list (8C104492: `mov.l @(r0,r14),r5; tst; bt`, then
+    8C10449A `jsr @r3` for each task, 8C1044B0 the loop end), table scans
+    (8C0D86C8 + 8C0D8722, 8C0E49A6 + 8C0E49B4: read an entry, skip it if
+    0) and interrupt mask toggles (8C0EAC58, 8C0EAC70: `stc SR` ... `ldc
+    SR`, 165K calls a second). At X3 it makes 172K dynamic call misses an
+    emulated second, at X30 47K (3.6 times fewer). JIT IDLE SKIP's pure
+    wait loops run the same at both levels (about 3.2K checks an emulated
+    second).
+  - Why X30 makes the video fast: it bills the main loop's small read
+    and branch blocks (8C104492, 8C0D86C8, 8C0E49A6 and those in the
+    task functions) x30, so each loop turn uses more emulated time and the
+    host runs fewer turns. X3 bills a forward bt block x1. Level 3 cannot
+    catch the loop: it calls functions and writes memory, so it is not a
+    pure wait. An x30 bill on the three loop blocks alone would cut the
+    turns only a little, because most of a turn is in the task functions.
+- Same night, other boots at SH4 Clock 200, 3D windows (1K+ vertices a
+  frame): Tomb Raider: The Last Revelation at X3 + WAITS X30 SPEED 37.5%,
+  10.8 frames a second (28.8 an emulated second); at X3 BACKWARD 36.5%,
+  10.0; at X30 (earlier log) 98.8%, 13.1. An X30 game. Sonic Adventure 2
+  (Europe) at X3 + WAITS X30: SPEED 98.2%, 58.4 frames a second at 11K
+  vertices a frame.
+- What can fix both phases of Donald Duck: an AUTO level that uses X3
+  BACKWARD while the host keeps up and X30 when SPEED falls, with a code
+  cache clear at each switch. Built (Matt: "Yes, do it. Thanks."; the
+  block at the top of this section).
+
+**JIT IDLE RULE level X3 + WAITS X30 built 2026-10-15 (Matt: "Yes, let's
+go with this build with the idle rule."). Package of 02:15
+(`build/notdc_ps3.pkg`, 1753968 bytes) = commit 2020f69 + MMU JIT speed 2
++ GD-ROM Timing + this. The default stays X30. HW runs 2026-10-15: no fix
+for the video (below the HW steps). Not committed. `.got` 0xF828 of
+0x10000, 0 `r2off`.**
+- Why: Donald Duck: Goin' Quackers needs X3 BACKWARD in gameplay (29-30
+  frames a second at SPEED 100%; X30: 11-19), but X30 in its intro video
+  (X3 BACKWARD: SPEED 65%; X30: 100%). Sega Rally 2 needs X30 (X3: 52%).
+- The level (row JIT IDLE RULE, 4th value, `JitIdleRule=3`, set before
+  boot): as X3 BACKWARD, but a block that JIT IDLE SKIP takes for a pure
+  wait loop bills x30, as at X30. That block is `block.idle_loop`: a small
+  read-and-branch block that branches back, and whose turn repeats while
+  memory does not change (`idle_turn_is_pure`). The x10 self-loop bill
+  and the x5 / x15 syscall bills stay, as at X30 and X3 BACKWARD.
+- Expected: in Matt's Donald Duck X3 BACKWARD logs, the video's pure wait
+  loops (8C1061C0, 8C105F48, 8C119F92) run only about 2K turns a second.
+  So the level can keep X3's frame rate in gameplay and still leave the
+  video slow. Then a JIT HOTBLOCKS ON boot of the intro at X3 BACKWARD
+  shows the video's real wait.
+- Code: `dc/sh4/rec_v2/decoder.cpp` (the cycle tricks: `idle_loop` is set
+  before the bill now, the x10 and syscall bills test `idle_rule!=2`),
+  `ps3/ps3_menu.cpp` (`k_idlerule`, the help), `ps3/ps3_presets.cpp`.
+- PC checks (WSL), all PASS:
+  - `misc/jit8_check`: decoder 1081401 checks; level 3 equals X30 for a
+    pure small read block that branches back, else Reicast's rule; the
+    rule cases have two level 3 columns (a pure turn, one that is not).
+    `mutate.py`: the cycle rule, idle_loop and idle hash mutants, 54 of 54
+    (6 new for the level).
+  - fschg, interp, chd, clock, flash, glpath, maple, mmu, pad, rtt,
+    screen, sys20, timebase, fullmmu: PASS.
+- HW steps (package of 02:15):
+  1. UDP listener on port 18194 (it runs).
+  2. JIT SPEED page: JIT IDLE RULE X3 + WAITS X30. The other rows as in
+     the Donald Duck boots.
+  3. Boot 1: Donald Duck, the intro video, then gameplay, 30 s or more
+     each.
+  4. What to compare: the video's SPEED (X30 100%, X3 BACKWARD 65%), the
+     gameplay frames a second (X30 11-19, X3 BACKWARD 29-30).
+  5. Boot 2 (optional): Tomb Raider: The Last Revelation at the same level
+     (at X30: about 12 frames a second at SPEED 100%).
+- HW runs 2026-10-15, Donald Duck (three boots; Matt set SH4 Clock 250 for
+  the first two):
+  - X30, SH4 Clock 250: video SPEED 100%; gameplay 14-15 frames a second at
+    SPEED 100%, `[pace] slept` 60 of 60. The faster clock does not give
+    X30 its frames (X30 at 200: 11-19).
+  - X3 + WAITS X30, SH4 Clock 250: gameplay 30 frames a second at SPEED
+    100%, as X3 BACKWARD. Video SPEED 53-55% (Matt: "The video was still
+    slow."). In the video, JIT IDLE SKIP's pure wait loops run about 1.9K
+    checks a second in all, so their x30 bill changes nothing.
+  - X3 BACKWARD + JIT HOTBLOCKS ON, SH4 Clock 200: video SPEED 58-60%,
+    13.9M block entries a second, 49 hot instructions an entry. No
+    `[HOTC]` census and no code dump: `hotblocks_dump` counts only the
+    windows with more than 3K vertices a frame, and the video has 0.00K
+    (gameplay 0.2-1.0K). My error: I did not check this gate when I named
+    the boot.
+  - So the video's cost is in blocks that are not pure wait loops. Next
+    (Matt: "Yes, do it."): JIT HOTBLOCKS ALL WINDOWS, built (block above).
+
+**GD-ROM Timing row built 2026-10-15 (Matt: "Yes." to a fixed disc timing,
+in the Windows CE speed work). Package of 01:09 (`build/notdc_ps3.pkg`,
+1753456 bytes) = commit 2020f69 + MMU JIT speed 2 + this. Default HOST, the
+old path. HW runs 1-2 2026-10-15: no fix (below the HW steps). Not committed.
+`.got` 0xF828 of 0x10000, 0 `r2off`.**
+- Why: in the HW runs of speed 2 (block below), the Sega Rally 2 race
+  drew a frame every vblank (SPEED 58-74%) in three boots in a row, but
+  changed between a frame every 2 vblanks (SPEED 99.7%) and every vblank
+  in the first boot after a PS3 restart. Only the two boots with the 30
+  fps phases (speed 1's HW run 1 and speed 2's run 4) had a ~330 ms disc
+  read at the title, ~22 s after the launch (the PS3 HDD's first read
+  after a few seconds of no reads). With GD-ROM Async the GD-DMA waits in
+  emulated time for the worker's read, so the HDD's time reaches the game.
+- Row GD-ROM Timing (GD-ROM page, after GD-ROM Speed; key `GdTiming`;
+  live):
+  - HOST: as before, the DMA waits for the HDD in emulated time.
+  - FIXED: the SH4 waits for a late fill in `UpdateGDRom` (`gda_wait`), so
+    the game sees only GD-ROM Speed's pacing, as with GD-ROM Async OFF,
+    and the worker's read-ahead stays. Every boot sees the same disc time.
+  - SEEK 100 / SEEK 330: FIXED and a seek of 100 or 330 ms before a DMA
+    read that does not start where the last read ended. PIO and CD-DA
+    reads have no seek; a reset forgets where the head is.
+- Log: the `[gdr]` line has `seek N ms` (the seeks of that second and
+  their modeled time); FIXED's waits are in its `wait N ms(max)`.
+- Code: `dc/gdrom/gdromv3.cpp` (`gd_seek_wait`, `gd_head_fad`,
+  `UpdateGDRom`, SPI_CD_READ, the resets, `gdrom_spinup_tick`),
+  `ps3/ps3_gdasync.h` (`GDR_SEEK`), `ps3_gdasync.cpp` (the `[gdr]` line),
+  `ps3_presets.cpp`, `ps3_presets.h`, `ps3_menu.cpp`.
+- PC checks (WSL), all PASS:
+  - `misc/gd2_check`: the trace with every row at 0 equals the frozen
+    reference; new model `timing` (SEEK's cycles, a read that goes on, a
+    PIO read, a reset; none at HOST and FIXED); `mutate.py` 10 of 10 new.
+  - `misc/gdasync_check`: 31 runs; new phase `timing`: with FIXED and SEEK
+    a DMA takes the same updates with a slow disc (12 of 12 reads), with
+    HOST it does not; TSan with FIXED. `mutate.py`: the 5 new or changed mutants, run alone: 5 of 5.
+  - chd, clock, flash, fullmmu, glpath, interp, maple, mmu, pad, rtt,
+    screen, sys20, timebase: PASS.
+- HW steps (package of 01:09; the disc cache does not matter with FIXED
+  or SEEK):
+  1. UDP listener on port 18194 (it runs).
+  2. The rows of speed 2's run 4 (MMU Pref JIT, MMU ASID JTC ON, the
+     speed 1 rows). GD-ROM page: GD-ROM Timing FIXED.
+  3. Boot 1: Sega Rally 2, the same race, 30 s or more.
+  4. Boot 2: the same with GD-ROM Timing SEEK 330.
+  5. Boot 3, only if boot 2 has the 30 fps phases: SEEK 100.
+  6. With SEEK the loading screens take longer (each new read waits).
+- HW runs 2026-10-15 (Sega Rally 2, the rows of speed 2's run 4): boot 1
+  FIXED: the race drew a frame every vblank, SPEED 63-78%; the `[gdr]`
+  waits show it hid a 335 ms HDD read. Boot 2 SEEK 330: the same, 63-77%,
+  and the loads took far longer (about 3 seeks a second). So the disc
+  timing does not set the race's frame rate. FIXED does no harm; SEEK is
+  of no use here. Open lead: the two boots with 30 fps phases had 117 s
+  and 793 s in the NotDC menu before the launch (the others 14-79 s).
+- Other games of the same night (speed 2 package, Matt's rows), by log:
+  Resident Evil 2 (Windows CE): 3D SPEED 61% (lowest 7%), host-bound by
+  MMU ASID JTC (2000-5500 switches a second, write path 330-890 ms a
+  second): keep that row OFF. Tomb Raider: The Last Revelation (Windows
+  CE): SPEED 100% with spare time but ~12 frames a second (X30 signs, 65K
+  billed blocks), and ~1400 stale recompiles a second (96 I-cache flushes,
+  ~160 changed code pages). Sonic Adventure 2 (X3 BACKWARD): 89-92% at
+  ~18K vertices, the known SH4-bound case (bundle 22). Donald Duck: X30
+  gameplay 11-19 frames a second at 100%; X3 BACKWARD 29-30 at 100% (Matt:
+  "runs in full speed in-game with x3 backwards"), its intro video 65%.
+
+**MMU JIT speed 2 (the Windows CE speed work; Matt 2026-10-14: "I'd
+like to work on the Windows CE Speed now.") built 2026-10-14. Package of
+23:20 (`build/notdc_ps3.pkg`, 1753648 bytes) = commit 2020f69 +
+this. The two new rows default to the old path. HW runs 1-4 2026-10-14/15:
+no fault; the results below the HW steps. Not committed. `.got` 0xF808
+(2.0 KB left) of 0x10000, 0 `r2off`.**
+- Why: HW run 1 of speed 1 (block below), the race at SPEED 87%, per
+  second: ifb 95.9 ms (each pref on the MMU interpreter, ~200K), lookup
+  74.9 ms (114-272K C lookups; the block cache fills ~80% of them), slow
+  r 59.6 ms, w 20.9 ms; the JTC flushed ~160 times (a new ASID drops
+  owner 64), then ~95K fills.
+- Rows (SH4 / SYSTEM page, after MMU SQ Stores; set before boot; the
+  first value is the old path and the default; in `[syscfg]`):
+  - MMU Pref IFB / JIT (`MmuPref`): a block's pref with AT on is
+    compiled: the store queue area test in the block, then a C call
+    (`jmmu_pref`, `jx_pref`); a fault leaves by the block's exception
+    exit, SPC = the pref. IFB: each pref runs on the MMU interpreter, as
+    before.
+  - MMU ASID JTC OFF / ON (`MmuAsidJtc`, with MMU Model FAST only): the
+    JTC of the 8 last ASIDs is kept (32 KB each; the least recently used
+    goes). A switch to a kept ASID restores its JTC; a new ASID starts
+    with an empty JTC. A change of FAST's table, a new MMUCR.SV, an AT
+    edge and the engine choice drop every copy. OFF: a new ASID drops the
+    translated slots, as before.
+- Also, with no row of its own:
+  - The block cache has 2 ways a set (4096 x 2, row MMU Block Cache): a
+    fill takes the way of the same pc, else a stale way, else way 0 moves
+    to way 1. An exception's vector is looked up through the cache too
+    (`jmmu_exc_stub` goes to `loop_mmu_bc`).
+  - With MMU Model FAST, a JTC miss, a block's first fetch and the JIT's
+    pref find a page of FAST's table with no setjmp (`fast_try`); a page
+    not in the table and every other case take the setjmp path as before.
+  - The `[idle]` dump reads a loop's ops at their virtual address through
+    the MMU (`jx_peek16`), so it shows the code of 01E3E9C0.
+- Logs: `[fullmmu] MMU JIT rows: block cache ON (4096 x 2 entries), SQ
+  stores INLINE, pref JIT, ASID JTC ON`; `[jmmu] ms/s: ..., exc N, pref
+  N | block cache ON: fills N, evicts N, gen +N`; and after it the new
+  line `[jmmu] prefs N, ASID switches N (restored N) | hot slow r: pa %
+  ... | hot lookups: pc % ...` (the 4 top physical addresses of the
+  timed slow reads and the 4 top pcs of the timed C lookups, in % of the
+  timed calls).
+- Code: `dc/sh4/sh4_mmu_int.cpp` (`fast_try`, the paths with no setjmp,
+  `jx_pref`, `jx_peek16`), `sh4_mmu_jit.cpp` (`jmmu_pref`, the JTC
+  copies, the 2-way fill, the hot line), `sh4_mmu_jit.h`, `sh4_fullmmu.h`,
+  `rec_v2/decoder.cpp` (pref is not an ifb with the row), `ps3/ps3_jit_mmu.h`
+  (`emit_jmmu_dispatch` with 2 ways, `emit_jmmu_pref`, `emit_jmmu_raise`),
+  `ps3_driver.cpp` (`shop_pref`, cold kind 10, the stub, the idle dump),
+  `ps3_presets.cpp`, `ps3_presets.h`, `ps3_menu.cpp`.
+- PC checks (WSL), all PASS:
+  - `misc/jmmu_check`: 278 ppu-as words (23 new: the 2-way dispatch, two
+    pref forms, the raise). On the PPC64 model: the dispatch against its
+    reference in 7 kinds of sets (a hit in either way, no pc, a wrong key
+    or generation, both ways with the pc), the pref (no call outside the
+    store queues, the call, a fault and its exit, the cycle store):
+    286647 checks. `jmmu_rt.cpp` 126 checks (+ the pref, the ASID copies,
+    the 2 ways, the hot line). `mutate.py` with `JMMU_NOWORDS=1` (the
+    model alone): 183 of 183 planted bugs fail (53 new; 77 in the header,
+    101 in `sh4_mmu_jit.cpp`, 5 in the block functions).
+  - `misc/fullmmu_check`: 86 programs (6 new: the JIT's pref with FAST
+    and FULL, a data access with no setjmp, an odd fetch, the peek with
+    FAST and FULL); `mutate.py` 122 of 122 (19 new; two taken out: "the
+    choice keeps the table" loops for ever, and "the JIT names a UTLB
+    entry" is the same code since the paths with no setjmp).
+  - The other run.sh that read a changed file: fschg, interp, jit8,
+    constprop, div32, clock, exit, mmu, sqstore, sysgate, tcopy, timebase,
+    flash, glpath, maple, pad, rtt, screen, sys20, chd, greuse, dynic,
+    link, sqla, carry, idle, hot, ppe, fv, frpref, vram: all PASS.
+  - Not on the PC: the pref and the 2-way dispatch inside the blocks and
+    the main loop. Only the HW run tests them.
+- HW steps (package of 23:20; the install keeps `nullDC.cfg`; SH4
+  Clock 200, JIT IDLE RULE X30):
+  1. UDP listener on port 18194, only when Matt says so.
+  2. SH4 / SYSTEM: MMU Pref JIT, MMU ASID JTC ON; the rows of speed 1 as
+     in its HW run 1 (SH4 MMU AUTO, SH4 MMU Engine JIT, MMU Model FAST,
+     MMU Block Cache ON, MMU SQ Stores INLINE). VIDEO / DEBUG: LMMODE ON.
+  3. Boot 1: Sega Rally 2 to the race of speed 1's HW run 1 (SPEED 87%).
+     Log: the lines above; note SPEED and fps.
+  4. On a fault (a hang, wrong graphics, a crash): one row back to its
+     old value a boot, in this order: MMU ASID JTC OFF, MMU Pref IFB,
+     MMU Block Cache OFF (the 2 ways), MMU Model FULL (the paths with no
+     setjmp).
+  5. Boot 2: Crazy Taxi, the same rows. The MMU JIT does not run: the
+     game and SPEED as before.
+- HW runs 2026-10-14/15 (package of 23:20, Sega Rally 2, the race of
+  speed 1, SH4 Clock 200, JIT IDLE RULE X30; Matt: the same race, it
+  looked right). Crazy Taxi after run 1: SPEED ~100%.
+  - Runs 1-3, in a row (the disc image in the PS3's cache): rows Pref
+    JIT + ASID JTC ON, Pref JIT + ASID OFF, Pref IFB + ASID OFF. The race
+    draws a frame every vblank (35-45 a second) at SPEED 58-74% in all
+    three; the wait loop at 01E3E9C0 runs 1-2K times a second (speed 1:
+    90-146K). ASID JTC ON, t=100-121 s: SPEED 69.2% against 67.5%: it
+    saves ~31 ms a second of slow reads, its copies cost ~30 ms (~950
+    switches a second, 64 KB each).
+  - Run 4, the first game after a PS3 restart, both rows ON: the wait
+    loop at ~100K turns a second again; the race changes between a frame
+    every 2 vblanks (21 s, SPEED 99.7%; speed 1: 87.4%) and a frame every
+    vblank (30 s, SPEED 78.8%). Whole race (51 s): SPEED 87.4% at 36.9
+    frames a second on screen (speed 1: 86.7% at 27.5). `[jmmu] ms/s`:
+    lookup 39.5, slow r 35.5, w 51.3, ifb 19.2, exc 1.9, pref 78.0 (225;
+    speed 1: 260).
+  - So the game picks its frame rate by the PS3's state, most likely the
+    disc cache (the same title reads took 370-394 ms in the speed 1 run,
+    55-58 ms in runs 1-3), not by the new code. Every boot setting but
+    the two rows was the same as in the speed 1 run.
+
 **MMU JIT speed 1 (the MMU JIT's first speed package) built 2026-10-14
 (Matt: "Yes." to speed work on the MMU JIT). Package of 21:45
 (`build/notdc_ps3.pkg`, 1750384 bytes) = commit 0be5997 + this. HW run
 1 2026-10-14 with the three rows ON (Matt: "Much better!"): results
 below the HW steps. The three rows default ON in source (Matt: "Yes, I
 want them."), and SH4 MMU default AUTO (Matt: "I want AUTO."), not
-packaged. Not committed. `.got` 0xF778 of 0x10000 (2.1 KB left), 0
+packaged. Commit 2020f69 (Matt). `.got` 0xF778 of 0x10000 (2.1 KB left), 0
 `r2off`.**
 - Why: HW run 2 of the MMU JIT (block below), the 3D scene of Sega Rally 2
   at SPEED ~35% (~11 fps), per second: 1.0M block lookups in C, ~425K
@@ -140,7 +538,7 @@ packaged. Not committed. `.got` 0xF778 of 0x10000 (2.1 KB left), 0
 HW SUCCESS 2026-10-14 (Matt: "It booted!"): Sega Rally 2 boots on the
 MMU JIT with row LMMODE ON (OFF gave a black screen); Crazy Taxi as
 before. Results below the HW steps. LMMODE default ON in source
-(Matt: "Keep it as up by default."), not packaged. Not committed. `.got`
+(Matt: "Keep it as up by default."), not packaged. Commit 0be5997 (Matt). `.got`
 0xF600 of 0x10000 (2.5 KB left), 0 `r2off`.**
 - Row SH4 MMU Engine (`MmuJit`, INTERP / JIT; SH4 / SYSTEM page, after
   SH4 MMU; default JIT in source since 2026-10-14 (Matt: "Yes."), INTERP
@@ -257,38 +655,31 @@ before. Results below the HW steps. LMMODE default ON in source
   - SH4 MMU Engine: default JIT in source (Matt: "Yes."), not packaged
     alone (the speed package of 21:45 has it).
 
-**NEXT SESSION (Matt 2026-10-14, after HW run 4: "Check option 3. Save
-it. I'll start a new session."): the JIT form of the SH4 MMU (P38, the
-last item of bundle 20). Built 2026-10-14: see the block above. The notes
-of its start:**
-- What exists: the interpreter form (`dc/sh4/sh4_mmu_int.cpp`, row SH4
-  MMU OFF / AUTO / ON, chosen at each reset by `sh4_fullmmu_select()`),
-  its PC check `misc/fullmmu_check` (55 programs, op tests at AT 0 and 1,
-  61 planted bugs), the `[fullmmu]` stats and diagnostic lines. Package
-  of 17:30 = commit 542229b + bundles 19 and 20, NOT committed.
-- HW facts (the bundle 20 block below): Sega Rally 2 (US),
-  `Run2/Sega Rally 2 (U).cdi`, is detected by AUTO and boots Windows CE;
-  the game then runs on a black screen at SPEED 11.5% (7 renders a
-  second), with no wait loop and no stuck interrupt: most likely only
-  slow. Per second: 4.3K TLB misses, 0.9K API calls (address errors), 21
-  FPU-disable traps, 310 store-queue flushes. A non-Windows CE disc with
-  AUTO keeps the JIT (Crazy Taxi, SPEED 99.5%).
-- The design to follow is the gate of P38 in bundle 20's section
-  (section 7): the flag is set before the first block compiles; the
-  emitter tests it when it compiles a block (no test in the generated
-  code); with the flag: blocks keyed by the virtual address, an exception
-  exit, no fastmem, no inline store-queue stores, no constprop, no
-  DYN_IC. It needs JIT RM 2/3 at ACCEPT (Windows CE sets RM 2 or 3) and
-  Maple VBlank DMA FIXED.
-- Traps learned in bundle 20: `_vmem` holds handler ids 0-7 only (an
-  eighth froze every P4 access; `misc/sys20_check` counts them); the
-  build has -fno-exceptions (the interpreter leaves an op by
-  `__builtin_longjmp`); `sh4_cpu.ResetCache` is a no-op under the MMU
-  engine; `.got` is 0xF3D8 of 0x10000 (about 3 KB left: new big files
-  may need `-mminimal-toc`, as `sh4_selftest.o`).
-- Not chosen: a 10-15 minute run on the black screen (it would prove
-  "only slow"), and a bigger translation cache in the interpreter (the
-  460K full UTLB scans a second; estimate 15-25% faster).
+**NEXT SESSION (Matt 2026-10-14: "I'd like to work on the Windows CE
+Speed now."): the Windows CE speed work on the MMU JIT. Its second
+package, MMU JIT speed 2, is built (block above); its HW run is open.**
+- Speed 2's HW runs are done (block above, no fault). Matt chooses the
+  defaults of the rows MMU Pref and MMU ASID JTC. A speed compare of
+  Sega Rally 2 needs the first boot after a PS3 restart (the disc cache
+  changes the game's frame rate), or GD-ROM Timing FIXED or SEEK.
+- The GD-ROM Timing row's HW runs are done: no fix (its block, at the top
+  of this section). Matt asked for full speed in the race: its 30 fps phases
+  run at 99.7%, its 60 fps phases at ~79% (the MMU C costs, ~225 ms a
+  second, and the wait loop at 01E3E9C0 are the known costs left).
+- Then the costs its `[jmmu]` lines show. Left after speed 1 (the race,
+  ms a second): lookup 74.9, slow r 59.6, w 20.9, exc 7.2, compile 1.5.
+  The hot line names the physical addresses of the slow reads and the
+  pcs that miss the block cache: read it before a new item is chosen.
+- Facts to keep: JIT IDLE RULE X30 is right for Sega Rally 2 (X3
+  BACKWARD: SPEED 52%); it needs LMMODE ON; its `[idle]` loop at
+  01E3E9C0 runs 91-97K times a second and is never skipped.
+- The new idle rule level X3 + WAITS X30 (block at the top of this
+  section) has its HW run open: Donald Duck first.
+- Traps: `.got` 0xF808 of 0x10000 (2.0 KB left: a new big file may need
+  `-mminimal-toc`, as `sh4_selftest.o`); `_vmem` holds handler ids 0-7
+  only; the build has -fno-exceptions (the MMU interpreter leaves an op
+  by `__builtin_longjmp`); the jmmu mutants also run with
+  `JMMU_NOWORDS=1` (the model alone must catch the header's).
 
 **Bundle 20 (SH4 correctness tail) built 2026-10-14 (Matt: "Let's work
 on bundle 20"). Package of 16:40 (`build/notdc_ps3.pkg`, 1735792 bytes) =
@@ -3726,7 +4117,7 @@ on 2026-10-11. It also holds bundle 7's four defaults, as the package of
   | JIT BCACHE | `JitBcache` | OFF / ON | 5.3 `bcache` | ON (1) since 2026-10-11 (HW run 6); OFF in the package of 22:43 |
   | JIT PR MOVES | `JitPrMoves` | OFF / ON | 5.39 | OFF (0) |
   | JIT RM 2/3 | `JitRmAny` | VERIFY / ACCEPT | P57 | VERIFY (0) |
-  | JIT IDLE RULE | `JitIdleRule` | X30 / X3 BACKWARD / OFF | P71 | X30 (0), Matt's verdict 2026-10-12 |
+  | JIT IDLE RULE | `JitIdleRule` | X30 / X3 BACKWARD / OFF / X3 + WAITS X30 / AUTO (both 2026-10-15) | P71 | X30 (0), Matt's verdict 2026-10-12 |
   | FPU DN | `FpuDn` | OFF / ON | 5.40 | removed from source 2026-10-12 (Matt); still in the package of 22:43 |
   | JIT MAC (EMULATION, old row) | `JitMac` | OFF / ON | 5.3 `JitMac` | OFF (0) |
 
@@ -14128,7 +14519,11 @@ Main gains:
      uses X3 only while the host has spare time (not designed; the bill
      is in the compiled block today); or X3 for all games after the wait
      loops below cost nothing (points 2 to 4: way (A), way (B) as
-     Reicast, the timer poll).
+     Reicast, the timer poll). Built 2026-10-15 as a fourth level: X3 +
+     WAITS X30 (X3 BACKWARD, but JIT IDLE SKIP's pure wait loops bill
+     x30); HW: no gain over X3 BACKWARD. Then a fifth, AUTO (X3 BACKWARD
+     while the host keeps up, X30 when SPEED falls), no HW run (section
+     0).
   2. Way (A), the wider JIT IDLE SKIP: Looney Tunes waits on a memory
      counter in a 3-block loop (8C01453E, 8C0713D0, 8C014544; 46.6% of
      the JIT weight at X3, run 12). The candidates would take a closing
@@ -15102,7 +15497,7 @@ Main gains:
 - HW: a two-disc game at its swap prompt; a GDI set with spaces in its
   file names; ChuChu Rocket CD-DA.
 
-### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, HW runs 1-4 of the interpreter form (section 0); P38's JIT form built 2026-10-14, no HW run; new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
+### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, HW runs 1-4 of the interpreter form (section 0); P38's JIT form built 2026-10-14, HW SUCCESS (Sega Rally 2), speed package 1 HW SUCCESS, speed package 2 HW no fault; new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
 
 - Items: P46 (Flycast's SH4 op tests as `misc/interp_check` and a boot
   self-test), P32 (fneg with PR=1, mac.w with S=1), P64 (the FPSCR cause
@@ -15191,6 +15586,15 @@ Main gains:
   SH4 MMU Engine default JIT. Block "MMU JIT speed 1" of section 0. HW
   run 1: the Sega Rally 2 race SPEED 35% -> 87%, menus 100%; Crazy Taxi
   as before. The three rows default ON in source (Matt).
+- Built 2026-10-14 (Matt: "I'd like to work on the Windows CE Speed
+  now."): MMU JIT speed 2, rows MMU Pref IFB / JIT and MMU ASID JTC OFF /
+  ON (default the old path), a 2-way block cache, FAST paths with no
+  setjmp, the `[jmmu]` hot line. Block "MMU JIT speed 2" of section 0. HW
+  runs 1-4: no fault; the race's 30 fps phases run at 99.7% (speed 1:
+  87.4%), but the game's frame rate follows the PS3 disc cache.
+- Built 2026-10-15 (Matt: "Yes."): the row GD-ROM Timing (HOST / FIXED /
+  SEEK 100 / SEEK 330), so the PS3 HDD's time no longer reaches a game.
+  Block "GD-ROM Timing row" of section 0. No HW run.
 
 ### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 

@@ -312,6 +312,7 @@ static const char* k_gdasync[]   = { "OFF", "DATA", "+ CD-DA", NULL };
 static const char* k_gdstatus[]  = { "OLD", "READ STOPS CD-DA", "+ TIMING", NULL };
 static const char* k_gdpos[]     = { "OLD", "REQ_STAT", "+ GET_SCD", NULL };
 static const char* k_gdspeed[]   = { "FAST", "REAL", NULL };
+static const char* k_gdtiming[]  = { "HOST", "FIXED", "SEEK 100", "SEEK 330", NULL };
 static const char* k_cddamiss[]  = { "OFF", "PLAY AHEAD", "+ SILENCE", "+ LOOP AHEAD", NULL };
 static const char* k_cddarules[] = { "OFF", "ON", "+ LEAD-OUT", NULL };
 static const char* k_div32[]     = { "OLD", "FIXED", NULL };
@@ -333,9 +334,10 @@ static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
 static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
 static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
 static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
-static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", NULL };
+static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
+static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", "FULL (2 STICKS)", NULL };
@@ -361,6 +363,7 @@ static const char* k_fullmmu[]   = { "OFF", "AUTO", "ON", NULL };
 static const char* k_mmujit[]    = { "INTERP", "JIT", NULL };
 static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
 static const char* k_sqstore[]   = { "C", "INLINE", NULL };
+static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -533,8 +536,8 @@ static Option s_video[] = {
 	  "Logs [IFB] interpreter-fallback counts per opcode. Set before boot." },
 	{ "JIT C-Calls",     &g_jit_ccalls_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Logs [CC] C call-outs, [mem64] and the [stall] slowest frame each second. Live." },
-	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Counts JIT block entries: [HOTC] census, code dumps. Slower. Set before boot." },
+	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_hotblocks, 0, 0,0,0, NULL,
+	  "[HOTC] census, dumps. ON: 3K+ vertex frames; ALL WINDOWS: every second. Slower. Set before boot." },
 	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SPE wake test at boot, [spe] counts in play. Set before boot." },
 	{ "SPE Draw",        &g_spe_draw_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -604,7 +607,7 @@ static Option s_jit[] = {
 	{ "JIT RM 2/3",      &g_jit_rm_any_preset,    OPT_CHOICE, k_rmany,     0, 0,0,0, NULL,
 	  "ACCEPT: FPSCR.RM 2 or 3 runs as round to nearest, no hang (P57). Set before boot." },
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
-	  "X3 BACKWARD: more frames in some games, slower in others (P71). Set before boot." },
+	  "X3 BACKWARD: more frames in some games. AUTO: X3 BACKWARD, X30 when SPEED falls. Set before boot." },
 	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
 	  "A listed wait loop ends the timeslice (Looney Tunes), as Reicast. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
@@ -627,6 +630,8 @@ static Option s_gdrom[] = {
 	  "Read-ahead at CD_PLAY; + SILENCE: no stall at a miss; + LOOP AHEAD: no gap at a loop. Live." },
 	{ "GD-ROM Speed",    &g_gd_speed_preset,      OPT_CHOICE, k_gdspeed,   0, 0,0,0, NULL,
 	  "REAL paces disc DMA at 1.8 MB/s as a Dreamcast; loads take longer (P22). Live." },
+	{ "GD-ROM Timing",   &g_gd_timing_preset,     OPT_CHOICE, k_gdtiming,  0, 0,0,0, NULL,
+	  "FIXED: the SH4 waits for the HDD, so a game never sees it; SEEK: + a seek on DMA reads. Live." },
 	{ "GD DMA Fix",      &g_gd_dma_fix_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A DMA of length 0 is 32 MB; a DMA longer than its read stops (P22, P9). Live." },
 	{ "GD Command Fix",  &g_gd_cmd_fix_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -846,6 +851,10 @@ static Option s_sys[] = {
 	  "The MMU JIT finds the next block in a cache, not in C (with AT on: MMU Model FAST). Set before boot." },
 	{ "MMU SQ Stores",   &g_mmu_sq_preset,        OPT_CHOICE, k_sqstore,   0, 0,0,0, NULL,
 	  "INLINE: an MMU JIT block writes the store queues itself, not through C. Set before boot." },
+	{ "MMU Pref",        &g_mmu_pref_preset,      OPT_CHOICE, k_mmupref,   0, 0,0,0, NULL,
+	  "JIT: an MMU block's pref goes to the store queue flush, not the MMU interpreter. Set before boot." },
+	{ "MMU ASID JTC",    &g_mmu_asidjtc_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "With MMU Model FAST, the JIT keeps the data page cache of 8 recent processes. Set before boot." },
 };
 
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.

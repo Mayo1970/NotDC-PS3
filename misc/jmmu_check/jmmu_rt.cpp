@@ -128,6 +128,15 @@ u32 jx_fetch(u32 va, u32* pa)
 }
 static u32 g_ifb_ret, g_ifb_pteh, g_ifb_args[3];
 static int g_ifb_calls;
+// Row MMU Pref JIT: the store queue flush of sh4_mmu_int.cpp, recorded; its code is the next one scripted.
+static u32 g_pref_code, g_pref_last;
+static int g_pref_calls;
+u32 jx_pref(u32 dest)
+{
+	g_pref_calls++;
+	g_pref_last = dest;
+	return g_pref_code;
+}
 u32 jx_ifb(u32 op, u32 epc, u32 slot)
 {
 	g_ifb_calls++;
@@ -203,7 +212,7 @@ static void world(const char* name)
 	bm_reset_all();
 	g_log.clear();
 	g_mmu_fast = false;
-	g_jmmu_bcache = g_jmmu_sq = false;
+	g_jmmu_bcache = g_jmmu_sq = g_jmmu_pref = g_jmmu_asidjtc = false;
 	g_faw.clear();
 	g_fast_flushes = 0;
 	jmmu_select(true);
@@ -625,7 +634,7 @@ static void t_fast()
 }
 
 // ---- row MMU Block Cache: the fills, their key and the generation's moves ----
-static const JDisp& jd(u32 pc) { return g_jdisp[jdisp_index(pc)]; }
+static const JDisp& jd(u32 pc, u32 way = 0) { return g_jdisp[jdisp_index(pc)][way]; }
 
 static void t_bcache()
 {
@@ -642,7 +651,7 @@ static void t_bcache()
 	      jd(0x8C010020).pc, jd(0x8C010020).key, jd(0x8C010020).gen, jd(0x8C010020).code);
 	CHECK(jmmu_dkey() == jd(0x8C010020).key, "jmmu_dkey %08X", jmmu_dkey());
 	CHECK(jmmu_lookup(0x8C010020) == a && jd(0x8C010020).code == (u32)(uintptr_t)a, "the found block's fill");
-	CHECK(jdisp_index(0x8C010020) == ((0x8C010020u ^ (0x8C010020u >> 12)) >> 1) % JDISP_N, "the index");
+	CHECK(jdisp_index(0x8C010020) == ((0x8C010020u ^ (0x8C010020u >> 12)) >> 1) % JDISP_SETS, "the index");
 
 	world("block cache: AT on fills only with MMU Model FAST");
 	g_jmmu_bcache = true;
@@ -695,7 +704,7 @@ static void t_time()
 	s_tick = 15;
 	jmmu_rd32(0x8C005000);
 	jmmu_stats(1.0);
-	CHECK(logged("[jmmu] ms/s: lookup 16.0, compile 1.0, slow r 16.0 w 0.0, ifb 0.0, exc 0.0 | block cache OFF"),
+	CHECK(logged("[jmmu] ms/s: lookup 16.0, compile 1.0, slow r 16.0 w 0.0, ifb 0.0, exc 0.0, pref 0.0 | block cache OFF"),
 	      "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
 	g_log.clear();
 	s_tick = 15;
@@ -711,6 +720,190 @@ static void t_time()
 	jmmu_stats(1.0);
 	CHECK(logged("[jmmu] ms/s: lookup 32.0, compile 1.0,"), "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
 	g_fake_step = 100;
+}
+
+// ---- row MMU Pref JIT, the JIT side: the flush's code, a fault left as a data access leaves it ----
+static void t_pref()
+{
+	world("pref: a flush, then a fault left for the block's exit");
+	g_pref_calls = 0;
+	g_pref_code = 0;
+	CHECK(jmmu_pref(0xE0000020) == 0 && g_pref_calls == 1 && g_pref_last == 0xE0000020 && g_jmmu_fault == 0, "the flush");
+	g_pref_code = 0x040;
+	CHECK(jmmu_pref(0xE0100000) == 0x040 && g_jmmu_fault == 0x040 && s_js.data_exc == 1, "the fault %03X", g_jmmu_fault);
+	g_jmmu_fault = 0;
+	g_pref_code = 0;
+	jmmu_stats(1.0);
+	CHECK(logged("[jmmu] prefs 2,"), "the count: %s", g_log.empty() ? "none" : g_log.back().c_str());
+
+	world("pref: a sampled flush in the ms line");
+	g_fake_step = 79800;	// 1 ms a call
+	s_tick = 15;
+	jmmu_pref(0xE0000020);
+	jmmu_stats(1.0);
+	CHECK(logged("exc 0.0, pref 16.0 | block cache OFF"), "the line: %s", g_log.empty() ? "none" : g_log.back().c_str());
+	g_fake_step = 100;
+}
+
+// ---- row MMU ASID JTC: a JTC copy per recent ASID, while the translations hold ----
+static void pteh(u32 asid)
+{
+	g_xl = { 0, 0xFF000000, -1 };
+	jmmu_wr32(0xFF000000, asid);
+}
+
+static void t_asid()
+{
+	world("ASID JTC: a switch and its return keep the slots of both");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	read_from(0x8C005000, 0x8C005000, -1);
+	pteh(5);
+	CHECK(!owned_kept() && !p1_kept(), "a new ASID with no copy kept a slot");
+	read_from(0x00402000, 0x0C402000, 64);
+	pteh(0);
+	CHECK(owned_kept() && p1_kept() && slot(0, 0x00402000).tag == 0xFFFFFFFF, "ASID 0's slots: %d %d %08X", owned_kept(),
+	      p1_kept(), slot(0, 0x00402000).tag);
+	pteh(5);
+	CHECK(!owned_kept() && slot(0, 0x00402000).tag == 0x00402000, "ASID 5's slot");
+	CHECK(s_js.asid == 3 && s_js.asid_restores == 2, "%u switches, %u restores", s_js.asid, s_js.asid_restores);
+	// The restored slots are not listed: a drop of owner 64 flushes every table.
+	jmmu_fast_changed();
+	CHECK(slot(0, 0x00402000).tag == 0xFFFFFFFF, "a drop of owner 64 kept a restored slot");
+
+	world("ASID JTC: a change of the table or of MMUCR.SV drops the copies");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	pteh(5);
+	jmmu_fast_changed();
+	pteh(0);
+	CHECK(!owned_kept() && s_js.asid_restores == 0, "a copy came back after a table change");
+	read_from(0x00401000, 0x0C401000, 64);
+	pteh(5);
+	g_xl = { 0, 0xFF000010, -1 };
+	jmmu_wr32(0xFF000010, 1 | 0x100);
+	const u32 restores = s_js.asid_restores;
+	pteh(0);
+	CHECK(!owned_kept() && s_js.asid_restores == restores, "a copy came back after a new SV");
+
+	world("ASID JTC: 8 copies, the least recently used goes");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	for (u32 a = 1; a <= 8; a++)
+		pteh(a);
+	pteh(2);
+	CHECK(s_js.asid_restores == 1, "a recent ASID's copy is gone");
+	pteh(0);
+	CHECK(!owned_kept() && s_js.asid_restores == 1, "the oldest copy stayed");
+
+	world("ASID JTC: with 8 copies, the copy that comes back is not saved over");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	for (u32 a = 1; a <= 8; a++)
+		pteh(a);
+	pteh(0);
+	CHECK(owned_kept() && s_js.asid_restores == 1, "ASID 0, the oldest: %d, %u restores", owned_kept(),
+	      s_js.asid_restores);
+
+	world("ASID JTC: a return saves into the copy of the ASID it leaves");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	for (u32 a = 1; a <= 7; a++)
+		pteh(a);
+	for (int k = 0; k < 4; k++)
+	{
+		pteh(6);
+		pteh(7);
+	}
+	pteh(0);
+	CHECK(owned_kept() && s_js.asid_restores == 9, "ASID 0's copy: %d, %u restores", owned_kept(), s_js.asid_restores);
+
+	world("ASID JTC: an AT edge drops the copies");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	pteh(5);
+	CCN_MMUCR.reg_data = 0;
+	jmmu_lookup(0x8C010000);
+	CCN_MMUCR.reg_data = 1;
+	jmmu_lookup(0x8C010000);
+	pteh(0);
+	CHECK(!owned_kept() && s_js.asid_restores == 0, "a copy came back after an AT edge");
+
+	world("ASID JTC: the choice drops the copies");
+	g_mmu_fast = true;
+	g_jmmu_asidjtc = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	pteh(5);	// ASID 0's copy at generation 1, as after the choice
+	jmmu_select(true);
+	pteh(0);
+	CHECK(!owned_kept() && s_js.asid_restores == 0, "a copy came back after the choice");
+
+	world("ASID JTC OFF: a new ASID drops the translated slots, as before");
+	g_mmu_fast = true;
+	read_from(0x00401000, 0x0C401000, 64);
+	read_from(0x8C005000, 0x8C005000, -1);
+	pteh(5);
+	pteh(0);
+	CHECK(!owned_kept() && p1_kept() && s_js.asid == 2 && s_js.asid_restores == 0, "OFF restored or dropped P1");
+}
+
+// ---- the block cache's two ways: a second pc of the set, then way 0 moves to way 1 ----
+static void t_bcache2()
+{
+	world("block cache: 2 ways a set; a third pc moves way 0 to way 1");
+	g_jmmu_bcache = true;
+	CCN_MMUCR.reg_data = 0;
+	jmmu_select(true);
+	set_md(true);
+	// Address bits 25 and up are not in the index: the three pcs share a set.
+	const u32 p0 = 0x8C010020, p1 = p0 + 0x02000000, p2 = p0 + 0x04000000;
+	CHECK(jdisp_index(p0) == jdisp_index(p1) && jdisp_index(p1) == jdisp_index(p2), "not one set");
+	void* a = jmmu_lookup(p0);
+	void* b = jmmu_lookup(p1);
+	CHECK(jd(p0, 0).pc == p0 && jd(p0, 1).pc == p1 && jd(p0, 1).code == (u32)(uintptr_t)b && s_js.bc_evicts == 0,
+	      "ways %08X %08X", jd(p0, 0).pc, jd(p0, 1).pc);
+	jmmu_lookup(p0);
+	CHECK(jd(p0, 0).pc == p0 && jd(p0, 1).pc == p1 && s_js.bc_evicts == 0, "a pc of way 0 moved");
+	void* c = jmmu_lookup(p2);
+	CHECK(jd(p0, 0).pc == p2 && jd(p0, 0).code == (u32)(uintptr_t)c && jd(p0, 1).pc == p0 &&
+	      jd(p0, 1).code == (u32)(uintptr_t)a && s_js.bc_evicts == 1, "after the third: %08X %08X, %u evicts",
+	      jd(p0, 0).pc, jd(p0, 1).pc, s_js.bc_evicts);
+	jmmu_lookup(p0);
+	CHECK(jd(p0, 1).pc == p0 && jd(p0, 0).pc == p2 && s_js.bc_evicts == 1, "a pc of way 1 moved");
+	jmmu_code_cleared();
+	jmmu_lookup(p1);
+	CHECK(jd(p0, 0).pc == p1 && jd(p0, 0).gen == g_jdgen && s_js.bc_evicts == 1, "a stale way not taken first");
+}
+
+// ---- the hot line: the timed slow reads' physical addresses and the C lookups' pcs ----
+static void t_hot()
+{
+	world("the hot line: the top addresses and pcs of the timed calls; the choice empties the tables");
+	s_tick = 15;
+	jmmu_lookup(0x8C0F0000);
+	jmmu_select(true);
+	for (int i = 0; i < 4; i++)
+	{
+		g_xl = { 0, i < 3 ? 0x0C401004u : 0x0C402008u, -1 };
+		s_tick = 15;
+		jmmu_rd32(0x00401004);
+	}
+	jmmu_rd32(0x00403000);
+	s_tick = 15;
+	jmmu_lookup(0x8C010000);
+	jmmu_stats(1.0);
+	CHECK(logged("| hot slow r: 0C401004 75% 0C402008 25% | hot lookups: 8C010000 100%"), "the line: %s",
+	      g_log.empty() ? "none" : g_log.back().c_str());
+	g_log.clear();
+	jmmu_lookup(0x8C010000);
+	jmmu_stats(1.0);
+	CHECK(logged("| hot slow r: | hot lookups:"), "the tables not emptied: %s", g_log.empty() ? "none" : g_log.back().c_str());
 }
 
 int main()
@@ -735,6 +928,10 @@ int main()
 	t_fast();
 	t_bcache();
 	t_time();
+	t_pref();
+	t_asid();
+	t_bcache2();
+	t_hot();
 	printf("%s: %d runtime checks, %d failed\n", g_fails ? "FAIL" : "PASS", g_checks, g_fails);
 	return g_fails ? 1 : 0;
 }

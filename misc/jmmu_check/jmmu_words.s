@@ -212,14 +212,19 @@ start:
 	addis 3,0,0x8C01
 	ori 3,3,0x2345
 	b start
-# emit_jmmu_dispatch(0x10298000, 0x102B8AB0, 0x102BCDE0, r30, 0x114, 0x11C): three lows that are negative
+# emit_jmmu_dispatch(0x10298000, 0x102B8AB0, 0x102BCDE0, r30, 0x114, 0x11C), 2 ways: three lows that are negative
 	rlwinm 11,3,20,12,31
 	xor 11,11,3
-	rlwinm 11,11,3,16,27
+	rlwinm 11,11,4,15,26
 	addis 11,11,0x102A
 	lwz 12,-0x8000(11)
 	cmplw 0,12,3
+	beq 0,2f
+	lwz 12,-0x7FF0(11)
+	cmplw 0,12,3
 	bne 0,1f
+	addi 11,11,16
+2:
 	lwz 12,0x114(30)
 	lwz 0,0x11C(30)
 	rlwinm 12,12,2,31,31
@@ -292,3 +297,26 @@ start:
 	stw 6,-0x7FBC(12)
 	b start
 1:
+# emit_jmmu_pref: areg r20 with the cycle store at 0x9C, then r3 without it; each label marked at its end
+	rlwinm 0,20,6,26,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	ori 3,20,0
+	clrldi 3,3,32
+	stw 29,0x9C(30)
+	bl .
+	cmpwi 0,3,0
+	bne 0,1f
+1:
+	rlwinm 0,3,6,26,31
+	cmplwi 0,0,0x38
+	bne 0,1f
+	clrldi 3,3,32
+	bl .
+	cmpwi 0,3,0
+	bne 0,1f
+1:
+# emit_jmmu_raise: r3 = the SPC, b stub (start)
+	addis 3,0,0x8C01
+	ori 3,3,0x2345
+	b start

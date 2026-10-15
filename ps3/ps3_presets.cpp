@@ -130,6 +130,7 @@ int g_gd_scd_q_preset      = 1;   // 1 = GET_SCD format 1 is 14 bytes of Q data,
 int g_cdda_rules_preset    = 1;   // 1 = Flycast's CD-DA end, resume and repeat rules (P61, HW), 2 = also the lead-out stop (P82)
 int g_toc_fields_preset    = 1;   // 1 = TOC entries with ADR 1, a data lead-out, the GD low-density lead-out after track 2 (P23, HW)
 int g_gd_speed_preset      = 1;   // 1 = GD-DMA paced at 1.8 MB/s, a last small chunk at 25 MB/s (P22, HW)
+int g_gd_timing_preset     = 0;   // 1 = the SH4 waits for a late disc read, 2, 3 = also a 100, 330 ms seek on DMA reads
 int g_gd_dma_fix_preset    = 1;   // 1 = SB_GDLEN 0 is 32 MB, a DMA longer than its read stops at the read's end (P22, P9, HW)
 int g_cdda_miss_preset     = 2;   // 1 = read-ahead from CD_PLAY, 2 = a ring miss plays silence (5.34, HW), 3 = also the loop head
 int g_gd_cmd_fix_preset    = 1;   // 1 = unknown ATA, EXEC_DIAG, slave drive, CD_READ2 length and length clamps as Flycast (P22, HW)
@@ -140,7 +141,8 @@ int g_gdi_paths_preset     = 1;   // 1 = a '\' in a GDI track path opens as '/' 
 int g_disc_swap_preset     = 1;   // 1 = TRIANGLE in the SELECT menu changes the disc (P34)
 int g_arm7_jit_preset      = 5;   // ARM7 recompiler level 0..5, 0 = cached interpreter
 int g_ifb_probe_preset     = 0;   // 1 = [IFB] interpreter-fallback counts per opcode, read at compile time
-int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot
+int g_hotblocks_preset     = 0;   // 1 = JIT block entry counts, [HOTC] census and code dumps (5.18), set before boot;
+                                  // 1 counts frames of 3K+ vertices, 2 = every window (an FMV too)
 int g_spe_bell_preset      = 0;   // 1 = SPE doorbell ping test at boot, then TA batch rings (5.12 S0)
 int g_spe_draw_preset      = 1;   // 1 = the SPU decodes the TA stream and the render thread draws its lists (5.12 S3, 5.16 HW)
 int g_spe_wait_yield_preset = 0;  // 1 = the render thread's SPU fence wait leaves the PPE core to the SH4 thread (5.16)
@@ -181,7 +183,9 @@ int g_vblank_int_reset_preset = 1; // 1 = SPG_VBLANK_INT resets to 0x00150104, a
 int g_jit_bcache_preset    = 1;   // 1 = dynamic block ends look up the flat {addr, code} table (5.3 bcache, HW)
 int g_jit_pr_moves_preset  = 0;   // 1 = fmov, flds and fsts stay native in a PR=1 block (5.39)
 int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to nearest; 0 hangs in a verify (P57)
-int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles (P71)
+int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles,
+                                  // 3 = as 1, but a pure wait loop x30, 4 = AUTO: 1 or 0 by host load (P71)
+int g_jit_idle_rule_now    = 1;   // AUTO's level now (ps3_idle_auto.h); the decoder reads get_jit_idle_rule()
 int g_jit_idle_hash_preset = 0;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
 int g_jit_sq_copy_preset   = 0;   // 1 = SQ shape for stores whose block PREFs through a copy of their base register
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
@@ -253,6 +257,8 @@ int g_mmu_jit_preset       = 1;   // the full MMU's engine: 0 the interpreter, 1
 int g_mmu_fast_preset      = 1;   // 1 = each TLB entry loaded stays; no ITLB, protection or first-write checks (FAST_MMU, HW)
 int g_mmu_bcache_preset    = 1;   // 1 = the MMU JIT finds the next block in a cache before its C lookup (HW)
 int g_mmu_sq_preset        = 1;   // 1 = an MMU block writes the store queues itself, not through C (HW)
+int g_mmu_pref_preset      = 0;   // 1 = an MMU block's pref calls the store queue flush, not the MMU interpreter
+int g_mmu_asidjtc_preset   = 0;   // 1 = with MMU Model FAST, the JTC of each recent ASID is kept for its next switch
 
 struct CfgItem { const char* key; int* val; };
 
@@ -367,6 +373,7 @@ static const CfgItem s_items[] = {
 	{ "CddaRules",     &g_cdda_rules_preset },
 	{ "TocFields",     &g_toc_fields_preset },
 	{ "GdSpeed",       &g_gd_speed_preset },
+	{ "GdTiming",      &g_gd_timing_preset },
 	{ "GdDmaFix",      &g_gd_dma_fix_preset },
 	{ "CddaMiss",      &g_cdda_miss_preset },
 	{ "GdCmdFix",      &g_gd_cmd_fix_preset },
@@ -423,6 +430,8 @@ static const CfgItem s_items[] = {
 	{ "MmuFast",       &g_mmu_fast_preset },
 	{ "MmuBlockCache", &g_mmu_bcache_preset },
 	{ "MmuSqStores",   &g_mmu_sq_preset },
+	{ "MmuPref",       &g_mmu_pref_preset },
+	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -549,6 +558,7 @@ static const CfgItem s_gd_items[] = {
 	{ "TocFields",     &g_toc_fields_preset },
 	{ "CddaMiss",      &g_cdda_miss_preset },
 	{ "GdSpeed",       &g_gd_speed_preset },
+	{ "GdTiming",      &g_gd_timing_preset },
 	{ "GdDmaFix",      &g_gd_dma_fix_preset },
 	{ "GdCmdFix",      &g_gd_cmd_fix_preset },
 	{ "GdSetMode",     &g_gd_set_mode_preset },
@@ -732,6 +742,8 @@ static const CfgItem s_sys_items[] = {
 	{ "MmuFast",       &g_mmu_fast_preset },
 	{ "MmuBlockCache", &g_mmu_bcache_preset },
 	{ "MmuSqStores",   &g_mmu_sq_preset },
+	{ "MmuPref",       &g_mmu_pref_preset },
+	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
 };
 #define SYS_ITEMS (sizeof(s_sys_items) / sizeof(s_sys_items[0]))
 
@@ -972,6 +984,7 @@ int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
 int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
+int get_jit_idle_rule()        { return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
 int get_flash_defaults_preset() { return g_flash_defaults_preset; }
@@ -1017,6 +1030,7 @@ int get_gd_scd_q_preset()      { return g_gd_scd_q_preset; }
 int get_cdda_rules_preset()    { return g_cdda_rules_preset; }
 int get_toc_fields_preset()    { return g_toc_fields_preset; }
 int get_gd_speed_preset()      { return g_gd_speed_preset; }
+int get_gd_timing_preset()     { return g_gd_timing_preset; }
 int get_gd_dma_fix_preset()    { return g_gd_dma_fix_preset; }
 int get_cdda_miss_preset()     { return g_cdda_miss_preset; }
 int get_gd_cmd_fix_preset()    { return g_gd_cmd_fix_preset; }

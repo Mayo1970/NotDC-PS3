@@ -19,7 +19,7 @@ void* emit_GetCCPtr() { return &g_code[g_n]; }
 #include "emitter/PPCEmit/ppc_emitter.h"
 
 // The fake C functions, by the pointer the emitters get.
-enum { FN_RD8, FN_RD16, FN_RD32, FN_RD64, FN_WR8, FN_WR16, FN_WR32, FN_WR64, FN_COUNT };
+enum { FN_RD8, FN_RD16, FN_RD32, FN_RD64, FN_WR8, FN_WR16, FN_WR32, FN_WR64, FN_PREF, FN_COUNT };
 static char g_fn_mark[FN_COUNT];
 static void* fnp(int id) { return &g_fn_mark[id]; }
 
@@ -116,6 +116,11 @@ static void test_words()
 		if (o.sqmd)
 			o.sqmd->MarkLabel();
 	}
+	JmmuCold pc_c = { 30, 0x48, 0x1023AABC, 0x8C012345, 0x9C, &g_code[0], &g_code[0] };
+	emit_jmmu_pref(pc_c, 20, fnp(FN_PREF))->MarkLabel();
+	pc_c.cyc_ofs = 0;
+	emit_jmmu_pref(pc_c, 3, fnp(FN_PREF))->MarkLabel();
+	emit_jmmu_raise(pc_c);
 	const u32 want = (u32)(sizeof(k_ref) / sizeof(k_ref[0]));
 	char d[96];
 	snprintf(d, sizeof(d), "%u words, ppu-as %u", g_n, want);
@@ -207,7 +212,7 @@ static void fake_call(Cpu& c, int fn)
 		p.why = "the wrong C function";
 	else if (c.r[3] != p.va)
 		p.why = "r3 is not the address, zero-extended";
-	else if (fn >= FN_WR8 && c.r[4] != p.r4)
+	else if (fn >= FN_WR8 && fn <= FN_WR64 && c.r[4] != p.r4)
 		p.why = "r4 is not the value as the C function takes it";
 	c.r[3] = fn == FN_RD64 ? p.ret : (p.ret & 0xFFFFFFFFull) | (rnd() << 32);
 	stm(c, p.fault_addr, 4, p.fault);
@@ -218,13 +223,13 @@ static void fake_call(Cpu& c, int fn)
 	c.cr0 = (u32)(rnd() & 14);
 }
 
-// Runs from word 0 until the pc reaches one of the two stop words; returns it, or -1 with why set.
-static int run(Cpu& c, u32 stop_a, u32 stop_b)
+// Runs from word 0 until the pc reaches one of the stop words; returns it, or -1 with why set.
+static int run(Cpu& c, u32 stop_a, u32 stop_b, u32 stop_c = 0xFFFFFFFF)
 {
 	u32 pc = 0;
 	for (int steps = 0; steps < 4000; steps++)
 	{
-		if (pc == stop_a || pc == stop_b)
+		if (pc == stop_a || pc == stop_b || pc == stop_c)
 			return (int)pc;
 		if (pc >= CODE_WORDS)
 		{
@@ -633,28 +638,60 @@ static u32 ref_key(u32 sr, u32 fpscr, u32 pteh)
 	       (pteh & 0xFF) << 8;
 }
 
+// The way the dispatch takes: the first whose pc matches, a hit if its key and generation match too.
+static int ref_way(u32 set, u32 pc, u32 key, u32 gen)
+{
+	for (u32 w = 0; w < 2; w++)
+		if ((u32)host_ld(set + w * 16, 4) == pc)
+			return (u32)host_ld(set + w * 16 + 4, 4) == key && (u32)host_ld(set + w * 16 + 8, 4) == gen ? (int)w : -1;
+	return -1;
+}
+
+static const u32 DONE1 = 1925;
+
 static void test_dispatch(int cases)
 {
 	char d[160];
-	int kinds[4] = {};
+	int kinds[7] = {};
 	for (int n = 0; n < cases; n++)
 	{
 		const u32 pc = (u32)rnd(), sr = (u32)rnd(), pteh = (u32)rnd(), gen = (u32)rnd();
 		// FPSCR's RM 1 in a quarter of the cases, so the key's bit 4 is seen set.
 		const u32 fpscr = (rnd() & 3) ? (u32)rnd() : (((u32)rnd() & ~3u) | 1);
-		const int kind = (int)(rnd() % 4);	// a hit, then a wrong pc, key, generation
-		u32 epc = pc, ekey = ref_key(sr, fpscr, pteh), egen = gen;
-		if (kind == 1)
-			epc ^= 1u << (rnd() % 32);
-		else if (kind == 2)
-			ekey ^= 1u << (rnd() % 32);
-		else if (kind == 3)
-			egen ^= 1u << (rnd() % 32);
-		const u32 e = DTBL + ref_index(pc) * 16;
-		host_st(e, 4, epc);
-		host_st(e + 4, 4, ekey);
-		host_st(e + 8, 4, egen);
-		host_st(e + 12, 4, CODE32 + 4 * DONE);
+		const u32 key = ref_key(sr, fpscr, pteh);
+		// 0, 1: a hit in way 0, 1; 2: the pc in no way, both with its key and generation; 3, 4: its way with a wrong key,
+		// generation; 5: a hit in way 1, way 0 stale; 6: the pc in both ways, way 0's key wrong (way 0 taken: a miss).
+		const int kind = (int)(rnd() % 7);
+		const u32 set = DTBL + ref_index(pc) * 32;
+		const u32 way = (kind == 1 || kind == 5 || (kind >= 3 && kind <= 4 && (rnd() & 1))) ? 1 : 0;
+		for (u32 w = 0; w < 2; w++)
+		{
+			u32 other = (u32)rnd();
+			if (other == pc)
+				other ^= 2;
+			host_st(set + w * 16, 4, other);
+			host_st(set + w * 16 + 4, 4, kind == 2 ? key : (u32)rnd());
+			host_st(set + w * 16 + 8, 4, kind == 2 ? gen : (u32)rnd());
+			host_st(set + w * 16 + 12, 4, CODE32 + 4 * (w ? DONE1 : DONE));
+		}
+		if (kind != 2)
+		{
+			const u32 e = set + way * 16;
+			host_st(e, 4, pc);
+			host_st(e + 4, 4, kind == 3 ? key ^ (1u << (rnd() % 32)) : key);
+			host_st(e + 8, 4, kind == 4 ? gen ^ (1u << (rnd() % 32)) : gen);
+			if (kind == 5)
+				host_st(set + 8, 4, gen ^ 1);
+			if (kind == 6)
+			{
+				host_st(set, 4, pc);
+				host_st(set + 4, 4, key ^ (1u << (rnd() % 32)));
+				host_st(set + 16, 4, pc);
+				host_st(set + 20, 4, key);
+				host_st(set + 24, 4, gen);
+			}
+		}
+		const int want = ref_way(set, pc, key, gen);
 		host_st(DGEN, 4, gen);
 		host_st(DPTEH, 4, pteh);
 		host_st(CTX + SR_OFS, 4, sr);
@@ -668,7 +705,7 @@ static void test_dispatch(int cases)
 		c.r[30] = CTX;
 		c.r[3] = (rnd() << 32) | pc;	// a poisoned upper half, as `li` of a P1 pc leaves
 		const Cpu before = c;
-		const int end = run(c, DONE, MISS);
+		const int end = run(c, DONE, MISS, DONE1);
 		snprintf(d, sizeof(d), "kind %d pc %08X sr %08X fpscr %08X pteh %08X: %s", kind, pc, sr, fpscr, pteh,
 		         c.why ? c.why : "");
 		if (end < 0)
@@ -677,7 +714,9 @@ static void test_dispatch(int cases)
 			continue;
 		}
 		kinds[kind]++;
-		check(end == (int)(kind ? MISS : DONE), kind ? "a wrong entry was entered" : "a hit took the miss", d);
+		check(end == (int)(want < 0 ? MISS : want ? DONE1 : DONE), want < 0 ? "a wrong entry was entered" :
+		      "the hit's way not taken", d);
+		check((kind == 0 || kind == 1 || kind == 5) == (want >= 0), "the case's own reference", d);
 		bool kept = true;
 		for (int k = 1; k < 32; k++)
 			if (k != 10 && k != 11 && k != 12 && c.r[k] != before.r[k])
@@ -685,9 +724,73 @@ static void test_dispatch(int cases)
 		check(kept, "a register other than r0 and r10-r12 changed", d);
 	}
 	char line[64];
-	snprintf(line, sizeof(line), "%d %d %d %d", kinds[0], kinds[1], kinds[2], kinds[3]);
-	check(kinds[0] > cases / 8 && kinds[1] > cases / 8 && kinds[2] > cases / 8 && kinds[3] > cases / 8, "too few cases",
-	      line);
+	snprintf(line, sizeof(line), "%d %d %d %d %d %d %d", kinds[0], kinds[1], kinds[2], kinds[3], kinds[4], kinds[5],
+	         kinds[6]);
+	bool enough = true;
+	for (int k = 0; k < 7; k++)
+		enough = enough && kinds[k] > cases / 10;
+	check(enough, "too few cases", line);
+}
+
+// ---- row MMU Pref JIT: the store queue test, the call and its fault exit ----
+static void test_pref(int cases)
+{
+	char d[160];
+	int skips = 0, calls = 0, faults = 0;
+	for (int n = 0; n < cases; n++)
+	{
+		const bool sq = rnd() % 3 != 0, fault = sq && rnd() % 3 == 0;
+		u32 va = (u32)rnd();
+		if (sq)
+			va = 0xE0000000 | (va & 0x03FFFFFF);
+		else if ((va >> 26) == 0x38)
+			va ^= 0x04000000;
+		const u32 areg = (rnd() & 1) ? 20 : 3;
+		JmmuCold jc = { 30, FOFS, FAULT, EPC, (rnd() & 1) ? CYC : 0, &g_code[MISS], &g_code[DONE] };
+		Cpu c = {};
+		for (int k = 0; k < 32; k++)
+			c.r[k] = rnd();
+		c.r[30] = CTX;
+		c.r[areg] = (rnd() << 32) | va;
+		host_st(CTX + CYC, 4, 0);
+		g_callp = Call();
+		g_callp.fn = FN_PREF;
+		g_callp.va = va;
+		g_callp.ret = fault ? 0x040 : 0;
+		g_callp.fault_addr = FAULT + 0x100;
+		g_n = 0;
+		ppc_label* exc = emit_jmmu_pref(jc, areg, fnp(FN_PREF));
+		ppc_bx(&g_code[DONE], 0);
+		exc->MarkLabel();
+		emit_jmmu_raise(jc);
+		const Cpu before = c;
+		const int end = run(c, DONE, MISS);
+		snprintf(d, sizeof(d), "va %08X areg r%u fault %d cyc %u: %s %s", va, areg, (int)fault, jc.cyc_ofs,
+		         c.why ? c.why : "", g_callp.why ? g_callp.why : "");
+		if (end < 0 || g_callp.why)
+		{
+			check(false, "pref run", d);
+			continue;
+		}
+		check(g_callp.calls == (sq ? 1 : 0), sq ? "a store queue address not flushed" : "another address called the flush",
+		      d);
+		check(end == (int)(fault ? MISS : DONE), fault ? "a fault not taken" : "no fault, but the exit", d);
+		if (fault)
+			check((u32)c.r[3] == EPC, "a fault exits with r3 = the SPC", d);
+		if (sq && jc.cyc_ofs)
+			check(host_ld(CTX + CYC, 4) == (u32)before.r[29], "the cycle count stored before the call", d);
+		bool kept = true;
+		for (int k = 13; k < 32; k++)
+			if (c.r[k] != before.r[k])
+				kept = false;
+		check(kept, "a non-volatile register changed", d);
+		skips += !sq;
+		calls += sq && !fault;
+		faults += fault;
+	}
+	char line[64];
+	snprintf(line, sizeof(line), "%d skips, %d calls, %d faults", skips, calls, faults);
+	check(skips > cases / 10 && calls > cases / 10 && faults > cases / 10, "too few cases of a kind", line);
 }
 
 // ---- row MMU SQ Stores: the store against the rule of xlat_data (sh4_mmu_int.cpp) for the store queue area ----
@@ -775,6 +878,7 @@ int main(int argc, char** argv)
 	test_fd();
 	test_dispatch(cases);
 	test_sq(cases);
+	test_pref(cases);
 	printf("%s: %d checks, %d failed (%d fast and cold cases each)\n", g_fail ? "FAIL" : "PASS", g_checks, g_fail, cases);
 	return g_fail ? 1 : 0;
 }

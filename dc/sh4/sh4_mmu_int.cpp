@@ -264,14 +264,15 @@ static inline bool fc_hit(const FCache& c, u32 va)
 	       c.sv == MMUCR_SV(CCN_MMUCR.reg_data);
 }
 
-static u32 fast_xlat(u32 va, u32 acc)
+// The frame of va from the cache or the table, with no exception: false = not in the table.
+static bool fast_try(u32 va, u32 acc, u32& pa)
 {
 	FCache& c = s_fc[acc];
 	if (!fc_hit(c, va))
 	{
 		const int i = fast_find(va);
 		if (i < 0)
-			mmu_fault(MX_MISS, va, acc == AC_SQ ? (u32)AC_R : acc);
+			return false;
 		const FEnt& e = s_fe[i];
 		c.mask = k_page_mask[e.sz];
 		c.vpage = va & c.mask;
@@ -282,7 +283,16 @@ static u32 fast_xlat(u32 va, u32 acc)
 		c.sv = MMUCR_SV(CCN_MMUCR.reg_data);
 		c.valid = 1;
 	}
-	return c.ppage | (va & ~c.mask);
+	pa = c.ppage | (va & ~c.mask);
+	return true;
+}
+
+static u32 fast_xlat(u32 va, u32 acc)
+{
+	u32 pa;
+	if (!fast_try(va, acc, pa))
+		mmu_fault(MX_MISS, va, acc == AC_SQ ? (u32)AC_R : acc);
+	return pa;
 }
 
 // A TLB array write leaves the table with what the UTLB holds after it: an entry the write added or took away.
@@ -553,9 +563,8 @@ static void pref_flush(u32 addr, u32 dest)
 }
 
 // pref to the store queues: with AT on, the UTLB gives the target (Flycast mmu_full_SQ, a read's checks).
-static void FASTCALL mmu_op_pref(u32 op)
+static void pref_at(u32 dest)
 {
-	const u32 dest = r[GetN(op)];
 	if ((dest >> 26) != 0x38)
 		return;
 	if (!at_on())
@@ -578,6 +587,8 @@ static void FASTCALL mmu_op_pref(u32 op)
 	const u32 addr = tlb_phys(UTLB[i], dest) & ~31u;
 	pref_flush(addr, dest);
 }
+
+static void FASTCALL mmu_op_pref(u32 op) { pref_at(r[GetN(op)]); }
 
 static u32 s_illegal_logs;
 static void FASTCALL mmu_op_illegal(u32 op)
@@ -853,6 +864,8 @@ void sh4_fullmmu_select()
 		       " no ITLB, protection or first-write checks\n", FAST_N);
 	g_jmmu_bcache = jit && g_mmu_bcache_preset;
 	g_jmmu_sq = jit && g_mmu_sq_preset;
+	g_jmmu_pref = jit && g_mmu_pref_preset;
+	g_jmmu_asidjtc = jit && g_mmu_fast && g_mmu_asidjtc_preset;
 	jmmu_select(jit);
 	if (g_fullmmu_active && !g_mmu_bits_preset)
 		printf("[fullmmu] WARNING: MMUCR Bits is OLD, so MMUCR.TI flushes are lost: set it to FIXED\n");
@@ -872,7 +885,7 @@ static inline bool jx_translated(u32 va)
 
 // A data access: 0 and the physical address, or the exception code (TEA and PTEH set). *ent: the UTLB entry used
 // (64 for MMU Model FAST's table), or -1 for an address the TLB does not translate.
-u32 __attribute__((noinline)) jx_data_xlat(u32 va, u32 size, u32 write, u32* pa, int* ent)
+static u32 __attribute__((noinline)) jx_data_xlat_slow(u32 va, u32 size, u32 write, u32* pa, int* ent)
 {
 	if (__builtin_setjmp(s_jb))
 		return s_exc;
@@ -886,6 +899,20 @@ u32 __attribute__((noinline)) jx_data_xlat(u32 va, u32 size, u32 write, u32* pa,
 	if (jx_translated(va))
 		*ent = g_mmu_fast ? 64 : (int)s_xc[write ? AC_W : AC_R].idx;
 	return 0;
+}
+
+// MMU Model FAST, a page of its table: no setjmp, whose prologue saves every register. Any other access: the slow path.
+u32 jx_data_xlat(u32 va, u32 size, u32 write, u32* pa, int* ent)
+{
+	u32 p;
+	if (g_mmu_fast && at_on() && !(va & ((size > 4 ? 4 : size) - 1)) && jx_translated(va) &&
+	    fast_try(va, write ? AC_W : AC_R, p))
+	{
+		*pa = (p & 0x1C000000) == 0x1C000000 ? p | 0xF0000000 : p;
+		*ent = 64;
+		return 0;
+	}
+	return jx_data_xlat_slow(va, size, write, pa, ent);
 }
 
 // The dispatcher's code translations: s_xc[AC_I]'s check, one per 1 KB page, LRUI as a fetch; FAST: s_fc[AC_I]'s.
@@ -912,10 +939,18 @@ u32 jx_fetch(u32 va, u32* pa)
 	if (g_mmu_fast)
 	{
 		FCache& f = s_jx_fctc[(va >> 10) & 63];
-		if (!(va & 1) && region != 7 && (sr.MD || !(va & 0x80000000)) && fc_hit(f, va))
+		const bool plain = !(va & 1) && region != 7 && (sr.MD || !(va & 0x80000000));
+		if (plain && fc_hit(f, va))
 		{
 			s_st.ihits++;
 			*pa = f.ppage | (va & ~f.mask);
+			return 0;
+		}
+		u32 p;
+		if (plain && fast_try(va, AC_I, p))
+		{
+			*pa = p;
+			f = s_fc[AC_I];
 			return 0;
 		}
 		const u32 fcode = jx_fetch_slow(va, pa);
@@ -985,6 +1020,46 @@ u32 jx_take(u32 epc, u32 code)
 	}
 	jx_fatal(epc, code);
 	return 0;
+}
+
+static u32 __attribute__((noinline)) jx_pref_slow(u32 dest)
+{
+	if (__builtin_setjmp(s_jb))
+		return s_exc;
+	pref_at(dest);
+	return 0;
+}
+
+// pref from a JIT block (row MMU Pref JIT): 0, or the exception code (TEA, PTEH set). A store queue page in MMU Model
+// FAST's table needs no setjmp; any other case is pref_at's.
+u32 jx_pref(u32 dest)
+{
+	u32 p;
+	if (g_mmu_fast && at_on() && (dest >> 26) == 0x38 && !(dest & 3) && (sr.MD || !MMUCR_SQMD(CCN_MMUCR.reg_data)) &&
+	    fast_try(dest, AC_SQ, p))
+	{
+		pref_flush(p & ~31u, dest);
+		return 0;
+	}
+	return jx_pref_slow(dest);
+}
+
+// The halfword at a virtual address for a log line (no exception): MMU Model FAST's table, else the UTLB; RAM only.
+bool jx_peek16(u32 va, u16& v)
+{
+	u32 pa;
+	if (g_mmu_fast && at_on() && (va >> 29) != 4 && (va >> 29) != 5 && !(va & 1) && va < 0xE0000000)
+	{
+		const int i = fast_find(va);
+		if (i < 0)
+			return false;
+		pa = s_fe[i].ppn | (va & ~k_page_mask[s_fe[i].sz]);
+		if ((pa >> 29) == 7 || (pa & 0x1C000000) != 0x0C000000)
+			return false;
+		v = _vmem_ReadMem16(pa);
+		return true;
+	}
+	return mmu_peek16(va, v);
 }
 
 bool jx_fpu_op(u32 op) { return fpu_op(op); }

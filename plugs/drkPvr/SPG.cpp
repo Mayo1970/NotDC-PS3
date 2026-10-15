@@ -39,6 +39,8 @@ static u32 s_st_field, s_st_hblank;
 extern "C" void ifb_probe_dump(double seconds);
 // JIT HOTBLOCKS (ps3_driver.cpp, plan 5.18); vt_k is the stats line's vt, which marks dense windows.
 extern "C" void hotblocks_dump(double seconds, double vt_k);
+// JIT IDLE RULE AUTO (ps3_driver.cpp): X3 BACKWARD or X30 by SPEED and the pacer's sleep, once a window.
+extern "C" void jit_idle_auto(double seconds, double speed, double sleep_s);
 // C call-out census (dc/sh4/rec_v2/ccall_census.h). Takes vblanks/sec too,
 // so it can report the per-FRAME rate dave actually asked for.
 extern "C" void ccall_census_dump(double seconds, double vbs);
@@ -186,6 +188,7 @@ void spg_SchedListEndIrq(u32 list)
 // Temporary bisect counters for the FMV-overspeed investigation: which branch
 // spg_PaceFrame() takes, once per second in the existing stats line.
 u32 g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept;
+double g_pace_sleep_s;   // the pacer's sleep in this stats window (JIT IDLE RULE AUTO)
 
 static void spg_PaceFrame()
 {
@@ -222,7 +225,9 @@ static void spg_PaceFrame()
         stall_push(ST_SLEEP);
         usleep((useconds_t)(-err * 1000000.0));
         stall_pop();
+        const double t0 = now;
         now = os_GetSeconds();
+        g_pace_sleep_s += now - t0;
         err = now - s_pace_deadline;
     }
 
@@ -411,13 +416,16 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     vps, rnd_pct, ta_pct, ta_kps,
                     arm_pct, aica_pct, vox_pct, voices, snd_pct);
                 // Temporary: which branch spg_PaceFrame() took this window (FMV-overspeed bisect).
-                printf("[pace] calls=%u zero=%u reset=%u slept=%u\n",
-                       g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept);
+                const double pace_sleep = g_pace_sleep_s;
+                printf("[pace] calls=%u zero=%u reset=%u slept=%u sleep=%.0fms\n",
+                       g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept, pace_sleep * 1000.0);
                 g_pace_calls = g_pace_zero = g_pace_reset = g_pace_slept = 0;
+                g_pace_sleep_s = 0.0;
                 fflush(stdout); // once per 1s: keep the log tail intact if the console is powered off
 
                 ifb_probe_dump(tdiff);   // no-op unless the IFB PROBE preset is on
                 hotblocks_dump(tdiff, spd_fps > 0.0 ? mv / spd_fps / tdiff : 0.0);   // no-op unless JIT HOTBLOCKS is on
+                jit_idle_auto(tdiff, spd_cpu * 100.0 / clk_mhz, pace_sleep);         // no-op unless JIT IDLE RULE AUTO
                 ccall_census_dump(tdiff, spd_vbs); // no-op unless JIT CCALLS is on
                 stall_dump(tdiff);                 // plan 5.32, the same switch
                 arm_jit_census_dump(tdiff);        // same, and only while the ARM7 JIT runs

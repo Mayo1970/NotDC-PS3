@@ -39,6 +39,7 @@ int get_gd_position_preset();   // P47: 1 = REQ_STAT position bytes, 2 = GET_SCD
 int get_gd_scd_q_preset();      // P62: GET_SCD format 1 layout, replies cut at the asked length
 int get_cdda_rules_preset();    // P61: CD-DA end, resume and repeat rules; 2 = also the stop at the lead-out (P82)
 int get_gd_speed_preset();      // P22: 1 = DMA paced as the drive
+int get_gd_timing_preset();     // 1 = the SH4 waits for a late disc read; 2, 3 = also a 100, 330 ms seek (DMA reads)
 int get_gd_dma_fix_preset();    // P22 SB_GDLEN 0, P9 DMA clamp
 int get_cdda_miss_preset();     // 5.34: 1 = read-ahead from CD_PLAY, 2 = a miss plays silence, 3 = loop start read ahead
 int get_gd_cmd_fix_preset();    // P22: ATA and SPI command hangs
@@ -222,6 +223,11 @@ static void cdda_transition(int state,u32 ms,int transient)
 
 // GD-ROM Speed REAL: SH4 cycles until the next DMA chunk is due.
 static s64 gd_dma_wait;
+
+// GD-ROM Timing SEEK: SH4 cycles until a DMA read that does not go on from the last read has its data, and the FAD
+// where the last read ended (none after a reset).
+static s64 gd_seek_wait;
+static u32 gd_head_fad=0xFFFFFFFF;
 
 // P34: sense key, ASC and ASCQ as Flycast's; only a disc swap sets them, and they act only after one.
 static int sns_key,sns_asc,sns_ascq;
@@ -489,6 +495,8 @@ void gd_setdisc()
 void gd_reset()
 {
 	gda_wait();   // P3: a fill in flight lands before the drive resets
+	gd_seek_wait=0;
+	gd_head_fad=0xFFFFFFFF;
 	//Reset the drive
 	gd_setdisc();
 	gd_set_state(gds_waitcmd);
@@ -780,6 +788,16 @@ void gd_process_spi_cmd()
 			}
 
 			gda_wait();   // P3: a fill still in flight (an aborted read) lands before read_buff is armed again
+			// GD-ROM Timing SEEK: the head moves unless the read goes on from the last one. DMA reads only.
+			gd_seek_wait=0;
+			const int timing=get_gd_timing_preset();
+			if (timing>=2 && Features.CDRead.DMA==1 && start_sector!=gd_head_fad)
+			{
+				const u32 seek_ms=timing==2 ? 100 : 330;
+				gd_seek_wait=(s64)(SH4_CLOCK_EFF/1000)*seek_ms;
+				gda_count(GDR_SEEK,0,ps3_timebase_hz/1000*seek_ms);
+			}
+			gd_head_fad=start_sector+sector_count;
 			read_params.start_sector=start_sector;
 			read_params.remaining_sectors=sector_count;
 			read_params.sector_type = sector_type;//yeah i know , not realy many types supported ...
@@ -1419,9 +1437,17 @@ void UpdateGDRom()
 	StallScope st_(ST_GDDMA);
 	if(!(SB_GDST&1) || !(SB_GDEN &1))
 		return;
-	// P3: read_buff is the worker's until its fill lands; the DMA goes on at a later update.
-	if (gda_busy())
+	// GD-ROM Timing SEEK: the head is still on its way.
+	if (gd_seek_wait>0)
 		return;
+	// P3: read_buff is the worker's until its fill lands; the DMA goes on at a later update. GD-ROM Timing FIXED:
+	// the SH4 waits for it here, so the game never sees the disc's time.
+	if (gda_busy())
+	{
+		if (!get_gd_timing_preset())
+			return;
+		gda_wait();
+	}
 	const bool real=get_gd_speed_preset()!=0, fix=get_gd_dma_fix_preset()!=0;
 	// GD-ROM Speed REAL: the next chunk is not due.
 	if (real && gd_dma_wait>0)
@@ -1468,9 +1494,14 @@ void UpdateGDRom()
 				verify(read_params.remaining_sectors>0);
 				//buffer is empty , fill it :)
 				FillReadBuffer();
-				// P3: the rest waits for the fill. Only full 32-sector batches end early, so len stays 32-aligned.
+				// P3: the rest waits for the fill (FIXED: here). Only full 32-sector batches end early, so len stays
+				// 32-aligned.
 				if (gda_busy())
-					break;
+				{
+					if (!get_gd_timing_preset())
+						break;
+					gda_wait();
+				}
 			}
 
 			//transfer up to len bytes
@@ -1605,16 +1636,20 @@ void gdrom_reg_Reset(bool Manual)
 	gda_wait();   // P3: as gd_reset
 	gd_trans_next=-1;
 	gd_dma_wait=0;
+	gd_seek_wait=0;
+	gd_head_fad=0xFFFFFFFF;
 	gd_spinup_cycles = (s64)SH4_CLOCK_EFF * GD_SPINUP_SECONDS;
 	if (gd_disk_type == NoDisk)
 		SecNumber.Status = GD_BUSY;
 }
 
-// Every SlowUpdate: the spin-up, and the emulated-time waits of P21 step 2, GD-ROM Speed REAL and P34.
+// Every SlowUpdate: the spin-up, and the emulated-time waits of P21 step 2, GD-ROM Speed REAL and Timing, and P34.
 void gdrom_spinup_tick(u32 cycles)
 {
 	if (gd_dma_wait>0)
 		gd_dma_wait-=cycles;
+	if (gd_seek_wait>0)
+		gd_seek_wait-=cycles;
 
 	// P21 step 2 (Flycast dev statusSched): the status and the CD-DA state a command asked for.
 	if (gd_trans_next!=-1 && (gd_trans_cycles-=cycles)<=0)
@@ -1662,6 +1697,8 @@ bool gdrom_disc_swap(const char* path)
 	cdda_held=0;
 	gd_trans_next=-1;
 	gd_dma_wait=0;
+	gd_seek_wait=0;
+	gd_head_fad=0xFFFFFFFF;
 
 	gd_swapped=true;
 	sns_key=2;

@@ -29,6 +29,7 @@ put('pr_free.inc', cut(dec, 'static bool dec_is_pr_free(u32 op)\n', '\n}\n', 'de
 put('pr_gate.inc', cut(dec, '\t\tif (state.cpu.FPR64 /*|| state.cpu.FSZ64*/)\n', '\n\t\tif (state.cpu.FSZ64 && (d==PRM_FRN_SZ',
                        'PR gate'))
 put('cycle.inc', cut(dec, '\t//cycle tricks\n', '\n\tstatic int cc=0;', 'cycle block'))
+put('bill.inc', cut(dec, 'static u32 dec_bill(int idle_rule,u32 cycles,u32 max_cycles)\n', '\n}\n', 'dec_bill', True))
 put('rm.inc', cut(dec, '\t\tcpu.FSZ64=fpu_cfg.SZ;\n', '\t\t//what about fp/fs ?', 'RM setup'))
 put('hash_dec.inc', cut(dec, 'static bool dec_idle_hash(int level)\n', '\n}\n', 'dec_idle_hash', True))
 

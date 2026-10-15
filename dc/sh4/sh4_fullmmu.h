@@ -8,6 +8,7 @@ extern bool g_fullmmu_active;   // this boot runs the full MMU (on the interpret
 extern bool g_jit_mmu;          // this boot runs it on the JIT
 extern bool g_mmu_fast;         // row MMU Model FAST this boot, on either engine
 extern bool g_jmmu_bcache, g_jmmu_sq;   // rows MMU Block Cache and MMU SQ Stores, set before jmmu_select
+extern bool g_jmmu_pref, g_jmmu_asidjtc;   // rows MMU Pref JIT and MMU ASID JTC (FAST only), set the same way
 
 // After each reset, before the CPU runs: the row and the disc pick the engine of this boot.
 void sh4_fullmmu_select();
@@ -32,3 +33,6 @@ bool jx_fpu_op(u32 op);
 void jx_stats_print();
 // MMU Model FAST: a write that flushes its table (MMUCR.TI, a TLB array). v: a 32-bit write's value, else 0.
 void jx_fast_after_write(u32 pa, u32 v);
+// Row MMU Pref JIT: a block's pref, 0 or the exception code. The halfword at a virtual address for a log, no exception.
+u32 jx_pref(u32 dest);
+bool jx_peek16(u32 va, u16& v);
