@@ -60,6 +60,12 @@ KNOWN = [
     ('Looney Tunes event wait, tail', 0x8C19D168, '88FF 8DF9 6D03', 'O'),
     ('Looney Tunes event wait, head', 0x8C19D160, '4A0B E407', '-'),
     ('Looney Tunes event wait, the scan call', 0x8C19D164, 'BD53 0009', '-'),
+    ('CvS2 vsync wait, tail', 0x8C21A2EE, '61F2 6312 2338 8BF1', 'O'),
+    ('CvS2 vsync wait, counter block (Reicast meant it: its entry lost a colon)', 0x8C21A2DE,
+     '63F2 6232 72FF 2322 53F1 6232 32E0 8B03', '-'),
+    ('CvS2 vsync wait, the hook call', 0x8C21A2DA, '4D0B E407', '-'),
+    ('CvS2 hook dispatcher', 0x8C217FE0, '4F22 7FF8 6243 D30E 4208 2F42 4200 323C 6423 1F21 6122 410B 5441', 'R'),
+    ('CvS2 hook dispatcher, its return', 0x8C217FFA, '7F08 4F26 000B E000', 'R'),
 ]
 LISTS = {'R': 'IDLE_LIST_REICAST', 'O': 'IDLE_LIST_OWN', '-': 'IDLE_LIST_NONE'}
 rows = ''
@@ -112,7 +118,7 @@ LINES = [
     ('ps3/ps3_presets.cpp', 'getter (the MMU JIT forces ACCEPT)',
      'int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }'),
-    ('ps3/ps3_presets.cpp', 'JIT IDLE HASH defaults to OFF', 'int g_jit_idle_hash_preset = 0;'),
+    ('ps3/ps3_presets.cpp', 'JIT IDLE HASH defaults to ON (Matt 2026-10-15)', 'int g_jit_idle_hash_preset = 1;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }'),
     ('dc/sh4/rec_v2/decoder.cpp', 'idle hash: under its row, with the level',
      '\tconst int idle_hash_level=get_jit_idle_hash_preset();\n'

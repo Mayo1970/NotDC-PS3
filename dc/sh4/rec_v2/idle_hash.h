@@ -35,7 +35,9 @@ static const char idle_hash_own[] =
 	// Looney Tunes Space Race (US): the block that closes its frame wait `while (*counter > (int)table[6]);`.
 	">:1:8C014544:06:82CA5453:BF5F6A1A:DFB3BC03:5297CDA2:ABB80F01"
 	// The same game, demo and menus: the block that closes `do { hook(7); bit = find_event(); } while (bit == -1);`.
-	">:1:8C19D168:03:D81E7C3D:BBC0DA9E:01A57B05:239F0A0B:C4727FBC";
+	">:1:8C19D168:03:D81E7C3D:BBC0DA9E:01A57B05:239F0A0B:C4727FBC"
+	// Capcom vs. SNK 2 (JP): the tail of Kamui's vsync wait `do { hook(7); count--; } while (vbl == old && count);`.
+	">:1:8C21A2EE:04:0E313F0D:345E5DC5:A6CFFD76:91D47842:D22C2D1C";
 
 static inline u32 idle_rol(u32 x, u32 n)
 {

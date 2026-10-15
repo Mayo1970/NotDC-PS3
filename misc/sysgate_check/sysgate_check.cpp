@@ -93,16 +93,23 @@ static void holly_raise(HollyInterruptID id)
 pvr_init_params PVRPARAMS = { holly_raise, 0 };
 void asic_RaiseInterrupt(HollyInterruptID id) { holly_raise(id); }
 
-// StartRender's countdown part, with its plan 5.36 hooks (ps3_rend.cpp does not build on the PC).
+// StartRender's countdown part, with its plan 5.36 hooks (ps3_rend.cpp does not build on the PC). Level 2's TA
+// bytes step through 0..15K, so its countdowns fall below and at Flycast's 1.5M cap.
 void StartRender()
 {
+	static u32 s_bytes;
 	sys_sync();
-	if (get_render_delay_preset())
+	if (get_render_delay_preset() == 1)
 	{
 		render_isp_pending_cycles = 800000;
 		render_tsp_pending_cycles = 850000;
 		render_vd_pending_cycles  = 900000;
 		render_end_pending_cycles = 0;
+	}
+	else if (get_render_delay_preset() == 2)
+	{
+		s_bytes = (s_bytes + 1536) % 15360;
+		render_end_pending_cycles = s_bytes < 10500 ? (s32)(450000 + 100 * s_bytes) : 1500000;
 	}
 	else
 		render_end_pending_cycles = 50000;
@@ -484,7 +491,8 @@ int main(int argc, char** argv)
 	size_t lines = 0;
 	for (u32 s = 1; s <= seeds; s++)
 	{
-		Scen sc = { s, slices, s % 3, (s % 11) == 5, (s % 4) == 1, (s % 13) == 7 ? 3u : 1u, 0 };
+		Scen sc = { s, slices, s % 3, (s % 11) == 5, (s % 4) == 1 ? 1u : (s % 4) == 3 ? 2u : 0u,
+		            (s % 13) == 7 ? 3u : 1u, 0 };
 		const std::string a = run_forked(sc, 0);
 		const std::string b = run_forked(sc, 1);
 		const std::string c = run_forked(sc, 2);

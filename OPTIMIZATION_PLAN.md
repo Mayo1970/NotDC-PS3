@@ -28,6 +28,272 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**Bundle 21 (Capcom vs. SNK 2 fights) started 2026-10-15 (Matt: "Let's
+go with Bundle 21."), then investigated in full (Matt: "I'd like you
+investigate the whole bundle 21."). Nothing built, no HW run at that
+point (two builds and three HW runs followed; the last bullet has the
+state). The fights are not game work: the SH4 thread spends them in the Kamui
+library's wait for the next vblank. Sources: the old UDP logs and the
+game's own code (`1ST_READ.BIN` from Matt's disc image in
+`E:\Users\Matteo\Desktop\DC Roms`, read on the PC with scratchpad tools
+of session 74d25a32: `cdi_extract.py`, `sh4dis.py`, `xref.py`).**
+- Item 1 is answered from old logs, so the profile boot is not needed:
+  - Every fight window at X3 BACKWARD (`b15_hw.txt` of session e511e0f6:
+    48 windows of boot 2, 36 of boot 3) has the block 8C21A2EE on top of
+    `[idle]`, at 3.2-3.6M checks a second and 0 skips.
+  - A JIT HOTBLOCKS ALL WINDOWS boot of the game exists: `b18s_hw.txt`
+    of session 72efb758, lines 336828-345022 (2026-10-15 about 03:50,
+    JIT IDLE RULE AUTO, menus only). In its X3 windows the loop below is
+    6 blocks a turn and about 25M of the 26M block entries a second.
+  - Menus at X3 with no HOTBLOCKS (b15 boot 2): 4.7M turns a second,
+    SPEED 100%, sleep about 40 ms a second, 20-120 vertices a frame. So
+    one turn costs about 0.2 us of host time (estimate), and the fight's
+    3.5M turns cost about 0.6 s of each second.
+- The loop (loop A), Kamui's vsync wait at 8C21A2A0: it reads the vblank
+  count at 8C3DC5E4 (the VBLANK_IN handler 8C21AA46 adds 1), then calls
+  hook 7 and counts a timeout down from 0x100000 until the count changes.
+  Hook 7 is the empty function 8C216D40 (the game resets it to the
+  default at start, and nothing else sets it). The turn writes the
+  timeout counter, so JIT IDLE SKIP never skips it.
+  - Reicast's list holds this loop: its "IKA, HH" entries are the hook
+    call (8C217FE0) and its return, and its last entry is the counter
+    block (8C21A2DE), but with a typo (`">1:` for `">:1:`), so it never
+    matches. Our own list (row JIT IDLE HASH) has no entry for it.
+  - The same loop, byte for byte, is in 8 other games of the logs:
+    Spider-Man (up to 3.4M turns a second), Project Justice (1.2M),
+    Power Stone 2 (1.2M), Ikaruga (1.1M), Rez (1.0M), Donald Duck (72K),
+    Rayman 2 (58K), Quake III Arena (12K; Rez and Quake III call hook 12
+    too).
+- Item 2, the fix (not built): an entry for the loop's tail block in our
+  list, `">:1:8C21A2EE:04:0E313F0D:345E5DC5:A6CFFD76:91D47842:D22C2D1C"`
+  (computed as `misc/jit8_check/cut.py` does). The block then ends its
+  timeslice, so the loop runs one turn a slice. The emulated time of the
+  wait does not change; only the timeout counter runs about 40 times
+  slower, which matters only if no vblank comes. Expected: fights at
+  SPEED 100% with spare time. It acts only with JIT IDLE HASH ON (the
+  row defaults to OFF). Item 3 (game work) is not needed.
+- New fault: X30 breaks the game, so the default JIT IDLE RULE AUTO is
+  bad for it.
+  - The game's main loop (8C0100BA) clears the flag 8C332940, builds the
+    frame, then waits (loop B, 8C0687D4) until the flag is set or 167 ms
+    pass (167000 us on TMU channel 0 at Pphi/64). Kamui's render-done
+    handler (Holly bit 2, RENDER_DONE_TSP, handler 8C21AB16) sets the
+    flag through hook 0 (callback 8C0687BC).
+  - At X30 loop B times out on every frame: the menu frame is 180.0 ms
+    at PAL (9 vblanks) and 183.5 ms at NTSC (11 vblanks), 167 ms + the
+    frame's work in both modes, so 5-6 frames a second at SPEED 100%.
+    At X3 the same menus draw 60 frames a second, but one menu scene
+    (1.2K vertices a frame) drops to 13-29 frames a second at SPEED 100%
+    with loop B at 420-560K turns a second, about 4 time-outs a second.
+  - AUTO in the b18s boot: X3 windows at 91-93% (HOTBLOCKS costs a few
+    points) went to X30 (5-6 frames a second, sleep 480 ms a second),
+    then X3 tries after 5, 10, 20 and 40 s failed: 7 switches in about
+    100 s. The fights at X3 run at 84-88%, so AUTO takes them to X30 too
+    (no fight at X30 in any log).
+  - Lead, not proven: the render-done comes too early. Ours (Render
+    Delay OFF, the default) is max(vertices x 15, 50000) cycles, 0.25 ms
+    in the menus (nullDCe's value). The PC references: nullDC-v1 500000
+    + 45 a vertex (2.5 ms+), Reicast 1500000 + 60 a vertex (7.5 ms+),
+    Flycast 450000 + 100 a TA byte, at most 1500000 (2.25-7.5 ms; raised
+    twice for Marvel vs. Capcom 2, `976fb99aa`, `a593cddf5`). The row
+    Render Delay ON gives 4.0-4.5 ms.
+- Proposed next steps (Matt picks; nothing started):
+  1. HW test with no code: Render Delay ON (EMULATION page), JIT IDLE
+     RULE X30, the menus. Expected if the lead is right: 60 frames a
+     second, not 5-6.
+  2. Build the entry of item 2, then a fight at X3 BACKWARD and at AUTO
+     with JIT IDLE HASH ON and JIT HOTBLOCKS OFF.
+  3. Option for bundle 22: one rule for this Kamui loop in every game
+     (by its code, not its address).
+- HW run 1 of step 1, 2026-10-15 (Matt: "Start the listener and tell me
+  what to do."): listener PID 18416 (msys2 python), log `b21_hw.txt` in
+  the scratchpad of session 74d25a32. Package as installed (no build).
+  1. Rows: EMULATION Render Delay ON, SH4 Clock 200 MHz; JIT SPEED JIT
+     IDLE RULE X30, JIT IDLE HASH OFF; VIDEO / DEBUG JIT HOTBLOCKS OFF,
+     JIT C-Calls OFF; FLASH / CLOCK Broadcast DISC.
+  2. Boot 1: the menus for 30 s, then character select and a fight for
+     30 s. If the menus are still at 5-6 frames a second, skip the fight.
+  3. Boot 2: the same with JIT IDLE RULE X3 BACKWARD (the menu scene that
+     dropped to 13-29, and the fight's SPEED with the longer delay).
+  4. Then Render Delay back to OFF (the row acts on every game).
+- HW run 1, boot 1 (Render Delay ON, X30; JIT HOTBLOCKS was left at ALL
+  WINDOWS), 2026-10-15 about 10:20. Matt: "With boot 1 settings
+  everything ran at 60 FPS." The lead is confirmed: with the longer
+  render-done delay, loop B no longer times out.
+  - Menus: 60 frames a second, SPEED 100%, sleep about 580 ms a second
+    (before at X30: 5-6 frames a second).
+  - The 1.2K-vertex menu scene: 59.2 frames a second on average, SPEED
+    100%, sleep 509 ms a second (before: 13-29 at X3, 5-6 at X30).
+  - Fight (16 windows, 5.4-6.2K vertices): 59.0 frames a second on
+    average (60 after the first window), SPEED 100.0%, sleep 347 ms a
+    second (before at X3: 87%, 52 frames a second).
+  - At X30 loop A runs 0.55-0.67M turns a second in the fight (X3:
+    3.2-3.6M) and is 44% of the census weight; the rest is game work.
+    Loop B is gone in the fight and runs 124K turns a second in the menus
+    (the 4.25 ms render time).
+  - So the bundle goal (fights at 60) is met with no code, at X30 and
+    Render Delay ON.
+- HW run 1, boot 2 (Render Delay ON, X3 BACKWARD, JIT HOTBLOCKS OFF),
+  2026-10-15 about 10:28 (Matt: "Done."):
+  - Menus: 60 frames a second, SPEED 100%, sleep about 117 ms a second.
+  - The 1.2K-vertex menu scene: 56-62 frames a second, SPEED 99.2% on
+    average (before at X3: 13-29). Render Delay fixes it at X3 too.
+  - Fight (42 windows): SPEED 87.9% on average (89.4-90.1% in the steady
+    part, 78-88% in the last 6 windows, one window 36.5%), 52-54 frames
+    a second, no sleep. Unchanged from 2026-10-13: loop A still runs
+    3.2-3.3M turns a second. X3 needs item 2's entry.
+  - Under AUTO with Render Delay ON (my reading, no boot): the fights
+    go to X30 (60 frames a second), and each X3 try costs about 3 s at
+    about 54 frames a second, at ever longer intervals.
+- Matt asked for an AUTO rule for the render delay; my answer: a switch
+  is not needed (the long delay costs no host time), but Flycast's rule
+  adapts per frame. Built 2026-10-15 (Matt: "LEt's try Flycast's rule"):
+  package of 10:43 (`build/notdc_ps3.pkg`, 1755888 bytes) = the package
+  of 04:02 + this. Not committed. `.got` 0xF918 of 0x10000 (1.7 KB left).
+  - Row Render Delay (EMULATION page, set before boot): OFF / ON /
+    FLYCAST. FLYCAST: all three end-of-render IRQs after min(450000 +
+    100 x the context's TA bytes, 1500000) cycles (`raw_used`; 4096 when
+    PARAM_BASE names no context), list-end IRQs at once, as Flycast's
+    `scheduleRenderDone`. OFF and ON are unchanged; the default stays OFF.
+  - Log: `[timecfg]` has `RenderDelay=N`; with FLYCAST, an `[rdelay]`
+    line a second (renders, average and largest delay, renders at the
+    7.5 ms cap).
+  - Code: `ps3/ps3_rend.cpp` (StartRender), `plugs/drkPvr/SPG.cpp`
+    (`RENDER_DELAY()` is level 1 only; `g_rdelay_*`, the line),
+    `ps3/ps3_menu.cpp` (`k_rdelay`), `ps3/ps3_presets.cpp`.
+  - PC checks (WSL), all PASS: sysgate (its StartRender model has level
+    2 now, a quarter of the seeds; 300 of 300), timebase, clock,
+    idleauto, rtt, screen, glpath, maple, flash, pad, mmu, fullmmu,
+    interp, sys20, chd, rend4, ta4, tr4, bump, fog, spepix, spevb, jit8.
+    No mutate.py run.
+  - HW steps (listener of HW run 1 still up): install the package; rows
+    as in HW run 1 but Render Delay FLYCAST and JIT HOTBLOCKS OFF. Boot 1:
+    JIT IDLE RULE X30, menus, character select, a fight. Boot 2: JIT
+    IDLE RULE AUTO, the same path.
+- HW run 2, 2026-10-15 about 10:45-10:54 (`b21_hw.txt` from line 14078;
+  Matt: "Game runs at 57 FPS. Not 60."). Two boots, both at AUTO; no X30
+  boot.
+  - Boot 3 had the old package (its `[timecfg]` has no RenderDelay key;
+    Render Delay was ON, since X30 drew 60): AUTO went back and forth,
+    fights at X30 60 frames a second (sleep 460 ms a second), each X3
+    try 3 windows at 88-91% (53-54 frames a second), 9 switches.
+  - Boot 4, package of 10:43, `RenderDelay=2`: menus and the 1.2K scene
+    60 frames a second at X3. `[rdelay]`: 2.6-3.9 ms in the menus, 7.5 ms
+    (the cap) in every fight render.
+  - The 57: the fight at X3 ran at SPEED 95.1-95.8% for 20 windows, 57.0-57.4
+    frames a second, just above AUTO's 95% limit (`IA_LOW`), so AUTO did
+    not switch. When a heavier part fell to 87-90%, AUTO went to X30:
+    60 frames a second at SPEED 100%.
+  - With FLYCAST the X3 fight is faster than with ON (95% against 88-90%;
+    loop A 2.5M turns a second against 3.2M): the longer render wait
+    runs in loop B, whose turn bills about 7 times more cycles.
+  - Ways to 60 at X3 (Matt picks): item 2's entry (loop A, X3 at 100%);
+    AUTO's limit at 98%; X30 by hand.
+- Item 2 built 2026-10-15 (Matt: "I'd like to keep AUTO by default", then
+  "Yes, let's go with it" to the entry with JIT IDLE HASH ON as default):
+  package of 11:04 (`build/notdc_ps3.pkg`, 1755952 bytes) = the package
+  of 10:43 + this. Not committed. `.got` 0xF918.
+  - `dc/sh4/rec_v2/idle_hash.h`: our list has CvS2's entry
+    `">:1:8C21A2EE:04:0E313F0D:345E5DC5:A6CFFD76:91D47842:D22C2D1C"`.
+  - `ps3/ps3_presets.cpp`: JIT IDLE HASH defaults to ON (level 1: our
+    list acts, Reicast's list only logs). This also turns on the two
+    Looney Tunes entries. An install keeps its own value.
+  - Menu help of JIT IDLE HASH names CvS2.
+  - PC checks (WSL), all PASS: jit8 (idle hash 473 checks: 5 CvS2 blocks
+    added to `cut.py` KNOWN, the default line updated), flash, pad,
+    maple, mmu, fullmmu, interp, sys20, glpath, rtt, screen, idleauto,
+    timebase, clock, chd. `jit8_check/mutate.py 20000 "idle hash"`: 34
+    of 34 caught (2 new CvS2 mutants; the default mutant now flips to
+    OFF).
+  - HW steps: install the package; JIT SPEED JIT IDLE RULE AUTO, JIT
+    IDLE HASH ON (by hand: the install keeps OFF); EMULATION Render Delay
+    FLYCAST, SH4 Clock 200; VIDEO / DEBUG JIT HOTBLOCKS OFF, JIT C-Calls
+    OFF; FLASH / CLOCK Broadcast DISC. Menus, character select, a fight
+    of 60 s. Expected: the fight at X3, SPEED 100% with sleep, 60 frames
+    a second, no `[idle-auto]` switch; `[idlehash] ... 8C21A2EE ... our
+    list: ends the slice`.
+  - Open: Render Delay's default (OFF in source; Matt's install has
+    FLYCAST).
+- HW run 3, 2026-10-15 about 11:05-11:12 (`b21_hw.txt` lines
+  22667-26811; AUTO, JIT IDLE HASH ON, Render Delay FLYCAST). HW SUCCESS
+  (Matt: "It runs well!"): `[idlehash] ... 8C21A2EE ... our list: ends the
+  slice`; the fight in 62 windows at X3, SPEED 100.0% (99.8% lowest),
+  59.8 frames a second on average, sleep 378 ms a second, no
+  `[idle-auto]` switch. Loop B (the 7.5 ms render wait) is now the top
+  idle block, about 215K turns a second.
+  - Render Delay defaults to FLYCAST in source since then (Matt: "Yeah
+    keep the FLYCAST setting for the Render Delay."). Not packaged.
+  - New fault (Matt): "with Render Delay, sprites don't look good. They
+    seem cut. This issue didn't happen with the render delay off." Cause
+    not known. The log shows no dropped TA record (`gate_drop=0`), no
+    dropped render, no RTT, each frame shown once (`held 1=300`). Lead
+    to check: Flycast's end of render waits for its render thread
+    (`renderEnd.Wait()`); ours (`EndRender()`) does not, so the game may
+    change video memory while the PS3 still draws the frame.
+  - Matt's two screenshots: thin horizontal and vertical lines along the
+    tile joins of both fighters with FLYCAST. The OFF screenshot has no
+    VMU screen and SPEED 87.98% (the run of 2026-10-13 morning), so it is
+    from an older package. `[rend17]` in the fight: `planes ppu=0 spu=0`
+    (no sprite corners), `applied offs` about 400 a second (Offset
+    Colour, bundle 17, after that run). Test asked: today's package with
+    Render Delay OFF; then FLYCAST with Offset Colour OFF.
+  - CLOSED (Matt: "My fault. The texture filter was set wrong."): the
+    lines came from Tex Filter LINEAR (`[texcfg] ... TexFilter=2`, then
+    GAME from the menu), not from Render Delay or Offset Colour.
+  - The same boot (`b21_hw.txt` from line 45003) had Render Delay OFF
+    with the new entry and AUTO: menus and character select at 5-7
+    frames a second, SPEED 100%, X3, loop B on top (650K turns a second):
+    the 167 ms time-out on every frame, now also at X3. So the entry
+    needs Render Delay FLYCAST (or ON); both are the source defaults.
+- Other games on the package of 11:04 (AUTO, JIT IDLE HASH ON, Render
+  Delay FLYCAST), 2026-10-15 11:13-11:30 (Matt: "the changes we made
+  greatly helped Sonic Adventure 2! Still not enough"):
+  - The row was AUTO in all three games; "X30" below is the level AUTO
+    picked by itself (`[idle-auto]` lines; Matt: "It's not at x30. It's at
+    AUTO").
+  - Sonic Adventure 2 (Europe): 15-20K vertices SPEED 99.5%, 58.9 frames a
+    second (24 of 28 windows at X30); 20K+ 95.5%, 57.3. Older boots at X3
+    BACKWARD / X3 + WAITS X30 (`b18s_hw.txt`): 15-20K 95.2 / 97.2%, 20K+
+    88.8 / 90.6% (53-54 frames a second). X30 keeps the frame rate there
+    now; no SA2 boot at AUTO with Render Delay OFF exists to split the
+    two causes.
+  - Sonic Adventure: 30 frames a second at 5-15K and 20K+ (SPEED 100%);
+    15-20K 28.8 on average (one window 14.7).
+  - Space Channel 5: 29.8 frames a second at 1-5K vertices, SPEED 99.4%,
+    all at X30.
+- Open issue of this bundle, PARKED (Matt 2026-10-15: "Park it as open
+  issue from this bundle."): the menus and the HUD show green with
+  Texture Filter GAME or NEAREST. LINEAR shows them right (Matt: "Green:
+  wrong one, Yellow: correct one (Linear)", "Main menus and HUD mostly"),
+  but LINEAR cuts the fighters, so it is no fix. Cause not found; nothing
+  built.
+  - Log `b21_hw.txt`: the green screenshot is boot 2 at NEAREST (window
+    63716), the yellow one just after the switch to LINEAR (64011). Boot 1
+    decoded no texture between its LINEAR (55577) and GAME (55646)
+    switches.
+  - Texture Filter only sets the sampler (`set_tex_params` in
+    `ps3/ps3_tex.cpp`): the same texels in the same RSX layout.
+  - Pixels (Mode Select): an unselected panel 0,135,0 against 159,148,0;
+    the selected one 0,190,0 against 216,207,0. One bilinear read cannot
+    give R 216 when the nearest texel has R 0 (that texel weighs at least
+    25%), so a second layer or read makes the colour. The green shot also
+    has no teal border and no white glow on the selected panel.
+  - The Mode Select frame (`[rendz]`): opaque 35 strips (29 with 565
+    textures; Modulate, IgnoreTexA, offset colour), translucent 40 quads
+    (1555 and 4444; 4 additive, SRC_ALPHA/ONE). No palette, mipmap or VQ
+    texture.
+  - Proposed next step, not built: at each Texture Filter change, a dump
+    of every textured strip of the frame (corners, UVs, texture, the
+    nearest texel and the four linear texels from VRAM, the texel in RSX
+    memory, a stale-hash flag). HW: Mode Select at GAME, LINEAR, GAME,
+    then the same in a fight.
+- State at the end of session 74d25a32, 2026-10-15 about 12:40 (Matt:
+  "Bundle 21 is still not done"; a new session resumes here): Render Delay
+  FLYCAST and the idle-list entry with JIT IDLE HASH ON are built, HW
+  SUCCESS (package of 11:04). Render Delay defaults to FLYCAST in source
+  only (not packaged). Not committed. Open: the green menus (parked) and
+  Matt's close of the bundle.
+
 **JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
 to no left-out seconds and a shorter hold, now that a switch costs about
 2 ms). Package of 03:45 (`build/notdc_ps3.pkg`, 1755504 bytes) = the
@@ -291,8 +557,8 @@ for the video (below the HW steps). Not committed. `.got` 0xF828 of
 **GD-ROM Timing row built 2026-10-15 (Matt: "Yes." to a fixed disc timing,
 in the Windows CE speed work). Package of 01:09 (`build/notdc_ps3.pkg`,
 1753456 bytes) = commit 2020f69 + MMU JIT speed 2 + this. Default HOST, the
-old path (Matt 2026-10-15: keep it). HW runs 1-2 2026-10-15: no fix (below the
-HW steps). Not committed.
+old path until 2026-10-15; default FIXED since then (Matt: "Wait, I was wrong. Can you place the Timing to fixed and to MMU Pref to JIT?"). HW runs 1-2 2026-10-15: no fix (below the HW
+steps). Not committed.
 `.got` 0xF828 of 0x10000, 0 `r2off`.**
 - Why: in the HW runs of speed 2 (block below), the Sega Rally 2 race
   drew a frame every vblank (SPEED 58-74%) in three boots in a row, but
@@ -691,9 +957,11 @@ before. Results below the HW steps. LMMODE default ON in source
 session 20 I suppose."; section 7). The Windows CE speed work and the
 JIT IDLE RULE AUTO work of this section are done.**
 - Defaults by Matt (2026-10-15: "Keep the MMU ASID JTC OFF, and same for
-  the GD-ROM Timing. And MMU Pref."): MMU ASID JTC OFF, GD-ROM Timing
-  HOST, MMU Pref IFB, the old paths, as in source. JIT IDLE RULE AUTO is
-  the default (Matt: "Yes, keep it AUTO as the default."). Matt: the AUTO
+  the GD-ROM Timing. And MMU Pref.", then "Wait, I was wrong. Can you
+  place the Timing to fixed and to MMU Pref to JIT?"): MMU ASID JTC OFF,
+  GD-ROM Timing FIXED, MMU Pref JIT, in source since 2026-10-15 (package
+  of 04:02). JIT IDLE RULE AUTO is the default (Matt: "Yes, keep it AUTO
+  as the default."). Matt: the AUTO
   swapper was meant for bundle 21 ("It's good that we got it sorted out
   now").
 - Next by the recorded order: bundle 21 (Capcom vs. SNK 2 fights), item
@@ -14254,8 +14522,8 @@ built by the change.
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
 | 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance = the ADPCM stream wrap, row "ADPCM Stream" FIXED HW SUCCESS 2026-10-14 (Matt), default FIXED in source since 2026-10-14 (Matt), not packaged |
 | 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[~]` built 2026-10-14 (Matt: "I'm not far enough in the games to be able to test the disc swap, but we can implement the other things and test them, in case."; section 0): CD-DA Rules level + LEAD-OUT (P82), CD-DA Miss level + LOOP AHEAD (the gaps left at loop turns; the stall itself ended in bundle 2), the GDI HW test file `misc/gdi_check/hw/GDI test Rayman 2.gdi`; the defaults are not changed; PC checks PASS; package of 10:21; no HW run; not built: P77 and the Disc Swap HW test (Matt: no game of his at a swap prompt yet); PARKED 2026-10-14 (Matt: "Park this goal, we will test it later!") |
-| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); defaults by Matt: MMU ASID JTC OFF, GD-ROM Timing HOST, MMU Pref IFB; P38's JIT form and its speed packages 1 and 2 HW SUCCESS; JIT IDLE RULE AUTO (default, HW SUCCESS) built on the way; history: built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
-| 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF; 2026-10-15: JIT IDLE RULE AUTO (the default) takes the menus' X3 BACKWARD by itself (built at bundle 20's close; Matt: it was meant for this bundle); the fights open |
+| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); defaults by Matt: MMU ASID JTC OFF, GD-ROM Timing FIXED, MMU Pref JIT; P38's JIT form and its speed packages 1 and 2 HW SUCCESS; JIT IDLE RULE AUTO (default, HW SUCCESS) built on the way; history: built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
+| 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[~]` started 2026-10-15 (Matt), not closed (Matt: "Bundle 21 is still not done"): Render Delay FLYCAST (default in source, not packaged) ends the 167 ms render-done time-outs, and the idle-list entry for Kamui's vsync loop (JIT IDLE HASH ON by default) gives the fights at X3 SPEED 100%, 59.8 frames a second; both HW SUCCESS (section 0); not committed; open issue, parked: menus and HUD green unless Texture Filter LINEAR; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights were SH4-bound at X3 before the entry, with JIT C-Calls ON and OFF; JIT IDLE RULE AUTO (the default since bundle 20's close; Matt: it was meant for this bundle) keeps the game at X3 with the two fixes |
 | 22 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12; bundle 21 until 2026-10-13) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
 
 Main gains:
@@ -15629,8 +15897,9 @@ Main gains:
   Rally 2's frame rate.
 - Closed 2026-10-15 (Matt: "Also, we can close session 20 I suppose.").
   Defaults (Matt: "Keep the MMU ASID JTC OFF, and same for the GD-ROM
-  Timing. And MMU Pref."): MMU ASID JTC OFF, GD-ROM Timing HOST, MMU Pref
-  IFB. Left as they are at the close: JIT MAC and JIT RM 2/3 have no test
+  Timing. And MMU Pref.", then "Wait, I was wrong. Can you place the
+  Timing to fixed and to MMU Pref to JIT?"): MMU ASID JTC OFF, GD-ROM
+  Timing FIXED, MMU Pref JIT. Left as they are at the close: JIT MAC and JIT RM 2/3 have no test
   game (rows OFF; the MMU JIT runs RM 2/3 as ACCEPT by itself).
 - Built on the way, for the games of the same night (section 0): JIT IDLE
   RULE X3 + WAITS X30 (HW: no gain over X3 BACKWARD), JIT HOTBLOCKS ALL
@@ -15639,7 +15908,7 @@ Main gains:
   supposed to be for bundle 21, but It's good that we got it sorted out
   now." (bundle 21 below).
 
-### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
+### Bundle 21: Capcom vs. SNK 2 fights  `[~]` started 2026-10-15 (Matt: "Let's go with Bundle 21."); new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 
 - Goal: the fights of Capcom vs. SNK 2 (JP) at 60 frames per second
   (Matt: "avg is 50 FPS. Game is supposed to hard run at 60."). It is
@@ -15692,6 +15961,33 @@ Main gains:
   runs X3 BACKWARD while the host keeps up and X30 when SPEED falls, so
   the menus need no hand setting now (no CvS2 boot with AUTO yet). Items
   1-3 (the fights) are open.
+- Started 2026-10-15 (Matt: "Let's go with Bundle 21."): item 1 needs no
+  code; its HW steps are in the bundle 21 block of section 0.
+- Investigated 2026-10-15 (Matt: "I'd like you investigate the whole
+  bundle 21."; the bundle 21 block of section 0 has the facts):
+  - Item 1 answered from old logs: the fights spend the SH4 thread in
+    Kamui's vsync wait (8C21A2DA-8C21A2F6, 3.2-3.6M turns a second), not
+    in game work. The profile boot is not needed.
+  - Item 2: the entry is computed, not built (8C21A2EE). Item 3: not
+    needed.
+  - Correction to the line above: a CvS2 boot with AUTO exists
+    (`b18s_hw.txt` of session 72efb758, menus only). AUTO does not give
+    the game X3 BACKWARD: under 95% it goes to X30, where the game's
+    167 ms render-done wait times out on every frame (5-6 frames a
+    second).
+  - New item 4: the render-done wait times out at X30 always and at X3
+    in one menu scene. Lead: our render-done delay (0.25 ms) is 9-30
+    times shorter than in the PC references; test Render Delay ON.
+- Built and HW SUCCESS 2026-10-15 (section 0 has the runs): Render Delay
+  level FLYCAST (Flycast's end-of-render time) ends the 167 ms time-outs
+  (item 4), and item 2's entry with JIT IDLE HASH ON by default gives the
+  fights at X3 SPEED 100%, 59.8 frames a second, no AUTO switch. Render
+  Delay defaults to FLYCAST in source (not packaged). Not committed. Not
+  closed (Matt: "Bundle 21 is still not done").
+- Open issue, parked (Matt 2026-10-15: "Park it as open issue from this
+  bundle."): the menus and the HUD show green with Texture Filter GAME or
+  NEAREST, right with LINEAR (which cuts the fighters). Section 0 has the
+  facts and the proposed dump.
 
 ### Bundle 22: Frame rate in heavy scenes  `[ ]` new at the re-cut of 2026-10-12 as bundle 21, bundle 22 since 2026-10-13; parked for the end (Matt 2026-10-12)
 

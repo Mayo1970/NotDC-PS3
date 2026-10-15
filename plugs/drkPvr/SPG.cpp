@@ -22,9 +22,10 @@ extern int g_fb_line_double_preset;
 // Plan section 7, bundle 12 (P36): the cheat file's codes (ps3/ps3_cheats.cpp); nothing with no file loaded.
 void ps3_cheats_vblank(void);
 
-// Hardware-like HOLLY IRQ delays (ps3/ps3_presets.cpp).
+// Hardware-like HOLLY IRQ delays (ps3/ps3_presets.cpp). Level 2 (FLYCAST) uses the legacy countdown with
+// Flycast's length (StartRender) and raises the list-end IRQs at once, as Flycast does.
 extern "C" int get_render_delay_preset();
-#define RENDER_DELAY() (get_render_delay_preset() != 0)
+#define RENDER_DELAY() (get_render_delay_preset() == 1)
 
 // Plan section 7, bundle 7 (P28, Flycast spg.cpp): the field bit flips once per frame; the HBlank IRQ follows
 // SPG_HBLANK_INT. Off: a flip on each line, one HBlank IRQ at vblank.
@@ -125,6 +126,10 @@ void CalculateSync()
 }
 
 s32 render_end_pending_cycles = 0;
+// Render Delay FLYCAST, for the [rdelay] line: renders, their countdowns' sum and largest, those at the 1.5M cap.
+u32 g_rdelay_n = 0, g_rdelay_cap = 0;
+u64 g_rdelay_sum = 0;
+s32 g_rdelay_max = 0;
 
 // RENDER_DELAY() preset: delay list-complete IRQs by 200 cycles and render-done ISP/TSP/video by
 // 800k/850k/900k after STARTRENDER (originaldave_'s holly.cpp); fixes games that pace off them (MvC2).
@@ -443,6 +448,14 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                            s_st_hblank / tdiff, (u32)SPG_HBLANK_INT.hblank_int_mode,
                            (u32)SPG_HBLANK_INT.line_comp_val);
                 s_st_field = s_st_hblank = 0;
+                // Cycles at 200 MHz: 200 a microsecond.
+                if (get_render_delay_preset() == 2 && g_rdelay_n)
+                    printf("[rdelay] flycast: %u renders, end-of-render after %.2f ms avg, %.2f ms max, %u at the cap\n",
+                           g_rdelay_n, (double)g_rdelay_sum / g_rdelay_n / 200000.0, g_rdelay_max / 200000.0,
+                           g_rdelay_cap);
+                g_rdelay_n = g_rdelay_cap = 0;
+                g_rdelay_sum = 0;
+                g_rdelay_max = 0;
 #endif
                 snd_unlock();
                 stall_pop();
@@ -453,7 +466,7 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
         }
     }
 
-    // Deferred render completion interrupt (legacy path, RENDER_DELAY() off)
+    // Deferred render completion interrupt (legacy path: Render Delay OFF or FLYCAST)
     if (render_end_pending_cycles > 0)
     {
         render_end_pending_cycles -= (s32)cycles;

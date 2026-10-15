@@ -57,6 +57,9 @@ extern "C" int ps3gl_tex_chain_levels(void);
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
+extern u32 g_rdelay_n, g_rdelay_cap;   // Render Delay FLYCAST: the [rdelay] line of SPG.cpp
+extern u64 g_rdelay_sum;
+extern s32 g_rdelay_max;
 
 #define MAX_VTX    (64 * 1024)
 #define MAX_STRIPS (16 * 1024)
@@ -5000,6 +5003,7 @@ void StartRender()
 	spe_flush(s_ta);
 	snapshot_render_regs();
 	TaContext* rc = find_context(s_snap.param_base);
+	const bool rc_found = rc != 0;
 	if (!rc)
 	{
 		static u32 s_warned;
@@ -5016,12 +5020,24 @@ void StartRender()
 	// job's count (TR3 replays later), close enough for a clamped delay.
 	u32 vtx = rc->rend_nvtx;
 	sys_sync();   // plan 5.36: the countdowns start at the next slice end, as with the update every slice
-	if (get_render_delay_preset())
+	const int rdelay = get_render_delay_preset();
+	if (rdelay == 1)
 	{
 		render_isp_pending_cycles = 800000;
 		render_tsp_pending_cycles = 850000;
 		render_vd_pending_cycles  = 900000;
 		render_end_pending_cycles = 0;
+	}
+	else if (rdelay == 2)
+	{
+		// Flycast scheduleRenderDone: 450000 cycles + 100 a TA byte, at most 1.5M (10500 bytes); 4096 with no context.
+		const u32 bytes = rc->raw_used;
+		render_end_pending_cycles = !rc_found ? 4096 : bytes < 10500 ? (s32)(450000 + 100 * bytes) : 1500000;
+		g_rdelay_n++;
+		g_rdelay_sum += (u64)render_end_pending_cycles;
+		if (render_end_pending_cycles > g_rdelay_max)
+			g_rdelay_max = render_end_pending_cycles;
+		g_rdelay_cap += render_end_pending_cycles == 1500000;
 	}
 	else
 	{

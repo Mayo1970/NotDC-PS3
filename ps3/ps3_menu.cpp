@@ -334,6 +334,7 @@ static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
 static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
 static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
 static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
+static const char* k_rdelay[]    = { "OFF", "ON", "FLYCAST", NULL };
 static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
@@ -416,8 +417,8 @@ static Option s_emu[] = {
 	  "Disc reads on a worker thread; + CD-DA also reads music ahead. Set before boot." },
 	{ "Speed Limiter",   &g_speed_limiter_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Caps emulation at real hardware speed. No effect below 100%." },
-	{ "Render Delay",    &g_render_delay_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Hardware-like HOLLY interrupt delays, for games paced off them." },
+	{ "Render Delay",    &g_render_delay_preset,  OPT_CHOICE, k_rdelay,    0, 0,0,0, NULL,
+	  "End-of-render IRQ delay. ON: 4-4.5 ms. FLYCAST: 2.25-7.5 ms by list size. Set before boot." },
 	{ "Exit Fix",        &g_exit_fix_preset,      OPT_CHOICE, k_exit_fix,  0, 0,0,0, NULL,
 	  "How the emulator shuts down when the XMB asks it to quit." },
 	{ "JIT Exit",        &g_jit_exit_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -609,7 +610,7 @@ static Option s_jit[] = {
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
 	  "X3 BACKWARD: more frames in some games. AUTO: X3 BACKWARD, X30 when SPEED falls. Set before boot." },
 	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
-	  "A listed wait loop ends the timeslice (Looney Tunes), as Reicast. Set before boot." },
+	  "A listed wait loop ends the timeslice (Looney Tunes, CvS2), as Reicast. Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };

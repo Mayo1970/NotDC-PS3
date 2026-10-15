@@ -155,6 +155,8 @@ MUTANTS = [
     (HASH, 'idle hash: dead entry made live', '">1:08:AF4AC687', '">:1:08:AF4AC687'),
     (HASH, 'idle hash: Looney Tunes entry on the head block', '">:1:8C014544:06:', '">:1:8C01453E:06:'),
     (HASH, 'idle hash: Looney Tunes entry with a wrong word', ':82CA5453:', ':82CA5452:'),
+    (HASH, 'idle hash: CvS2 entry on the counter block', '">:1:8C21A2EE:04:', '">:1:8C21A2DE:04:'),
+    (HASH, 'idle hash: CvS2 entry with a wrong word', ':A6CFFD76:', ':A6CFFD77:'),
     (HASH, 'idle hash: a Reicast entry with a wrong word', ':DD9FDF9D:', ':DD9FDF9C:'),
     (HASH, 'idle hash: limit one too high', 'opcodes > IDLE_HASH_MAX_OPS)', 'opcodes > IDLE_HASH_MAX_OPS + 1)'),
     (HASH, 'idle hash: full form with decimal opcodes', '">:1:%08X:%02X:', '">:1:%08X:%02d:'),
@@ -174,7 +176,7 @@ MUTANTS = [
     (DRV, 'idle hash: driver keeps one cycle', '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,0);\n',
      '\tif (block->idle_hash)\n\t\tppc_li(ppc_cycles,1);\n'),
     (DRV, 'idle hash: driver on every idle-rule loop', '\tif (block->idle_hash)\n', '\tif (block->idle_loop)\n'),
-    (PRE, 'idle hash: presets default ON', 'int g_jit_idle_hash_preset = 0;', 'int g_jit_idle_hash_preset = 1;'),
+    (PRE, 'idle hash: presets default OFF', 'int g_jit_idle_hash_preset = 1;', 'int g_jit_idle_hash_preset = 0;'),
     (PRE, 'idle hash: presets getter fixed', '{ return g_jit_idle_hash_preset; }', '{ return 0; }'),
 ]
 
