@@ -28,12 +28,33 @@ file are renumbered. Later that day (Matt: "Place it in one of the last
 bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 (P38) is the last item of bundle 20; nothing is built by it.**
 
+**JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
+to no left-out seconds and a shorter hold, now that a switch costs about
+2 ms). Package of 03:45 (`build/notdc_ps3.pkg`, 1755504 bytes) = the
+package of 03:26 + this. No HW run. Not committed. `.got` 0xF8C8, 0
+`r2off`.**
+- `ps3/ps3_idle_auto.h`: no window is left out after a switch (`IA_SETTLE`
+  and its field are gone): the next window runs all at the new level. Hold
+  5 windows (was 10), up to 160 (was 320). A try counts as failed, and
+  doubles the hold, only if it goes back within 10 X3 windows (was 20).
+  Unchanged: 3 windows under 95% go to X30; 3 windows at 98%+ with 30%+
+  sleep try X3.
+- Why (HW, package of 03:26, Donald Duck): an in-game cutscene 8 s after
+  an X3 try sent X3 to X30 (right), but the doubled hold (20 s) kept the
+  play after it at X30 for about 12 s (11-16 frames a second).
+- PC checks (WSL), PASS: `misc/idleauto_check` 83 checks (new models at
+  the "soon" bound: 9 and 10 X3 windows), 25 source lines, `mutate.py` 66
+  of 66.
+- HW steps: as for the package of 03:26 (JIT IDLE RULE AUTO, JIT HOTBLOCKS
+  OFF, SH4 Clock 200), any game; the `[idle-auto]` lines show each switch.
+
 **JIT IDLE RULE AUTO: a switch patches the bills, built 2026-10-15 (Matt
 asked "Can we delegate the cached code to RAM?" for the stutter at each
 switch; to the patch below: "Yes!"). Package of 03:26
-(`build/notdc_ps3.pkg`, 1755504 bytes) = the package of 03:05 + this. No
-HW run. Not committed. `.got` 0xF8C8 of 0x10000 (1.8 KB left), 0
-`r2off`.**
+(`build/notdc_ps3.pkg`, 1755504 bytes) = the package of 03:05 + this. HW
+2026-10-15 (Donald Duck): each switch patched 813-1813 blocks in 1.1-2.4
+ms, no recompile, the second after it at 103% (block above). Not
+committed. `.got` 0xF8C8 of 0x10000 (1.8 KB left), 0 `r2off`.**
 - Why not RAM: the PS3 runs JIT code only from the `.text` array (HW probe
   2026-09-20: code in `.bss`, `malloc` and lv2 memory faulted). A RAM copy
   to restore at a switch would not help either: Donald Duck flushes its

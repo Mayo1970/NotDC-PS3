@@ -10,23 +10,22 @@
 #define IA_FULL      98.0   // an X30 window must reach this SPEED %
 #define IA_SPARE     0.3    // and the pacer must sleep this share of it
 #define IA_SPARE_N   3      // such X30 windows in a row that try X3 again
-#define IA_SETTLE    2      // windows left out after a switch: the code cache fills again
-#define IA_HOLD_MIN  10     // X30 windows before an X3 try
-#define IA_HOLD_MAX  320
-#define IA_SOON      20     // an X3 try that goes back within this many windows doubles the hold
+#define IA_HOLD_MIN  5      // X30 windows before an X3 try
+#define IA_HOLD_MAX  160
+#define IA_SOON      10     // an X3 try that goes back within this many windows doubles the hold
 
 struct IdleAuto
 {
 	int rule;              // IA_X3 or IA_X30
 	u32 slow, spare;       // the windows in a row that count to a switch
-	u32 settle, wait;      // windows left out, then X30 windows before a try
+	u32 wait;              // X30 windows left before a try
 	u32 hold, x3_n;        // the next wait, and the X3 windows since the last try
 };
 
 static inline void idle_auto_init(IdleAuto& a)
 {
 	a.rule = IA_X3;
-	a.slow = a.spare = a.settle = a.wait = 0;
+	a.slow = a.spare = a.wait = 0;
 	a.hold = IA_HOLD_MIN;
 	a.x3_n = IA_SOON;      // the boot is no try: its first fall back keeps the shortest hold
 }
@@ -42,17 +41,12 @@ static inline bool idle_bill_word(u32& w, u32 cycles)
 	return true;
 }
 
-// One stats window of secs seconds; sleep_s is the pacer's sleep in it. True when the rule changed: the caller
-// then patches the bill of every compiled block (ps3_driver.cpp), so the new level reaches all code.
+// One stats window of secs seconds; sleep_s is the pacer's sleep in it. True when the rule changed: the caller then
+// patches the bill of every compiled block (ps3_driver.cpp), so the next window runs all at the new level.
 static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double sleep_s)
 {
 	if (secs <= 0.0)
 		return false;
-	if (a.settle)
-	{
-		a.settle--;
-		return false;
-	}
 	if (a.rule == IA_X3)
 	{
 		a.x3_n++;
@@ -77,6 +71,5 @@ static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double
 		a.rule = IA_X3;
 	}
 	a.slow = a.spare = 0;
-	a.settle = IA_SETTLE;
 	return true;
 }

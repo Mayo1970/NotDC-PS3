@@ -74,12 +74,18 @@ static Win m_hold_ok(u32 i, int rule)
 		return { 1.0, 100.0, 0.5 };
 	return (i <= 3 || i > 60) ? Win{ 1.0, 60.0, 0.0 } : Win{ 1.0, 100.0, 0.5 };
 }
-// The first X3 try goes back after 15 X3 windows: still soon.
-static Win m_soon15(u32 i, int rule)
+// The first X3 try (window 11) goes back after 9 X3 windows: soon. After 10 it is not.
+static Win m_soon9(u32 i, int rule)
 {
 	if (!rule)
 		return { 1.0, 100.0, 0.5 };
-	return (i <= 3 || i > 32) ? Win{ 1.0, 60.0, 0.0 } : Win{ 1.0, 100.0, 0.5 };
+	return (i <= 3 || i > 17) ? Win{ 1.0, 60.0, 0.0 } : Win{ 1.0, 100.0, 0.5 };
+}
+static Win m_soon10(u32 i, int rule)
+{
+	if (!rule)
+		return { 1.0, 100.0, 0.5 };
+	return (i <= 3 || i > 18) ? Win{ 1.0, 60.0, 0.0 } : Win{ 1.0, 100.0, 0.5 };
 }
 // Slow and full X3 windows in turn: never three slow ones in a row.
 static Win m_turns(u32 i, int) { return { 1.0, (i & 1) ? 60.0 : 100.0, 0.0 }; }
@@ -87,24 +93,25 @@ static Win m_turns(u32 i, int) { return { 1.0, (i & 1) ? 60.0 : 100.0, 0.0 }; }
 static void t_models()
 {
 	same("steady", run(m_steady, 600), {});
-	same("X30 game", run(m_x30_game, 1000), { { 3, IA_X30, 10 } });
-	same("Donald Duck", run(m_dd, 400), { { 19, IA_X30, 10 }, { 59, IA_X3, 10 } });
-	same("a try that holds", run(m_hold_ok, 100),
-	     { { 3, IA_X30, 10 }, { 18, IA_X3, 10 }, { 63, IA_X30, 10 }, { 78, IA_X3, 10 }, { 83, IA_X30, 20 } });
-	same("a try back after 15 windows", run(m_soon15, 40), { { 3, IA_X30, 10 }, { 18, IA_X3, 10 }, { 35, IA_X30, 20 } });
+	same("X30 game", run(m_x30_game, 1000), { { 3, IA_X30, 5 } });
+	same("Donald Duck", run(m_dd, 400), { { 19, IA_X30, 5 }, { 59, IA_X3, 5 } });
+	same("a try that holds", run(m_hold_ok, 80),
+	     { { 3, IA_X30, 5 }, { 11, IA_X3, 5 }, { 63, IA_X30, 5 }, { 71, IA_X3, 5 }, { 74, IA_X30, 10 } });
+	same("a try back after 9 X3 windows", run(m_soon9, 25), { { 3, IA_X30, 5 }, { 11, IA_X3, 5 }, { 20, IA_X30, 10 } });
+	same("a try back after 10 X3 windows", run(m_soon10, 25), { { 3, IA_X30, 5 }, { 11, IA_X3, 5 }, { 21, IA_X30, 5 } });
 	same("slow in turns", run(m_turns, 600), {});
 
-	// Each X30 switch at w with hold h: X3 at w + h + 5 (2 left out, h waits, 3 spare), X30 again 5 later.
-	std::vector<Event> want = { { 3, IA_X30, 10 } };
-	u32 w = 3, h = 10;
+	// Each X30 switch at w with hold h: X3 at w + h + 3 (h waits, 3 spare), X30 again 3 later with the hold doubled.
+	std::vector<Event> want = { { 3, IA_X30, 5 } };
+	u32 w = 3, h = 5;
 	while (true)
 	{
-		const u32 x3 = w + h + 5;
+		const u32 x3 = w + h + 3;
 		if (x3 > 2000)
 			break;
 		want.push_back({ x3, IA_X3, h });
-		w = x3 + 5;
-		h = h * 2 > 320 ? 320 : h * 2;
+		w = x3 + 3;
+		h = h * 2 > 160 ? 160 : h * 2;
 		if (w > 2000)
 			break;
 		want.push_back({ w, IA_X30, h });
@@ -133,7 +140,7 @@ static void t_edges()
 {
 	IdleAuto a;
 	idle_auto_init(a);
-	expect(a.rule == IA_X3 && a.hold == 10 && a.x3_n == 20 && !a.slow && !a.spare && !a.settle && !a.wait,
+	expect(a.rule == IA_X3 && a.hold == 5 && a.x3_n == 10 && !a.slow && !a.spare && !a.wait,
 	       "init: rule %d hold %u x3_n %u", a.rule, a.hold, a.x3_n);
 	expect(feed(a, 10, 1.0, 95.0, 0.0) == 0, "X3 at 95.0%% is not slow");
 	idle_auto_init(a);
@@ -169,16 +176,15 @@ static void t_edges()
 	expect(!idle_auto_step(a, -1.0, 60.0, 0.0) && !memcmp(&a, &b, sizeof(a)), "a window of -1 s changed the state");
 	expect(idle_auto_step(a, 1.0, 60.0, 0.0) && a.rule == IA_X30, "the third slow window after a 0 s one");
 
-	// After a switch, 2 windows count for nothing, whatever they show.
-	expect(a.settle == 2 && !a.slow && !a.spare && a.wait == 10, "after X30: settle %u slow %u spare %u wait %u",
-	       a.settle, a.slow, a.spare, a.wait);
-	expect(!idle_auto_step(a, 1.0, 100.0, 1.0) && !idle_auto_step(a, 1.0, 100.0, 1.0) && a.wait == 10,
-	       "the settle windows moved the wait to %u", a.wait);
-	expect(feed(a, 9, 1.0, 100.0, 1.0) == 0 && a.wait == 1 && !a.spare, "nine waits: wait %u spare %u", a.wait,
+	// The window after a switch counts at once: the hold waits, then 3 spare windows try X3.
+	expect(!a.slow && !a.spare && a.wait == 5, "after X30: slow %u spare %u wait %u", a.slow, a.spare, a.wait);
+	expect(feed(a, 4, 1.0, 100.0, 1.0) == 0 && a.wait == 1 && !a.spare, "four waits: wait %u spare %u", a.wait,
 	       a.spare);
 	expect(!idle_auto_step(a, 1.0, 100.0, 1.0) && !a.wait && !a.spare, "the last wait counted as spare");
-	expect(feed(a, 3, 1.0, 100.0, 1.0) == 3 && a.rule == IA_X3 && !a.x3_n && a.settle == 2,
-	       "the try: rule %d x3_n %u settle %u", a.rule, a.x3_n, a.settle);
+	expect(feed(a, 3, 1.0, 100.0, 1.0) == 3 && a.rule == IA_X3 && !a.x3_n, "the try: rule %d x3_n %u", a.rule, a.x3_n);
+	// And the X3 windows after the try count at once.
+	expect(feed(a, 3, 1.0, 60.0, 0.0) == 3 && a.rule == IA_X30 && a.hold == 10, "back at once: rule %d hold %u",
+	       a.rule, a.hold);
 }
 
 // The patch of a bill word: the words of ngen_Begin's three paths, as the emitter makes them, then other words.
