@@ -135,7 +135,7 @@ MUTANTS = [
     (DRV, 'driver: bcache looks up the scratch', 'emit_bcache_lookup(ppc_rarg0,', 'emit_bcache_lookup(ppc_rarg1,'),
     (DRV, 'driver: bcache without its row', '\t\tif (get_bcache_preset())\n\t\t{\n', '\t\tif (true)\n\t\t{\n'),
     (PRE, 'presets: bcache getter fixed', '{ return g_jit_bcache_preset; }', '{ return 0; }'),
-    (PRE, 'presets: idle rule default X3', 'int g_jit_idle_rule_preset = 0;', 'int g_jit_idle_rule_preset = 1;'),
+    (PRE, 'presets: idle rule default X30', 'int g_jit_idle_rule_preset = 4;', 'int g_jit_idle_rule_preset = 0;'),
     (PRE, 'presets: bcache default OFF', 'int g_jit_bcache_preset    = 1;', 'int g_jit_bcache_preset    = 0;'),
 
     (HASH, 'idle hash: bytes as {0, byte}', 'msg[i * 2] = code[i];\n\t\tmsg[i * 2 + 1] = 0;',

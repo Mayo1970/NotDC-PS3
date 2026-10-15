@@ -74,7 +74,7 @@ P=ps3/ps3_presets.cpp
 has $P 'int get_jit_idle_rule()        { return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }' \
 	'the getter: AUTO gives the level of now'
 has $P 'int g_jit_idle_rule_now    = 1;' 'AUTO starts at X3 BACKWARD'
-has $P 'int g_jit_idle_rule_preset = 0;' 'the default stays X30'
+has $P 'int g_jit_idle_rule_preset = 4;' 'the default is AUTO (Matt 2026-10-15)'
 has ps3/ps3_menu.cpp 'static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };' \
 	'the row: AUTO is level 4'
 has dc/sh4/rec_v2/decoder.cpp '		block.cycles=dec_bill(get_jit_idle_rule(),plain_cycles,max_cycles);' 'the decoder bills the level of now'

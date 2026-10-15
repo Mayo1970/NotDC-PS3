@@ -106,7 +106,7 @@ LINES = [
      'int g_jit_bcache_preset    = 1;'),
     ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_jit_pr_moves_preset  = 0;'),
     ('ps3/ps3_presets.cpp', 'rows default to the old path', 'int g_jit_rm_any_preset    = 0;'),
-    ('ps3/ps3_presets.cpp', 'JIT IDLE RULE defaults to X30 (Matt 2026-10-12)', 'int g_jit_idle_rule_preset = 0;'),
+    ('ps3/ps3_presets.cpp', 'JIT IDLE RULE defaults to AUTO (Matt 2026-10-15)', 'int g_jit_idle_rule_preset = 4;'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_bcache_preset()        { return g_jit_bcache_preset; }'),
     ('ps3/ps3_presets.cpp', 'getter', 'int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }'),
     ('ps3/ps3_presets.cpp', 'getter (the MMU JIT forces ACCEPT)',

@@ -11,7 +11,7 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-14)
+## 0. Resume here (updated 2026-10-15)
 
 **Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
 work is in bundles 10 to 22 now. Bundles 1-9 are closed, and the table of
@@ -31,8 +31,10 @@ bundles. It's worth a shot."): the full SH4 MMU for the Windows CE games
 **JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
 to no left-out seconds and a shorter hold, now that a switch costs about
 2 ms). Package of 03:45 (`build/notdc_ps3.pkg`, 1755504 bytes) = the
-package of 03:26 + this. No HW run. Not committed. `.got` 0xF8C8, 0
-`r2off`.**
+package of 03:26 + this. HW SUCCESS 2026-10-15 (Matt: "Much better!";
+below the HW steps). JIT IDLE RULE defaults to AUTO in source since then
+(Matt: "Yes, keep it AUTO as the default."). Not committed. `.got` 0xF8C8,
+0 `r2off`.**
 - `ps3/ps3_idle_auto.h`: no window is left out after a switch (`IA_SETTLE`
   and its field are gone): the next window runs all at the new level. Hold
   5 windows (was 10), up to 160 (was 320). A try counts as failed, and
@@ -47,6 +49,14 @@ package of 03:26 + this. No HW run. Not committed. `.got` 0xF8C8, 0
   of 66.
 - HW steps: as for the package of 03:26 (JIT IDLE RULE AUTO, JIT HOTBLOCKS
   OFF, SH4 Clock 200), any game; the `[idle-auto]` lines show each switch.
+- HW run 2026-10-15, Donald Duck (105 s): 2 switches. X3 BACKWARD to X30
+  at the video's third slow second (57.8%), 813 blocks billed again in
+  1.10 ms; the next second ran at 102.6%. X30 to X3 BACKWARD at the third
+  second of play (sleep 574 ms/s), 1762 blocks in 2.09 ms; the next second
+  ran at 99.9%. Play then ran at 30 frames a second, SPEED 100.0%, to the
+  end. Matt: "Much better!" Then the default: AUTO (`JitIdleRule=4`,
+  `g_jit_idle_rule_preset = 4`; Matt: "Yes, keep it AUTO as the
+  default."); an install keeps its own `nullDC.cfg` value.
 
 **JIT IDLE RULE AUTO: a switch patches the bills, built 2026-10-15 (Matt
 asked "Can we delegate the cached code to RAM?" for the stutter at each
@@ -281,7 +291,8 @@ for the video (below the HW steps). Not committed. `.got` 0xF828 of
 **GD-ROM Timing row built 2026-10-15 (Matt: "Yes." to a fixed disc timing,
 in the Windows CE speed work). Package of 01:09 (`build/notdc_ps3.pkg`,
 1753456 bytes) = commit 2020f69 + MMU JIT speed 2 + this. Default HOST, the
-old path. HW runs 1-2 2026-10-15: no fix (below the HW steps). Not committed.
+old path (Matt 2026-10-15: keep it). HW runs 1-2 2026-10-15: no fix (below the
+HW steps). Not committed.
 `.got` 0xF828 of 0x10000, 0 `r2off`.**
 - Why: in the HW runs of speed 2 (block below), the Sega Rally 2 race
   drew a frame every vblank (SPEED 58-74%) in three boots in a row, but
@@ -676,31 +687,30 @@ before. Results below the HW steps. LMMODE default ON in source
   - SH4 MMU Engine: default JIT in source (Matt: "Yes."), not packaged
     alone (the speed package of 21:45 has it).
 
-**NEXT SESSION (Matt 2026-10-14: "I'd like to work on the Windows CE
-Speed now."): the Windows CE speed work on the MMU JIT. Its second
-package, MMU JIT speed 2, is built (block above); its HW run is open.**
-- Speed 2's HW runs are done (block above, no fault). Matt chooses the
-  defaults of the rows MMU Pref and MMU ASID JTC. A speed compare of
-  Sega Rally 2 needs the first boot after a PS3 restart (the disc cache
-  changes the game's frame rate), or GD-ROM Timing FIXED or SEEK.
-- The GD-ROM Timing row's HW runs are done: no fix (its block, at the top
-  of this section). Matt asked for full speed in the race: its 30 fps phases
-  run at 99.7%, its 60 fps phases at ~79% (the MMU C costs, ~225 ms a
-  second, and the wait loop at 01E3E9C0 are the known costs left).
-- Then the costs its `[jmmu]` lines show. Left after speed 1 (the race,
-  ms a second): lookup 74.9, slow r 59.6, w 20.9, exc 7.2, compile 1.5.
-  The hot line names the physical addresses of the slow reads and the
-  pcs that miss the block cache: read it before a new item is chosen.
-- Facts to keep: JIT IDLE RULE X30 is right for Sega Rally 2 (X3
-  BACKWARD: SPEED 52%); it needs LMMODE ON; its `[idle]` loop at
-  01E3E9C0 runs 91-97K times a second and is never skipped.
-- The new idle rule level X3 + WAITS X30 (block at the top of this
-  section) has its HW run open: Donald Duck first.
-- Traps: `.got` 0xF808 of 0x10000 (2.0 KB left: a new big file may need
+**NEXT SESSION: bundle 20 is closed (Matt 2026-10-15: "Also, we can close
+session 20 I suppose."; section 7). The Windows CE speed work and the
+JIT IDLE RULE AUTO work of this section are done.**
+- Defaults by Matt (2026-10-15: "Keep the MMU ASID JTC OFF, and same for
+  the GD-ROM Timing. And MMU Pref."): MMU ASID JTC OFF, GD-ROM Timing
+  HOST, MMU Pref IFB, the old paths, as in source. JIT IDLE RULE AUTO is
+  the default (Matt: "Yes, keep it AUTO as the default."). Matt: the AUTO
+  swapper was meant for bundle 21 ("It's good that we got it sorted out
+  now").
+- Next by the recorded order: bundle 21 (Capcom vs. SNK 2 fights), item
+  1: a profile boot of a fight. The fights draw 5.5K vertices a frame, so
+  JIT HOTBLOCKS ON counts them (ALL WINDOWS also does). Bundle 19's HW
+  test waits for Matt. Then bundle 22 (parked for the end), G11, then G10
+  with G13.
+- Facts to keep: Sega Rally 2 needs X30 (X3 BACKWARD: SPEED 52%) and LMMODE
+  ON; its race's frame rate follows the PS3 disc cache (compare only the
+  first boot after a PS3 restart). Under AUTO it goes to X30 by itself.
+- Traps: `.got` 0xF8C8 of 0x10000 (1.8 KB left: a new big file may need
   `-mminimal-toc`, as `sh4_selftest.o`); `_vmem` holds handler ids 0-7
   only; the build has -fno-exceptions (the MMU interpreter leaves an op
   by `__builtin_longjmp`); the jmmu mutants also run with
-  `JMMU_NOWORDS=1` (the model alone must catch the header's).
+  `JMMU_NOWORDS=1` (the model alone must catch the header's); a JIT
+  block's bill is one word that AUTO patches (`ngen_Begin`, checked by
+  `misc/idleauto_check`): keep it the first word of each cycle path.
 
 **Bundle 20 (SH4 correctness tail) built 2026-10-14 (Matt: "Let's work
 on bundle 20"). Package of 16:40 (`build/notdc_ps3.pkg`, 1735792 bytes) =
@@ -4138,7 +4148,7 @@ on 2026-10-11. It also holds bundle 7's four defaults, as the package of
   | JIT BCACHE | `JitBcache` | OFF / ON | 5.3 `bcache` | ON (1) since 2026-10-11 (HW run 6); OFF in the package of 22:43 |
   | JIT PR MOVES | `JitPrMoves` | OFF / ON | 5.39 | OFF (0) |
   | JIT RM 2/3 | `JitRmAny` | VERIFY / ACCEPT | P57 | VERIFY (0) |
-  | JIT IDLE RULE | `JitIdleRule` | X30 / X3 BACKWARD / OFF / X3 + WAITS X30 / AUTO (both 2026-10-15) | P71 | X30 (0), Matt's verdict 2026-10-12 |
+  | JIT IDLE RULE | `JitIdleRule` | X30 / X3 BACKWARD / OFF / X3 + WAITS X30 / AUTO (both 2026-10-15) | P71 | AUTO (4) since 2026-10-15 (Matt); X30 (0) from 2026-10-12 |
   | FPU DN | `FpuDn` | OFF / ON | 5.40 | removed from source 2026-10-12 (Matt); still in the package of 22:43 |
   | JIT MAC (EMULATION, old row) | `JitMac` | OFF / ON | 5.3 `JitMac` | OFF (0) |
 
@@ -14244,8 +14254,8 @@ built by the change.
 | 17 | Draw rules tail (new at the re-cut of 2026-10-12) | P79, P80, 3b (offset colour, colour clamp), P25's trilinear weights, the open verdicts of bundles 3 and 4 | punch-through edges (Jet Grind Radio); trapezoid sprites; specular highlights; trilinear (Shenmue) | `[~]` built 2026-10-13 (Matt: "Let's work with Bundle 17."; section 0): on the RENDERER page the rows Sprite Corner (OLD / PLANE), Offset Colour, Colour Clamp and Trilinear (OFF / ON), and PT Blend's third level + ALPHA 1; every new row at its old path, PT Blend stays ON; PC checks PASS (`misc/ta4_check` 74 of 74 mutants, `misc/spevb_check` repaired, 112 of 114 mutants at the package of 14:10, `misc/rend4_check` 108 of 108 mutants); package of 14:10 on 2026-10-13; HW run 1 2026-10-13: PT Blend + ALPHA 1 in Jet Grind Radio, no fault (Matt: "It's looking good."); HW run 2 2026-10-13: the four new rows ON in Sonic Adventure, only Offset Colour acts there, the models look right (Matt), no fault, a scene's build 3.8 times as long; the fast step for it is built (Matt: "I want the fast step build."; package of 16:56 on 2026-10-13, `misc/spevb_check` PASS, 125 of 127 mutants), HW SUCCESS in run 4 (Sonic Adventure; Matt: "It runs like before now!"; the build time 1.0 to 1.1 times the row OFF, 3.4 to 3.9 times before); the four new rows default ON in source since 2026-10-13 (Matt: "Let's keep it in default ON.", then "I'd keep the also the other ones on by default. We may run into a game that uses them."; not packaged, the package of 16:56 has OFF; Sprite Corner PLANE, Colour Clamp and Trilinear still with no HW draw); Colour Clamp, Trilinear and Sprite Corner still have no game that hits them; the verdicts that bundles 3 and 4 left open wait for a run (section 0 names the games that use each row) |
 | 18 | Sound wrap-up (new at the re-cut of 2026-10-12) | bundle 5's four OFF rows, P81, P82, bundle 6's HW tests, P69's VMU beep, P31's nullAICA-only fixes | the Looney Tunes balance (a probe); the Bangai-O and Nomad Soul freezes; a verdict for every sound row | `[~]` PARKED 2026-10-13 (Matt: "park this bundle for now. I will start a more intense session on this."): an investigation and four HW runs on Sonic Adventure 2 (effects too loud, distortion, the track restarts too early, against Flycast), no fix; the rows "ARM7 Rate" and "ARM7 Interleave" built (6.3, 6.2), default the old path, package of 18:56 on 2026-10-13; DSP Ring 64K ran with no fault; the bundle's own items not started (section 0); RESUMED 2026-10-14 (Matt): the row "ADPCM Loop" (6.9 B), the log row "Key Census" and the `[mem64]` count of 6.7 built, every row at its old path; HW run 1 2026-10-14 (Sonic Adventure 2): `[mem64]` 0, the driver's levels and the music level are right, ADPCM Loop RESTORE HW SUCCESS (Matt), default RESTORE in source since 2026-10-14; the sound stop (timebase read) fixed, HW SUCCESS; the Looney Tunes balance = the ADPCM stream wrap, row "ADPCM Stream" FIXED HW SUCCESS 2026-10-14 (Matt), default FIXED in source since 2026-10-14 (Matt), not packaged |
 | 19 | Disc tail (new at the re-cut of 2026-10-12) | P77 with the first Disc Swap HW test (P34), the GDI HW tests (P23, P57), P82's lead-out stop, the parked CD-DA miss stall (5.34) | multi-disc games (Shenmue); GDI sets; no stall at a CD-DA miss | `[~]` built 2026-10-14 (Matt: "I'm not far enough in the games to be able to test the disc swap, but we can implement the other things and test them, in case."; section 0): CD-DA Rules level + LEAD-OUT (P82), CD-DA Miss level + LOOP AHEAD (the gaps left at loop turns; the stall itself ended in bundle 2), the GDI HW test file `misc/gdi_check/hw/GDI test Rayman 2.gdi`; the defaults are not changed; PC checks PASS; package of 10:21; no HW run; not built: P77 and the Disc Swap HW test (Matt: no game of his at a swap prompt yet); PARKED 2026-10-14 (Matt: "Park this goal, we will test it later!") |
-| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[~]` built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
-| 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF |
+| 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); defaults by Matt: MMU ASID JTC OFF, GD-ROM Timing HOST, MMU Pref IFB; P38's JIT form and its speed packages 1 and 2 HW SUCCESS; JIT IDLE RULE AUTO (default, HW SUCCESS) built on the way; history: built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
+| 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[ ]` nothing built; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights are SH4-bound at X3, with JIT C-Calls ON and OFF; 2026-10-15: JIT IDLE RULE AUTO (the default) takes the menus' X3 BACKWARD by itself (built at bundle 20's close; Matt: it was meant for this bundle); the fights open |
 | 22 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12; bundle 21 until 2026-10-13) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
 
 Main gains:
@@ -15518,7 +15528,7 @@ Main gains:
 - HW: a two-disc game at its swap prompt; a GDI set with spaces in its
   file names; ChuChu Rocket CD-DA.
 
-### Bundle 20: SH4 correctness tail  `[~]` built 2026-10-14, HW runs 1-4 of the interpreter form (section 0); P38's JIT form built 2026-10-14, HW SUCCESS (Sega Rally 2), speed package 1 HW SUCCESS, speed package 2 HW no fault; new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
+### Bundle 20: SH4 correctness tail  `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); built 2026-10-14, HW runs 1-4 of the interpreter form (section 0); P38's JIT form built 2026-10-14, HW SUCCESS (Sega Rally 2), speed package 1 HW SUCCESS, speed package 2 HW no fault; new at the re-cut of 2026-10-12 (the interpreter parts of bundle 8, with the small system fixes); the full SH4 MMU for Windows CE (P38) added 2026-10-13 (Matt)
 
 - Items: P46 (Flycast's SH4 op tests as `misc/interp_check` and a boot
   self-test), P32 (fneg with PR=1, mac.w with S=1), P64 (the FPSCR cause
@@ -15615,7 +15625,19 @@ Main gains:
   87.4%), but the game's frame rate follows the PS3 disc cache.
 - Built 2026-10-15 (Matt: "Yes."): the row GD-ROM Timing (HOST / FIXED /
   SEEK 100 / SEEK 330), so the PS3 HDD's time no longer reaches a game.
-  Block "GD-ROM Timing row" of section 0. No HW run.
+  Block "GD-ROM Timing row" of section 0. HW runs 1-2: no fix for Sega
+  Rally 2's frame rate.
+- Closed 2026-10-15 (Matt: "Also, we can close session 20 I suppose.").
+  Defaults (Matt: "Keep the MMU ASID JTC OFF, and same for the GD-ROM
+  Timing. And MMU Pref."): MMU ASID JTC OFF, GD-ROM Timing HOST, MMU Pref
+  IFB. Left as they are at the close: JIT MAC and JIT RM 2/3 have no test
+  game (rows OFF; the MMU JIT runs RM 2/3 as ACCEPT by itself).
+- Built on the way, for the games of the same night (section 0): JIT IDLE
+  RULE X3 + WAITS X30 (HW: no gain over X3 BACKWARD), JIT HOTBLOCKS ALL
+  WINDOWS, and JIT IDLE RULE AUTO with the patch of each block's bill (HW
+  SUCCESS, default AUTO). Matt: "Technically this auto-swapper was
+  supposed to be for bundle 21, but It's good that we got it sorted out
+  now." (bundle 21 below).
 
 ### Bundle 21: Capcom vs. SNK 2 fights  `[ ]` new 2026-10-13 (Matt: "Can you place it as bundle 20?", then "Sorry, bundle 21. Bundle 20 is SH4 stuff."); it was item 4 of the heavy scenes bundle, which is bundle 22 now
 
@@ -15662,9 +15684,14 @@ Main gains:
   P30's bank bit (bundle 13); the leads of the fifth review
   (`OPTIMIZATION_POTENTIAL.md` section 4).
 - Shared code: the idle rule and the idle list in `dc/sh4/rec_v2/`.
-- Rule: X30 stays the default (Matt 2026-10-12). Until bundle 22 has a
-  way per game, the game needs JIT IDLE RULE X3 BACKWARD set by hand.
-- Nothing is built.
+- Rule, until 2026-10-15: X30 stayed the default (Matt 2026-10-12), so
+  the game needed JIT IDLE RULE X3 BACKWARD set by hand.
+- 2026-10-15: JIT IDLE RULE AUTO is built and the default (bundle 20's
+  close, section 0; Matt: "Technically this auto-swapper was supposed to
+  be for bundle 21, but It's good that we got it sorted out now."). It
+  runs X3 BACKWARD while the host keeps up and X30 when SPEED falls, so
+  the menus need no hand setting now (no CvS2 boot with AUTO yet). Items
+  1-3 (the fights) are open.
 
 ### Bundle 22: Frame rate in heavy scenes  `[ ]` new at the re-cut of 2026-10-12 as bundle 21, bundle 22 since 2026-10-13; parked for the end (Matt 2026-10-12)
 

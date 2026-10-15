@@ -80,7 +80,7 @@ MUTANTS = [
     (P, 'presets: the getter gives the row', 'return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset;',
      'return g_jit_idle_rule_preset;'),
     (P, 'presets: AUTO starts at X30', 'int g_jit_idle_rule_now    = 1;', 'int g_jit_idle_rule_now    = 0;'),
-    (P, 'presets: default AUTO', 'int g_jit_idle_rule_preset = 0;', 'int g_jit_idle_rule_preset = 4;'),
+    (P, 'presets: default X30', 'int g_jit_idle_rule_preset = 4;', 'int g_jit_idle_rule_preset = 0;'),
     (M, 'menu: no AUTO', '"X3 + WAITS X30", "AUTO", NULL };', '"X3 + WAITS X30", NULL };'),
     (C, 'decoder: bills the row', 'block.cycles=dec_bill(get_jit_idle_rule(),', 'block.cycles=dec_bill(get_jit_idle_rule_preset(),'),
 ]

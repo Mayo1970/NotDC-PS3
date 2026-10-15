@@ -183,7 +183,7 @@ int g_vblank_int_reset_preset = 1; // 1 = SPG_VBLANK_INT resets to 0x00150104, a
 int g_jit_bcache_preset    = 1;   // 1 = dynamic block ends look up the flat {addr, code} table (5.3 bcache, HW)
 int g_jit_pr_moves_preset  = 0;   // 1 = fmov, flds and fsts stay native in a PR=1 block (5.39)
 int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to nearest; 0 hangs in a verify (P57)
-int g_jit_idle_rule_preset = 0;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles,
+int g_jit_idle_rule_preset = 4;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles,
                                   // 3 = as 1, but a pure wait loop x30, 4 = AUTO: 1 or 0 by host load (P71)
 int g_jit_idle_rule_now    = 1;   // AUTO's level now (ps3_idle_auto.h); the decoder reads get_jit_idle_rule()
 int g_jit_idle_hash_preset = 0;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
