@@ -215,6 +215,10 @@ int g_present_rule_preset  = 0;   // 1 = a render flips when FB_R_SOF1/2 holds i
 int g_region_scissor_preset = 0;  // 1 = a render draws only inside its region array's tiles and the FB clip (P60)
 int g_fb_reads_preset      = 0;   // 1 = 2D presents read an interlaced buffer whole, the shown field, 24-bit pixels (P26)
 int g_keep_frame_preset    = 1;   // 1 = a render that Region Scissor cuts starts from a copy of the last flipped frame, not black (P60)
+// P95 (Rez): an RTT and the next list init no longer wait for the job in flight. 0 is the old path in each.
+// ON since 2026-10-16 (Matt): HW SUCCESS in Rez (25-28K vertices 85% -> 100%), Crazy Taxi unchanged.
+int g_rtt_async_preset     = 1;   // 1 = an RTT waits behind the job in flight and the SH4 runs on (P95, HW)
+int g_ta_ctx_split_preset  = 1;   // 1 = a list init on a context a job still holds moves to a free context (P95, HW)
 // OPTIMIZATION_PLAN section 7, bundle 12 (screen format and test tools): 0 is the old path in every one; a row is off
 // until it is cleared on hardware.
 int g_fps_overlay_preset   = 0;   // 1 = FPS and SPEED on the screen's left edge, new once a second (P50)
@@ -507,6 +511,8 @@ static const CfgItem s_items[] = {
 	{ "PresentRule",   &g_present_rule_preset },
 	{ "RegionScissor", &g_region_scissor_preset },
 	{ "FbReads",       &g_fb_reads_preset },
+	{ "RttAsync",      &g_rtt_async_preset },
+	{ "TaCtxSplit",    &g_ta_ctx_split_preset },
 	{ "KeepFrame",     &g_keep_frame_preset },
 };
 
@@ -678,6 +684,8 @@ static const CfgItem s_out_items[] = {
 	{ "RegionScissor", &g_region_scissor_preset },
 	{ "FbReads",       &g_fb_reads_preset },
 	{ "KeepFrame",     &g_keep_frame_preset },
+	{ "RttAsync",      &g_rtt_async_preset },
+	{ "TaCtxSplit",    &g_ta_ctx_split_preset },
 	{ "FrameHold",     &g_frame_hold_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "FbWatch",       &g_fb_watch_preset },

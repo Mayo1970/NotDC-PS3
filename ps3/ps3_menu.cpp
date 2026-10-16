@@ -760,6 +760,10 @@ static Option s_output[] = {
 	  "With Region Scissor: a render of some tiles keeps the last frame around them (P60). Live." },
 	{ "FB Reads",        &g_fb_reads_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
 	  "FLYCAST: 2D screens read both interlaced fields; 24-bit screens show (P26). Live." },
+	{ "RTT Async",       &g_rtt_async_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A render to texture waits behind the frame in flight; the SH4 runs on (P95, Rez). Live." },
+	{ "TA Context Split", &g_ta_ctx_split_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "A list on a buffer still in a job takes a free context; nothing waits (P95, Rez). Live." },
 };
 
 // Plan section 7, bundle 12: one row per item; the first value is the old path. The screenshot has no row: it is
@@ -1402,6 +1406,7 @@ static int* const k_live_opts[] = {
 	&g_arm7_rate_preset, &g_arm7_interleave_preset,
 	&g_adpcm_loop_preset, &g_key_census_preset,
 	&g_mmu_sq_direct_preset,
+	&g_rtt_async_preset, &g_ta_ctx_split_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

@@ -225,6 +225,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P92 | Flycast's per-game lists that we lack | bug | 24 games that Flycast fixes per game (a-g); the Dricas login patches for GOALS.md G11 (h) | a, b, d, f, g small; c large; e is against plan section 4 | plan bundle 23 items 2-8 (new 2026-10-16, Matt); h goes to G11; nothing built |
 | P93 | Texture churn: a new texture takes an evicted one | speed | Garou (fights 84-98%); no other game of the HW logs evicts | ~150 lines with the checks | new 2026-10-16 (Matt: "apply the Garou fixes"); built, row Tex Recycle default OFF; HW: render-thread time down, no speed change (Garou is SH4-bound) |
 | P94 | One rule for the Shinobi task loop | speed | Garou; Sonic Shuffle and Border Down as before | ~30 lines | new 2026-10-16 (Matt: "2."); acts with JIT TASK IDLE (default LONG); HW SUCCESS 2026-10-16 (Garou 100%, 60 frames); it replaces the two address entries |
+| P95 | Rez: the RTT and the next list wait for the render thread | speed | Rez (an RTT every frame; 25-33K vertices at 73-88%) | ~120 lines with its rows, ~600 with the check | new 2026-10-16 (Matt: "Let's go with option 1."); built, rows RTT Async and TA Context Split; HW run 1: Rez 25-28K vertices 85% -> 100%, Crazy Taxi unchanged; default ON (Matt) |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -1300,6 +1301,41 @@ Adventure intro FMV, `[stall] dma`.
   Down only.
 - HW measure: Garou fights, SPEED and frames a second, the `[idle]` turns
   of 8C015E70; the game must play as before (timers, sound).
+
+### P95 Rez: the RTT and the next list wait for the render thread  `[~]` built 2026-10-16, rows RTT Async and TA Context Split; HW run 1 (both ON): Rez 25-28K vertices 84.7% -> 100.5%, Crazy Taxi unchanged; default ON since 2026-10-16 (Matt) (plan section 0)
+
+- Our own work, from Rez's long HW run (2026-10-16, `ps3log_p89_run1.txt`
+  lines 59208-74010). Each frame has a main scene and a 256x256 render to
+  texture (RTT). At 25-33K vertices: SPEED 73-88%, 21-26 frames a second,
+  no sleep. In the 29 heartbeats of that part, the SH4 waits in the RTT 21
+  times (16 while the render thread draws the main scene before it); each
+  time the SH4 runs game code, the render thread is idle. The threads take
+  turns: a frame is the SH4 time plus the render time (~30 ms). The SPU
+  decoder also waits for the render thread before a list reset (23-25 a
+  second, 25-30% of its time): the RTT list and the main list share one TA
+  context (our key is TA_ISP_BASE & 0xF00000).
+- Built: row OUTPUT > RTT Async. An RTT waits behind the job in flight in a
+  second job slot, and the SH4 runs on; the render thread takes it next,
+  before any other job. Row OUTPUT > TA Context Split. A list init on a
+  context that a job still holds moves the TA's address to a free slot (one
+  with no address first, then one whose list a STARTRENDER took), so
+  neither the SH4 nor the SPU waits. Both rows are live. Flycast keys its
+  contexts by TA_OL_BASE and takes the context at the render; its SH4 runs
+  to the render-end event, then waits for an RTT.
+- Scope (every HW log since 2026-10-03: 608 boots in 194 files): Rez is
+  the only game with an RTT in play. Crazy Taxi does one at each pause;
+  the NippleTale disc a 512x481 one 7 times in a 31-minute boot. The SPU
+  list wait shows in 11 more games, but only Sonic Shuffle's render thread
+  waits for the SPU there (~2.8 ms a frame; today's log: 58 of 148
+  windows, ~99% with sleep). Looney Tunes, Spider-Man, Quake III, Project
+  Justice, CvS2, Donald Duck, Ikaruga, Ecco, Rayman 2 and Power Stone 2:
+  fence wait near 0, slow parts SH4-bound.
+- Risk: a game that reads its RTT texture with the CPU gets it one frame
+  late. A STARTRENDER with no new list, on a buffer whose slot a move gave
+  to another buffer, draws the TA's own context.
+- HW measure: Rez's heavy part, both rows ON against both OFF: SPEED,
+  frames a second, sleep, the `[rttq]` line (SH4 wait, moves), `[spe] rel
+  waits`, the `[hb]` phases; the glow pictures must look as before.
 
 ---
 

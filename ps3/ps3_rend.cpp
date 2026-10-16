@@ -144,6 +144,8 @@ struct TaContext
 	u32 spe_cmd;
 	// Vertices of the last job's lists, for the render-end IRQ delay. In S3 nvtx stays at the PPU replay's.
 	u32 rend_nvtx;
+	// P95: a STARTRENDER took this list (a drop too), so TA Context Split may give the slot to another buffer.
+	bool posted;
 };
 #define TA_CONTEXTS 4
 
@@ -267,6 +269,14 @@ static u32 s_job_raw_end, s_job_cont_end, s_job_fence;
 // Plan 5.41 Frame Hold: the timebase tick of the emulated vblank a render's flip waits for, 0 = none.
 static u64 s_snap_hold, s_job_hold;
 static u32 s_hold_last_vbl, s_hold_run;
+// P95 RTT Async (under s_rmx): one RTT that waits behind the job in flight; the render thread takes it next.
+static bool s_q_valid;
+static TaContext* s_q_ctx;
+static u32 s_q_raw_end, s_q_cont_end, s_q_fence;
+static RenderRegs s_q_rr;
+// P95, per stats window: RTTs queued and posted at once, the SH4's time in RTT posts, list inits moved and not.
+static u32 s_stat_rtt_q, s_stat_rtt_direct, s_stat_ctx_moves, s_stat_ctx_full;
+static double s_stat_rtt_sh4;
 static u32 s_stat_dropped;
 // TR5: a vblank present the render thread was too busy to take. Unlike a dropped
 // render this loses nothing - the framebuffer is unmarked, so the next vblank retries.
@@ -338,6 +348,7 @@ static void reset_raw(TaContext* c)
 	c->n_cont_done = 0;
 	c->raw_overflow = false;
 	c->spe_pub = 0;
+	c->posted = false;
 	// The SPU decoder takes the same options with the RESET, so both decoders give one set of lists.
 	c->opt = ta_opts_now();
 	if (g_spe_on)
@@ -380,12 +391,34 @@ static void reset_all_contexts()
 	s_ta = s_dec = s_rc = &s_ctx[0];
 }
 
+// rttq_check: begin slots
 static TaContext* find_context(u32 addr)
 {
 	for (u32 i = 0; i < TA_CONTEXTS; i++)
 		if (s_ctx[i].addr == addr)
 			return &s_ctx[i];
 	return 0;
+}
+
+// The contexts a job may read: the last one decoded, the job's in flight and the waiting RTT's (P95).
+static void rth_used(TaContext* used[3])
+{
+	used[0] = s_rc;
+	used[1] = used[2] = 0;
+	if (!s_rend_running)
+		return;
+	sysMutexLock(s_rmx, 0);
+	used[1] = s_job_busy ? s_busy_ctx : 0;
+	used[2] = s_q_valid ? s_q_ctx : 0;
+	sysMutexUnlock(s_rmx);
+}
+
+// P95: a job in flight or waiting holds this context: its stream until the replay, its lists until the draw ends.
+static bool rth_holds(const TaContext* c)
+{
+	TaContext* used[3];
+	rth_used(used);
+	return c == used[1] || c == used[2];
 }
 
 // Switches the TA to the context of its parameter buffer; a new buffer reuses the oldest slot.
@@ -399,9 +432,11 @@ static void set_ta_context(u32 addr)
 	TaContext* c = find_context(addr);
 	if (!c)
 	{
+		TaContext* used[3];
+		rth_used(used);
 		c = &s_ctx[s_next_slot++ % TA_CONTEXTS];
-		// Skip the slot being drawn and the one the render thread holds.
-		for (u32 i = 0; i < TA_CONTEXTS && (c == s_rc || c == s_busy_ctx); i++)
+		// Skip the slot being drawn and the ones a job holds.
+		for (u32 i = 0; i < TA_CONTEXTS && (c == used[0] || c == used[1] || c == used[2]); i++)
 			c = &s_ctx[s_next_slot++ % TA_CONTEXTS];
 		c->addr = addr;
 		reset_lists(c);
@@ -409,6 +444,31 @@ static void set_ta_context(u32 addr)
 	}
 	s_ta = c;
 }
+
+// P95 TA Context Split: the TA's address moves to a slot no job holds (no address first, then one a STARTRENDER
+// took; a list none took stays), so nobody waits for the old slot's job. False = none free: the old wait.
+static bool ctx_move()
+{
+	TaContext* used[3];
+	rth_used(used);
+	for (u32 pass = 0; pass < 2; pass++)
+		for (u32 i = 0; i < TA_CONTEXTS; i++)
+		{
+			TaContext* c = &s_ctx[i];
+			if (c == s_ta || c == used[0] || c == used[1] || c == used[2] ||
+			    (pass == 0 ? c->addr != 0xFFFFFFFF : !c->posted))
+				continue;
+			c->addr = s_ta->addr;
+			s_ta->addr = 0xFFFFFFFF;
+			reset_lists(c);
+			s_ta = c;
+			s_stat_ctx_moves++;
+			return true;
+		}
+	s_stat_ctx_full++;
+	return false;
+}
+// rttq_check: end slots
 
 // misc/bump_check compiles the code from here to "bump_check: end" against a model of the offset colours.
 static inline u32 clamp_byte(float f)
@@ -1075,13 +1135,15 @@ static void ta_store_fsm_run(Ta_Dma* p, u32 words)
 	s_fsm_state = (u8)st;
 }
 
+// rttq_check: begin waits
 // The SH4 must not disturb a raw stream the render thread is still replaying.
 static void rth_wait_decode(TaContext* c)
 {
 	if (!s_rend_running)
 		return;
 	sysMutexLock(s_rmx, 0);
-	while (s_job_busy && s_busy_ctx == c && !s_job_decoded)
+	// P95: the RTT that waits behind the job in flight is not replayed yet either.
+	while ((s_job_busy && s_busy_ctx == c && !s_job_decoded) || (s_q_valid && s_q_ctx == c))
 		sysCondWait(s_done_cv, 0);
 	sysMutexUnlock(s_rmx);
 }
@@ -1105,6 +1167,7 @@ static bool rth_busy()
 	sysMutexUnlock(s_rmx);
 	return busy;
 }
+// rttq_check: end waits
 
 // Replays [from, to) of the stored stream. Joining SQ and DMA blocks is safe: a 64-byte record split
 // at a block end still feeds both halves to the same decoder calls.
@@ -4231,6 +4294,7 @@ static void present_fb_draw()
 
 // -- TR3: the render thread --------------------------------------------------
 
+// rttq_check: begin mark
 // Publishes "the replay is done", so the SH4 may touch this context's raw stream again.
 static void rth_mark_decoded()
 {
@@ -4241,6 +4305,7 @@ static void rth_mark_decoded()
 	sysCondBroadcast(s_done_cv);
 	sysMutexUnlock(s_rmx);
 }
+// rttq_check: end mark
 
 static void rth_print_stats()
 {
@@ -4338,6 +4403,14 @@ static void rth_print_stats()
 		       s_stat_carry);
 	s_stat_rtt_wait = s_stat_held = s_stat_shown = s_stat_keep = s_stat_scis = s_stat_retry = s_stat_blank = 0;
 	s_stat_carry = 0;
+	// P95: the rows; RTTs that waited behind a job and that went at once; the SH4's time in RTT posts; list inits
+	// moved to a free context, and those that found none and waited.
+	if (g_rtt_async_preset || g_ta_ctx_split_preset || s_stat_rtt)
+		printf("[rttq] async=%d split=%d | rtt queued=%u direct=%u sh4 wait %u ms/s | ctx moves=%u full=%u\n",
+		       g_rtt_async_preset, g_ta_ctx_split_preset, s_stat_rtt_q, s_stat_rtt_direct,
+		       (u32)(s_stat_rtt_sh4 * 1000.0 / (now - s_stat_t0)), s_stat_ctx_moves, s_stat_ctx_full);
+	s_stat_rtt_q = s_stat_rtt_direct = s_stat_ctx_moves = s_stat_ctx_full = 0;
+	s_stat_rtt_sh4 = 0.0;
 	// Bundle 12: the rows; renders drawn wide and WIDE renders kept at 4:3 by their clip; the last render's canvas.
 	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots)
 		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u\n", g_screen_format_preset,
@@ -4687,6 +4760,7 @@ static void rth_job_draw(int type, u64 hold)
 		rth_print_stats();
 }
 
+// rttq_check: begin thread
 static void rth_thread(void* arg)
 {
 	// The SH4 thread FPSCR follows the guest rounding mode. This thread has its
@@ -4725,10 +4799,27 @@ static void rth_thread(void* arg)
 			ps3_video_flip_held();
 			sysMutexLock(s_rmx, 0);
 		}
-		s_job_type = JOB_NONE;
-		s_job_busy = false;
-		s_busy_ctx = 0;
-		s_job_decoded = true;
+		// P95: the RTT that waits takes the slot at once (still busy), so no later job passes it.
+		if (s_q_valid)
+		{
+			s_job_type = JOB_RTT;
+			s_job_ctx = s_busy_ctx = s_q_ctx;
+			s_job_raw_end = s_q_raw_end;
+			s_job_cont_end = s_q_cont_end;
+			s_job_fence = s_q_fence;
+			s_job_hold = 0;
+			memcpy(&s_job_rr, &s_q_rr, sizeof(s_job_rr));
+			s_job_decoded = false;
+			s_job_pending = true;
+			s_q_valid = false;
+		}
+		else
+		{
+			s_job_type = JOB_NONE;
+			s_job_busy = false;
+			s_busy_ctx = 0;
+			s_job_decoded = true;
+		}
 		sysCondBroadcast(s_done_cv);
 	}
 	sysMutexUnlock(s_rmx);
@@ -4772,7 +4863,7 @@ static bool rth_start()
 	}
 
 	s_job_type = JOB_NONE;
-	s_job_pending = s_job_busy = false;
+	s_job_pending = s_job_busy = s_q_valid = false;
 	s_job_decoded = true;
 	s_busy_ctx = 0;
 	s_rend_quit = 0;
@@ -4811,13 +4902,35 @@ static void rth_stop()
 // RTT never drops (the guest reads it back); renders wait per Frame Drop (TR5); presents never wait.
 static bool rth_run(int type, TaContext* c)
 {
+	if (c)
+		c->posted = true;
 	if (s_rend_running)
 	{
-		bool blocking = (type == JOB_RTT);
+		// P95 RTT Async: an RTT waits behind the job in flight, and the SH4 runs on.
+		const bool async = type == JOB_RTT && g_rtt_async_preset;
+		bool blocking = (type == JOB_RTT) && !async;
 		int pol = (type == JOB_RENDER) ? get_drop_policy_preset() : 0;
+		const double t_in = (type == JOB_RTT) ? os_GetSeconds() : 0.0;
 		sysMutexLock(s_rmx, 0);
 		while (blocking && s_job_busy)
 			sysCondWait(s_done_cv, 0);
+		// One RTT waits at most: a second one waits until the first takes the slot.
+		while (async && s_q_valid)
+			sysCondWait(s_done_cv, 0);
+		if (async && s_job_busy)
+		{
+			s_q_ctx = c;
+			s_q_raw_end = c ? c->raw_used : 0;
+			s_q_cont_end = c ? c->n_cont : 0;
+			s_q_fence = spe_fence(c);
+			memcpy(&s_q_rr, &s_snap, sizeof(s_q_rr));
+			s_q_valid = true;
+			s_stat_rtt_q++;
+			s_stat_rtt_sh4 += os_GetSeconds() - t_in;
+			sysMutexUnlock(s_rmx);
+			return true;
+		}
+		s_stat_rtt_direct += async ? 1 : 0;
 		if (s_job_busy && pol != 0)
 		{
 			// One 59.94 Hz frame. Policy 2 waits with no budget at all.
@@ -4860,6 +4973,8 @@ static bool rth_run(int type, TaContext* c)
 		sysCondSignal(s_job_cv);
 		while (blocking && s_job_busy)
 			sysCondWait(s_done_cv, 0);
+		if (type == JOB_RTT)
+			s_stat_rtt_sh4 += os_GetSeconds() - t_in;
 		sysMutexUnlock(s_rmx);
 		return true;
 	}
@@ -4903,6 +5018,7 @@ static void rth_flip_held()
 	}
 	sysMutexUnlock(s_rmx);
 }
+// rttq_check: end thread
 
 // P60, Flycast rend_swap_frame: the game wrote addr (masked) to FB_R_SOF1 or FB_R_SOF2. If the last render waits
 // for that buffer, it reaches the TV now.
@@ -5200,10 +5316,14 @@ void ListCont()
 		ta_store_reset();
 }
 
+// rttq_check: begin listinit
 void ListInit()
 {
 	set_ta_context(TA_ISP_BASE);
 	ta_gate_set(false);
+	// P95 TA Context Split: a job still holds this context, so the new list takes a free one.
+	if (g_ta_ctx_split_preset && rth_holds(s_ta))
+		ctx_move();
 	// reset_raw drops bytes the render thread may still be replaying.
 	rth_wait_decode(s_ta);
 	reset_raw(s_ta);
@@ -5212,6 +5332,7 @@ void ListInit()
 	else
 		TaStore.ListInit();
 }
+// rttq_check: end listinit
 
 // As nullDC-v1: a soft reset keeps the lists and the stored bytes.
 void SoftReset()

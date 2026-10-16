@@ -190,6 +190,9 @@ extern int g_present_rule_preset;
 extern int g_region_scissor_preset;
 extern int g_fb_reads_preset;
 extern int g_keep_frame_preset;
+// P95, the OUTPUT page.
+extern int g_rtt_async_preset;
+extern int g_ta_ctx_split_preset;
 // Bundle 12 (plan section 7), the SCREEN page.
 extern int g_fps_overlay_preset;
 extern int g_screen_format_preset;

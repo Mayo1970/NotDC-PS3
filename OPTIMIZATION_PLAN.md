@@ -13,6 +13,74 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-16)
 
+**P95, Rez: the RTT and the next list wait for the render thread
+(`OPTIMIZATION_POTENTIAL.md` P95), built 2026-10-16 (Matt: "Let's go with
+option 1."). Package of 21:00 (`build/notdc_ps3.pkg`, 1764720 bytes) =
+commit 944c740 + this. Not committed. HW run 1 (below): Rez's heavy parts
+85% -> 100%. Both rows default ON since the package of 21:00 (Matt: "Sure,
+set them on by default.").**
+- Cause, from Rez's long HW run (`ps3log_p89_run1.txt` lines 59208-74010):
+  each frame has a main scene and a 256x256 render to texture (RTT).
+  `rth_run(JOB_RTT)` blocked the SH4 until the render thread ended the main
+  scene before it, then until the RTT was drawn, read back and copied. In
+  the 29 heartbeats of t=412-440 s (25-33K vertices, 73-88%, 21-26 frames
+  a second, no sleep): the SH4 waits in the RTT 21 times (16 with the
+  render thread on the main scene); the SH4 runs game code 8 times, each
+  time with the render thread idle. Render busy 67-72% (~30 ms a frame).
+  The SPU decoder waits for the render thread before a list reset 23-25
+  times a second (25-30% of its time): the RTT list and the main list
+  share one TA context. With no RTT (t=465-516 s), 16-20K vertices run at
+  100% with 100-260 ms/s of sleep.
+- Row OUTPUT > RTT Async (`RttAsync`, live, default OFF): an RTT that finds
+  a job in flight waits in a second job slot (`s_q_*`), and the SH4 runs
+  on. When the job ends, the render thread takes the RTT at once (the slot
+  stays busy), so no later job passes it. A second RTT waits until the
+  first takes the slot. `rth_wait_decode()` and the slot picks also see the
+  waiting RTT's context.
+- Row OUTPUT > TA Context Split (`TaCtxSplit`, live, default OFF): a list
+  init on a context that a job holds (in flight or waiting) moves the TA's
+  address to another slot (`ctx_move()`): one with no address first, then
+  one whose list a STARTRENDER took (new field `posted`); never a slot a
+  job holds or the last replayed one. The old slot keeps its stream and
+  lists for its job and loses its address. No free slot: the old wait.
+- Log: `[rttq] async= split= | rtt queued= direct= sh4 wait N ms/s | ctx
+  moves= full=` in each stats window with a row ON or an RTT; `[outcfg]`
+  at boot has `RttAsync` and `TaCtxSplit`.
+- PC (WSL): `misc/rttq_check` (new): the job slot, the waiting RTT, the
+  waits, the slot picks and ListInit, cut from `ps3_rend.cpp`, run on
+  pthreads against a model (6000 frames, 4 seeds: ~12.5K jobs, 1.5-1.9K
+  moves, 150-230 with no free slot, rows and Frame Drop changed every 37
+  frames, a part with the render thread off). The model checks job order,
+  the stream of each job up to its replay, the lists up to the end of its
+  draw, the registers of each draw, the blocking RTT with the row OFF, no
+  move with the row OFF, no wait at a list init with a free slot, no move
+  onto a list no STARTRENDER took, the redraw of the last list, the counts
+  of the `[rttq]` line. `mutate.py`: 44 of 44. No build warning. The 22
+  other checks that read the changed files PASS (idleauto_check names the
+  last three lines of `k_live_opts`: the new line is before them).
+- `.got` 0xFB80 of 0x10000 (was 0xFB10).
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package.
+  2. Rez, both rows OFF first (SELECT menu, OUTPUT page): the heavy part
+     of the long run (25-33K vertices). Then RTT Async ON and TA Context
+     Split ON (both live) in the same part.
+  3. Look for: a wrong or late glow picture, a broken screen at an area
+     change, a freeze.
+  4. Log: SPEED, frames a second and sleep, ON against OFF; `[rttq]` sh4
+     wait and ctx moves/full; `[spe] rel waits` (23-25 a second before);
+     the `[hb]` phases (before: SH4 in `rtt` 21 of 29).
+  5. If there is time: Crazy Taxi's pause (an RTT) with both rows ON.
+- HW run 1, 2026-10-16 (`ps3log_p89_run1.txt` lines 108471-116500 Rez,
+  116647-121760 Crazy Taxi; both rows ON from boot, Tex Recycle ON as
+  left). No fault line. Rez against the long run (rows OFF), per vertex
+  band: 22-25K 94.7% / 28.4 frames -> 100.0% / 29.4; 25-28K 84.7% / 25.4
+  -> 100.5% / 30.2; 28-34K 75.8% / 22.6 -> 84.6% / 25.6 (2 s). `[rttq]`:
+  most RTTs go at once (`direct=150` a window), the SH4's RTT wait 0 ms/s,
+  few moves (0-8 a window). Crazy Taxi (Matt: "Is it me, or Crazy Taxi ran
+  worse?"): the same as its 4 runs of 2026-10-15/16 at each vertex band
+  (6-10K 100.2%, 10-12K 98.5%, 14-17K 92.9%, 17-25K 93.9%); the rows act
+  only at the pause (1 RTT, 1 move); no SPU list wait.
+
 **P94, one rule for the Shinobi task loop (`OPTIMIZATION_POTENTIAL.md` P94),
 built 2026-10-16 (Matt: "2." after Tex Recycle gave Garou no speed). Package
 of 17:49 (`build/notdc_ps3.pkg`, 1764208 bytes) = the package of 16:57 +
