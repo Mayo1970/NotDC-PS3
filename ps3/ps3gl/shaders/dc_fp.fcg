@@ -56,7 +56,9 @@ void main(
     c.rgb = lerp(c.rgb, tex2D(fogtab, float2(saturate(tc0.z), 0.75)).rgb, offs.a);
 #endif
 #if XT
-    c = c * xtp.x;
+    // cgcomp sets DISABLE_PC on a MUL that reads a texcoord, and the RSX then scales the read by depth (Soul Calibur
+    // went dark): saturate() reads the weight with a MOV first.
+    c = c * saturate(xtp.x);
 #endif
     oColor = c;
 }

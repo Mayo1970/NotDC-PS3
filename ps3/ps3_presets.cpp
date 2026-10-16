@@ -55,6 +55,7 @@ int g_render_thread_preset = 1;   // 1 = TA decode and RSX draw on their own thr
 int g_ta_fast_preset       = 1;   // 1 = table-driven TA store stage on the SH4 thread
 int g_ta_sq_direct_preset  = 1;   // 1 = a PREF to TA polygon data runs one flat store function (5.17, HW)
 int g_ram_sq_direct_preset = 1;   // 1 = a PREF to main RAM copies its 32 bytes straight into the RAM image (5.44, HW)
+int g_mmu_sq_direct_preset = 1;   // 1 = with MMUCR.AT on, a PREF takes the two flat paths above too, target from sq_remap (P74, HW)
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_frame_hold_preset    = 0;   // 1 = a frame under 60 fps flips on the PS3 vsync of its emulated vblank (5.41 b)
 int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
@@ -194,7 +195,8 @@ int g_jit_x30_fwd_preset   = 2;   // at X30 a block whose branch goes forward bi
 int g_jit_x30_fwd_now      = 1;   // AUTO's choice now (ps3_idle_auto.h); the decoder reads get_jit_x30_fwd()
 int g_jit_task_idle_preset = 2;   // 1 = an idle SDK task-loop turn skips IDLE_TASK_SLICES timeslices (bundle 21),
                                   // 2 = IDLE_TASK_LONG, and an interrupt drops the rest of the skip (HW; LONG, Matt)
-int g_jit_auto_checks_preset = 1; // 1 = FRAMES: the AUTO rows test frames and loads (ps3_idle_auto.h), live (HW; Matt)
+int g_jit_auto_checks_preset = 2; // 1 = FRAMES: the AUTO rows test frames and loads (ps3_idle_auto.h), live (HW);
+                                  // 2 = + X3 TRY: an X3 try needs a frame to win and must win it (bundle 22, HW; Matt)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
@@ -311,6 +313,7 @@ static const CfgItem s_items[] = {
 	{ "TaFastStore",   &g_ta_fast_preset },
 	{ "TaSqDirect",    &g_ta_sq_direct_preset },
 	{ "RamSqDirect",   &g_ram_sq_direct_preset },
+	{ "MmuSqDirect",   &g_mmu_sq_direct_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "FrameHold",     &g_frame_hold_preset },
 	{ "StripMerge",    &g_strip_merge_preset },

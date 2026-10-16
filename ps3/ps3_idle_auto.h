@@ -14,6 +14,13 @@
 #define IA_HOLD_MAX  160
 #define IA_SOON      10     // an X3 try that goes back within this many windows doubles the hold
 #define IA_LOAD_K    1.0    // JIT AUTO CHECKS FRAMES: a spare window needs this many K vertices a frame
+// JIT AUTO CHECKS + X3 TRY: X30 at this many frames a vblank has no frame for X3 to win, so it tries none.
+#define IA_TRY_FULL  0.97
+#define IA_TRY_N     3      // the X3 windows a try is judged on
+#define IA_TRY_GAIN  1.03   // a try stays only with more than this many times X30's frames a vblank
+#define IA_TRY_FPS   2.0    // a try window with fewer frames a second on screen (a loading screen) is not judged
+#define IA_FWD_TRY   1      // idle_auto_step's fwd: an X30 FORWARD try runs
+#define IA_FWD_X30   2      // and: the X30 level bills forward branches x30 now
 
 struct IdleAuto
 {
@@ -21,7 +28,12 @@ struct IdleAuto
 	u32 slow, spare;       // the windows in a row that count to a switch
 	u32 wait;              // X30 windows left before a try
 	u32 hold, x3_n;        // the next wait, and the X3 windows since the last try
-	int frames;            // JIT AUTO CHECKS: 1 = FRAMES (no X3 try from a loading screen), 0 = OLD
+	int frames;            // JIT AUTO CHECKS: 1 = FRAMES (no X3 try from a loading screen), 0 = OLD, 2 = + X3 TRY
+	double run_fpv;        // + X3 TRY: frames a vblank summed over the spare run
+	double base_fpv;       // the run's mean as the try began
+	double try_fpv;        // summed over the try's windows
+	u32 try_n;             // the try's windows left to judge it (0: no try under test)
+	int lost;              // the last switch to X30 came from a try with no more frames
 };
 
 static inline void idle_auto_init(IdleAuto& a)
@@ -31,6 +43,9 @@ static inline void idle_auto_init(IdleAuto& a)
 	a.hold = IA_HOLD_MIN;
 	a.x3_n = IA_SOON;      // the boot is no try: its first fall back keeps the shortest hold
 	a.frames = 0;
+	a.run_fpv = a.base_fpv = a.try_fpv = 0.0;
+	a.try_n = 0;
+	a.lost = 0;
 }
 
 // A compiled block's bill word, `addi` or `addic.` of a register to itself: the same word billing cycles now. False
@@ -44,9 +59,11 @@ static inline bool idle_bill_word(u32& w, u32 cycles)
 	return true;
 }
 
-// One stats window of secs seconds; sleep_s is the pacer's sleep in it, vt_k its K vertices a frame. True when the
-// rule changed: the caller patches the bill of every compiled block (ps3_driver.cpp).
-static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double sleep_s, double vt_k = 0.0)
+// One stats window of secs seconds; sleep_s is the pacer's sleep in it, vt_k its K vertices a frame, fpv its frames
+// a vblank, fps its frames a second on screen; fwd: IA_FWD_* of X30 FORWARD. True when the rule changed: the
+// caller patches the bill of every compiled block (ps3_driver.cpp).
+static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double sleep_s, double vt_k = 0.0,
+                                  double fpv = 0.0, double fps = 0.0, u32 fwd = 0)
 {
 	if (secs <= 0.0)
 		return false;
@@ -54,8 +71,18 @@ static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double
 	{
 		a.x3_n++;
 		a.slow = speed < IA_LOW ? a.slow + 1 : 0;
-		if (a.slow < IA_SLOW_N)
+		// + X3 TRY: a try that gives no more frames than X30 did goes back at its last judged window.
+		bool lost = false;
+		if (a.try_n && fps >= IA_TRY_FPS)
+		{
+			a.try_fpv += fpv;
+			if (--a.try_n == 0)
+				lost = a.try_fpv / IA_TRY_N <= a.base_fpv * IA_TRY_GAIN;
+		}
+		if (a.slow < IA_SLOW_N && !lost)
 			return false;
+		a.lost = a.slow < IA_SLOW_N;
+		a.try_n = 0;
 		a.hold = a.x3_n < IA_SOON ? (a.hold * 2 < IA_HOLD_MAX ? a.hold * 2 : IA_HOLD_MAX) : IA_HOLD_MIN;
 		a.wait = a.hold;
 		a.rule = IA_X30;
@@ -70,10 +97,21 @@ static inline bool idle_auto_step(IdleAuto& a, double secs, double speed, double
 		a.spare = speed >= IA_FULL && sleep_s >= IA_SPARE * secs ? a.spare + 1 : 0;
 		if (a.frames && vt_k < IA_LOAD_K)	// FRAMES: a loading screen tells nothing of the game's X3 cost
 			a.spare = 0;
+		if (a.frames >= 2)
+		{
+			// A switch to X3 would end the FORWARD try with X30 again, which can drop the frames PLAIN gave.
+			if (fpv >= IA_TRY_FULL || (fwd & IA_FWD_TRY))
+				a.spare = 0;
+			a.run_fpv = a.spare > 1 ? a.run_fpv + fpv : fpv;
+		}
 		if (a.spare < IA_SPARE_N)
 			return false;
 		a.x3_n = 0;
 		a.rule = IA_X3;
+		a.base_fpv = a.run_fpv / IA_SPARE_N;
+		a.try_fpv = 0.0;
+		// At FORWARD X30 the X30 level can drop frames in the next scene, so such a try is not judged, as at FRAMES.
+		a.try_n = a.frames >= 2 && !(fwd & IA_FWD_X30) ? IA_TRY_N : 0;
 	}
 	a.slow = a.spare = 0;
 	return true;

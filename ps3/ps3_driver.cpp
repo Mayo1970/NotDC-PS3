@@ -2146,8 +2146,8 @@ static void idle_bills_patch(int rule,bool plain)
 }
 
 // JIT IDLE RULE AUTO and X30 FORWARD AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every
-// compiled block, so the new level reaches all code without a recompile. fps: frames a second on screen.
-extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps,double vt_k)
+// compiled block, so the new level reaches all code without a recompile. fps, vbs: frames and vblanks a second.
+extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps,double vt_k,double vbs)
 {
 	static IdleAuto s_ia;
 	static FwdAuto s_fa;
@@ -2166,10 +2166,12 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 	static int s_frames_logged=-1;
 	if (s_fa.frames!=s_frames_logged)
 	{
-		printf("[idle-auto] JIT AUTO CHECKS %s\n",s_fa.frames ? "FRAMES" : "OLD");
+		printf("[idle-auto] JIT AUTO CHECKS %s\n",s_fa.frames>=2 ? "+ X3 TRY" : s_fa.frames ? "FRAMES" : "OLD");
 		s_frames_logged=s_fa.frames;
 	}
-	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s,vt_k))
+	const double fpv=vbs>0.0 ? fps/vbs : 0.0;
+	const u32 fwd=(fwd_auto && s_fa.trying ? IA_FWD_TRY : 0)|(get_jit_x30_fwd()==0 ? IA_FWD_X30 : 0);
+	if (rule_auto && idle_auto_step(s_ia,seconds,speed,sleep_s,vt_k,fpv,fps,fwd))
 	{
 		g_jit_idle_rule_now=s_ia.rule;
 		if (fwd_auto)
@@ -2178,12 +2180,22 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 			g_jit_x30_fwd_now=s_fa.plain;
 		}
 		s_ia_switches++;
-		if (s_ia.rule==IA_X30)
+		if (s_ia.rule==IA_X30 && s_ia.lost)
+			printf("[idle-auto] X3 BACKWARD -> X30: the try gave %.2f frames a vblank, X30 %.2f; an X3 try after %u s"
+			       " (switch %u)\n",s_ia.try_fpv/IA_TRY_N,s_ia.base_fpv,s_ia.hold,s_ia_switches);
+		else if (s_ia.rule==IA_X30)
 			printf("[idle-auto] X3 BACKWARD -> X30: SPEED %.1f%%, sleep %.0f ms/s; an X3 try after %u s (switch %u)\n",
 			       speed,sleep_s*1000.0/seconds,s_ia.hold,s_ia_switches);
 		else
+		{
 			printf("[idle-auto] X30 -> X3 BACKWARD: SPEED %.1f%%, sleep %.0f ms/s (switch %u)\n",
 			       speed,sleep_s*1000.0/seconds,s_ia_switches);
+			if (s_ia.try_n)
+				printf("[idle-auto] + X3 TRY: X30 gave %.2f frames a vblank; the try needs more than %.2f\n",
+				       s_ia.base_fpv,s_ia.base_fpv*IA_TRY_GAIN);
+			else if (s_ia.frames>=2)
+				printf("[idle-auto] + X3 TRY: X30 FORWARD is X30, so the try is not judged\n");
+		}
 		idle_bills_patch(s_ia.rule,get_jit_x30_fwd()!=0);
 		return;
 	}

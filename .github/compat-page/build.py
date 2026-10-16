@@ -14,7 +14,8 @@ TEMPLATE = os.path.join(HERE, "..", "ISSUE_TEMPLATE", "game_compatibility.yml")
 LABELS = "compatibility,approved"
 HIDDEN_REASONS = {"not_planned", "duplicate"}
 STATUSES = ["Perfect", "Playable", "In-game", "Menus / Intro", "Boots", "Nothing"]
-NAME, STATUS, DESCRIPTION = "Game title", "Compatibility status", "What happens?"
+REGIONS = ["NTSC-U (USA)", "PAL (Europe)", "NTSC-J (Japan)", "Other / Unknown"]
+NAME, REGION, STATUS, DESCRIPTION = "Game title", "Region", "Compatibility status", "What happens?"
 
 
 def form_labels():
@@ -75,7 +76,9 @@ def main():
         if not name or status not in STATUSES:
             print(f"::warning::#{issue['number']} skipped: no game title or unknown status")
             continue
+        region = fields.get(REGION, "")
         games.append({"number": issue["number"], "name": name, "status": status,
+                      "region": region if region in REGIONS else REGIONS[-1],
                       "description": fields.get(DESCRIPTION, "")})
 
     games.sort(key=lambda g: (g["name"].casefold(), g["number"]))
@@ -85,8 +88,8 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     shutil.copy(os.path.join(HERE, "index.html"), out_dir)
     with open(os.path.join(out_dir, "compat.json"), "w", encoding="utf-8") as f:
-        json.dump({"repo": os.environ.get("GH_REPO", ""), "statuses": STATUSES, "games": games},
-                  f, ensure_ascii=False, indent=1)
+        json.dump({"repo": os.environ.get("GH_REPO", ""), "statuses": STATUSES, "regions": REGIONS,
+                   "games": games}, f, ensure_ascii=False, indent=1)
     print(f"{len(games)} games written")
 
 

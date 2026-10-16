@@ -46,6 +46,7 @@ extern int g_render_thread_preset;
 extern int g_ta_fast_preset;
 extern int g_ta_sq_direct_preset;
 extern int g_ram_sq_direct_preset;
+extern int g_mmu_sq_direct_preset;
 extern int g_drop_policy_preset;
 extern int g_frame_hold_preset;
 extern int g_strip_merge_preset;

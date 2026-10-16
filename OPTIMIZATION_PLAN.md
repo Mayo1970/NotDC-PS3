@@ -11,7 +11,265 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-15)
+## 0. Resume here (updated 2026-10-16)
+
+**Bundle 22 item 1, AUTO's X3 tries judged by frames, built 2026-10-16
+(Matt, after HW run 1 of P74 below: "I feel like the x3 reverse/x30 swaps
+are too aggressive and noticeable. Any way to make them less aggressive
+and more natural?", then "Go with 1."). Package of 11:29
+(`build/notdc_ps3.pkg`, 1762800 bytes) = the package of 10:20 + this. HW
+run 1 below; then two fixes and the defaults (+ X3 TRY, MMU SQ Direct
+ON), package of 12:08; then the FORWARD X30 rule, package of 12:42. HW
+SUCCESS 2026-10-16 with the package of 12:42 (Matt: "Perfect. That's a
+huge success."), HW run 3 below. Not committed.**
+- Row JIT SPEED > JIT AUTO CHECKS has a third value, + X3 TRY (`JitAutoChecks=2`,
+  live), the default since 2026-10-16. + X3 TRY is FRAMES and two rules for
+  JIT IDLE RULE AUTO (`ps3/ps3_idle_auto.h`, `idle_auto_step`):
+  - No X3 try while X30 shows a frame each vblank (0.97 or more frames a
+    vblank: X30 drops no frame, so X3 has none to win). Ikaruga's case.
+  - A try is judged on its first 3 X3 windows: with no more than 1.03
+    times the frames a vblank of X30's 3 spare windows before it, AUTO
+    goes back to X30 at the third window, at full speed, and the hold
+    doubles as for a slow try (5, 10, 20 ... 160 s). Rez's case.
+  - The slow rule (3 X3 windows under 95%) stays. Games where X3 gives
+    more frames keep their tries (Donald Duck 30 against 11-19, Sonic
+    Adventure 29.7 against 26.3, PSO 30 against 20).
+- Frames a vblank: renders / vblanks of the window, so SPEED does not
+  enter it. `jit_idle_auto()` (`ps3/ps3_driver.cpp`) gets the vblanks a
+  second from the stats window (`spd_vbs`, `plugs/drkPvr/SPG.cpp`).
+- Log: `[idle-auto] JIT AUTO CHECKS + X3 TRY`; at a try `[idle-auto] + X3
+  TRY: X30 gave 0.50 frames a vblank; the try needs more than 0.52`; a
+  lost try `[idle-auto] X3 BACKWARD -> X30: the try gave 0.50 frames a
+  vblank, X30 0.50; an X3 try after 10 s`.
+- PC (WSL): `misc/idleauto_check` PASS, 1117 checks, 47 source lines:
+  Ikaruga, Rez, Donald Duck and Sonic Adventure models from the HW logs,
+  the limits, the means, the hold; OLD and FRAMES give the same switches
+  with any frames a vblank. `mutate.py`: 214 of 214 planted bugs fail (28
+  new; the 5 texts this edit made stale are repaired). Also PASS after the edit:
+  sysgate, timebase, clock (their stub of the step has the new argument),
+  rtt, screen, mmu, jit8, constprop, div32, exit, sqstore, tcopy, chd,
+  flash, fullmmu, glpath, interp, maple, pad, sys20.
+- `.got` 0xFAA8 of 0x10000. The build warnings are the old ones.
+- HW steps (the listener of HW run 1 is still up, PID 27024, same log
+  file; the new part starts after line 16871):
+  1. Install the package.
+  2. Rows: JIT SPEED > JIT IDLE RULE AUTO, JIT AUTO CHECKS + X3 TRY (it is
+     FRAMES on the PS3 now); VIDEO / DEBUG > MMU SQ Direct ON (as in run
+     1); EMULATION > SH4 Clock 200.
+  3. Ikaruga, chapter 1. Expected: one switch to X30 near the start, then
+     no X3 try.
+  4. Rez, the first area. Expected: each X3 try lasts 3 s at full speed
+     and ends with the "the try gave" line; the tries get rarer.
+  5. Donald Duck, a level of play: X3 must still win there (30 frames a
+     second, `X30 -> X3 BACKWARD` and no "the try gave" line after it).
+- HW run 1, 2026-10-16 (same log, lines 16872-23874; `autochk=2` in
+  both boots). All clean: no fault line, every SPU fence `bad=0`,
+  `mmusq=1`, clean XMB exits. Matt: "Tested Ikaruga and I'm satisfied so
+  far." (sent after the Rez boot; the Ikaruga boot came after it).
+  - Rez (lines 17220-21194; JIT TASK IDLE was ON, not LONG): one switch
+    to X30 at the loading screen, then 2 X3 tries, each 3 windows at
+    97.8-101.3% SPEED, each back with "the try gave 0.50 frames a vblank,
+    X30 0.50" (holds 10, then 20 s). No slow X3 window (FRAMES, HW run 1
+    of P74: 3-6 windows at 63-95% after each try).
+  - Ikaruga (lines 21663-23874, about 50 windows): one switch to X30 at
+    the menus (X3 at 88.9%), then no X3 try; 59.9 frames per emulated
+    second at X30, the 20.7K-vertex part at 79.7% (the host limit). The
+    X3 windows before that first switch run at 70-94% (the boot starts at
+    X3); this rule does not change that.
+  - Donald Duck (lines 23979-31920, Matt: "Done."), clean. X30 with X30
+    FORWARD PLAIN now gives its play 30 frames a second, as X3 does
+    (2026-10-15, before X30 FORWARD AUTO: 11-19 at X30). So 6 of its 7
+    X3 tries went back ("the try gave 0.50 ... X30 0.50"); one was kept
+    13 windows (its base 0.48), then slow menus took it back.
+  - Side effect: 6 of 165 play windows (1K+ vertices) at 11-14 frames a
+    second, in two runs of 3, right after the first two lost tries. Both
+    tries began during an X30 FORWARD PLAIN try; the level switch ends
+    that try with X30 again (`fwd_auto_cancel`), so the lost try came
+    back to FORWARD X30, which drops frames here, until FORWARD AUTO tried
+    PLAIN again. With FRAMES these tries would have stayed at X3. After
+    FORWARD kept PLAIN (line 27120) no window dropped frames.
+  - Two verdicts took a loading screen in (1 frame a second): 0.32 and
+    0.17 against 0.50. The outcome was the same as with play windows.
+  - Fixes proposed: (1) no X3 try while an X30 FORWARD try runs; (2) a
+    try window with under 2 frames a second on screen does not count to
+    the verdict.
+- Both fixes built and the defaults set 2026-10-16 (Matt: "Update the
+  defaults and build both. fixes."). Package of 12:08
+  (`build/notdc_ps3.pkg`, 1762928 bytes). Not committed. No HW run yet.
+  - Defaults in source: JIT AUTO CHECKS + X3 TRY (`JitAutoChecks=2`),
+    MMU SQ Direct ON (`MmuSqDirect=1`). The install keeps Matt's values.
+  - Fix 1, at + X3 TRY only: `idle_auto_step()` gets `fwd_try` (an X30
+    FORWARD try runs, `s_fa.trying`); while it is set, an X30 window is no
+    spare window, so an X3 try starts at least 3 windows after the
+    FORWARD try ends.
+  - Fix 2: a try window with under 2 frames a second on screen
+    (`IA_TRY_FPS`) is not judged; the verdict waits for 3 windows that
+    are. The slow rule still counts every window.
+  - PC (WSL): `misc/idleauto_check` PASS, 1125 checks, 47 source lines
+    (the FORWARD flag, the loading windows, Donald Duck's try with its
+    loading window; OLD and FRAMES unchanged with every new input);
+    `mutate.py` 223 of 223 planted bugs fail (9 new). Also
+    PASS: flash, fullmmu, glpath, interp, jit8, maple, mmu, pad, rtt,
+    screen, sys20, timebase, clock, sysgate, constprop, div32, exit,
+    sqstore, tcopy, ramsq.
+  - HW steps (listener up, PID 27024, same log; the new part starts after
+    line 31920): install; check JIT AUTO CHECKS + X3 TRY, JIT IDLE RULE
+    AUTO, X30 FORWARD AUTO; Donald Duck, the same level as before.
+    Expected: no X3 try during a FORWARD try (`[idle-auto]` lines), no
+    play window under 27 frames a second after a lost try, verdicts with
+    no loading window in them.
+  - HW run 2, 2026-10-16 (same log, lines 32451-39476, Donald Duck,
+    `autochk=2`; Matt: "HW test done."): clean (no fault line, `bad=0`,
+    clean XMB exit). Fix 2 acted: the first try skipped 5 loading windows
+    and was judged on 3 with frames (30.0, 15.9 and 18.5 frames a second;
+    the last two were half loading screens): 0.37 against 0.49, lost.
+    Fix 1 had nothing to stop: FORWARD's PLAIN try had ended void just
+    before (its load went from 0.3K to 4.0K), so FORWARD was X30 again.
+  - After that lost try: 6 windows at 11-16 frames a second at FORWARD
+    X30, until FORWARD AUTO tried PLAIN and kept it (30.2 against 14.9).
+    The 3 later tries began at FORWARD PLAIN and went back at 30 frames
+    a second with no drop. In all, 10 of 166 play windows under 27 (HW
+    run 1: 6 of 165).
+  - Reading: X30 FORWARD X30 drops frames in some Donald Duck scenes and
+    PLAIN does not; a lost try goes back to the FORWARD choice of the
+    moment. Proposed: no verdict for a try that begins while the FORWARD
+    choice is X30 (that try works as at FRAMES).
+- That rule built 2026-10-16 (Matt: "Sure."). Package of 12:42
+  (`build/notdc_ps3.pkg`, 1762992 bytes). Not committed. No HW run yet.
+  - `idle_auto_step()` takes `fwd` flags: `IA_FWD_TRY` (an X30 FORWARD
+    try runs, fix 1) and `IA_FWD_X30` (the FORWARD choice now is X30:
+    `get_jit_x30_fwd()==0`, AUTO's choice or the fixed row). A try that
+    begins with `IA_FWD_X30` gets no verdict; the slow rule ends it, as at
+    FRAMES. Log: `[idle-auto] + X3 TRY: X30 FORWARD is X30, so the try is
+    not judged`.
+  - PC (WSL): `misc/idleauto_check` PASS, 1136 checks, 48 source lines
+    (Donald Duck's HW run 2 try at FORWARD X30, Rez at FORWARD X30, both
+    flags); `mutate.py` 232 of 232 (one mutant of the 233 was equivalent
+    and is out: a try never begins with `IA_FWD_TRY` set). Also PASS:
+    sysgate, timebase, clock, mmu, jit8, constprop, div32, exit, sqstore,
+    tcopy.
+  - Which games it changes, read from the logs of today and of bundle 21
+    HW runs 10-12 (`b21n_hw.txt`, session c6aef597; those ran at OLD or
+    FRAMES): only Donald Duck. The other X3 tries that began at FORWARD X30
+    (Looney Tunes, Tomb Raider TLR) are either stopped earlier by the
+    full-rate rule (1.00 frames a vblank), end by the slow rule in their
+    first 3 windows (Tomb Raider), or win frames (Looney Tunes 0.85 ->
+    1.00). Tries at FORWARD PLAIN keep the + X3 TRY verdict: in those logs
+    it would stop Looney Tunes' and Border Down's tries at 0.98-1.00
+    frames a vblank and end Looney Tunes' try at 0.77 against 0.87.
+  - HW steps (listener up, same log; the new part starts after line
+    39476): install; Donald Duck, the same level. Expected: the first
+    try begins at FORWARD X30 and stays at X3 (the "not judged" line), no
+    window under 27 frames a second after a try.
+  - HW run 3, 2026-10-16 (same log, lines 40449-49212; package of 12:42,
+    `autochk=2`), clean (no fault line, every SPU fence `bad=0`, clean
+    XMB exits):
+    - Donald Duck (40449-45341): the first try began at FORWARD X30 ("not
+      judged") and stayed at X3 to the exit: 77 of 80 play windows at X3,
+      SPEED 99.99% as the mean, 30 frames a second. The 4 windows under
+      27 are the edges of loading screens. No run of dropped frames.
+    - Sonic Adventure 2 (45537-49212): one switch to X30 at the start,
+      then no X3 try (60 frames: the full-rate rule). 57 play windows,
+      SPEED 98.4% as the mean, 57.7 frames per emulated second; the 24
+      windows at 15K+ vertices at 99.9%.
+
+**Bundle 22 item 7, the fast store-queue flush with the MMU on
+(`OPTIMIZATION_POTENTIAL.md` P74), built 2026-10-16 (Matt: "We're still
+on bundle 22. Let's work on Fast store-queue flush with the MMU on
+(P74)"). Package of 10:20 (`build/notdc_ps3.pkg`, 1762416 bytes) = the
+package of 02:34 + this. Not committed. HW run 1 below (clean, pictures
+right); default ON in source since 2026-10-16 (Matt: "Update the
+defaults"), in the package of 12:08.**
+- Row VIDEO / DEBUG > MMU SQ Direct (`MmuSqDirect`), default OFF, live.
+  ON: with MMUCR.AT on (Ikaruga, Rez, Border Down, Sonic Shuffle), a PREF
+  takes the flat paths of TA SQ Direct (plan 5.17) and RAM SQ Direct
+  (5.44); those two rows still act. The target is `mmu_TranslateSQW()`,
+  as in the old chain (the `sq_remap` slot of the address bits 25-20, the
+  low 20 bits kept). OFF: the old chain `do_sqw<true>`. The full MMU
+  (Windows CE) has its own flush and does not use the row.
+- Code, `ps3/ps3_rend.cpp`: `do_sqw_mmu` moved here from
+  `dc/sh4/sh4_cpu.cpp`, with `sqw_mmu_ta`, `sqw_mmu_ram`, `sqw_mmu_old`,
+  `sqw_mmu_chain` and `sqw_mmu_sampled` (the 5.17 probe). The flat TA body
+  is now `sqw_ta_flat()`, shared with `do_sqw_nommu`; `sqw_ram_copy()`
+  takes the target and the queue apart. The JIT is unchanged: it still
+  calls `do_sqw_mmu` when AT is on.
+- The fast paths have no stack frame (checked in the disassembly). RAM:
+  the table read, 4 `ld`, 4 `std`; TA: the body of `do_sqw_nommu`.
+- The path without the MMU is the same machine code as in the package
+  of 02:34: `do_sqw_nommu`, `do_sqw_nommu_frame`, `sqw_chain`,
+  `sqw_sampled`, `sqw_flat_general`, `sqw_finish`, `ps3ta_store_sq`,
+  `ps3ta_store_dma` (object files compared, TOC slots and call targets
+  resolved; scripts `objcmp.py`, `rendcmp.sh` in the scratchpad of
+  session bdcba906). `flatten` on `sqw_mmu_sampled` keeps the stamped
+  store of `sqw_sampled` inline. The compiler moves other inline choices
+  in `ps3_rend.o` (three `ta_poly_data` forms of the PPU TA decoder,
+  stack slots of `draw_scene` and `rth_job_draw`): same behaviour.
+- Log: `[ta-split] ... direct= ramsq= mmusq=`, each second.
+- PC (WSL): `misc/ramsq_check` repaired (stale since bundles 4 and 20:
+  `s_flat_ok`, the block-write helpers) and extended. It cuts the flush
+  code from the tree and runs the MMU form against `do_sqw<true>` on
+  random `sq_remap` tables (RAM in every mirror, TA polygons, YUV and
+  VRAM, other areas, empty slots), the rows, the TA gate and TA Peak
+  Frame on and off. 4M flushes PASS on seeds 1, 2, 3 and 7 (MMU part:
+  about 390K RAM direct, 170K TA flat, 490K with the row OFF, 18K probe
+  samples). `mutate.py`: 45 of 45 planted bugs fail (24 for the MMU
+  form). Also PASS: tr4, mmu, flash, pad, idleauto, clock, timebase,
+  rtt, screen, glpath, maple, fullmmu, interp, sys20, jit8, chd, bump,
+  fog, spepix, rend4, ta4, spevb.
+- `.got` 0xFA88 of 0x10000 (0xFA70 before).
+- Expected (estimates, not measured): in Ikaruga the TA flush goes from
+  336 ns to about 120-150 ns and the RAM flush to about 50-80 ns, so the
+  old chain's 23-31% of the SH4 thread falls to about 10%. Rez (log of
+  2026-10-13): 849K RAM flushes a second at 174 ns, all through the old
+  chain.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package. The install keeps the settings; the new row
+     starts OFF.
+  2. Main menu, before the boot: VIDEO / DEBUG > MMU SQ Direct ON, TA SQ
+     Direct ON, RAM SQ Direct ON, JIT C-Calls OFF, JIT HOTBLOCKS OFF.
+     JIT SPEED > JIT IDLE RULE X30 (AUTO must not switch during the
+     A/B). EMULATION > SH4 Clock 200.
+  3. Ikaruga: chapter 1 into its heavy part (11.7-20.1K vertices in the
+     log of 2026-10-13). There, SELECT > MMU SQ Direct OFF for about 30 s,
+     then ON again (the row is live). Look for wrong or missing geometry
+     and hangs.
+  4. Rez: the same in the first area.
+  5. JIT IDLE RULE back to AUTO.
+  6. Log: `mmusq=` of each window; in the heavy windows `sq path %` and
+     `ram ns ... path %`, SPEED and renders a second at the same vertex
+     counts, ON against OFF.
+- A game with the MMU off (Crazy Taxi, Sonic Adventure) runs the same
+  machine code for its flushes, so it needs no boot for this row.
+- HW run 1, 2026-10-16 (listener of session bdcba906,
+  `ps3log_p74_run1.txt` in its scratchpad): Ikaruga, then Rez twice.
+  Matt: "Yes, the images looked right. The framerates feel stable". All
+  three boots are clean: no fault line, every SPU fence `bad=0`, clean
+  XMB exits. MMU SQ Direct was ON in every window (`mmusq=1`); the
+  SELECT menu was not opened, so there is no OFF part. JIT IDLE RULE was
+  AUTO, not X30.
+  - Against the log of 2026-10-13 (older build, Ikaruga at 50 Hz), per
+    probe sample: TA flush 237-280 ns -> 120-200 ns, RAM flush 166-203 ns
+    -> 70-120 ns (Rez 125-169 -> 33-82). Ikaruga at 13.8K vertices:
+    SPEED 82.6% (50 Hz, 41 frames/s), flushes 31% of the SH4 thread ->
+    89.1% (60 Hz, 53 frames/s), 20.7%. Its heaviest scene now: 22.8-23.3K
+    vertices, SPEED 73-82%, 1.4-1.5M flushes/s, 19-22% of the thread.
+  - AUTO in these boots (Matt: "the x3 reverse/x30 swaps are too
+    aggressive and noticeable"): X30 gives both games their full frame
+    rate in emulated time (Ikaruga 59.9 frames per emulated second, Rez
+    30.0). Each of the 4 X3 tries gave the same frames, then 3-6 windows
+    at 63-95% SPEED before AUTO went back; the window after each switch
+    back runs at 105-107% (the pacer catches up its 4 late frames,
+    `PACE_MAX_LATE_FRAMES`). A switch patches 322-1563 bills in 0.65-3.8
+    ms.
+
+**Next (Matt 2026-10-16: "Can you save the issues as the next bundle to
+work on?"): bundle 23, Game-specific fixes (section 7). Its first item is
+the Re-Volt menu (Matt: "Re-Volt has an invisible menu."). The cause is
+found in an old HW log: the menu's 1/W is above our near-plane cap
+(1024 x 1024), so the RSX clips it (`OPTIMIZATION_POTENTIAL.md` P91).
+Matt picks way A (Flycast's depth scale for the three Re-Volt IDs) or way
+B (raise the cap with Depth Float ON, no list). The other items are the
+per-game lists of Flycast that we lack (P92). Nothing is built.**
 
 **Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
 work is in bundles 10 to 22 now. Bundles 1-9 are closed, and the table of
@@ -898,6 +1156,109 @@ of session 74d25a32: `cdi_extract.py`, `sh4dis.py`, `xref.py`).**
       checks of the defaults PASS (idleauto and jit8 pin them; their default
       mutants 10 of 10 and 6 of 6), and the 12 checks that read the presets.
       Not built: the weak-spot fix (no X30 -> PLAIN try without 1K vertices).
+    - The weak-spot fix, asked about and LEFT OUT (Matt: "Alright then."):
+      it would save Tomb Raider's slow level starts (about 6 s and 3 s at
+      33-40% in run 11) and 2-3 s of the Looney Tunes demo, but it could
+      start the Looney Tunes race at X30 (estimate 10-20 s before a PLAIN
+      try), and a 2D game under 1K vertices a frame could never try PLAIN.
+    - State at the end of session c6aef597, 2026-10-15 about 23:30 (Matt:
+      "I'll start a new session in a bit."): items 1-3 built, HW SUCCESS,
+      defaults in source, NOT committed, NOT packaged as defaults (package
+      of 21:58 has the old defaults; Matt's install has the new values).
+      Listener PID 28856 still up, log `b21n_hw.txt` (scratchpad of session
+      c6aef597). Open in bundle 21: the CvS2 green menus (parked), Matt's
+      close; heavy-scene ways left: the inline TA flush (way 4), Ikaruga/Rez
+      (P74 and a Kamui-loop rule), Quake III's TCNT loop, an Ecco profile.
+      Matt committed items 1-3 with their defaults as be083f2 (22:51).
+    - Way 4, the inline TA flush, built 2026-10-15 (session 0991dfd3; Matt
+      asked what it is and what it gives, then: "Go for it!"). Row JIT TA
+      INLINE (JIT SPEED page, OFF / ON, key `JitTaInline`, set before boot,
+      default OFF = the old call). Package of 23:57 (`build/notdc_ps3.pkg`,
+      1763312 bytes) = be083f2 + this. Not committed. `.got` 0xFAF8 (0x508
+      left), 0 `r2off`, the 7 old warnings.
+      - What it does: a PREF to the store queue without the MMU runs the
+        common case of do_sqw_nommu's flat path as 55 inline instructions
+        (`ps3/ps3_jit_ta.h`, `emit_ta_flush`; 51 with no SPE): the target
+        test (QACR0 or QACR1 by address bit 5 says area 4, no YUV or VRAM
+        address bits, the gate word open), room in s_ta's raw buffer, `dcbz`
+        at each new 128-byte line, the 32-byte copy (4 ld + 4 std), raw_used
+        += 32, a count, the FSM entry of the PCW. The old path had a C call
+        of 92-94 instructions with 12 TOC loads.
+      - The rare cases leave by two cold calls: before the copy the old
+        target (do_sqw_nommu, or _frame with TA Peak Frame: RAM, VRAM and
+        YUV flushes, no room, no buffer, a closed gate), after it
+        `ps3ta_jit_finish` (a TAS_SLOW entry or a due SPE batch: sqw_finish
+        without its count). FlushCold kinds 11 and 12. A block takes at most
+        8 inline flushes (`TAJ_BLOCK_SITES`); a PREF after them keeps the
+        call, so a block grows by about 2 KB at most (ngen_Compile keeps 16 KB).
+      - `ps3/ps3_rend.cpp`: `g_ta_jit` (gate word, count); `ta_jit_gate()`
+        at each `ta_gate_set` and after the in-game menu (TA SQ Direct is
+        live); `ps3ta_jit_addr()` at the latch, with the encoding rules of
+        `ps3/ps3_ta_inline.h` and the raw buffers on 128-byte lines (else
+        `[tajit] JIT TA INLINE stays off: ...`); VBlank adds the inline count
+        to TaCalls; set_ta_context notes the raw peak of the stream it leaves
+        (the inline flush notes no peak per record).
+      - Log: `[jitcfg] tainline=`, at the latch `[tajit] JIT TA INLINE on:
+        TaContext fields at +258888, SPE batch 2048`. `[ta-split]`: `sq=` and
+        `sq/s ta=` include the inline flushes; the samples, `ns` and `sq path
+        %` are the C calls only; new tail `| inline Nk/s sites=N`.
+      - Cost: an SQ flush to RAM runs about 21 instructions and a taken
+        branch before the old call (Border Down: 0.7-0.8M a second).
+      - PC checks (WSL), PASS: new `misc/tajit_check`: the words of two
+        layouts against ppu-as (109 words), then 400000 cases a layout on a
+        PPC64 model against the flat path cut from ps3_rend.cpp (layout A:
+        done 105175, full 213305, finish 81520, 6810 of them with the SPE off
+        since the latch, dcbz 77190; layout B 159226 / 214169 / 26605), 27
+        source lines; `mutate.py` 62 of 62 (with `TAJ_NO_WORDS=1` the model
+        alone catches every emitter mutant). `misc/tr4_check` has a
+        `ta_jit_gate` stub now. Also PASS, the checks that read the changed
+        files: tr4, ta4, rend4, bump, depth, fog, framehold, glpath, maple,
+        rtt, screen, idleauto, jit8, mmu, timebase, clock, flash, fullmmu,
+        interp, pad, sys20, chd, constprop, div32, exit, sqstore, tcopy,
+        sqla, spepix, spevb, sysgate. `misc/ramsq_check` stays stale (bundle 4).
+      - HW steps (UDP listener only when Matt says so; the one of session
+        c6aef597, PID 28856, still writes `b21n_hw.txt`): install the package;
+        the rows as in HW run 11 (his install keeps them; check `[jitcfg]`);
+        JIT SPEED: JIT TA INLINE ON (set before boot).
+        1. Sonic Adventure 2 (Europe CDI), the level of HW run 5, through its
+           18-25K parts; then the same with JIT TA INLINE OFF: the reference
+           on this package.
+        2. Looney Tunes: Space Race, a race (reference: HW run 11, game 1).
+        3. Crazy Taxi, a drive (reference: HW run 11, the extra run).
+        4. Border Down, the heavy part: its SQ flushes to RAM take the longer
+           path (reference: HW run 11, game 2: 12K+ at 99.3%).
+      - Expected: `[jitcfg] tainline=1`, `[tajit] JIT TA INLINE on: TaContext
+        fields at +258888, SPE batch 2048`, `[ta-split] ... | inline Nk/s`
+        near the old `sq/s ta=` rate and `sq path` down to the RAM/VRAM share;
+        no wrong or missing geometry, no hang, the same sound. Read: SPEED and
+        frames per vertex band against the references.
+      - HW run 12, 2026-10-16 (package of 23:57; `b21n_hw.txt` of session
+        c6aef597, lines 79824-89335; Matt: "I tested it on Crazy Taxi and it
+        ran worse, same for Looney Tunes Space Race."). The inline path ran
+        (`inline 534k/s sites=97`, `sq path 0.0%`), no fault seen.
+        - Crazy Taxi (79824-85949): AUTO kept the drive at X3 up to t 213
+          (HW run 11: mostly X30 + PLAIN). At X3 the SH4 thread's busy time
+          per emulated second is the same at the same TA flush rate: 0.860 at
+          0.4-0.5M flushes (33 windows; HW run 11 0.870, 25 windows), 0.940
+          at 0.5-0.6M (45; 0.941, 7). Tool: `binta.py` (scratchpad of session
+          0991dfd3).
+        - Looney Tunes (85950-89335): boot videos, menus and 6 windows of the
+          attract demo (22-28K at X30, 92-103%); no race in the log. The
+          listener (PID 28856) stopped at 00:10; since 00:13 port 18194 is the
+          Halo-PS3 session's (PID 10000).
+        - Reading: no gain at the same load. The flush's ~115 ns are mostly
+          memory stalls (the copy reads the store queue just after the guest
+          wrote it), and inline code does not remove them; the 2026-10-06
+          estimate for Minicast's inline ring push (about 4 cycles a flush)
+          fits this. Open, Matt picks: drop way 4, a variant without `dcbz`,
+          or a boot timing of both paths on HW.
+      - DROPPED, 2026-10-16 (Matt: "Drop way 4."). The code is out of the
+        tree; it was never committed. `ps3/ps3_jit_ta.h`, `ps3/ps3_ta_inline.h`
+        and `misc/tajit_check` are deleted, the eight other files are back at
+        be083f2 (their line ends kept). Package of 00:22 (1760624 bytes) =
+        be083f2: `.got` 0xFA70, 0 `r2off`, no JIT TA INLINE row. tr4_check
+        PASS. An install keeps a `JitTaInline` key in the cfg; the next save
+        drops it.
 
 **JIT IDLE RULE AUTO reacts faster, built 2026-10-15 (Matt: "Yes, I do."
 to no left-out seconds and a shorter hold, now that a switch costs about
@@ -15106,6 +15467,11 @@ P38, the full SH4 MMU for the Windows CE games, is the last item of
 bundle 20 (SH4 correctness tail). It had no bundle before. Nothing is
 built by the change.
 
+Change 2026-10-16 (Matt: "Can you save the issues as the next bundle to
+work on?"): a new bundle 23 holds the game-specific fixes: the Re-Volt
+menu (P91) and the per-game lists of Flycast that we lack (P92). It is
+the next bundle to work on. Nothing is built by the change.
+
 | # | Bundle | Items (plan home) | Main gain | Status |
 |---|---|---|---|---|
 | 1 | VRAM and TA-area writes | P43 (5.12), P55 + P7 (5.17), P26 write watch | the only SH4-thread speed left: P43 ~1-3% in Sofdec FMVs, P55 0.5% or less (estimates); P7 and P26 image fixes | `[x]` HW 2026-10-08 (section 0): P43 SUCCESS (FMV DMA -41/-45%), default ON in source; P55 no target (SQ non-TA flushes are RAM); P7 and P26 never exercised (Rez, Ikaruga stop on P58), OFF; re-cut 2026-10-12: P7, the P26 write watch and P55 wait in bundle 13 |
@@ -15130,6 +15496,7 @@ built by the change.
 | 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); defaults by Matt: MMU ASID JTC OFF, GD-ROM Timing FIXED, MMU Pref JIT; P38's JIT form and its speed packages 1 and 2 HW SUCCESS; JIT IDLE RULE AUTO (default, HW SUCCESS) built on the way; history: built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
 | 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[~]` started 2026-10-15 (Matt), not closed (Matt: "Bundle 21 is still not done"): Render Delay FLYCAST (default in source, not packaged) ends the 167 ms render-done time-outs, and the idle-list entry for Kamui's vsync loop (JIT IDLE HASH ON by default) gives the fights at X3 SPEED 100%, 59.8 frames a second; both HW SUCCESS (section 0); not committed; open issue, parked: menus and HUD green unless Texture Filter LINEAR; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights were SH4-bound at X3 before the entry, with JIT C-Calls ON and OFF; JIT IDLE RULE AUTO (the default since bundle 20's close; Matt: it was meant for this bundle) keeps the game at X3 with the two fixes |
 | 22 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12; bundle 21 until 2026-10-13) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
+| 23 | Game-specific fixes (new 2026-10-16, Matt) | P91 (the Re-Volt menu), P92 (Flycast's per-game lists: the extra depth games, Cosmic Smash, full framebuffer emulation, the broadcast lists, the HLE BIOS games, Caesar's Palace and the RGB list, Dave Mirra BMX and Fur Fighters) | the Re-Volt menu and HUD; 24 more games that Flycast fixes per game | `[ ]` new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?"): the next bundle to work on; the Re-Volt cause is found in an old HW log (P91); nothing built |
 
 Main gains:
 - Speed: little is left. Only bundle 1 gives SH4-thread time, and it is
@@ -16598,7 +16965,7 @@ Main gains:
   investigated, nothing built. Causes and 7 ways in the bundle 21 block of
   section 0. It is the same issue as bundle 22 items 2 and 7 (P86, P74).
 
-### Bundle 22: Frame rate in heavy scenes  `[ ]` new at the re-cut of 2026-10-12 as bundle 21, bundle 22 since 2026-10-13; parked for the end (Matt 2026-10-12)
+### Bundle 22: Frame rate in heavy scenes  `[~]` item 7 (P74, row MMU SQ Direct) built 2026-10-16, HW run 1 clean, default ON (Matt) (section 0); item 1 in part: JIT AUTO CHECKS + X3 TRY built 2026-10-16, HW SUCCESS with the package of 12:42 (Matt: "Perfect. That's a huge success."), default + X3 TRY (section 0); new at the re-cut of 2026-10-12 as bundle 21, bundle 22 since 2026-10-13; parked for the end (Matt 2026-10-12)
 
 - Items:
   1. Bundle 8's list "more friendly for other users": the idle rule
@@ -16623,10 +16990,11 @@ Main gains:
      their heavy scenes (SPEED 75-91% at 11.7-20.1K vertices, 87-95% at
      10.8-12.3K). With MMUCR.AT = 1 their store-queue flushes take the old
      chain: 952K/s at 336 ns (15.2% of the SH4 thread) and 849K/s at 174
-     ns (11.2%). The candidate is P74, the flat flush for AT = 1 (about 20
-     lines, own row; not built). Sonic Shuffle: 19.9 renders/s above 4K
-     vertices at X30 and SPEED 100%; X3 BACKWARD runs it at SPEED 56%
-     (Matt: "It runs better at x30. But It's too heavy for now.").
+     ns (11.2%). The candidate is P74, the flat flush for AT = 1 (built
+     2026-10-16 as the row MMU SQ Direct, section 0). Sonic Shuffle: 19.9
+     renders/s above 4K vertices at X30 and SPEED 100%; X3 BACKWARD runs
+     it at SPEED 56% (Matt: "It runs better at x30. But It's too heavy for
+     now.").
 - Shared code: the idle rule in `dc/sh4/rec_v2/decoder.cpp`,
   `ps3/ps3_jit_idle.h`, the SYS GATE and `dc/sh4/tmu.cpp`, the JIT
   store-queue paths.
@@ -16645,6 +17013,40 @@ Main gains:
   DMA (40-150 lines). The share of the missing 10 SPEED points above
   18K is not measured.
 - Rule: do not start it unasked. Matt: "We'll get back to it at the end."
+
+### Bundle 23: Game-specific fixes  `[ ]` new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?"); the next bundle to work on; nothing built
+
+- Goal: the faults that Flycast fixes per game, first the Re-Volt menu
+  (Matt 2026-10-16: "Re-Volt has an invisible menu.", then "Or if there
+  are game-specific fixes we may have not implemented.").
+- Items (`OPTIMIZATION_POTENTIAL.md` P91 and P92 have the evidence):
+  1. The Re-Volt menu and HUD (P91). The cause is in an old HW log: the
+     menu's 1/W is 1.7M to 2.5M, above our near-plane cap (1024 x 1024),
+     so the RSX clips it. Way A (Flycast: 1/W x 1/100 for the three
+     Re-Volt IDs) or way B (raise the cap with Depth Float ON, no list).
+     Matt picks.
+  2. The extra depth games (P92 a): NHL 2K2, Sturmwind, South Park Rally,
+     Capcom vs. SNK Pro, Test Drive V-Rally. Way B of item 1 can cover the
+     first four with no list. First a boot log of each (`w=`, `near=`).
+  3. Cosmic Smash (P92 b): a HW test of List Passes 2, no build.
+  4. Full framebuffer emulation (P92 c): Densha de Go! 2 and five more.
+     Large.
+  5. The broadcast lists (P92 d): read the area strings of the discs
+     first; only Hydro Thunder PAL and the PAL discs that list more than
+     Europe can need a change.
+  6. The HLE BIOS games (P92 e): Stupid Invaders, Suika, Cool Boarders
+     Burrrn. Against section 4 (reios); Matt decides.
+  7. Caesar's Palace and the RGB list (P92 f).
+  8. Dave Mirra BMX and Fur Fighters (P92 g): `.cht` files for the Cheats
+     row; for Fur Fighters, a boot with TMU Fine TCNT ON first.
+- For GOALS.md G11, not this bundle: Flycast's Dricas login patches for
+  11 online games (P92 h).
+- Shared code: `ps3/ps3_rend.cpp` (`track_inv_w()`, `draw_scene()`),
+  `ps3/spu/spe_dec.c`, `dc/dc.cpp` (`apply_disc_meta()`, the product ID
+  at IP.BIN 0x40), `dc/flash_fix.cpp` (Broadcast), `ps3/ps3_cheats.cpp`.
+- Rule: a list per game changes the rule "no per-game lists" (bundle 22
+  item 6): ask Matt for the scope before a design. Each item keeps its
+  own row and HW run, default OFF until HW validated, SH4 Clock 200.
 
 ### Not bundled
 

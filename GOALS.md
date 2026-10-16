@@ -13,7 +13,7 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
 Active goal: none. G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well."). The open goals
-are G10, G11 and G13 (last).
+are G10, G11, G15 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13.
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
 as bundles 10-22 since the re-cut of 2026-10-12 and the new bundle 21 of 2026-10-13, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
@@ -388,6 +388,45 @@ Built 2026-10-13, steps 1-4, 7 and 8; package of 09:35 (`build/notdc_ps3.pkg`, 1
 - Found: chdr frees no codec buffer at a close, about 135 KB and the packed map for each image that opens. It counts
   only for many disc swaps. `chd.c` is the unchanged file.
 
+## G15 - End-user front end  `[ ]` (added 2026-10-16 at Matt's request; nothing built)
+Matt 2026-10-16: "A few more things that I'd like to add/implement in future, as last things". They run at the end,
+together with G13. Matt's first item (most rows hidden, an "Advanced mode") is G13, see its note of 2026-10-16.
+Each item keeps its own row and HW run on Matt's PS3, SH4 Clock 200.
+1. Close a game. Matt: "A way to close a game and go back to the disc selection without having to open and close the
+   emulator". Today `main()` (`ps3/ps3_main.cpp`) runs the browser (`ps3_menu_run()`) one time, then `EmuMain()`
+   until the XMB exit. The SELECT menu goes back to the game or swaps the disc. It cannot stop the game. The core
+   was never made to run `EmuMain()` a second time.
+   - Way A: an item "Close Game" in the SELECT menu saves the flash and the VMUs, stops the threads as JIT EXIT
+     does, then starts our own `EBOOT.BIN` again (PSL1GHT `sysProcessExitSpawn2`). The browser opens as at a start
+     from the XMB.
+   - Way B: stop and free every unit (SH4, JIT cache, PVR, AICA, SPUs, GD-ROM) and go back to `ps3_menu_run()` in
+     the same process. Much larger. Matt picks.
+2. Controller slots. Matt: "A way for the emulator to let users choose what both slots in a controller do, by placing
+   the VMU as default option and the rumble as second option if the user chooses, or another VMU." Today
+   `mcfg_CreateDevices()` (`dc/maple/maple_cfg.cpp`) puts a VMU in slot 1, and in slot 2 a VMU or, with CONTROLS >
+   Rumble Pack ON (one row for all players, default OFF), the Puru Puru pack. New: rows "Slot 1" and "Slot 2", each
+   VMU (default) or RUMBLE. They replace the Rumble Pack row. Open: one pair of rows for all players, or one per player.
+3. VMU space. Matt: "If the VMUs can support a lot more space than the ones it currently has, since I'd like this to
+   be compatible with save editors". Facts (2026-10-16):
+   - Each card is a raw 128 KB image (`vmu_save_A1.bin`, or `<ID>_vmu_save_A1.bin` with VMU Per Game), the form of
+     Flycast's VMU files. So a save editor that opens Flycast's files should open ours. No test yet.
+   - The card has 256 blocks of 512 bytes, 200 of them for saves (`vmu_format()` and `MDCF_GetMediaInfo` in
+     `dc/maple/maple_devs.cpp`). The FAT is one block of 256 entries. The BIOS formats every card this way, and the
+     save editors expect it. So one larger card breaks the save editors.
+   - Way A: pages, as the third-party 4X memory cards did (4 pages of 200 blocks, one page plugged at a time). Each
+     slot gets N standard files (`vmu_save_A1.bin`, `vmu_save_A1_p2.bin` ...), and a row picks the page.
+   - Way B: VMU Per Game (built in plan bundle 16, default OFF because it hides the old saves): one 200-block card per
+     disc. Matt picks.
+4. Controller detector. Matt: "A controller detector that will let users assign more controllers ONLY if more pads
+   are plugged in." Today the row CONTROLS > Players (1-4, default 4) makes the maple ports at boot, pads or not.
+   `ps3_find_pad()` (`ps3/ps3_input.cpp`) gives DC port N the Nth connected PS3 pad at each poll, so a port with no
+   pad is a plugged controller that sends no input. New: a DC controller (with its slots) is plugged only on the
+   ports that have a PS3 pad, and it plugs or unplugs when a pad connects or leaves (also G10 step 1, pad hot-plug).
+   Open: the Players row stays as the most ports, or goes.
+5. HW test: close a game and boot another one, with no hang and the saves kept; RUMBLE and a second VMU in a slot work
+   in a game; a save editor opens a VMU file from the PS3; with one pad the game sees one controller, and a second
+   pad adds port B.
+
 ## G13 - Release candidate settings  `[ ]` (added 2026-10-08 at Matt's request; release material, stays the last goal)
 An RC build shows only a few option rows. Every other setting runs its source default.
 Risk: each launch writes every `[ps3]` key to `nullDC.cfg` (`ps3_presets_save`; `cfgLoadInt` writes an absent key
@@ -411,3 +450,8 @@ OFF their verdicts first (step 5).
    G11 adds one. On 2026-10-08 the menu has 83 option rows on 4 pages and 2 on CONTROLS.
 7. HW test: install the RC over a `nullDC.cfg` from an old build. `[jitcfg]` and `[sndcfg]` show the source defaults,
    the menus show only the visible rows, and a game plays as on the last dev build.
+
+Note 2026-10-16 (Matt): "Most options hidden except ones that are EFFECTIVELY useful for the end user, and an
+"Advanced mode" that will show the menu as we see it today". So a row "Advanced Mode" (OFF) hides the other rows,
+and ON shows the full menu as today. With this form the `RC=1` build flag of steps 1-2 is not needed; Matt confirms at
+goal start. Step 6 has the visible rows (recommended 2026-10-08). The rest of G15 runs with this goal.

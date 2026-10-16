@@ -619,6 +619,258 @@ static void t_fwd_frames()
 	}
 }
 
+// JIT AUTO CHECKS + X3 TRY (bundle 22): windows with their K vertices, frames a vblank and frames a second.
+struct TWin { double secs, speed, sleep, vt, fpv, fps; };
+typedef TWin (*TModel)(u32 i, int rule);
+
+static std::vector<Event> trun(TModel m, u32 n, int frames)
+{
+	IdleAuto a;
+	idle_auto_init(a);
+	a.frames = frames;
+	std::vector<Event> ev;
+	for (u32 i = 1; i <= n; i++)
+	{
+		const TWin w = m(i, a.rule);
+		if (idle_auto_step(a, w.secs, w.speed, w.sleep, w.vt, w.fpv, w.fps))
+			ev.push_back({ i, a.rule, a.hold });
+	}
+	return ev;
+}
+
+// Ikaruga (HW 2026-10-16): X3 at 93% from the boot, X30 at full speed with room at a frame each vblank.
+static TWin t_ikaruga(u32, int rule) { return rule ? TWin{ 1, 93, 0, 5, 1.0, 56 } : TWin{ 1, 100, 0.5, 5, 1.0, 60 }; }
+// Rez: a slow loading screen to window 3, then 30 frames at both levels, X3 at 99%.
+static TWin t_rez(u32 i, int rule)
+{
+	if (i <= 3)
+		return { 1, 60, 0, 0, 0.0, 0 };
+	return rule ? TWin{ 1, 99, 0.1, 6, 0.5, 30 } : TWin{ 1, 100, 0.45, 6, 0.5, 30 };
+}
+// Donald Duck's play on 2026-10-15: X30 drops to 15 frames a second, X3 gives 30 at full speed.
+static TWin t_dd(u32 i, int rule)
+{
+	if (i <= 3)
+		return { 1, 60, 0, 0, 0.0, 0 };
+	return rule ? TWin{ 1, 100, 0.2, 5, 0.5, 30 } : TWin{ 1, 100, 0.4, 5, 0.25, 15 };
+}
+// Sonic Adventure: 26.3 of 30 at X30, 29.7 at X3.
+static TWin t_sonic(u32 i, int rule)
+{
+	if (i <= 3)
+		return { 1, 60, 0, 0, 0.0, 0 };
+	return rule ? TWin{ 1, 99, 0.1, 9, 0.495, 29.7 } : TWin{ 1, 100, 0.4, 9, 0.438, 26.3 };
+}
+
+static u32 tfeed(IdleAuto& a, u32 n, double speed, double sleep, double vt, double fpv, double fps = 30.0,
+                 u32 fwd = 0)
+{
+	for (u32 i = 1; i <= n; i++)
+		if (idle_auto_step(a, 1.0, speed, sleep, vt, fpv, fps, fwd))
+			return i;
+	return 0;
+}
+
+static IdleAuto at_x30_try()
+{
+	IdleAuto a = at_x30();
+	a.frames = 2;
+	return a;
+}
+
+// An X30 run of 3 spare windows at fpv, then 3 X3 windows of the try at t1, t2, t3: the window of the switch back, or 0.
+static u32 try_case(IdleAuto& a, double fpv, double t1, double t2, double t3, double x3_speed = 100.0)
+{
+	expect(tfeed(a, 3, 100.0, 0.5, 5.0, fpv) == 3 && a.rule == IA_X3 && a.try_n == 3, "+ X3 TRY: the try starts");
+	const double t[3] = { t1, t2, t3 };
+	for (u32 i = 0; i < 3; i++)
+		if (idle_auto_step(a, 1.0, x3_speed, 0.1, 5.0, t[i], 30.0))
+			return i + 1;
+	return 0;
+}
+
+static void t_try_level()
+{
+	// Each lost try goes back after its 3 windows: the switches of a try that always fails.
+	std::vector<Event> fails = { { 3, IA_X30, 5 } };
+	u32 w = 3, h = 5;
+	while (true)
+	{
+		const u32 x3 = w + h + 3;
+		if (x3 > 2000)
+			break;
+		fails.push_back({ x3, IA_X3, h });
+		w = x3 + 3;
+		h = h * 2 > 160 ? 160 : h * 2;
+		if (w > 2000)
+			break;
+		fails.push_back({ w, IA_X30, h });
+	}
+	same("+ X3 TRY: Ikaruga tries no X3", trun(t_ikaruga, 2000, 2), { { 3, IA_X30, 5 } });
+	expect(trun(t_ikaruga, 2000, 1).size() > 10, "FRAMES: Ikaruga tries X3 again and again");
+	same("+ X3 TRY: Rez's tries go back", trun(t_rez, 2000, 2), fails);
+	same("FRAMES: Rez stays at its first try", trun(t_rez, 2000, 1), { { 3, IA_X30, 5 }, { 11, IA_X3, 5 } });
+	same("+ X3 TRY: Donald Duck keeps X3", trun(t_dd, 2000, 2), { { 3, IA_X30, 5 }, { 11, IA_X3, 5 } });
+	same("+ X3 TRY: Sonic Adventure keeps X3", trun(t_sonic, 2000, 2), { { 3, IA_X30, 5 }, { 11, IA_X3, 5 } });
+	// Levels OLD and FRAMES take no account of the frames a vblank, the frames a second or a FORWARD try.
+	for (int lv = 0; lv <= 1; lv++)
+	{
+		const std::vector<Event> a0 = runv(m_ecco, 400, lv);
+		IdleAuto a;
+		idle_auto_init(a);
+		a.frames = lv;
+		std::vector<Event> a1;
+		for (u32 i = 1; i <= 400; i++)
+		{
+			const Win x = m_ecco(i, a.rule);
+			if (idle_auto_step(a, x.secs, x.speed, x.sleep, (i % 40) >= 30 ? 0.0 : 9.0, (i * 7 % 13) / 10.0,
+			                   (i * 5 % 7) * 1.0, i % 4))
+				a1.push_back({ i, a.rule, a.hold });
+			expect(!a.try_n && !a.lost, "level %d: no try state (try_n %u lost %d)", lv, a.try_n, a.lost);
+		}
+		same(lv ? "FRAMES ignores the new inputs" : "OLD ignores the new inputs", a1, a0);
+	}
+
+	// No try at a frame each vblank, from 0.97 up; a run broken by such a window starts again.
+	IdleAuto a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.5, 5.0, 0.97) == 0, "+ X3 TRY: 0.97 frames a vblank tries no X3");
+	a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.5, 5.0, 0.9699) == 3, "+ X3 TRY: 0.9699 frames a vblank tries X3");
+	a = at_x30_try();
+	expect(tfeed(a, 2, 100.0, 0.5, 5.0, 0.5) == 0 && tfeed(a, 1, 100.0, 0.5, 5.0, 1.0) == 0 &&
+	       tfeed(a, 2, 100.0, 0.5, 5.0, 0.5) == 0 && tfeed(a, 1, 100.0, 0.5, 5.0, 0.5) == 1,
+	       "+ X3 TRY: a run broken by a full-rate window");
+	a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.5, 0.99, 0.5) == 0, "+ X3 TRY: the FRAMES load test stays");
+	a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.29, 5.0, 0.5) == 0, "+ X3 TRY: the sleep test stays");
+
+	// No try while an X30 FORWARD try runs; the run counts again from the window after it.
+	a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.5, 5.0, 0.5, 30.0, IA_FWD_TRY) == 0, "+ X3 TRY: no try during a FORWARD try");
+	expect(tfeed(a, 3, 100.0, 0.5, 5.0, 0.5) == 3 && a.rule == IA_X3, "+ X3 TRY: the try 3 windows after it");
+	a = at_x30_try();
+	expect(tfeed(a, 2, 100.0, 0.5, 5.0, 0.5) == 0 && tfeed(a, 1, 100.0, 0.5, 5.0, 0.5, 30.0, IA_FWD_TRY) == 0 &&
+	       tfeed(a, 2, 100.0, 0.5, 5.0, 0.5) == 0 && tfeed(a, 1, 100.0, 0.5, 5.0, 0.5) == 1,
+	       "+ X3 TRY: a FORWARD try breaks the run");
+	a = at_x30();
+	a.frames = 1;
+	expect(tfeed(a, 10, 100.0, 0.5, 5.0, 0.5, 30.0, IA_FWD_TRY) == 3, "FRAMES: a FORWARD try stops no X3 try");
+	// The FORWARD test is at X30 only: an X3 try under test goes on.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	expect(!idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.6, 30.0, IA_FWD_TRY) && a.try_n == 2,
+	       "+ X3 TRY: the FORWARD flag at X3 changes nothing: try_n %u", a.try_n);
+
+	// A try that begins at FORWARD X30 is not judged: it stays at X3 as at FRAMES, and only the slow rule ends it.
+	a = at_x30_try();
+	expect(tfeed(a, 3, 100.0, 0.5, 5.0, 0.5, 30.0, IA_FWD_X30) == 3 && a.rule == IA_X3 && !a.try_n,
+	       "+ X3 TRY: a try at FORWARD X30 starts unjudged: try_n %u", a.try_n);
+	expect(tfeed(a, 20, 100.0, 0.1, 5.0, 0.5) == 0 && a.rule == IA_X3, "+ X3 TRY: an unjudged try stays at X3");
+	expect(tfeed(a, 3, 60.0, 0.0, 5.0, 0.5) == 3 && a.rule == IA_X30 && !a.lost, "+ X3 TRY: the slow rule ends it");
+	a = at_x30_try();
+	expect(tfeed(a, 10, 100.0, 0.5, 5.0, 0.5, 30.0, IA_FWD_TRY | IA_FWD_X30) == 0, "+ X3 TRY: both flags: no try");
+	// Only the start counts: FORWARD X30 during a judged try changes nothing.
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.5, 0.5, 0.5) == 3 && a.lost, "+ X3 TRY: a try at FORWARD PLAIN is judged");
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	expect(!idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0, IA_FWD_X30) &&
+	       !idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0, IA_FWD_X30) &&
+	       idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0, IA_FWD_X30) && a.lost,
+	       "+ X3 TRY: FORWARD X30 after the start does not stop the verdict");
+	// Donald Duck (HW run 2): the try at FORWARD X30 with its loading screen stays at X3 through it.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.7, 3.8, 0.49, 29.5, IA_FWD_X30);
+	const TWin dd2[] = { { 1, 100.0, 0.7, 3.9, 0.5, 30.0 }, { 1, 92.7, 0.4, 3.8, 0.27, 15.9 }, { 1, 104.6, 0.2, 0, 0, 0 },
+	                     { 1, 100.0, 0.3, 0, 0, 0 }, { 1, 100.0, 0.2, 0, 0, 0 }, { 1, 95.8, 0.1, 0, 0, 0 },
+	                     { 1, 99.7, 0.2, 0, 0, 0 }, { 1, 92.6, 0.2, 3.1, 0.31, 18.5 }, { 1, 100.0, 0.7, 3.4, 0.5, 30.0 } };
+	u32 moved = 0;
+	for (const TWin& x : dd2)
+		moved += idle_auto_step(a, x.secs, x.speed, x.sleep, x.vt, x.fpv, x.fps, IA_FWD_X30);
+	expect(!moved && a.rule == IA_X3, "+ X3 TRY: Donald Duck's try at FORWARD X30 stays at X3: %u switches", moved);
+	// A level with the X30 flag in a model: Rez at FORWARD X30 keeps its first try, as at FRAMES.
+	idle_auto_init(a);
+	a.frames = 2;
+	std::vector<Event> ev;
+	for (u32 i = 1; i <= 2000; i++)
+	{
+		const TWin x = t_rez(i, a.rule);
+		if (idle_auto_step(a, x.secs, x.speed, x.sleep, x.vt, x.fpv, x.fps, IA_FWD_X30))
+			ev.push_back({ i, a.rule, a.hold });
+	}
+	same("+ X3 TRY: Rez at FORWARD X30 keeps its first try", ev, { { 3, IA_X30, 5 }, { 11, IA_X3, 5 } });
+
+	// The base is the run's mean; the run of before a broken window is not in it.
+	a = at_x30_try();
+	tfeed(a, 2, 100.0, 0.5, 5.0, 0.9);
+	tfeed(a, 1, 100.0, 0.0, 5.0, 0.9);
+	expect(tfeed(a, 1, 100.0, 0.5, 5.0, 0.4) == 0 && tfeed(a, 1, 100.0, 0.5, 5.0, 0.5) == 0 &&
+	       tfeed(a, 1, 100.0, 0.5, 5.0, 0.6) == 1 && a.base_fpv > 0.4999 && a.base_fpv < 0.5001,
+	       "+ X3 TRY: the base is the new run's mean: %.4f", a.base_fpv);
+
+	// The verdict: the try's mean over its 3 windows against 1.03 times the base, at the third window.
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.514, 0.514, 0.514) == 3 && a.rule == IA_X30 && a.lost && a.hold == 10,
+	       "+ X3 TRY: 0.514 against 0.5 goes back: rule %d lost %d hold %u", a.rule, a.lost, a.hold);
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.516, 0.516, 0.516) == 0 && a.rule == IA_X3 && !a.try_n,
+	       "+ X3 TRY: 0.516 against 0.5 stays: rule %d try_n %u", a.rule, a.try_n);
+	a = at_x30_try();
+	expect(try_case(a, 0.0, 0.0, 0.0, 0.0) == 3 && a.rule == IA_X30 && a.lost, "+ X3 TRY: no gain at 0 goes back");
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.3, 0.3, 0.9) == 3 && a.rule == IA_X30, "+ X3 TRY: the try's mean, not its last window");
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.9, 0.9, 0.3) == 0 && a.rule == IA_X3, "+ X3 TRY: the try's mean, not its first windows");
+	expect(a.try_fpv > 2.0999 && a.try_fpv < 2.1001, "+ X3 TRY: the sum of the try: %.4f", a.try_fpv);
+	// A kept try is plain X3: slow windows still go back, the hold set back after 10 X3 windows.
+	expect(tfeed(a, 6, 100.0, 0.1, 5.0, 0.6) == 0 && tfeed(a, 3, 60.0, 0.0, 5.0, 0.6) == 3 && a.rule == IA_X30 &&
+	       !a.lost && a.hold == 5, "+ X3 TRY: a kept try ends slow: lost %d hold %u", a.lost, a.hold);
+	// A slow try goes back by the slow rule, and its line says so.
+	a = at_x30_try();
+	expect(try_case(a, 0.5, 0.9, 0.9, 0.9, 60.0) == 3 && a.rule == IA_X30 && !a.lost, "+ X3 TRY: a slow try");
+	// The verdict counts only the try's windows: two slow ones and a lost verdict.
+	a = at_x30_try();
+	expect(tfeed(a, 3, 100.0, 0.5, 5.0, 0.5) == 3, "+ X3 TRY: the try again");
+	expect(!idle_auto_step(a, 1.0, 60.0, 0.0, 5.0, 0.5, 30.0) && !idle_auto_step(a, 1.0, 60.0, 0.0, 5.0, 0.5, 30.0) &&
+	       idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0) && a.lost, "+ X3 TRY: two slow windows, then the verdict");
+
+	// A try window under 2 frames a second (a loading screen) is not judged: the verdict waits for 3 that are.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	expect(!idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0) && !idle_auto_step(a, 1.0, 100.0, 0.1, 0.0, 0.0, 1.99) &&
+	       a.try_n == 2 && !idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 2.0) && a.try_n == 1 &&
+	       idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0) && a.lost && a.try_fpv > 1.4999 && a.try_fpv < 1.5001,
+	       "+ X3 TRY: a loading window is not judged: try_n %u sum %.4f", a.try_n, a.try_fpv);
+	// Donald Duck (HW 2026-10-16): a try with a loading window, 0.32 against 0.50, is judged on play windows only.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	expect(!idle_auto_step(a, 1.0, 100.0, 0.6, 3.7, 0.49, 29.5) && !idle_auto_step(a, 1.0, 99.9, 0.6, 4.0, 0.45, 26.9) &&
+	       !idle_auto_step(a, 1.0, 96.6, 0.2, 0.0, 0.02, 1.0) && a.try_n == 1 &&
+	       !idle_auto_step(a, 1.0, 100.0, 0.5, 4.0, 0.62, 37.0) && a.rule == IA_X3,
+	       "+ X3 TRY: Donald Duck's try judged on its play windows: rule %d try_n %u", a.rule, a.try_n);
+	// A slow loading screen in a try still goes back by the slow rule.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	expect(tfeed(a, 3, 60.0, 0.0, 0.0, 0.0, 0.0) == 3 && a.rule == IA_X30 && !a.lost, "+ X3 TRY: a slow loading try");
+
+	// A window of no time changes nothing in a try.
+	a = at_x30_try();
+	tfeed(a, 3, 100.0, 0.5, 5.0, 0.5);
+	idle_auto_step(a, 1.0, 100.0, 0.1, 5.0, 0.5, 30.0);
+	IdleAuto b = a;
+	expect(!idle_auto_step(a, 0.0, 100.0, 0.1, 5.0, 0.9, 30.0) && !memcmp(&a, &b, sizeof(a)), "+ X3 TRY: a 0 s window");
+	// The try state starts empty, and a try needs no state of an older one.
+	idle_auto_init(a);
+	expect(!a.try_n && !a.lost && a.run_fpv == 0.0 && a.base_fpv == 0.0 && a.try_fpv == 0.0, "+ X3 TRY: init");
+	a = at_x30_try();
+	try_case(a, 0.5, 0.9, 0.9, 0.9);
+	tfeed(a, 3, 60.0, 0.0, 5.0, 0.9);
+	a.wait = 0;
+	expect(try_case(a, 0.5, 0.514, 0.514, 0.514) == 3 && a.try_fpv > 1.5419 && a.try_fpv < 1.5421,
+	       "+ X3 TRY: a new try starts its sum at 0: %.4f", a.try_fpv);
+}
+
 int main()
 {
 	t_models();
@@ -628,6 +880,7 @@ int main()
 	t_fwd_edges();
 	t_frames_level();
 	t_fwd_frames();
+	t_try_level();
 	printf("%s: idle auto: %u checks, %u failed\n", g_fails ? "FAIL" : "PASS", g_checks, g_fails);
 	return g_fails ? 1 : 0;
 }

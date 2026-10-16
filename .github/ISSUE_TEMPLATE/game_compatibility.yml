@@ -110,9 +110,6 @@ body:
         - GDI
         - CDI
         - CHD
-        - NRG
-        - MDS / MDF
-        - Other
     validations:
       required: true
 

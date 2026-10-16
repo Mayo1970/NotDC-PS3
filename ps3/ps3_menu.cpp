@@ -339,7 +339,7 @@ static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X3
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
 static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };
 static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };
-static const char* k_autochk[]   = { "OLD", "FRAMES", NULL };
+static const char* k_autochk[]   = { "OLD", "FRAMES", "+ X3 TRY", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
@@ -506,6 +506,8 @@ static Option s_video[] = {
 	  "A store-queue flush to the TA runs in one flat function, not 4 calls. Live." },
 	{ "RAM SQ Direct",   &g_ram_sq_direct_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A store-queue flush to main RAM copies straight into RAM, not 3 calls (5.44). Live." },
+	{ "MMU SQ Direct",   &g_mmu_sq_direct_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "With the MMU on (Ikaruga, Rez), TA SQ Direct and RAM SQ Direct act too (P74). Live." },
 	{ "TA Peak Frame",   &g_ta_peak_frame_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The [rend] peak= stat is noted per frame, not per TA record. Set before boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
@@ -621,7 +623,7 @@ static Option s_jit[] = {
 	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_taskidle,  0, 0,0,0, NULL,
 	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Sonic Shuffle, Border Down). Set before boot." },
 	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,
-	  "FRAMES: AUTO tries PLAIN when X30 drops frames, no X3 try in loading screens. Live." },
+	  "FRAMES: AUTO tests frames and loads. + X3 TRY: an X3 try must give more frames than X30. Live." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -1396,6 +1398,7 @@ static int* const k_live_opts[] = {
 	&g_sprite_corner_preset, &g_offset_colour_preset, &g_colour_clamp_preset, &g_trilinear_preset,
 	&g_arm7_rate_preset, &g_arm7_interleave_preset,
 	&g_adpcm_loop_preset, &g_key_census_preset,
+	&g_mmu_sq_direct_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

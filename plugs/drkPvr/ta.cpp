@@ -117,12 +117,13 @@ void ta_split_dump(double seconds)
     char vbuf[320];
     vram_split_format(vbuf, sizeof(vbuf), seconds, calls);
     printf("[ta-split] sq=%.0fk/s n=%u/%u long=%u ns: in %.1f copy %.1f fsm %.1f out %.1f = %.1f mftb %.1f"
-           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d ramsq=%d sqst=%u sqla=%u sqcp=%u sqcold=%u | %s"
+           " | sq path %.1f%% | dma calls=%u blocks=%u %.1f%% | direct=%d ramsq=%d mmusq=%d sqst=%u sqla=%u sqcp=%u sqcold=%u | %s"
            " | ram ns: in %.1f write %.1f out %.1f = %.1f n=%u long=%u path %.1f%%\n",
            calls / seconds / 1000.0, s_split_n, s_split_taken, s_split_long,
            seg[0], seg[1], seg[2], seg[3], sum, mftb_ns, path,
            s_dma_calls, s_dma_blocks, (double)s_dma_ticks * tick_ns / 1e9 / seconds * 100.0,
-           g_ta_sq_direct_preset, g_ram_sq_direct_preset, g_jit_sq_sites, g_jit_sq_la_sites, g_jit_sq_cp_sites, g_jit_sq_cold_sites,
+           g_ta_sq_direct_preset, g_ram_sq_direct_preset, g_mmu_sq_direct_preset, g_jit_sq_sites, g_jit_sq_la_sites,
+           g_jit_sq_cp_sites, g_jit_sq_cold_sites,
            vbuf,
            rseg[0], rseg[1], rseg[2], rsum, s_ram_n, s_ram_long, rpath);
 

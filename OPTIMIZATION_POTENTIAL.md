@@ -87,6 +87,21 @@ is not a review of a reference. It collects, from the HW logs of
 2026-10-11 and 2026-10-12, where each game falls under full speed, and
 the ways to give the SH4 thread more room. Nothing is built by it.
 
+Seventh review 2026-10-16 (Matt: "Since the Inline TA flush was a failure,
+can you check Flycast or Reicast and see what can we implement to improve
+the performance in heavy scenes?", then "Can you write these in the
+@OPTIMIZATION_POTENTIAL.md ?"): heavy scenes only. It came after way 4 of
+plan bundle 21 (JIT TA INLINE, the TA flush inline at each PREF) gave no
+gain on HW and was dropped.
+- Flycast: the commits after the sixth review (`master`
+  ed953fcbf..80471d57b, 9 commits; `dev` ec56b5f26..91c3084d5, 4
+  commits), read from a scratch fetch; our clone is still not fetched.
+  Reicast: `alpha` is still 2e32999c.
+- Flycast and Reicast have nothing left to take for the SH4 thread
+  (section 4). Items P87-P90 are our own work, from the HW dumps. P74 gets
+  new facts. nulldc-360 is not a reference any more (Matt: "There's
+  nothing to take from them."). Review only: nothing is built.
+
 Merge 2026-10-06 (Matt: "Can you do the merge, then?"): the items with a
 plan goal now sit in `OPTIMIZATION_PLAN.md` at that goal, with a short
 entry; its section 0 lists where. Their headings here say "merged: plan
@@ -103,8 +118,8 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 - Every item was read in both trees. A claim that was not checked in the code
   is marked "unverified".
 - Line numbers: P1-P15 from 2026-10-04, P16-P57 from 2026-10-06, P58-P70
-  from 2026-10-08, P71-P85 from 2026-10-11. If a line moved, search for
-  the function.
+  from 2026-10-08, P71-P85 from 2026-10-11, P87-P92 from 2026-10-16. If a
+  line moved, search for the function.
   `ps3/ps3_driver.cpp` changes often, so the new items cite it by function
   name.
 - Reicast, Minicast and Flycast are little-endian only. Check every ported
@@ -189,7 +204,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P71 | The x30 idle rule bills work blocks | pacing in emulated time | Looney Tunes race (20% of the billed SH4 cycles); Phantasy Star Online and Sonic Adventure unverified | 3 lines + an option | verdict 2026-10-12 (Matt): default X30, X3 BACKWARD as a level (it gives Phantasy Star Online and Sonic Adventure their 30 frames); built 2026-10-11 (bundle 8, "JIT IDLE RULE" X30); HW at X3: 29.95 frames per emulated second in the race, SPEED 60.9% (Matt: "It runs much worse"), X30 stays; corrects section 4 ("ours (x30) is stronger") and plan section 0 ("1 cycle per non-FPU op"); new fact for plan 5.25 and 5.45 |
 | P72 | ps3gl state path: texture bind scan, no compare before set | speed | the render thread in every game; TR Triangle Sort in Crazy Taxi (busy 45%) | ~10 lines, then ~40 | HW SUCCESS 2026-10-13 (Matt; bundle 14): rows Tex Bind Table and GL State Compare, default ON in source; Crazy Taxi: a bind 1.47 -> 0.53 us, `glEnd` per draw 1.71 -> 1.08 us; = plan 5.10 (not chosen at 2.6-2.8%), now 11 points of busy; the parked cost of plan 3k |
 | P73 | Small render-thread items (4) | speed | fewer draws and copies (not measured) | 4-30 lines each | the first pass: HW SUCCESS 2026-10-13 (Matt; bundle 14): row TR First Pass (the skips, and the first pass in game order), default + GAME ORDER in source; Crazy Taxi: 1033 -> 615 TR draws per render; the merge key mask, the texture lifetime and the index list are open (not built); `[texlife]`: 68% of the decodes are textures the 180-frame rule freed; `[cost] key`: 13-20% fewer opaque state changes with a key mask; counters for the merge key and the texture lifetime; the index list not built; plan 3k's parked "cheaper first pass" |
-| P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there |
+| P74 | Store-queue flushes with AT = 1 take the old chain | speed | Border Down, Rez, Ikaruga, Sonic Shuffle (after P58) | ~20 lines | bundle 13, after P58; plan 5.17 Step 2 and 5.44 do not act there; 2026-10-16: first in the seventh review order (Ikaruga: 23-31% of the SH4 thread in the old chain); built 2026-10-16 as the row MMU SQ Direct (VIDEO / DEBUG), HW run 1 clean, default ON since 2026-10-16 (Matt) (plan bundle 22 item 7) |
 | P75 | RTT read-back never returns (PSL1GHT `rsxSetTransferData`) | bug (hang) | the Crazy Taxi pause freeze; every render to texture | 3 + 2 lines | bundle 11, first; the open item of plan section 0; then P66's RTT scaler |
 | P76 | Small RTT and present fixes (5) | bug | RTT games; static 2D screens | 1-8 lines each | bundle 11; new facts for P54 and P10; corrects section 4 (`9dbca9632`) |
 | P77 | Disc Swap: the command in flight, the lid-open phase | bug (hang) | every disc swap (Disc Swap is not HW tested yet) | 8 lines less, then ~12 | bundle 19 (re-cut 2026-10-12); corrects P34 (the Reicast `c050ee8f` clears) |
@@ -202,6 +217,12 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
 | P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save"; default FLYCAST, FLYCAST and OFF in source since 2026-10-13 (Matt); Console ID ran on HW 2026-10-13, the other two are open for the last checks before the release (Matt) |
 | P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 22 (parked for the end, Matt 2026-10-12; bundle 21 until 2026-10-13); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
+| P87 | Store-queue stores straight into the TA buffer | speed | Crazy Taxi, Looney Tunes race (their PREF follows the stores); not Sonic Adventure 2's main loop | probe ~40 lines; build ~100-200 lines | seventh review (2026-10-16); own work; after plan bundle 21 way 4 (dropped); build only if the probe shows a wait |
+| P88 | FSRRA as frsqrte plus Newton steps | speed | Sonic Adventure 2 (one FSRRA a vertex): 0.5-1.5% of the SH4 thread (estimate) | probe ~40 lines; build ~20-30 lines | seventh review (2026-10-16); own work; the hardware error bound is from Reicast |
+| P89 | One rule for the Kamui vsync wait loop | speed | Ikaruga, Rez, Spider-Man, Project Justice, Power Stone 2 | ~20-40 lines | seventh review (2026-10-16); plan bundle 21 way 5; Capcom vs. SNK 2 already has an address entry |
+| P90 | Heavy scenes: four checks with no build | measurement | Ecco the Dolphin, the system work, Looney Tunes race, Sonic Shuffle | no code | seventh review (2026-10-16) |
+| P91 | Re-Volt: the menu and the HUD are cut by the near-plane cap | bug | Re-Volt (US, EU, JP); maybe NHL 2K2, Sturmwind, South Park Rally, Capcom vs. SNK Pro (P92 a) | way B ~20 lines with its row; way A ~30 lines and a product-ID check (estimates) | plan bundle 23 item 1 (new 2026-10-16, Matt); the cause is from an old HW log; nothing built |
+| P92 | Flycast's per-game lists that we lack | bug | 24 games that Flycast fixes per game (a-g); the Dricas login patches for GOALS.md G11 (h) | a, b, d, f, g small; c large; e is against plan section 4 | plan bundle 23 items 2-8 (new 2026-10-16, Matt); h goes to G11; nothing built |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -241,6 +262,15 @@ Triangle Sort is the ps3gl state path (the bind scan of plan 5.10), not the
 sort. P81: the Looney Tunes boot of the complaint played no CD audio, and
 the level laws differ from Flycast by 1.5 dB at most. No new fact for F1
 (ChuChu) or for the Capcom vs. SNK 2 register.
+
+Seventh review (2026-10-16): heavy scenes, after the inline TA flush (plan
+bundle 21 way 4) gave no gain. Flycast and Reicast have nothing left for
+the SH4 thread. Their TA write path is the same as ours. Their hosts (x86,
+ARM) make a load right after a store, and a divide, cheap. The costs left
+are PPE costs. P87 (no read-back at the flush) and P88 (a faster FSRRA)
+are our own leads, each with a boot probe first. The largest measured
+items left are P74 (Ikaruga and Rez flush through the old chain) and P89
+(the Kamui vsync loop). P90 lists four checks with no build.
 
 ---
 
@@ -921,7 +951,7 @@ Adventure intro FMV, `[stall] dma`.
   Low.
 - Order: after P72, which takes the larger share.
 
-### P74 Store-queue flushes with AT = 1 take the old chain  `[ ]` not built with bundle 13 (2026-10-12): the plan takes it only if one of the four games is SH4-bound after P58; HW run 1 of bundle 13: that condition is met (Ikaruga 952K flushes/s at 336 ns, 15.2% of the SH4 thread; Rez 849K/s at 174 ns, 11.2%); for later (Matt 2026-10-13: "we will check the Ikaruga and Rez issues later on"), plan bundle 22 item 7
+### P74 Store-queue flushes with AT = 1 take the old chain  `[x]` built 2026-10-16 (Matt: "We're still on bundle 22. Let's work on Fast store-queue flush with the MMU on (P74)"): row VIDEO / DEBUG > MMU SQ Direct, package of 10:20; HW run 1 clean (Ikaruga, Rez; Matt: "the images looked right"), default ON in source since 2026-10-16 (Matt: "Update the defaults") (plan section 0); not built with bundle 13 (2026-10-12): the plan takes it only if one of the four games is SH4-bound after P58; HW run 1 of bundle 13: that condition is met (Ikaruga 952K flushes/s at 336 ns, 15.2% of the SH4 thread; Rez 849K/s at 174 ns, 11.2%); for later (Matt 2026-10-13: "we will check the Ikaruga and Rez issues later on"), plan bundle 22 item 7
 
 - After P58, a game with MMUCR.AT = 1 flushes through `do_sqw_mmu`
   (`dc/sh4/sh4_sqw.h:15-47`; from the JIT PREF, `ps3/ps3_driver.cpp:4343`
@@ -938,6 +968,32 @@ Adventure intro FMV, `[stall] dma`.
 - Helps: Border Down (it builds its lists in RAM through the store
   queues), Rez, Ikaruga, Sonic Shuffle. Gain not measured. Build it only
   if one of them is SH4-bound after P58.
+- New facts 2026-10-16 (seventh review; first in its order, section 5):
+  - Still the old chain. The JIT PREF (`shop_pref` in
+    `ps3/ps3_driver.cpp`) calls `do_sqw_mmu` when `mmucr_at()` is set,
+    then `do_sqw<true>` (`dc/sh4/sh4_sqw.h`), `mmu_TranslateSQW`, and
+    `TAWriteSQ` or `WriteMemBlock_nommu_ptr`.
+  - SH4 MMU AUTO turns the full MMU on only for a Windows CE disc
+    (`dc/sh4/sh4_fullmmu.h`). The four games write MMUCR 00040005 (AT +
+    TI) before their 25 store-queue TLB entries, so they run the normal
+    JIT, and MMU Pref JIT does not act for them.
+  - Cost: plan section 0, bundle 21 block: in Ikaruga at 14-20K (X30,
+    SPEED 75-83%, log of 2026-10-13) the chain takes 15-21% of the SH4
+    thread for the TA and 8-10% for RAM flushes, 23-31% in all. Border
+    Down runs its 12K+ part at 99.3% since bundle 21 HW run 11, so
+    Ikaruga and Rez are the test games.
+- Built 2026-10-16 (plan section 0 has the HW steps):
+  - Row MMU SQ Direct (`MmuSqDirect`), live. With MMUCR.AT on, a PREF
+    takes the flat TA and RAM bodies of TA SQ Direct and RAM SQ Direct;
+    both rows still act. The target is `mmu_TranslateSQW()`, the same as
+    the old chain (`sq_remap` slot, the low 20 bits from the address);
+    the queue is still bit 5 of the store-queue address.
+  - `do_sqw_mmu` moved from `dc/sh4/sh4_cpu.cpp` to `ps3/ps3_rend.cpp`.
+    The JIT is unchanged. Row OFF: the old chain `do_sqw<true>`.
+  - The machine code of the path without the MMU is unchanged
+    (`do_sqw_nommu` and its helpers, compared in the object files).
+  - PC: `misc/ramsq_check` repaired and extended to the MMU form: PASS,
+    45 of 45 planted bugs fail.
 
 ### P86 The SH4 thread in heavy scenes: where the time goes, and the ways  `[ ]` bundle 22 (bundle 21 until 2026-10-13), parked for the end (Matt 2026-10-12)
 
@@ -1050,6 +1106,154 @@ Adventure intro FMV, `[stall] dma`.
   render and the `[stall]` sleep in ms/s. Scenes: Sonic Adventure 2
   above 18K vertices at X3 BACKWARD, the Looney Tunes race at X30 and at
   X3 BACKWARD, a dense Crazy Taxi drive. Byte order: none.
+- 2026-10-16 (seventh review): ways 1 and 2 are done (both default ON in
+  source since bundle 21). Way 3 was built as plan bundle 21 way 4 (JIT
+  TA INLINE), gave no gain on HW, and was dropped. Its follow-up is P87.
+  Way 5: the 4 loads a vertex of Sonic Adventure 2's loop 8C141BBA are
+  already 64-bit (FSZ = 1, two `lfs` each); what is left is one RAM check
+  per load (plan bundle 21 way 6). New items P87-P90; the order is in
+  section 5.
+
+### P87 Store-queue stores straight into the TA buffer  `[ ]` seventh review (2026-10-16); a boot probe first
+
+- Our own work, not a take. Flycast and Reicast copy the store queue at
+  the PREF, as we do (section 4, seventh review). Their hosts forward a
+  store to a later load, so the copy costs them little.
+- Why: the inline TA flush (plan bundle 21 way 4, JIT TA INLINE, with a
+  dcbz at each new line) gave no gain on HW (HW run 12) and was dropped
+  on 2026-10-16. So the cost of a flush is not its instruction count. The
+  lead left: the flush reads back 32 bytes that the guest stored just
+  before. On the PPE a load that hits a store still in flight waits
+  (about 40 cycles or more each; not measured on our PS3).
+- The idea: each store-queue store also writes its word into the TA
+  buffer slot, so the flush reads nothing back.
+- Where the read-back follows the stores (HW dumps):
+  - Crazy Taxi 0C081BC4 (`run518b.txt`, session 29bdd1c1): the last
+    store-queue store `mov.l R2,@R6` is 2 ops before `pref @R6`. R2 holds
+    the previous store-queue address (0xE00000xx), which the TA reads as
+    a vertex PCW.
+  - Looney Tunes race 8C0873A6 (`b8_hash_lt_hot.txt`, session 1c8776dd):
+    `mov.l R7,@-R6` writes word 0, then `dt`, `bf.s`, and `pref @R6` in
+    the delay slot.
+  - Not Sonic Adventure 2 8C141BBA (`b21p_hw.txt`, session 77328546).
+    Its `pref @R3` flushes the previous vertex half a loop later, behind
+    an FSRRA (about 160 cycles, P88), so those stores are long done. The
+    loop also never writes word 5 (the ignored word of a type 4 vertex),
+    so that half keeps its old word 5.
+- Form, per block, only where the stores of one half and its PREF are in
+  the same block, with no C call and no other PREF between them. JIT SQ
+  STORES (plan 5.17 Step 3) already finds stores whose base a later PREF
+  in the block uses.
+  1. At the first store-queue store: P = raw + raw_used (a dummy area
+     when the buffer is full).
+  2. Each store-queue store also stores its word at P + (addr & 0x1C).
+  3. At the PREF, on the TA flat path: the words that the block did not
+     write come from `sq_both` (stored long before); the FSM step takes
+     the PCW from the GPR that the block stored it from (no GPR: today's
+     path); raw_used += 32. Any other target takes today's path. Words
+     left past raw_used are harmless.
+- Cost: about 2 instructions more per stored word and 3 per block. The
+  flush loses the read-back and the copy (about 10). The count stays about
+  the same, so the gain is only the wait that it removes.
+- Step 1, a boot probe (one self-test line, no row): time 8 word stores
+  followed at once by 4 doubleword loads of the same 32 bytes, against
+  the same loads 200 or more cycles later, and against stores to the other
+  half of the same line. If the wait is small, drop the item.
+- Not for Ikaruga, Rez, Sonic Shuffle and Border Down before P74: their
+  flushes take the old chain.
+- HW measure: SPEED and the `[ta-split]` share in a dense Crazy Taxi drive
+  and in the Looney Tunes race at 25K+, the same scene before and after.
+
+### P88 FSRRA as frsqrte plus Newton steps  `[ ]` seventh review (2026-10-16); a boot probe first
+
+- Our own work. Flycast and Reicast compute FSRRA exactly, as we do
+  (section 4, seventh review). The fact we take is Reicast's bound: "the
+  SH4 FSRRA needs |error| <= 2^-21"
+  (`libswirl/jit/backend/x64/rec_x64.cpp:609`). The real SH4 result is an
+  approximation, so an estimate within that bound is as right as the
+  hardware.
+- What FSRRA does: FRn = 1/sqrt(FRn). Games use it to normalize vectors
+  and for 1/w. Sonic Adventure 2 8C141BBA runs `fmul FR6,FR6`, then
+  `FSRRA FR6` (1/|w|), once per vertex.
+- Ours: `shop_fsrra` with JIT FSQRT ON (the default) emits `fsqrts`, `lfs`
+  1.0 and `fdivs`: the result of `1.0f/sqrtf` (`ps3/ps3_driver.cpp`).
+- PPE cost (GCC's Cell model, `gcc/config/rs6000/cell.md`): sdiv and ddiv
+  74 cycles, ssqrt and dsqrt 84 cycles, both not pipelined; the other FP
+  ops 10. So about 160 cycles per FSRRA, on the vertex's critical path.
+- Form: `frsqrte` (10 cycles), then Newton steps y = y * (1.5 - 0.5 * x *
+  y * y), 3 dependent FP ops (30 cycles) each. The steps depend on the
+  PPE estimate: 3 steps (about 100 cycles) if it has the PowerPC minimum
+  precision (1/32; GCC turns on `-mrecip-precision` from POWER6, not for
+  Cell); 1 step (about 40 cycles) if it has 12 bits or more. x = +0 and
+  x = +inf keep the exact path (Newton gives NaN there).
+- Counts in the hot dumps (dumped blocks only): Sonic Adventure 2
+  0.30-0.42M FSRRA a second (`b21p_hw.txt`, `b8_hash_sa2_hot.txt`, mostly
+  8C141BBA); Crazy Taxi 11K; the Looney Tunes race 8K.
+- Gain (estimate): 58-118 cycles each, 17-47M cycles a second, 0.5-1.5%
+  of the SH4 thread. Sonic Adventure 2 only.
+- Step 1, a boot probe (one self-test line): the largest relative error
+  of `frsqrte` over every mantissa, with even and odd exponents, and the
+  time of both forms in a loop.
+- Not FDIV. The SH4 rounds FDIV exactly. An estimate with Newton steps
+  costs about 60 cycles against 74, and it is not exact. FDIV rates: the
+  Looney Tunes race about 1M a second, Crazy Taxi 0.47M.
+- HW measure: Sonic Adventure 2 at 25K+, SPEED and sleep, the same scene
+  before and after. The picture must not change.
+
+### P89 One rule for the Kamui vsync wait loop  `[ ]` seventh review (2026-10-16); plan bundle 21 way 5
+
+- Our own work (plan bundle 21, 2026-10-15). The Kamui library's vsync
+  wait is the same code in 9 games of the logs (the `[idle] code` dumps):
+  `jsr @rX / mov #7,r4; mov.l @r15,r3; mov.l @r3,r2; add #-1,r2;
+  mov.l r2,@r3; mov.l @(4,r15),r3; mov.l @r3,r2; cmp/eq r14,r2; bf exit;
+  mov.l @r15,r1; mov.l @r1,r3; tst r3,r3; bf loop`. Rez and Quake III
+  also call hook 12.
+- Peak turns a second: Capcom vs. SNK 2 4.75M (8C21A2EE), Spider-Man
+  3.38M (8C016CAE), Project Justice 1.24M (0C2DB70E), Power Stone 2 1.23M
+  (0C2CBF2E), Ikaruga 1.06M (8C0370D2), Rez 1.05M (8C046052), Donald Duck
+  72K, Rayman 2 58K, Quake III 12K.
+- JIT IDLE SKIP never skips it: the turn writes its counter, so the pure
+  turn test fails, and X3 BACKWARD bills it x3.
+- Only Capcom vs. SNK 2 has an entry, bound to its address
+  (`idle_hash_own` in `dc/sh4/rec_v2/idle_hash.h`; JIT IDLE HASH is ON by
+  default). With it the fights run at X3 at SPEED 100%, 59.8 frames a
+  second (HW SUCCESS, plan bundle 21).
+- Form: an entry that matches the loop by its code, not by its address:
+  the 4-opcode tail block, plus the loop's opcodes before it (from the
+  `jsr`), read from RAM at compile time. The tail alone is too common:
+  Reicast's entry `04:DB35BCA0` hashes only a block's first half, so it
+  matched plain function returns (plan section 7, bundle 8;
+  `dc/sh4/rec_v2/idle_hash.h`). About 20-40 lines, with cases in
+  `misc/jit8_check`.
+- Helps: Ikaruga (SPEED 75-83% at 14-20K, X30, log of 2026-10-13; 0.4-0.75M
+  turns a second there) and Rez. Spider-Man, Project Justice and Power
+  Stone 2 have no recent HW log: check their speed first.
+- HW measure: SPEED and frames per second in the heavy scenes, and the
+  `[idle]` line (turns a second). Capcom vs. SNK 2 must not change.
+
+### P90 Heavy scenes: four checks with no build  `[ ]` seventh review (2026-10-16)
+
+1. Ecco the Dolphin profile. Ecco is host-bound from 8-10K vertices (plan
+   bundle 21, HW runs 10 and 11: X30 + PLAIN, on screen 28 frames a
+   second at 10-20K (SPEED 83-84%) and 25 at 20K+ (72%); 64-84% in the
+   next level). It was never profiled. One boot with JIT HOTBLOCKS ALL
+   WINDOWS in play shows where its time goes, and if a wait loop is part
+   of it.
+2. The system-work split with SPE AICA Defer ON. The last `[sys]` lines
+   (`b18b_hw.txt`, session 1ed40982, 2026-10-14) came before Defer: 45-79
+   ms a second (4.5-8% of the SH4 thread). Parts: `arm` (UpdateAica and
+   UpdateArm) 16-38 ms/s, `quiet` 8.5-13, `plan` 8-10.5, `tmu` 3-6, `pvr`
+   3-5.5. One heavy-scene boot with JIT C-Calls ON (it prints `[sys]` and
+   `[stall]`, and costs a little time itself) in Sonic Adventure 2 and in
+   a Crazy Taxi drive.
+3. JIT GUARD REUSE ON in the Looney Tunes race at 25K+ (about 80% now).
+   HW 2026-10-05 in Crazy Taxi (plan 5.31): +0.1%. The race's hot code is
+   mostly integer and memory work. Run `misc/greuse_check` first: the row
+   has not run on HW since JIT SQ MISS + LA STEPS, JIT SQ COPY and the LA
+   16 OPS level changed the store-queue store shapes.
+4. Sonic Shuffle at 18-22K vertices. Bundle 21 HW run 11 played 15-18K
+   (99.6%, 29.8 frames a second, 177 ms/s sleep), but not 18-22K (74-92%
+   in HW run 9). One play of that part with the current defaults.
 
 ---
 
@@ -2592,6 +2796,125 @@ None of the named games is in Matt's set.
   bundle 2 block lists "the stop at the lead-out" as not taken. Low.
 - ARMRST reads back raw; Flycast masks bit 0. No user known.
 
+### P91 Re-Volt: the menu and the HUD are cut by the near-plane cap  `[ ]` new 2026-10-16 (Matt: "Re-Volt has an invisible menu."); plan bundle 23 item 1; the cause is from an old HW log; nothing built
+
+- Log: `b21p_hw.txt` of session 77328546 (HW 2026-10-15), lines
+  74856-79300: Re-Volt (US) `T-8109N`, CDI, Depth Float ON, PT Depth ON.
+  - Title frames: `w=[4e-07..5.88235e-07] near=0.999001`. Every vertex of
+    the frame has 1/W from 1.7M to 2.5M. `[rendz]`: one PT strip, a
+    textured quad over the screen (x 64..576, y -16..496) at W 5.9e-7, and
+    one TR strip at W 4e-7.
+  - Menu frames: `w=[5e-07..0.47] near=0.00214`. The 3D scene is drawn;
+    the PT and TR polygons at W 5e-7 to 5.9e-7 are not.
+  - Race frames: near 7.1e-5 to 0.00119, TR polygons at W 5e-7 (probably
+    the HUD; not checked on the TV).
+- Cause: `track_inv_w()` (`ps3/ps3_rend.cpp`, reicast `update_fz`) takes
+  a 1/W only below 0x49800000 (1024 x 1024); `ps3/spu/spe_dec.c` has the
+  same test. A context starts at `max_inv_w = 1.0`, so with no tracked
+  vertex n = 1 / (1.0 x 1.001) = 0.999. FLOAT depth sets clip z = n and
+  clip w = W (`ps3/ps3_depth.h`), so the RSX clips each vertex with W < n.
+- Flycast: `config::ExtraDepthScale.override(100.f)` for `T-8109N`,
+  `T8107D  50` and `T-8101M` (`core/emulator.cpp:174-181`; `329230bf8`,
+  2019: "Re-Volt needs 100 extra depth scale for perfect menus";
+  `8b0add47a`, 2023: "This game uses large depth values in the menus
+  (2000000)", issue #1065). It divides each 1/W by the scale
+  (`core/rend/transform_matrix.cpp:122`) and multiplies the fog density
+  by it (`core/rend/gles/gles.cpp:1132`). It targets Flycast's own depth,
+  `log2(1 + 1e5 / W) / 34`, which reaches 1.0 at 1/W = 171,799, so the
+  menu layers merged (issue #1065: wrong font colours). Flycast's GLES2
+  path has our cap (`gles.cpp:1113`, `ta_vtx.cpp:657`).
+- Ways (Matt picks):
+  - A. Flycast's way: 1/W x 1/100 for the three IDs, before
+    `track_inv_w()` and in the vertex z; fog density x 100. It needs a
+    product-ID check, which changes the rule "no per-game lists" (plan
+    bundle 22 item 6). The ID is read at boot already
+    (`apply_disc_meta()`, IP.BIN 0x40).
+  - B. No list: with Depth Float ON, raise the cap in `track_inv_w()`,
+    in the fallback of `draw_scene()` and in `spe_dec.c`. Float depth
+    keeps 16 mantissa bits at any n, so no precision is lost. Keep the
+    inf and NaN reject, and a cap low enough that n x the smallest 1/W
+    stays a normal float. Depth Float OFF (Z24: a step of 2^-24 / n in
+    1/W) keeps the old cap. It can also act for the games of P92 a.
+- Other Re-Volt fixes of Flycast, already ours: the punch-through depth
+  write (P25, row PT Depth, ON in that run), the larger PT list
+  (`9191795b4`; the log has overflow 0), the scissor reset before the
+  modifier-volume quad (`1bd894f94`, split screen; `draw_modvols()` sets
+  the base clip first). Not taken: the PAL widescreen cheat (P36). Not
+  for us: issue #1386 (the GD-ROM track 2 length; Matt's image is a CDI).
+- PC checks: `misc/depth_check`; `misc/ta4_check` and `misc/rend4_check`
+  hold frozen copies of the cap lines.
+- HW test: the Re-Volt menu and race HUD, then Crazy Taxi for
+  regressions.
+
+### P92 Flycast's per-game lists that we lack  `[ ]` new 2026-10-16 (Matt: "Or if there are game-specific fixes we may have not implemented."); plan bundle 23 items 2-8; h goes to GOALS.md G11; nothing built
+
+Survey of `core/emulator.cpp` `loadSpecialSettings()` and the built-in
+cheats of `core/cheats.cpp` (clone 869038f40). Upstream master 80471d57b
+and dev 91c3084d5 (2026-10-14; GitHub compare API, no fetch) add only
+Capcom network code.
+- a. Extra depth scale (`emulator.cpp:168-198`): NHL 2K2 `MK-51182` 1e8
+  (a tiny pause menu, `064531df9`), Sturmwind `DR001` 100 (wrong in-game
+  text, issue #1691), South Park Rally `T-8116N` / `T-8112D-50` 1000 (the
+  car on the select screen, `f88abf998`), Capcom vs. SNK Pro `T1247M`
+  10000 (the winner portrait, `4cd627810`), Test Drive V-Rally `T15110N` /
+  `T15105D 50` 0.1 (the menu background in dx9 and dx11, `18d810799`).
+  The scales above 1 can hit P91 here. No logs of these games.
+- b. Cosmic Smash `HDR-0176` / `RDC-0057`: the translucent depth pass
+  between passes (`TranslucentPolygonDepthMask`, `emulator.cpp:162-167`).
+  Ours: row List Passes level 2 (P10, built, default 1). HW test only.
+- c. Full framebuffer emulation (`emulator.cpp:309-318`, `5722dc90f`):
+  Densha de Go! 2 `T1102M` (the HUD, issue #171), The Ring of the
+  Nibelungen demo `T00000A`, Worms Pinball `T15124N 00`, Eisei Meijin III
+  `T9503M`, Marionette Company `T5202M`, World Neverland Plus `T5301M`.
+  Ours shows VRAM only when no render wrote the frame
+  (`fb_needs_present()`), so a CPU draw over a render is lost. Large.
+- d. Broadcast (`emulator.cpp:288-307`). PAL: San Francisco Rush 2049 EU
+  `T-9709D-50`, South Park Rally EU `T-8112D-50`, Super Runabout EU
+  `T7014D  50`, MTV Sports Skateboarding `T10001D 50`, Snow Surfers
+  `MK-5101050` (with NTSC the opening movie and the music lose sync, issue
+  #1643), Caesar's Palace PAL `12502D-50`, Evil Twin `T46605D 80` (with
+  NTSC the fans do not lift, issue #2048). NTSC: five US discs and Hydro
+  Thunder PAL `T-9702D-50`. Ours: Broadcast DISC (P59) gives NTSC to a
+  disc that lists J or U, PAL to one that lists Europe alone. So the US
+  discs are covered; Hydro Thunder PAL and the PAL list depend on their
+  area strings, not read yet (images in `E:\Users\Matteo\Desktop\DC Roms`).
+- e. HLE BIOS (`emulator.cpp:280-287`): Stupid Invaders `T17708N` /
+  `T17711D` (stops at the SEGA screen with the real BIOS, issue #354),
+  Suika `T46509M` (resets after the Sofdec logo, issue #1278, still open),
+  Cool Boarders Burrrn `T36901M`. Ours has the real BIOS only. HLE BIOS is
+  P39, and plan section 4 lists reios under "Do not take": Matt decides.
+- f. Cable (`emulator.cpp:241-266`): Caesar's Palace `T-12504N` /
+  `12502D-50` to composite although its IP.BIN has the VGA flag; 14 discs
+  with no RGB, which act only when the cable is RGB. Ours: the VGA flag
+  rule of `apply_disc_meta()` only.
+- g. Built-in cheats (`cheats.cpp:502-518`): Dave Mirra BMX US `T-8120N`
+  (0x0030B8CC = 0x42040000, 33.0 ms) and EU `T8120D  50` (0x003011CC =
+  0x42200000, 40.0 ms), the main loop time (`e894d4df5`); Fur Fighters US
+  `T-8107N` (0x00314248 = 1) and EU `T-8113D-50` (0x00314228 = 1), the
+  game's logging ON so it runs slower (`7fee0d2d2`, issue #145: TCNT0
+  returns the same value twice and the game's speed calculation breaks);
+  the Samurai Spirits 6 conversion `T0002M`, one opcode for its depth
+  (`81cbf45bd`). Ours: the Cheats row (P36, Flycast `.cht`, default OFF)
+  can carry them as files. Row TMU Fine TCNT (default OFF since
+  2026-10-12) moves TCNT at each read and may fix Fur Fighters with no
+  patch.
+- h. For GOALS.md G11, not bundle 23: the Dricas login patches
+  (`cheats.cpp:519-582`): Aero Dancing i `T6807M` and `T6809M`, Aero
+  Dancing F `T6805M`, Daytona USA JP `HDR-0106`, Sega Tetris `HDR-0073`,
+  Golf Shiyou Yo 2 `T44501M`, Culdcept II `T43903M`, Outtrigger JP
+  `HDR-0118`, F355 Challenge JP `HDR-0100`, Nettou Golf `HDR-0006`, and
+  the net sync check of Ooga Booga `MK-51140`. Each writes `rts; mov
+  #0,r0` over the login function after a check of its first words. They
+  act only once the modem works.
+- Covered already: the region (`dc_flash_set_region()`), the no-VGA rule
+  and Windows CE (`apply_disc_meta()`), the RTT copy list (our RTT always
+  reads back into VRAM), the real BIOS list, TrickStyle in English (BIOS
+  Language ENGLISH), P25's punch-through depth write.
+- Not for us: the OIT layer counts, Native Depth Interpolation (Mortal
+  Kombat; a Flycast shader option), DCNet's game code, the widescreen
+  table (P36), Fish Life's touch screen, Shenmue II disc 4, the Naomi
+  lists.
+
 ---
 
 ## 3. Features and references
@@ -3446,7 +3769,8 @@ Fifth review (2026-10-08):
 - Per-game lists: Flycast's ExtraDepthScale list (NHL 2K2, Re-Volt, Test
   Drive V-Rally, South Park Rally, Capcom vs. SNK Pro) and its Broadcast
   overrides (`core/emulator.cpp`) are per-game lists (Matt's rule: none).
-  P59 uses the disc area instead.
+  P59 uses the disc area instead. Update 2026-10-16: Matt saved them as
+  plan bundle 23 (P91, P92).
 - New facts for older items:
   - P10 scaler: `c330cdd88`, `3cd9736fc` and `112e27207` name the games. A
     missing bottom half: Mr Driller (PAL 60 Hz), Kaen Seibo, Mahjong Taikai
@@ -3656,6 +3980,48 @@ Sixth review (2026-10-11):
   - The game scanner, and Minicast's input and modem (the same as
     Reicast): nothing.
 
+Seventh review (2026-10-16), heavy scenes:
+- Upstream: Flycast `master` ed953fcbf..80471d57b and `dev`
+  ec56b5f26..91c3084d5: libretro, Naomi, GGPO, MD5 and maple crash fixes,
+  `804edb00d` (dx11 and gl clear and scissor regressions of Flycast's own
+  renderer), `518c49625` (libretro: the SH4 context address at a reset),
+  `91c3084d5` (Bleemcast 2336-byte sectors). No speed change. Read from a
+  scratch fetch with alternates (scratchpad of session 508f06e3,
+  `flyfetch.git`). Reicast `alpha` 2e32999c unchanged.
+- TA write path: Flycast `ta_thd_data32_i` (`core/hw/pvr/ta.cpp:527-567`)
+  and Reicast (`libswirl/hw/pvr/ta.cpp:302-337`) read the PCW, copy 32
+  bytes and step the FSM, the same as our `do_sqw_flat`
+  (`ps3/ps3_rend.cpp`). Nothing there for the PPE store stall (P87).
+- Reicast "Unstable Optimizations" (`settings.dynarec.unstable_opt`):
+  `sq_pref` (`libswirl/hw/sh4/dyna/shil.cpp:926`) and store-queue stores
+  rewritten to direct stores after a fault
+  (`libswirl/jit/backend/arm32/rec_arm.cpp:2187`). Ours are JIT SQ STORES
+  and JIT SQ COPY, with run-time checks. Its safe mode only turns off the
+  div32 match.
+- Fastmem (Flycast x64 and arm64): it needs page faults and code rewrite,
+  which the PS3 does not give us. Our RAM check is 7 instructions with
+  the address copy (the Sonic Adventure 2 dump of 8C141BBA).
+- FSCA: Flycast keeps sin and cos as one pair (`f32_x2 sin_table[0x10000]`,
+  `core/hw/sh4/sh4_rom.h`), one 8-byte read. Ours reads `sin_table[i]` and
+  `sin_table[i + 0x4000]`, 64 KB apart (`shop_fsca` in
+  `ps3/ps3_driver.cpp`). Heavy scenes run only 10-30K fsca a second in the
+  hot dumps: under 0.3%. Not worth it.
+- FSRRA, FDIV and FSQRT are exact in all three (square root, then divide):
+  Flycast `core/rec-x64/xbyak_base.h:540`, `core/rec-ARM64/rec_arm64.cpp:883`,
+  `core/rec-ARM/rec_arm.cpp:1963`; Reicast x64, arm32 and arm64. Reicast's
+  comment gives the FSRRA bound (P88).
+- FPU op rates in the hot dumps (dumped blocks only; script
+  `tools/opcount.py`, scratchpad of session 508f06e3):
+  - Sonic Adventure 2 (`b21p_hw.txt`, `b8_hash_sa2_hot.txt`): FSRRA
+    0.30-0.42M a second, FTRV 0.43-0.58M, FDIV 0.05-0.06M.
+  - Looney Tunes race (`b8_hash_lt_hot.txt`): FDIV 0.97M, FTRV 1.08M,
+    FIPR 0.79M.
+  - Crazy Taxi (`run518b.txt`): FDIV 0.47M, FSQRT 0.25M, FIPR 0.71M.
+  - Border Down (`b21n_hw.txt`, bundle 21 HW run 10): almost no FPU ops,
+    20.8M guest memory accesses a second.
+- nulldc-360: Matt 2026-10-16: "We're much more advanced than nulldc-360,
+  sadly. There's nothing to take from them."
+
 ---
 
 ## 5. Suggested order
@@ -3756,3 +4122,16 @@ number only where it says "re-cut".
 - 21 Frame rate in heavy scenes: the open list of P71, P11 (the TMU
   rows), P86 (added 2026-10-12).
 - No bundle: P1, P2, P15, P35, P39, P42, P70, P83.
+
+Seventh review order (2026-10-16), heavy scenes (the heavy scenes block of
+plan bundle 21):
+1. P74 (about 20 lines). HW: Ikaruga and Rez heavy scenes, SPEED and the
+   `[ta-split]` share against the log of 2026-10-13. Sonic Shuffle and
+   Border Down also take the chain.
+2. P89 (one rule for the Kamui loop). HW: Ikaruga, Rez, then Spider-Man,
+   Project Justice and Power Stone 2; Capcom vs. SNK 2 must not change.
+3. P90 point 1, the Ecco profile (no build).
+4. P90 point 2, the system-work split with SPE AICA Defer ON (no build).
+5. P87 and P88 step 1, the two boot probes. Build only what the probes
+   support.
+- Any time, no build: P90 points 3 and 4.

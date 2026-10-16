@@ -1221,10 +1221,11 @@ static inline bool sqw_ram_target(u32 dest)
 	return area == 3 && g_ram_sq_direct_preset && !g_sh4_cached_live;
 }
 
-static inline void sqw_ram_copy(u32 dest)
+// addr is the target in any RAM mirror; bit 5 of dest picks the queue.
+static inline void sqw_ram_copy(u32 addr, u32 dest)
 {
 	g_vram_split.sq_mem++;
-	memcpy(&mem_b[dest & (RAM_MASK & ~31u)], &sq_both[dest & 0x20], 32);
+	memcpy(&mem_b[addr & (RAM_MASK & ~31u)], &sq_both[dest & 0x20], 32);
 }
 
 // The rare cases of do_sqw_nommu. It reaches them by tail calls, so its fast path needs no stack frame.
@@ -1248,7 +1249,7 @@ static __attribute__((noinline)) void sqw_sampled(u32 dest)
 	else if (sqw_ram_target(dest))
 	{
 		g_ta_split.t_store = ta_stamp();
-		sqw_ram_copy(dest);
+		sqw_ram_copy(dest, dest);
 		g_ta_split.t_copy = ta_stamp();
 		g_ta_split.ram = 1;
 	}
@@ -1275,20 +1276,9 @@ static __attribute__((noinline)) void sqw_finish(u32 pcw, Ta_Dma* rec)
 	TaCalls++;
 }
 
-// The JIT's PREF target without the MMU. One flat body for a TA polygon flush (TA SQ Direct, plan 5.17: no
-// TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq) and a main RAM flush (RAM SQ Direct, plan 5.44); the rest: the old path.
-template<bool peak>
-static inline __attribute__((always_inline)) void do_sqw_flat(u32 dest)
+// One flat body for a TA polygon flush (TA SQ Direct, plan 5.17: no TAWriteSQ / libPvr_TaSQ / ps3ta_store_sq).
+static inline __attribute__((always_inline)) void sqw_ta_flat(u32 dest, bool peak)
 {
-	if (++g_ta_split.calls == g_ta_split.next)
-		return sqw_sampled(dest);
-	if (!sqw_flat_target(dest))
-	{
-		if (!sqw_ram_target(dest))
-			return sqw_chain(dest);
-		CCALL(CC_SQW);
-		return sqw_ram_copy(dest);
-	}
 	CCALL(CC_SQW);
 	u32* data = (u32*)&sq_both[dest & 0x20];
 	TaContext* c = s_ta;
@@ -1308,6 +1298,23 @@ static inline __attribute__((always_inline)) void do_sqw_flat(u32 dest)
 	TaCalls++;
 }
 
+// The JIT's PREF target without the MMU: the flat TA body, or a main RAM flush (RAM SQ Direct, plan 5.44); the
+// rest: the old path.
+template<bool peak>
+static inline __attribute__((always_inline)) void do_sqw_flat(u32 dest)
+{
+	if (++g_ta_split.calls == g_ta_split.next)
+		return sqw_sampled(dest);
+	if (!sqw_flat_target(dest))
+	{
+		if (!sqw_ram_target(dest))
+			return sqw_chain(dest);
+		CCALL(CC_SQW);
+		return sqw_ram_copy(dest, dest);
+	}
+	sqw_ta_flat(dest, peak);
+}
+
 void FASTCALL do_sqw_nommu(u32 dest)
 {
 	do_sqw_flat<true>(dest);
@@ -1317,6 +1324,75 @@ void FASTCALL do_sqw_nommu(u32 dest)
 void FASTCALL do_sqw_nommu_frame(u32 dest)
 {
 	do_sqw_flat<false>(dest);
+}
+
+// P74 MMU SQ Direct: with MMUCR.AT on, the UTLB's sq_remap slot gives the target, as in do_sqw<true>. TA polygon
+// data and main RAM then take the flat bodies, under the same rows as without the MMU.
+static inline bool sqw_mmu_ta(u32 addr)
+{
+	return g_ta_sq_direct_preset && s_flat_ok && ((addr >> 26) & 7) == 4 && (addr & 0x01800000) == 0;
+}
+
+static inline bool sqw_mmu_ram(u32 addr)
+{
+	return ((addr >> 26) & 7) == 3 && g_ram_sq_direct_preset && !g_sh4_cached_live;
+}
+
+// The row OFF: the old chain, with its own probe count.
+static __attribute__((noinline)) void sqw_mmu_old(u32 dest)
+{
+	do_sqw<true>(dest);
+}
+
+// The row ON and a target the flat bodies do not take; do_sqw_mmu has already counted the flush for the probe.
+static __attribute__((noinline)) void sqw_mmu_chain(u32 dest)
+{
+	CCALL(CC_SQW);
+	do_sqw_target<true>(dest);
+}
+
+// A 5.17 sample with the row ON, stamped as sqw_sampled. flatten: sqw_sampled keeps its stamped store inline.
+static __attribute__((noinline, flatten)) void sqw_mmu_sampled(u32 dest)
+{
+	const u64 t_entry = ta_stamp();
+	CCALL(CC_SQW);
+	const u32 addr = mmu_TranslateSQW(dest & 0xFFFFFFE0);
+	if (sqw_mmu_ta(addr))
+	{
+		store_sq<true, true>((u32*)&sq_both[dest & 0x20]);
+		TaCalls++;
+	}
+	else if (sqw_mmu_ram(addr))
+	{
+		g_ta_split.t_store = ta_stamp();
+		sqw_ram_copy(addr, dest);
+		g_ta_split.t_copy = ta_stamp();
+		g_ta_split.ram = 1;
+	}
+	else
+	{
+		g_ta_split.armed = 1;
+		do_sqw_target<true>(dest);
+	}
+	ta_split_leave(t_entry);
+}
+
+// The JIT's PREF target with MMUCR.AT on.
+void FASTCALL do_sqw_mmu(u32 dest)
+{
+	if (!g_mmu_sq_direct_preset)
+		return sqw_mmu_old(dest);
+	if (++g_ta_split.calls == g_ta_split.next)
+		return sqw_mmu_sampled(dest);
+	const u32 addr = mmu_TranslateSQW(dest & 0xFFFFFFE0);
+	if (!sqw_mmu_ta(addr))
+	{
+		if (!sqw_mmu_ram(addr))
+			return sqw_mmu_chain(dest);
+		CCALL(CC_SQW);
+		return sqw_ram_copy(addr, dest);
+	}
+	sqw_ta_flat(dest, !s_peak_frame);
 }
 
 void ps3ta_store_dma(u32* data, u32 size)

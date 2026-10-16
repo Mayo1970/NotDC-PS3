@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NotDC-PS3 Compatibility</title>
+<title>NotDC Compatibility list</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -46,17 +46,13 @@
   .wrap { max-width: 1100px; margin: 0 auto; padding: 32px 16px 48px; }
   header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
   h1 { margin: 0; font-size: 28px; line-height: 1.2; }
-  h1 span { color: var(--accent); }
-  #report {
-    padding: 8px 14px;
-    border: 1px solid var(--accent);
-    border-radius: 8px;
-    color: var(--accent);
-    font-weight: 600;
-    text-decoration: none;
-  }
-  #report:hover { background: var(--accent); color: var(--panel); }
-  #report:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #summary { margin-bottom: 24px; }
+  #bar { display: flex; height: 12px; border-radius: 999px; overflow: hidden; background: var(--line); }
+  #bar span { flex: none; background: var(--c); }
+  #bar span + span { border-left: 2px solid var(--bg); }
+  #legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; padding: 0; list-style: none; font-size: 14px; }
+  #legend li { display: inline-flex; align-items: center; gap: 6px; }
+  .pct { color: var(--muted); font-variant-numeric: tabular-nums; }
   .controls { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
   #search {
     width: 100%;
@@ -69,8 +65,8 @@
     font: inherit;
   }
   #search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  #filters { display: flex; flex-wrap: wrap; gap: 8px; }
-  #filters button {
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; }
+  .filters button {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -83,10 +79,13 @@
     font-size: 14px;
     cursor: pointer;
   }
-  #filters button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-  #filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filters button[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .n { color: var(--muted); font-variant-numeric: tabular-nums; }
   .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; background: var(--c); }
+  .flag { display: block; width: 21px; height: 14px; flex: none; border-radius: 2px; box-shadow: 0 0 0 1px var(--line); }
+  .flag .q-bg { fill: var(--line); }
+  .flag .q { fill: var(--text); font: 700 11px system-ui, sans-serif; }
   #count { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
   table {
     width: 100%;
@@ -100,6 +99,8 @@
   th { font-size: 13px; color: var(--muted); font-weight: 600; }
   tbody tr:last-child td { border-bottom: 0; }
   td.name { font-weight: 600; width: 28%; }
+  td.region { width: 80px; }
+  td.region .flag { margin-top: 4px; }
   td.status { width: 160px; white-space: nowrap; }
   td.desc { white-space: pre-line; overflow-wrap: anywhere; }
   .badge { display: inline-flex; align-items: center; gap: 6px; }
@@ -110,7 +111,10 @@
     tr { padding: 10px 14px; border-bottom: 1px solid var(--line); }
     tbody tr:last-child { border-bottom: 0; }
     td { padding: 2px 0; border: 0; }
-    td.name, td.status { width: auto; }
+    td.name, td.region, td.status { width: auto; }
+    td.region, td.status { display: inline-block; vertical-align: middle; }
+    td.region { margin-right: 10px; }
+    td.region .flag { margin-top: 0; }
     td.desc { color: var(--muted); }
   }
 </style>
@@ -118,29 +122,55 @@
 <body>
 <div class="wrap">
   <header>
-    <h1><span>NotDC-PS3</span> Compatibility</h1>
-    <a id="report" hidden>Send a report</a>
+    <h1>Compatibility list</h1>
   </header>
+  <section id="summary" hidden>
+    <div id="bar" aria-hidden="true"></div>
+    <ul id="legend" aria-label="Share of games by compatibility"></ul>
+  </section>
   <div class="controls">
     <input id="search" type="search" placeholder="Search by name" aria-label="Search by name" autocomplete="off">
-    <div id="filters" role="group" aria-label="Filter by compatibility"></div>
+    <div id="filters" class="filters" role="group" aria-label="Filter by compatibility"></div>
+    <div id="regions" class="filters" role="group" aria-label="Filter by region"></div>
   </div>
   <p id="count" aria-live="polite"></p>
   <table hidden>
-    <thead><tr><th>Name</th><th>Compatibility</th><th>Description</th></tr></thead>
+    <thead><tr><th>Name</th><th>Region</th><th>Compatibility</th><th>Description</th></tr></thead>
     <tbody id="rows"></tbody>
   </table>
   <p id="message">Loading...</p>
 </div>
 <script>
 (function () {
-  var games = [], statuses = [], current = "All";
+  var games = [], statuses = [], regions = [], status = "All", region = "All";
   var search = document.getElementById("search");
   var filters = document.getElementById("filters");
+  var regionFilters = document.getElementById("regions");
   var rows = document.getElementById("rows");
   var table = document.querySelector("table");
   var count = document.getElementById("count");
   var message = document.getElementById("message");
+
+  // Flags drawn at 21x14; Other / Unknown gets a question mark.
+  var FLAGS = {
+    "NTSC-U (USA)": (function () {
+      var h = 14 / 13, s = '<rect width="21" height="14" fill="#fff"/>';
+      for (var i = 0; i < 13; i += 2) s += '<rect y="' + (i * h).toFixed(2) + '" width="21" height="' + h.toFixed(2) + '" fill="#b22234"/>';
+      s += '<rect width="8.4" height="' + (7 * h).toFixed(2) + '" fill="#3c3b6e"/>';
+      for (var r = 0; r < 4; r++) for (var c = 0; c < 5; c++) s += '<circle cx="' + (1 + c * 1.6) + '" cy="' + (1 + r * 1.75) + '" r=".35" fill="#fff"/>';
+      return s;
+    })(),
+    "PAL (Europe)": (function () {
+      var s = '<rect width="21" height="14" fill="#039"/>';
+      for (var i = 0; i < 12; i++) {
+        var a = i * Math.PI / 6;
+        s += '<circle cx="' + (10.5 + 4.6 * Math.sin(a)).toFixed(2) + '" cy="' + (7 - 4.6 * Math.cos(a)).toFixed(2) + '" r=".75" fill="#fc0"/>';
+      }
+      return s;
+    })(),
+    "NTSC-J (Japan)": '<rect width="21" height="14" fill="#fff"/><circle cx="10.5" cy="7" r="4.2" fill="#bc002d"/>'
+  };
+  var UNKNOWN = '<rect class="q-bg" width="21" height="14"/><text class="q" x="10.5" y="11" text-anchor="middle">?</text>';
 
   // Folds case and accents, so "pokemon" finds "Pokémon".
   function fold(s) {
@@ -162,37 +192,76 @@
     b.append(d, el("span", null, status));
     return b;
   }
+  function flag(region) {
+    var t = document.createElement("template");
+    t.innerHTML = '<svg class="flag" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 14" role="img">' +
+      (FLAGS[region] || UNKNOWN) + "</svg>";
+    var svg = t.content.firstChild;
+    var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = region;
+    svg.setAttribute("aria-label", region);
+    svg.prepend(title);
+    return svg;
+  }
 
-  function buildFilters() {
-    ["All"].concat(statuses).forEach(function (s) {
+  // Share of every status in the whole list, so the bar ignores search and filters.
+  function buildSummary() {
+    var bar = document.getElementById("bar");
+    var legend = document.getElementById("legend");
+    statuses.forEach(function (s) {
+      var pct = games.filter(function (g) { return g.status === s; }).length * 100 / games.length;
+      var text = Math.round(pct * 10) / 10 + "%";
+      var seg = el("span");
+      seg.style.width = pct + "%";
+      seg.style.setProperty("--c", "var(--" + slug(s) + ")");
+      seg.title = s + ": " + text;
+      bar.append(seg);
+      var li = el("li");
+      li.append(badge(s), el("span", "pct", text));
+      legend.append(li);
+    });
+    document.getElementById("summary").hidden = false;
+  }
+
+  function buildFilters(box, values, allText, label, pick) {
+    ["All"].concat(values).forEach(function (v) {
       var b = el("button");
       b.type = "button";
-      b.dataset.status = s;
-      b.append(s === "All" ? el("span", null, "All") : badge(s), el("span", "n"));
-      b.addEventListener("click", function () { current = s; render(); });
-      filters.append(b);
+      b.dataset.value = v;
+      b.append(v === "All" ? el("span", null, allText) : label(v), el("span", "n"));
+      b.addEventListener("click", function () { pick(v); render(); });
+      box.append(b);
+    });
+  }
+
+  function updateFilters(box, current, list, key) {
+    Array.prototype.forEach.call(box.children, function (b) {
+      var v = b.dataset.value;
+      var n = v === "All" ? list.length : list.filter(function (g) { return g[key] === v; }).length;
+      b.setAttribute("aria-pressed", String(v === current));
+      b.querySelector(".n").textContent = n;
     });
   }
 
   function render() {
     var q = fold(search.value.trim());
     var byName = games.filter(function (g) { return !q || g.fold.indexOf(q) !== -1; });
-    var shown = byName.filter(function (g) { return current === "All" || g.status === current; });
+    var inRegion = byName.filter(function (g) { return region === "All" || g.region === region; });
+    var inStatus = byName.filter(function (g) { return status === "All" || g.status === status; });
+    var shown = inRegion.filter(function (g) { return status === "All" || g.status === status; });
 
-    // Counts follow the name search, so each button says how many matches it holds.
-    Array.prototype.forEach.call(filters.children, function (b) {
-      var s = b.dataset.status;
-      var n = s === "All" ? byName.length : byName.filter(function (g) { return g.status === s; }).length;
-      b.setAttribute("aria-pressed", String(s === current));
-      b.querySelector(".n").textContent = n;
-    });
+    // Each button row counts what matches the search and the other row's filter.
+    updateFilters(filters, status, inRegion, "status");
+    updateFilters(regionFilters, region, inStatus, "region");
 
     rows.textContent = "";
     shown.forEach(function (g) {
       var tr = el("tr");
-      var status = el("td", "status");
-      status.append(badge(g.status));
-      tr.append(el("td", "name", g.name), status, el("td", "desc", g.description));
+      var where = el("td", "region");
+      where.append(flag(g.region));
+      var state = el("td", "status");
+      state.append(badge(g.status));
+      tr.append(el("td", "name", g.name), where, state, el("td", "desc", g.description));
       rows.append(tr);
     });
 
@@ -207,14 +276,12 @@
   fetch("compat.json", { cache: "no-cache" })
     .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(function (data) {
-      if (data.repo) {
-        var report = document.getElementById("report");
-        report.href = "https://github.com/" + data.repo + "/issues/new?template=game_compatibility.yml";
-        report.hidden = false;
-      }
       statuses = data.statuses;
+      regions = data.regions;
       games = data.games.map(function (g) { g.fold = fold(g.name); return g; });
-      buildFilters();
+      if (games.length) buildSummary();
+      buildFilters(filters, statuses, "All", badge, function (v) { status = v; });
+      buildFilters(regionFilters, regions, "All regions", flag, function (v) { region = v; });
       render();
     })
     .catch(function () { message.textContent = "Could not load the list."; });
