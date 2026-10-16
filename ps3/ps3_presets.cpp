@@ -232,6 +232,7 @@ int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and lengt
 int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table, not by a scan of its 4096 slots (P72, HW)
 int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
+int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames; new names skip ps3gl's pool scans (Garou)
 // OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
 // (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
 int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)
@@ -489,6 +490,7 @@ static const CfgItem s_items[] = {
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
 	{ "TexBindTable",  &g_tex_bind_table_preset },
+	{ "TexRecycle",    &g_tex_recycle_preset },
 	{ "GlCompare",     &g_gl_compare_preset },
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
 	{ "MmuBits",       &g_mmu_bits_preset },
@@ -710,6 +712,7 @@ static const CfgItem s_cost_items[] = {
 	{ "TexBindTable",  &g_tex_bind_table_preset },
 	{ "GlCompare",     &g_gl_compare_preset },
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
+	{ "TexRecycle",    &g_tex_recycle_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
 	{ "StripMerge",    &g_strip_merge_preset },
 	{ "VertexArrays",  &g_vertex_array_preset },
@@ -943,6 +946,7 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 int get_strip_merge_preset()   { return g_strip_merge_preset; }
 int get_vertex_array_preset()  { return g_vertex_array_preset; }
 int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
+int get_tex_recycle_preset()   { return g_tex_recycle_preset; }
 int get_depth_float_preset()   { return g_depth_float_preset; }
 int get_yuv_block_preset()     { return g_yuv_block_preset; }
 int get_bump_map_preset()      { return g_bump_map_preset; }

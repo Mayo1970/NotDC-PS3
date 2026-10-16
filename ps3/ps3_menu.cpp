@@ -617,11 +617,11 @@ static Option s_jit[] = {
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
 	  "X3 BACKWARD: more frames in some games. AUTO: X3 BACKWARD, X30 when SPEED falls. Set before boot." },
 	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
-	  "A listed wait loop ends the timeslice (Looney Tunes, CvS2), as Reicast. Set before boot." },
+	  "A known wait loop ends the timeslice (Looney Tunes, Kamui vsync wait), as Reicast. Set before boot." },
 	{ "JIT X30 FORWARD", &g_jit_x30_fwd_preset,   OPT_CHOICE, k_x30fwd,    0, 0,0,0, NULL,
 	  "PLAIN: at X30 a forward branch bills its own cycles. AUTO: PLAIN or X30 by frames. Set before boot." },
 	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_taskidle,  0, 0,0,0, NULL,
-	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Sonic Shuffle, Border Down). Set before boot." },
+	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Shuffle, Border Down, Garou). Set before boot." },
 	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,
 	  "FRAMES: AUTO tests frames and loads. + X3 TRY: an X3 try must give more frames than X30. Live." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
@@ -796,6 +796,8 @@ static Option s_cost[] = {
 	  "Render state, sampler and vertex binds go to the RSX only when they change (P72). Live." },
 	{ "TR First Pass",   &g_tr_first_pass_preset, OPT_CHOICE, k_firstpass, 0, 0,0,0, NULL,
 	  "+ OPAQUE DEPTH's depth pass: SKIP draws only what writes depth; GAME ORDER merges (P73). Live." },
+	{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "An evicted texture waits 2 frames, then a new one of its size reuses it (Garou). Live." },
 };
 
 // Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's
@@ -1392,6 +1394,7 @@ static int* const k_live_opts[] = {
 	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
 	&g_ch2_dma_fix_preset,
 	&g_tex_bind_table_preset, &g_gl_compare_preset, &g_tr_first_pass_preset,
+	&g_tex_recycle_preset,
 	&g_exit_save_preset,
 	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,
 	&g_maple_frame_preset, &g_vmu_screen_preset,

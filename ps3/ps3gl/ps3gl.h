@@ -86,6 +86,7 @@
 /* ps3gl_fast_path() bits (NotDC plan section 7, bundle 14). 0 is the old path. */
 #define PS3GL_FAST_BIND     1   /* glBindTexture finds its slot by a table, not by a scan of the pool */
 #define PS3GL_FAST_COMPARE  2   /* setters, texture parameters and attribute binds send only what changed */
+#define PS3GL_FAST_GEN      4   /* glGenTextures takes the pool entry; a pool scan starts at the first free entry */
 
 /* 36-byte interleaved vertex: pos(16) + tc0(8) + tc1(8) + color(4) */
 #pragma pack(push, 1)

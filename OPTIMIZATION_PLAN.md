@@ -13,6 +13,288 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-16)
 
+**P94, one rule for the Shinobi task loop (`OPTIMIZATION_POTENTIAL.md` P94),
+built 2026-10-16 (Matt: "2." after Tex Recycle gave Garou no speed). Package
+of 17:49 (`build/notdc_ps3.pkg`, 1764208 bytes) = the package of 16:57 +
+this. Not committed. HW SUCCESS 2026-10-16 (Matt: "Success! We can close
+this session now."), HW run 1 at the end of this block.**
+- JIT TASK IDLE (row default LONG) now finds the idle fiber's 16-slot
+  dispatch of Sega's Shinobi syMng by the code of its whole loop, at any
+  address: the 4-opcode loop test (`E310 51F1 3133 8BE1`), entered once a
+  call, and the 30 words from its `bf` target; words 12-13 (the table's
+  address) are free (`idle_task_loop[]`, `idle_task_rule()` in
+  `dc/sh4/rec_v2/idle_hash.h`, called by `dec_idle_hash()` after the Kamui
+  rule). It reads back from the block's last word, as the Kamui rule does.
+- The address list of Sonic Shuffle (8C0158A0) and Border Down (8C04838C)
+  is removed: the rule covers both with the same action. Log: `[idlehash]
+  ... the task rule: skips the slices`.
+- Where the loop is: the HW logs' `[idle] code` dumps have it in Sonic
+  Shuffle (table 8C112890), Border Down (8C1A5410) and Garou (8C015E70,
+  table 8C18E0AC). The 27 disc images on the PC have its test block only in
+  Shuffle and Border Down (the boot files hold the whole loop). Garou's
+  disc is not on the PC, so its slot table could not be read; in Shuffle
+  and Border Down it is empty.
+- Garou before (HW run 1 of Tex Recycle): the test block runs 96-148K
+  times a second with no skip; fights 86-100%, the 3.2-4.4K scenes 80-97%.
+- PC (WSL): `misc/jit8_check` PASS, idle hash 5368 checks: the 3 loops of
+  the logs at their address and at 2 others; each bit outside the table
+  words changed (no match) and inside them (a match); 0-6 opcodes; every
+  other block in and around the loop (no match, no read before it); the
+  rule against SH4 code (the table literal of `mov.l @(16,PC)`, the three
+  branch targets); the decoder at each JIT TASK IDLE level (0, 3, 16
+  slices), its log text and its own log share. `mutate.py`: task 30 of 30
+  (6 new; the 4 mutants of the address list are out), kamui 13 of 13, idle
+  hash 33 of 33, the shared reader 1 of 1. No build warning.
+- `.got` 0xFB10 of 0x10000 (unchanged: the task string list is gone).
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package.
+  2. JIT SPEED > JIT TASK IDLE LONG (the default), JIT IDLE RULE AUTO.
+  3. Garou: a fight in the 2.4K scene and in the 3.4K one. Look and listen
+     for slow or broken parts (timers, sound, menus).
+  4. Log: the `[idlehash]` line with "the task rule" for 8C015E70; the
+     `[idle]` turns of 8C015E70 (96-148K a second before); SPEED and frames
+     a second against HW run 1 of Tex Recycle (log lines 28201-31067).
+  5. If there is time: Sonic Shuffle or Border Down (the same action as
+     before).
+- HW run 1, 2026-10-16 (`ps3log_p89_run1.txt` lines 31982-34875, Garou,
+  JIT TASK IDLE LONG, Tex Recycle ON as left): clean (every SPU fence
+  `bad=0`, clean XMB exit). Line 32868: `[idlehash] >:1:8C015E70:04:...
+  the task rule: skips the slices`. The test block runs 3.6-5.7K times a
+  second (before 96-148K). No AUTO switch: X3 the whole boot.
+  - Fights at 2.2-2.4K vertices: SPEED 100%, 60 frames a second, 327-401
+    ms/s of sleep (before: 86-100%, 52-60, no sleep). The 3.0-3.4K scenes:
+    100%, 60, 242-285 ms/s (before 80-86%, 48-51). 5.8K: 100.3%, 57 frames,
+    163 ms/s. Sonic Shuffle and Border Down not run.
+
+**Garou's texture churn (`OPTIMIZATION_POTENTIAL.md` P93, row Tex Recycle),
+built 2026-10-16 (Matt: "Ok, apply the Garou fixes, and we can consider
+this session closed and a SUCCESS."). Package of 16:57
+(`build/notdc_ps3.pkg`, 1764208 bytes) = the package of 14:25 + this. Not
+committed. The row is OFF by default; no HW run yet.**
+- Ways 2 and 3 of the read-only investigation (the P89 block below, Garou
+  bullets): reuse an evicted texture for a new one of its size; in ps3gl, a
+  new texture name gets its pool entry at glGenTextures.
+- Row DRAW COST > Tex Recycle (`TexRecycle`, OFF / ON, live, default OFF).
+  It acts on both parts:
+  - `ps3/ps3_tex.cpp`: an evicted texture with no mip chain goes to a list
+    of spares (at most 256 and 16 MB) and is not deleted. A new texture of
+    the same size and layout (mirror, YUV) takes the oldest spare that was
+    evicted 2 frames before or earlier, and its texels go into that RSX
+    memory: no glGenTextures, no ps3gl pool scan, no rsxMemalign. The wait
+    is ps3gl's: `ps3gl_begin_frame` waits for the frame 2 frames back, so
+    the RSX no longer samples the spare. Spares not taken in 120 frames
+    are deleted, and all of them when the row goes OFF.
+  - `ps3/ps3gl/ps3gl_textures.c`, bit `PS3GL_FAST_GEN` (set by the row in
+    `rth_job_draw`): glGenTextures takes the pool entry, so the first bind
+    finds the name in the table (Tex Bind Table) and not by a scan of 4096
+    entries. The scan for a free entry starts at a hint, which is kept on
+    every path and finds the entry that the scan from 0 finds.
+- Log: `[texfmt] ... | spares reused= put= held=` each window, `[tex]
+  recycle ON`, `[costcfg] ... TexRecycle=`.
+- Expected in Garou (estimate from the fit of the P89 block): a new
+  texture that takes a spare costs about a re-upload (20 us), not 110 us;
+  evictions cost about 100 ms/s of the render thread in fights and 300 ms/s
+  in the 3.4K scene now. The cache still evicts (1024 slots; more slots was
+  way 4, not picked).
+- PC (WSL): `misc/tex3_check` PASS. Trace: 12 of 12 seeds equal to the
+  frozen files with the row OFF, now with churn pools (an evicted texture
+  is freed). Model: 6 seeds, churn pools of 3 colliding groups, every bind
+  texel by texel, and no texture name takes another texture within 2
+  frames of its last bind (422-803 such takes a seed). `misc/glpath_check`
+  PASS: rows OFF give the old RSX calls (10 seeds); every mix of the 3 bits
+  holds the RSX registers of bits 0, and the mixes without the compares
+  make the same RSX calls; a new texture
+  takes the first free pool entry, and has its entry before the bind only
+  with the bit; 20 source lines. Mutants: tex3 74 of 74 (7 new; the text of
+  "anisotropic parameter dropped" was stale since bundle 14 and is
+  repaired), glpath 89 of 89 (8 new). Also PASS: chd, clock, flash, fschg,
+  fullmmu, idleauto, interp, maple, mmu, pad, rtt, screen, sys20, timebase,
+  jit8, sysgate, constprop, div32, exit, sqstore, tcopy, ramsq, spepix,
+  spetex, texslot, tr4, rend4, ta4, bump, fog, spevb. No build warning.
+- `.got` 0xFB10 of 0x10000 (0xFAC0 before): 1264 bytes left.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package. The new row starts OFF.
+  2. VIDEO / DEBUG > DRAW COST > Tex Recycle ON (live). The other rows as
+     in P89 HW run 1.
+  3. Garou, a fight (the 2.4K scene, and the 3.4K one with the specials).
+     After about 30 s, SELECT > Tex Recycle OFF for about 30 s, then ON.
+  4. Look for a wrong sprite or a flicker (a texture with another one's
+     texels).
+  5. Log: `[texfmt]` reused, put, held; `[rend] busy` and `tex split
+     decode`; SPEED and frames a second, ON against OFF.
+- HW run 1, 2026-10-16 (same listener, `ps3log_p89_run1.txt` lines
+  28201-31067, package of 16:57, Tex Recycle ON the whole boot; Matt:
+  "Nothing changed"). Clean: every SPU fence `bad=0`, clean XMB exit.
+  - The fix acts: spares reused about equal the evictions (2614 of 2614,
+    2754 of 2757 a window), new RSX allocations 4-1142 a window (before
+    3000-14000), `tex split decode` 1.0-1.6% (before 12-35%), render busy
+    31-34% (before 48-80%).
+  - The speed does not change: fights at 2.3-2.4K vertices 86-100% (before
+    90-99%), the 3.2-4.4K scenes 80-97% (before 84-86%), no sleep. So
+    Garou is bound by the SH4 thread, not by the render thread; the render
+    thread's lower load does not reach the SH4 thread. Its Shinobi task
+    loop (8C015E70) runs 96-148K turns a second with no skip.
+
+**P89, one rule for the Kamui vsync wait loop (`OPTIMIZATION_POTENTIAL.md`
+P89, bundle 21 way 5), built 2026-10-16 (Matt: "Let's work on P89: one rule
+for the Kamui library's vsync wait loop."). Package of 14:25
+(`build/notdc_ps3.pkg`, 1762544 bytes) = the package of 12:42 + this. Not
+committed. HW SUCCESS and session closed 2026-10-16 (Matt: "we can consider
+this session closed and a SUCCESS"), HW run 1 below.**
+- The rule: the 4-opcode tail block of Kamui's vsync wait `do { hook(7);
+  [hook(12);] count--; } while (vbl == old && count);` ends the timeslice,
+  as an entry of our list does. It acts with JIT SPEED > JIT IDLE HASH ON
+  (the default); OFF turns it off. It matches the code of the whole loop,
+  from the `jsr` to the tail's `bf`, at any address (`idle_kamui[]`,
+  `idle_kamui_form()` in `dc/sh4/rec_v2/idle_hash.h`; `dec_idle_hash()`
+  calls it when no list holds the block). It reads back from the block's
+  last word, so it reads code before a block only when the block is a tail.
+- Three forms: hook 7 (14 opcodes: Capcom vs. SNK 2, Spider-Man, Project
+  Justice, Power Stone 2, Donald Duck, Rayman 2, Re-Volt), hooks 7 and 12
+  (16: Ikaruga, Rez), the same with other registers (16: Quake III Arena).
+  The `[idle] code` dumps of the HW logs and the 27 disc images on the PC
+  hold no other form (the images also: Ecco, Dead or Alive 2, Looney Tunes,
+  Border Down, Sonic Shuffle, Phantasy Star Online Ver. 2). A looser scan
+  (the same tail with a `mov #7,r4` before it) found nothing more.
+- Capcom vs. SNK 2's address entry 8C21A2EE is removed from our list: the
+  rule covers that block with the same action (one slice).
+- The hooks, read from the disc images: Ikaruga and Rez never set hook 7 or
+  12 (they set 0, 2, 5, 8, 11), so both are the library's empty default.
+  Capcom vs. SNK 2 and Power Stone 2 reset hook 7 to the default.
+  Spider-Man sets hook 7 to a switch into a background task (8C03D000 ->
+  8C0466FC) when its flag 8C059C2C is set; in that phase the task runs
+  once a slice in the wait.
+- Effect: one turn a slice. The slice is 1792 cycles (`[gate]
+  slices=111.6K/s`), so the loop runs at most 111.6K turns a second. Before:
+  Ikaruga 0.42-1.05M at X30 and 2.8M at X3, Rez 0.52M at X30 and 1.5M at X3,
+  Capcom vs. SNK 2 3.2-3.6M at X3 (before its entry). The timeout counter
+  (0x100000 turns) then lasts about 9.4 s of emulated time; it matters only
+  if no vblank comes.
+- Log: `[idlehash] >:1:8C0370D2:04:... the Kamui rule: ends the slice`.
+- PC (WSL): `misc/jit8_check` PASS, idle hash 3671 checks: the 10 loops of
+  the logs at their address and at 2 others; each bit of each loop changed;
+  0-6 opcodes; every other block in and around the loop (no match, no read
+  before it); the table against SH4 code (`jsr`, `mov #7,r4`, both `bf`
+  targets); the decoder at each level, its log text and its own log share.
+  `mutate.py`: 14 of 14 new planted bugs fail; the idle hash and task idle
+  groups 33 of 33 and 22 of 22 (the 2 mutants of the removed entry are out,
+  2 patterns follow the new line). Also PASS: chd, clock, flash, fschg,
+  fullmmu, glpath, idleauto, interp, maple, mmu, pad, rtt, screen, sys20,
+  timebase.
+- `.got` 0xFAC0 of 0x10000 (0xFAA8 before). No build warning in the two
+  changed files. The row's help text names the Kamui vsync wait.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package. The install keeps the settings.
+  2. Rows: JIT SPEED > JIT IDLE HASH ON, JIT IDLE RULE AUTO, JIT AUTO
+     CHECKS + X3 TRY, JIT TASK IDLE LONG; VIDEO / DEBUG > MMU SQ Direct ON,
+     JIT HOTBLOCKS OFF, JIT C-Calls OFF; EMULATION > SH4 Clock 200.
+  3. Ikaruga, chapter 1 into its heavy part. HW run 1 of + X3 TRY: 20.7K
+     vertices at SPEED 79.7%, 47.8 frames a second, the loop at 424K turns
+     a second.
+  4. Rez, the first area. At X30 it ran at 100% with 120-450 ms/s of sleep,
+     so expect more sleep, not more SPEED.
+  5. Capcom vs. SNK 2, a fight: 60 frames a second at SPEED 100% at X3, as
+     before.
+  6. If there is time: Spider-Man (a level and a load), Project Justice,
+     Power Stone 2: speed, loads and sound.
+  7. Log: the `[idlehash]` line of each game; the `[idle]` turns of the
+     loop block (111.6K a second at most); SPEED, frames a second and sleep
+     by vertex band against HW run 1 of + X3 TRY (`ps3log_p74_run1.txt`,
+     session bdcba906: Rez 17220-21194, Ikaruga 21663-23874).
+- HW run 1, 2026-10-16 (Matt: "Start the listener"; listener PID 26220,
+  log `ps3log_p89_run1.txt` in the scratchpad of session a86c2d7d).
+  - Ikaruga, chapter 1 (lines 410-3851; Matt: "Ikaruga's run is done."):
+    clean (no fault line, every SPU fence `bad=0`, clean XMB exit). Line
+    1520: `[idlehash] >:1:8C0370D2:04:... the Kamui rule: ends the slice`.
+    The loop runs 45-118K turns a second (before 0.42-1.0M).
+  - Against HW run 1 of P74 (same log of session bdcba906, lines
+    514-4241, the same scene): the heavy part (22.8-23.3K vertices) runs
+    at SPEED 84.6-90.4%, 50.7-54.2 frames a second (mean 87.3%, 52.4);
+    before 73.1-81.7%, 43.8-49.0 (mean 77.2%, 46.3). Light play has about
+    twice the sleep: 3.5K vertices 529-539 ms/s (before 267-277), 10K
+    179-233 ms/s (before 0-39).
+  - AUTO now keeps X3 BACKWARD to the heavy part (X3 at 100% with sleep);
+    before, it went to X30 at the first scene (X3 at 88.9-93.2%). In the
+    heavy part: X3 85.1%, X30 88.4-90.4%, an X30 FORWARD X30 try 84.6-86.3%.
+  - Rez, the first area (lines 3921-7836; Matt: "Rez is done."): clean
+    (no fault line, every SPU fence `bad=0`, clean XMB exit). The rule
+    line for 8C046052 comes 6 times: Rez clears the JIT cache at its loads
+    (`clears all` 15 -> 20), and each clear compiles the block again. The
+    loop runs 47-99K turns a second (before 0.52M at X30, 1.5M at X3).
+  - AUTO kept X3 BACKWARD for the whole area (before: X30, its X3 tries
+    lost) and went to X30 only in the last heavy windows. At 5-14K vertices:
+    30 frames a second, SPEED 100%, sleep 330-630 ms/s at X3 (before
+    120-450 at X30).
+  - The last windows (13.5-16.3K vertices): X3 90.7-95.0%, then X30 92.8%
+    at 15.7K. That scene is heavier on the render thread than the old
+    15.7K window of P74 run 1 (100% there): render busy 60% (draw 47)
+    against 34% (draw 24), TA DMA 8.7 against 6.9 MB/s. So it is no
+    like-for-like compare.
+  - Capcom vs. SNK 2 (lines 7988-12048; Matt: "CvS2 is done too"): clean
+    (no fault line, every SPU fence `bad=0`, clean XMB exit), Render Delay
+    FLYCAST. Line 9076: `[idlehash] >:1:8C21A2EE:04:... the Kamui rule:
+    ends the slice` (the old entry's block). X3 BACKWARD the whole boot,
+    no AUTO switch. Fights (44 windows, 1.6-3.9K vertices): SPEED 99.95%
+    as the mean (min 97.7%), 60 frames a second but 4 round-change
+    windows, sleep 483 ms/s as the mean, the loop at 16-61K turns a second.
+    With the address entry (`b21_hw.txt`, session 74d25a32, lines
+    22667-26812): 100.01%, 59.8 frames a second, 377 ms/s, 50-61K turns
+    (other fights, 4K+ vertices). Unchanged, as required.
+  - Garou: Mark of the Wolves (Fatal Fury, US v0.800; Matt: "I also tested
+    a new game: Garou"), lines 12194-16243, two boots (the first ends after
+    the BIOS logo), clean. No Kamui loop: the rule does not act. Its own
+    wait loops: 8C13F23C (a counted poll, 0.3-1.0M turns a second in menus
+    and loads, none in fights), 8C015E70 (80-100K in fights), 8C0DE7C0
+    (a status poll). Fights at X30 (X3 at 75-83%): 2.4K vertices
+    90.0-99.2% (mostly 96-98%), 54-59.5 frames a second; 3.4K 83.8-86.4%,
+    50-51.5; no sleep. The render thread is busy 50% (2.4K) to 80% (3.4K):
+    1720-2160 draw flushes a frame of 5.5 vertices, and 4-bit palette
+    textures evicted while hot and decoded again (`[texfmt]` evict 4208 /
+    hot 4151 and 13855 / 13561 a window, `p4=4006` and 12613).
+  - Garou's texture thrash, read only (Matt: "Yes, do it."), nothing built:
+    - The game binds 590-833 different textures a frame (`[spetex]
+      hashed`), small 4-bit palette sprite tiles. Our cache
+      (`ps3/ps3_tex.cpp`) has 1024 slots, and a new texture may only take
+      one of 8 neighbouring slots (`CACHE_SLOTS`, `CACHE_PROBE`). `live` is
+      815-890 in fights and 982-1024 (full) in the 3.4K scene, so a new
+      texture evicts one used in the last 4 frames (97-100% of the
+      evictions), which then comes back.
+    - Cost on the render thread, a fit over 6 windows of `tex split
+      decode` against the counts: about 110 us a new texture, about 20 us
+      a re-upload of changed texels. A new texture runs ps3gl's
+      glBindTexture of a new name (a full scan of the 4096-entry pool, then
+      a scan for a free entry) and rsxMemalign (PSL1GHT's first-fit list,
+      block headers in RSX memory, `ppu/librt/heap.c`); the old texture's
+      rsxFree comes at the next frame start.
+    - Per second: fights about 145 ms of decode time, about 100 ms of it
+      from evictions; the 3.4K scene about 350 ms, about 300 from
+      evictions (2800 a second). Texel changes (animation or palettes):
+      2200-2700 re-uploads a second, about 50 ms; those are real changes.
+    - Ways (Matt picks): (1) more cache slots (2048 or more; RSX memory
+      grows with the live count, so a memory cap with it); (2) reuse the
+      evicted texture and its RSX memory for a new one of the same size
+      (no delete, no pool scans, no heap walk; every game with churn); (3)
+      ps3gl: a new name gets its pool entry at glGenTextures, so its first
+      bind does not scan 4096 entries; (4) later, the palette lookup in the
+      shader (one texture for all palettes, Flycast's way).
+    - Also seen: Garou's fights run the Shinobi task loop (block
+      8C015E70, the same 4 words as the Sonic Shuffle and Border Down task
+      entries) at 80-100K turns a second; JIT TASK IDLE's list is bound to
+      those two games' addresses, so it does not act in Garou.
+    - Scope of ways 1 and 2 (the reuse and the ps3gl pool entry; Matt:
+      "Can you check if 1 and 2 will affect Alpha 3, as well?"): they act
+      only on new textures. Street Fighter Alpha 3 (this log, lines
+      16498-20214): 33-53 textures a frame, at most 159 live, 0 evictions,
+      0-30 new textures a second, texture time under 1% and render busy
+      2-13%; fights at 100% with about 500 ms/s of sleep. So no change
+      there. Over 28 games of the HW logs, only Garou evicts (2325 hot
+      evictions a window as the mean); Soul Calibur's evictions are all
+      from P16 HW run 1 with Tex Slot Hash OFF.
+    - Alpha 3's windows at 18-43% (lines 19384-19482) are the in-game menu
+      (Texture Filter changes), not a slowdown. AUTO took those paused
+      windows as dropped frames and moved X30 FORWARD to X30 (kept: 61.3
+      against 18.5 frames a second); harmless here.
+
 **Bundle 22 item 1, AUTO's X3 tries judged by frames, built 2026-10-16
 (Matt, after HW run 1 of P74 below: "I feel like the x3 reverse/x30 swaps
 are too aggressive and noticeable. Any way to make them less aggressive

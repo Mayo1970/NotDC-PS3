@@ -57,6 +57,10 @@ static uint32_t g_swz_tbl_h = 0;
 #endif
 static uint16_t g_name_slot[PS3GL_NAME_SLOTS];
 
+/* No pool entry below it is free. Kept on every path; PS3GL_FAST_GEN starts the scan for a free entry there, which
+ * finds the entry the scan from 0 finds. */
+static int g_free_hint = 0;
+
 /* Init / Shutdown */
 
 void ps3gl_textures_init(void)
@@ -67,6 +71,7 @@ void ps3gl_textures_init(void)
     }
     ps3gl.tex_next_name = 1;
     memset(g_name_slot, 0, sizeof(g_name_slot));
+    g_free_hint = 0;
 }
 
 void ps3gl_textures_shutdown(void)
@@ -82,6 +87,7 @@ void ps3gl_textures_shutdown(void)
         }
         ps3gl.textures[i].glname = -1;
     }
+    g_free_hint = 0;
 
     /* Main-memory scratch: free it, and reset the table size so a later ps3gl_init rebuilds the tables. */
     if (g_swz_staging) {
@@ -135,9 +141,10 @@ ps3gl_texture_t *ps3gl_texture_find(GLuint name)
 
 ps3gl_texture_t *ps3gl_texture_alloc(GLuint name)
 {
-    for (int i = 0; i < PS3GL_MAX_TEXTURES; i++) {
+    for (int i = (ps3gl.fast & PS3GL_FAST_GEN) ? g_free_hint : 0; i < PS3GL_MAX_TEXTURES; i++) {
         if (ps3gl.textures[i].glname == -1) {
             ps3gl_texture_t *t = &ps3gl.textures[i];
+            g_free_hint = i + 1;
             memset(t, 0, sizeof(*t));
             g_name_slot[name & (PS3GL_NAME_SLOTS - 1)] = (uint16_t)(i + 1);
             t->glname     = (int)name;
@@ -160,6 +167,9 @@ void glGenTextures(GLsizei n, GLuint *textures)
     if (!textures || n <= 0) return;
     for (int i = 0; i < n; i++) {
         textures[i] = ps3gl.tex_next_name++;
+        /* PS3GL_FAST_GEN: the entry now, so the first bind finds a new name in the table, not by a scan of the pool. */
+        if (ps3gl.fast & PS3GL_FAST_GEN)
+            ps3gl_texture_alloc(textures[i]);
     }
 }
 
@@ -181,6 +191,8 @@ void glDeleteTextures(GLsizei n, const GLuint *textures)
                 t->data = NULL;
             }
             t->glname = -1;
+            if (t - ps3gl.textures < g_free_hint)
+                g_free_hint = (int)(t - ps3gl.textures);
         }
     }
 }

@@ -35,7 +35,8 @@ for v in new ref; do
 	D=""
 	[ $v = ref ] && D="-DTEX_REF"
 	[ $v = ref ] && [ -n "$TEX3_REFBIN" ] && continue
-	g++ -std=c++14 -O1 -g $SAN $INC $REN -w -c $OUT/$v/ps3_tex.cpp -o $OUT/$v/tex.o
+	# Tex Recycle's limits small, so a churn pool fills the spare list.
+	g++ -std=c++14 -O1 -g $SAN $INC $REN -DSPARE_MAX=24 -DSPARE_BYTES=65536 -w -c $OUT/$v/ps3_tex.cpp -o $OUT/$v/tex.o
 	gcc -O1 -g $SAN $INC -w -c $OUT/$v/ps3gl_textures.c -o $OUT/$v/gl.o
 	g++ -std=c++14 -O1 -g $SAN $INC $D -w -c misc/tex3_check/harness.cpp -o $OUT/$v/harness.o
 	g++ $SAN $OUT/$v/tex.o $OUT/$v/gl.o $OUT/$v/harness.o $OUT/spu_side.o -o $OUT/tex3_$v
@@ -56,7 +57,7 @@ s=1
 while [ $s -le "$MSEEDS" ]; do
 	[ -n "$QUICK" ] && [ $fail -ne 0 ] && break
 	$OUT/tex3_new model $s "$MEPOCHS" > $OUT/model.out 2>&1 || fail=1
-	grep -E "^(PASS|FAIL|model:|paths:|lower-level|\[texfmt\])" $OUT/model.out | sed "s/^/seed $s: /" || true
+	grep -E "^(PASS|FAIL|model:|paths:|lower-level|recycle:|\[texfmt\])" $OUT/model.out | sed "s/^/seed $s: /" || true
 	grep -qE "^(PASS|FAIL)" $OUT/model.out || { echo "seed $s: ERROR: no verdict"; tail -5 $OUT/model.out; fail=1; }
 	s=$((s + 1))
 done

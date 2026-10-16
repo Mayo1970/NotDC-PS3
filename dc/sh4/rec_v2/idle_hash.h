@@ -1,6 +1,6 @@
 #pragma once
 // Plan section 7, bundle 8, way (B) JIT IDLE HASH: Reicast's list of known wait loops by code hash (libswirl
-// hw/sh4/dyna: decoder.cpp idle_hash, driver.cpp hash()). Needs u8 and u32; misc/jit8_check/hash8_check tests it.
+// hw/sh4/dyna: decoder.cpp idle_hash, driver.cpp hash()). Needs u8, u16, u32; misc/jit8_check/hash8_check tests it.
 #include <stdio.h>
 #include <string.h>
 
@@ -8,8 +8,8 @@
 #define IDLE_HASH_MAX_OPS 64
 #define IDLE_HASH_STR 64
 
-enum { IDLE_LIST_NONE = 0, IDLE_LIST_OWN = 1, IDLE_LIST_REICAST = 2, IDLE_LIST_TASK = 3 };
-// Bundle 21, JIT TASK IDLE: a task-list block drops the rest of the timeslice and 2 more, about what X30 bills its turn.
+enum { IDLE_LIST_NONE = 0, IDLE_LIST_OWN = 1, IDLE_LIST_REICAST = 2, IDLE_LIST_TASK = 3, IDLE_LIST_KAMUI = 4 };
+// Bundle 21, JIT TASK IDLE: the task loop's test drops the rest of the timeslice and 2 more, about what X30 bills a turn.
 #define IDLE_TASK_SLICES 3
 // LONG: 16 slices a turn (a turn polls 16 times, so each pays its debt); an interrupt drops what is left of it.
 #define IDLE_TASK_LONG 16
@@ -39,16 +39,64 @@ static const char idle_hash_own[] =
 	// Looney Tunes Space Race (US): the block that closes its frame wait `while (*counter > (int)table[6]);`.
 	">:1:8C014544:06:82CA5453:BF5F6A1A:DFB3BC03:5297CDA2:ABB80F01"
 	// The same game, demo and menus: the block that closes `do { hook(7); bit = find_event(); } while (bit == -1);`.
-	">:1:8C19D168:03:D81E7C3D:BBC0DA9E:01A57B05:239F0A0B:C4727FBC"
-	// Capcom vs. SNK 2 (JP): the tail of Kamui's vsync wait `do { hook(7); count--; } while (vbl == old && count);`.
-	">:1:8C21A2EE:04:0E313F0D:345E5DC5:A6CFFD76:91D47842:D22C2D1C";
+	">:1:8C19D168:03:D81E7C3D:BBC0DA9E:01A57B05:239F0A0B:C4727FBC";
 
-// Bundle 21, the task list: the idle turn of an SDK task loop, entered once a turn, in hash()'s full form.
-static const char idle_hash_task[] =
-	// Sonic Shuffle: the loop test of the 16-slot dispatch 8C01585C, entered by its `bra` once a call.
-	">:1:8C0158A0:04:63FE2E15:EC7B702E:174D24A7:DFD3298D:DB21BB3B"
-	// Border Down (Japan): the same SDK code.
-	">:1:8C04838C:04:63FE2E15:EC7B702E:174D24A7:DFD3298D:DB21BB3B";
+// P89, Kamui's vsync wait `do { hook(7); [hook(12);] count--; } while (vbl == old && count);` at any address: the
+// whole loop, `jsr` to `bf`; word 0 is the length. The HW logs and 27 disc images hold only these 3 forms.
+#define IDLE_KAMUI_MAX 16
+static const u16 idle_kamui[][IDLE_KAMUI_MAX + 1] = {
+	// Hook 7: Capcom vs. SNK 2 (an address entry before), Spider-Man, Project Justice, Power Stone 2, Donald Duck,
+	// Rayman 2, Re-Volt, Ecco, Dead or Alive 2.
+	{ 14, 0x4D0B, 0xE407, 0x63F2, 0x6232, 0x72FF, 0x2322, 0x53F1, 0x6232, 0x32E0, 0x8B03,
+	  0x61F2, 0x6312, 0x2338, 0x8BF1 },
+	// Hooks 7 and 12: Ikaruga, Rez, Border Down, Sonic Shuffle.
+	{ 16, 0x4E0B, 0xE407, 0x4E0B, 0xE40C, 0x63F2, 0x6232, 0x72FF, 0x2322, 0x53F1, 0x6232, 0x32D0, 0x8B03,
+	  0x61F2, 0x6312, 0x2338, 0x8BEF },
+	// Hooks 7 and 12, other registers: Quake III Arena, Phantasy Star Online Ver. 2.
+	{ 16, 0x4E0B, 0xE407, 0x4E0B, 0xE40C, 0x62F2, 0x6322, 0x73FF, 0x2232, 0x52F1, 0x6322, 0x33D0, 0x8B03,
+	  0x61F2, 0x6312, 0x2338, 0x8BEF },
+};
+#define IDLE_KAMUI_FORMS (sizeof(idle_kamui) / sizeof(idle_kamui[0]))
+
+// The form whose loop this 4-opcode block closes, or -1. It reads from the block's last word back, so the code before
+// a block is read only when the block is a form's tail.
+static int idle_kamui_form(u32 addr, u32 opcodes, u16 (*read16)(u32))
+{
+	if (opcodes != 4)
+		return -1;
+	for (u32 f = 0; f < IDLE_KAMUI_FORMS; f++)
+	{
+		const u32 n = idle_kamui[f][0];
+		u32 i = n;
+		while (i > 0 && read16(addr + 6 - (n - i) * 2) == idle_kamui[f][i])
+			i--;
+		if (i == 0)
+			return (int)f;
+	}
+	return -1;
+}
+
+// Bundle 21 and P94 (JIT TASK IDLE): Shinobi syMng's 16-slot dispatch of the idle fiber at any address: the loop, `bf`
+// target to the test block. Words 12-13 are the table's address. Sonic Shuffle and Border Down had address entries.
+#define IDLE_TASK_WORDS 30
+#define IDLE_TASK_TABLE 12
+static const u16 idle_task_loop[IDLE_TASK_WORDS] = {
+	0x51F1, 0x4108, 0x4100, 0xD304, 0x313C, 0x1F12, 0x6212, 0x2228, 0x8B04, 0xA00C, 0x0009, 0x0000, 0x0000, 0x0000,
+	0x53F2, 0x6232, 0x54F2, 0x5441, 0x420B, 0x0009, 0x63F2, 0x230B, 0x2F32, 0x52F1, 0x7201, 0x1F21,
+	0xE310, 0x51F1, 0x3133, 0x8BE1 };
+
+// True when this 4-opcode block is that loop's test, which the `bra` before the loop enters once a call. It reads back
+// from the block's last word, so the code before a block is read only when the block is the test.
+static bool idle_task_rule(u32 addr, u32 opcodes, u16 (*read16)(u32))
+{
+	if (opcodes != 4)
+		return false;
+	for (u32 i = IDLE_TASK_WORDS; i-- > 0;)
+		if ((i < IDLE_TASK_TABLE || i > IDLE_TASK_TABLE + 1) &&
+		    read16(addr + 8 - (IDLE_TASK_WORDS - i) * 2) != idle_task_loop[i])
+			return false;
+	return true;
+}
 
 static inline u32 idle_rol(u32 x, u32 n)
 {
@@ -105,7 +153,7 @@ static void idle_hash_words(const u8* code, u32 opcodes, u32 h[5])
 	idle_sha1(msg, opcodes * 2, h);
 }
 
-// Which list holds the block (ours, then the task list). `full` (IDLE_HASH_STR chars) gets hash()'s full form.
+// Which list holds the block (ours, then Reicast's). `full` (IDLE_HASH_STR chars) gets hash()'s full form.
 static int idle_hash_listed(u32 addr, u32 opcodes, const u8* code, char* full)
 {
 	full[0] = 0;
@@ -120,8 +168,6 @@ static int idle_hash_listed(u32 addr, u32 opcodes, const u8* code, char* full)
 	         (unsigned)h[0], (unsigned)h[1], (unsigned)h[2], (unsigned)h[3], (unsigned)h[4]);
 	if (strstr(idle_hash_own, full))
 		return IDLE_LIST_OWN;
-	if (strstr(idle_hash_task, full))
-		return IDLE_LIST_TASK;
 	if (strstr(idle_hash_reicast, brief))
 		return IDLE_LIST_REICAST;
 	return IDLE_LIST_NONE;

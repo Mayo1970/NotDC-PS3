@@ -56,7 +56,8 @@ MUTANTS = [
     # P45: which textures, and when
     ('OFF: chains', 'T', 'const bool chain = s_mips > 0 && d.mip && !mirror;', 'const bool chain = d.mip && !mirror;'),
     ('a chain on any twiddled texture', 'T', 'const bool chain = s_mips > 0 && d.mip && !mirror;', 'const bool chain = s_mips > 0 && d.twiddled && !mirror;'),
-    ('a YUV chain keeps the linear hint', 'T', '\t\t\tps3gl_texture_hint_mipmaps();\n\t\telse if (d.fmt == 3)', '\t\t\tps3gl_texture_hint_mipmaps();\n\t\tif (d.fmt == 3)'),
+    ('a YUV chain keeps the linear hint', 'T', '\t\t\tps3gl_texture_hint_mipmaps();\n\t\telse if (!spare && d.fmt == 3)',
+     '\t\t\tps3gl_texture_hint_mipmaps();\n\t\tif (!spare && d.fmt == 3)'),
     ('chain not decoded on a change', 'T', '\t\t\tif (hit->chain)\n\t\t\t\tupload_chain(d, tsp.IgnoreTexA);\n', ''),
     ('new texture without its levels', 'T', '\t\tif (chain)\n\t\t\tupload_chain(d, tsp.IgnoreTexA);\n', ''),
     ('no cache clear on a switch', 'T', 'if (mips != s_mips || vqfmt != s_vqfmt)\n\t{\n\t\tps3tex_reset();', 'if (mips != s_mips || vqfmt != s_vqfmt)\n\t{'),
@@ -76,6 +77,17 @@ MUTANTS = [
     ('anisotropic 16x as 8x', 'T', 'k_aniso[5] = { 1, 2, 4, 8, 16 };', 'k_aniso[5] = { 1, 2, 4, 8, 8 };'),
     ('anisotropic 2x as 4x', 'T', 'k_aniso[5] = { 1, 2, 4, 8, 16 };', 'k_aniso[5] = { 1, 4, 4, 8, 16 };'),
     ('anisotropic preset not latched', 'T', '\t\ts_aniso = aniso;\n', ''),
+    # Tex Recycle (Garou). Left out as equivalent or memory only: a spare given the hints again, a chain texture kept as
+    # a spare (no new texture can take it), the age-out and the byte limit.
+    ('recycle: a name taken in the next frame', 'T', '#define SPARE_WAIT 2', '#define SPARE_WAIT 1'),
+    ('recycle: any layout', 'T', ' && s_spare[i].kind == kind)', ')'),
+    ('recycle: a taken spare stays in the list', 'T', '\t\t\tspare_remove(i, false);\n', ''),
+    ('recycle: the entry keeps the name', 'T', '\te.name = 0;\n\ts_live--;\n\ts_spared++;', '\ts_live--;\n\ts_spared++;'),
+    ('recycle: OFF keeps spares', 'T', 'if (s_recycle > 0 && victim->kind < 4)', 'if (victim->kind < 4)'),
+    ('recycle: the layout without the mirror', 'T', 'const u8 kind = (u8)(mirror | ((d.fmt == 3) << 1) | (chain << 2));',
+     'const u8 kind = (u8)(((d.fmt == 3) << 1) | (chain << 2));'),
+    ('recycle: the layout without YUV', 'T', 'const u8 kind = (u8)(mirror | ((d.fmt == 3) << 1) | (chain << 2));',
+     'const u8 kind = (u8)(mirror | (chain << 2));'),
     # ps3gl
     ('hint ignored', 'G', '(t->mip_hint && t->swizzled)', '(0)'),
     ('hint on every texture', 'G', 'if (t) t->mip_hint = 1;', 'if (t) t->mip_hint = 1;\n    g_mipmap_enabled = 1;'),
@@ -91,7 +103,7 @@ MUTANTS = [
      '        t->num_levels = (uint8_t)(level + 1);\n    }\n    build_gcm_texture(t);\n    t->dirty = 1;\n    t->content_dirty = 1;\n}\n\n/* 5.12 #4 CHECK'),
     ('anisotropic not sent', 'G', 'rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, t->max_aniso);',
      'rsxTextureControl(ctx, i, GCM_TRUE, minlod, maxlod, GCM_TEXTURE_MAX_ANISO_1);'),
-    ('anisotropic parameter dropped', 'G', 'case GL_TEXTURE_MAX_ANISOTROPY_EXT: t->max_aniso = gl_to_gcm_aniso(param); break;',
+    ('anisotropic parameter dropped', 'G', 'case GL_TEXTURE_MAX_ANISOTROPY_EXT: field = &t->max_aniso; value = gl_to_gcm_aniso(param); break;',
      'case GL_TEXTURE_MAX_ANISOTROPY_EXT: break;'),
     ('16 taps as 12', 'G', 'if (param >= 16) return GCM_TEXTURE_MAX_ANISO_16;', 'if (param >= 16) return GCM_TEXTURE_MAX_ANISO_12;'),
     ('8 taps as 6', 'G', 'if (param >= 8)  return GCM_TEXTURE_MAX_ANISO_8;', 'if (param >= 8)  return GCM_TEXTURE_MAX_ANISO_6;'),

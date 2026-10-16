@@ -78,7 +78,13 @@ has $M 1 'static const char* k_firstpass[] = { "OLD", "SKIP", "+ GAME ORDER", NU
 has $M 1 '{ "DRAW COST",     s_cost,  (int)(sizeof(s_cost) / sizeof(s_cost[0])) },'
 has $M 1 '&g_tex_bind_table_preset, &g_gl_compare_preset, &g_tr_first_pass_preset,'
 has $M 2 'ps3_costcfg_print('
-has $R 1 'ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0));'
+has $R 1 'ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0) |'
+has $R 1 '(g_tex_recycle_preset ? PS3GL_FAST_GEN : 0));'
 has $R 1 's_do.first_pass = (u8)g_tr_first_pass_preset;'
-[ $fail -eq 0 ] && echo "PASS: $SEEDS seeds, 15 source line checks" || echo "SOME FAILED"
+# Tex Recycle (Garou): OFF in the source, saved (and in [costcfg]), in the menu, live; its ps3_tex.cpp side is tex3_check's.
+has $P 1 'int g_tex_recycle_preset   = 0;'
+has $P 2 '{ "TexRecycle",    &g_tex_recycle_preset },'
+has $M 1 '{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,'
+has $M 2 '&g_tex_recycle_preset,'
+[ $fail -eq 0 ] && echo "PASS: $SEEDS seeds, 20 source line checks" || echo "SOME FAILED"
 exit $fail

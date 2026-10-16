@@ -1280,8 +1280,8 @@ int stuffcmp(const void* p1,const void* p2)
 	return b->fallbacks-a->fallbacks;
 }
 
-// JIT IDLE HASH: the timeslices this block drops (0 = none). Level 1 acts on our list and only logs a block of
-// Reicast's list; level 2 acts on both. JIT TASK IDLE (task 1, 2 = LONG) acts on the task list. Hits go to the log.
+// JIT IDLE HASH: the timeslices this block drops (0 = none). Level 1 acts on our list and the Kamui rule, and logs
+// Reicast's list; level 2 acts on all. JIT TASK IDLE (task 1, 2 = LONG) acts on the task rule. Hits go to the log.
 static u32 dec_idle_hash(int level,int task)
 {
 	if (block.opcodes==0 || block.opcodes>IDLE_HASH_MAX_OPS)
@@ -1290,19 +1290,26 @@ static u32 dec_idle_hash(int level,int task)
 	for (u32 i=0;i<block.opcodes;i++)
 		code[i]=ReadMem8(block.start+i);
 	char full[IDLE_HASH_STR];
-	const int list=idle_hash_listed(block.start,block.opcodes,code,full);
+	int list=idle_hash_listed(block.start,block.opcodes,code,full);
+	// P89 (Kamui's vsync wait) and P94 (the Shinobi task loop): each by the code of its whole loop, at any address.
+	u16 (*const read16)(u32)=[](u32 a) -> u16 { return ReadMem16(a); };
+	if (list==IDLE_LIST_NONE && idle_kamui_form(block.start,block.opcodes,read16)>=0)
+		list=IDLE_LIST_KAMUI;
+	else if (list==IDLE_LIST_NONE && idle_task_rule(block.start,block.opcodes,read16))
+		list=IDLE_LIST_TASK;
 	if (list==IDLE_LIST_NONE)
 		return 0;
 	const u32 slices=list==IDLE_LIST_TASK ? (task>=2 ? IDLE_TASK_LONG : task ? IDLE_TASK_SLICES : 0)
-	                : (list==IDLE_LIST_OWN && level>=1) || level>=2 ? 1 : 0;
+	                : ((list==IDLE_LIST_OWN || list==IDLE_LIST_KAMUI) && level>=1) || level>=2 ? 1 : 0;
 	// A log share per list: Reicast's entries hit dozens of blocks in a boot and must not hide ours.
-	static u32 logged[4];
+	static u32 logged[5];
 	u32& lines=logged[list];
 	if (lines<24)
 	{
 		lines++;
-		printf("[idlehash] %s %s: %s\n",full,list==IDLE_LIST_OWN?"our list":list==IDLE_LIST_TASK?"the task list":
-		       "Reicast's list",!slices?"log only":slices==1?"ends the slice":"skips the slices");
+		printf("[idlehash] %s %s: %s\n",full,list==IDLE_LIST_OWN?"our list":list==IDLE_LIST_TASK?"the task rule":
+		       list==IDLE_LIST_KAMUI?"the Kamui rule":"Reicast's list",!slices?"log only":slices==1?"ends the slice":
+		       "skips the slices");
 	}
 	if (slices)
 		g_dec_hash_blocks++;

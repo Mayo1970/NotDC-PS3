@@ -22,6 +22,7 @@ extern "C" {
 #pragma GCC diagnostic pop
 
 extern "C" int get_tex_slot_hash_preset();
+extern "C" int get_tex_recycle_preset();
 extern "C" int get_yuv_block_preset();
 extern "C" int get_bump_map_preset();
 extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint32_t* pitch);
@@ -51,6 +52,7 @@ struct TexEntry
 	u32 checked_frame;
 	u16 w, h;
 	bool chain; // P45: its RSX memory holds the mip levels
+	u8 kind;    // its ps3gl layout, fixed at allocation: mirror | YUV << 1 | chain asked << 2 (Tex Recycle)
 };
 
 static TexEntry s_cache[CACHE_SLOTS];
@@ -751,6 +753,79 @@ static void free_entry(TexEntry& e)
 	memset(&e, 0, sizeof(e));
 }
 
+// Garou (row Tex Recycle): an evicted texture waits as a spare until the RSX is past its last frame (ps3gl fences 2
+// frames back), then a new texture of its size and layout takes it: no new ps3gl texture, no RSX allocation.
+#ifndef SPARE_MAX
+#define SPARE_MAX 256
+#endif
+#ifndef SPARE_BYTES
+#define SPARE_BYTES (16u << 20)
+#endif
+#define SPARE_WAIT 2
+#define SPARE_AGE 120
+
+struct TexSpare
+{
+	GLuint name;
+	u32 frame;  // evicted in this frame
+	u16 w, h;
+	u8 kind;
+};
+static TexSpare s_spare[SPARE_MAX];  // oldest first
+static u32 s_spare_n, s_spare_bytes;
+static int s_recycle = -1;
+// [texfmt]: new textures that took a spare, and evicted textures kept as one, this window.
+static u32 s_reused, s_spared;
+
+static inline u32 spare_bytes(const TexSpare& s)
+{
+	return (u32)s.w * s.h * 4;
+}
+
+static void spare_remove(u32 i, bool del)
+{
+	if (del)
+		glDeleteTextures(1, &s_spare[i].name);
+	s_spare_bytes -= spare_bytes(s_spare[i]);
+	memmove(&s_spare[i], &s_spare[i + 1], (s_spare_n - i - 1) * sizeof(TexSpare));
+	s_spare_n--;
+}
+
+static void spare_clear()
+{
+	while (s_spare_n)
+		spare_remove(s_spare_n - 1, true);
+}
+
+// The entry's texture becomes a spare and the entry keeps none; a full list gives up its oldest first.
+static void spare_put(TexEntry& e)
+{
+	const TexSpare s = { e.name, s_frame, e.w, e.h, e.kind };
+	if (spare_bytes(s) > SPARE_BYTES)
+		return;
+	while (s_spare_n && (s_spare_n == SPARE_MAX || s_spare_bytes + spare_bytes(s) > SPARE_BYTES))
+		spare_remove(0, true);
+	s_spare[s_spare_n++] = s;
+	s_spare_bytes += spare_bytes(s);
+	e.name = 0;
+	s_live--;
+	s_spared++;
+}
+
+// The oldest spare of this size and kind that the RSX is done with, or 0. The list is in eviction order.
+static GLuint spare_take(u32 w, u32 h, u8 kind)
+{
+	for (u32 i = 0; i < s_spare_n && s_spare[i].frame + SPARE_WAIT <= s_frame; i++)
+		if (s_spare[i].w == w && s_spare[i].h == h && s_spare[i].kind == kind)
+		{
+			const GLuint name = s_spare[i].name;
+			spare_remove(i, false);
+			s_reused++;
+			return name;
+		}
+	return 0;
+}
+
 void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 {
 	// 5.12 #3: the SPU starts on this scene's textures before the rest of the frame.
@@ -791,6 +866,14 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 		s_vqfmt = vqfmt;
 		printf("[tex] mipmaps %s, vq formats %s, cache cleared\n", mips ? "ON" : "OFF", vqfmt ? "ON" : "OFF");
 	}
+	// Tex Recycle is live: OFF gives the spares' memory back.
+	const int recycle = get_tex_recycle_preset() != 0;
+	if (recycle != s_recycle)
+	{
+		spare_clear();
+		s_recycle = recycle;
+		printf("[tex] recycle %s\n", recycle ? "ON" : "OFF");
+	}
 	int aniso = get_aniso_preset(), filter = get_tex_filter_preset();
 	aniso = aniso < 0 ? 0 : (aniso > 4 ? 4 : aniso);
 	filter = filter < 0 || filter > 2 ? 0 : filter;
@@ -803,6 +886,9 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 	}
 
 	s_frame++;
+	// Spares no new texture took give back their RSX memory.
+	while (s_spare_n && s_frame - s_spare[0].frame > SPARE_AGE)
+		spare_remove(0, true);
 	// Age out a slice per frame so the sweep cost stays flat.
 	for (u32 i = 0; i < CACHE_SLOTS / 64; i++)
 	{
@@ -901,12 +987,18 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 	{
 		if (d.w > 1024 || d.h > 1024)
 			return false;
+		// P45 Mipmaps: the chain needs the swizzled layout, so the first build gives a mirrored texture none.
+		const bool chain = s_mips > 0 && d.mip && !mirror;
+		const u8 kind = (u8)(mirror | ((d.fmt == 3) << 1) | (chain << 2));
 		if (victim->name)
 		{
 			s_evict++;
 			// Drawn in the last 4 frames: its probe window holds more textures than it fits (P16).
 			if (s_frame - victim->last_frame <= 4)
 				s_evict_hot++;
+			// Tex Recycle: a texture with no mip chain waits as a spare.
+			if (s_recycle > 0 && victim->kind < 4)
+				spare_put(*victim);
 		}
 		free_entry(*victim);
 		hit = victim;
@@ -914,6 +1006,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 		hit->key1 = key1;
 		hit->w = d.w;
 		hit->h = d.h;
+		hit->kind = kind;
 		const u64 t_h = PERF_TICKS();
 		hit->hash = tex_hash(d, tsp, tcw, pidx);
 		s_t_hash += PERF_TICKS() - t_h;
@@ -940,16 +1033,17 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 		if (tcw.NO_PAL.VQ_Comp && !pal && tcw.NO_PAL.ScanOrder && !tcw.NO_PAL.MipMapped) s_flag_plvq++;
 		REND_PHASE(PH_TEX);
 		const u64 t_d = PERF_TICKS();
-		glGenTextures(1, &hit->name);
+		hit->name = s_recycle > 0 && !chain ? spare_take(d.w, d.h, kind) : 0;
+		const bool spare = hit->name != 0;
+		if (!spare)
+			glGenTextures(1, &hit->name);
 		glBindTexture(GL_TEXTURE_2D, hit->name);
 		set_tex_params(tsp, mirror_u, mirror_v, false);
-		// P45 Mipmaps: the chain needs the swizzled layout, so the first build gives a mirrored texture none.
-		const bool chain = s_mips > 0 && d.mip && !mirror;
 		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy (and P42 needs linear).
-		// Both must be set before the first upload: the layout is fixed at allocation.
-		if (chain)
+		// Both must be set before the first upload: the layout is fixed at allocation (a spare's is already).
+		if (!spare && chain)
 			ps3gl_texture_hint_mipmaps();
-		else if (d.fmt == 3)
+		else if (!spare && d.fmt == 3)
 			ps3gl_texture_hint_no_swizzle();
 		upload(d, tsp.IgnoreTexA);
 		if (chain)
@@ -975,6 +1069,7 @@ void ps3tex_reset()
 	for (u32 i = 0; i < CACHE_SLOTS; i++)
 		free_entry(s_cache[i]);
 	s_live = 0;
+	spare_clear();
 }
 
 void ps3tex_split(u64* t_hash, u64* t_decode, u64* t_gl, u32* hashes, u64* hash_bytes)
@@ -999,15 +1094,16 @@ void ps3tex_stats(u32* decodes, u32* live)
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
 	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u"
 	       " | yuvblk=%u yuvlast=%ux%u%c%u spudec=%u"
-	       " | chains=%u chainlv=%u palvq=%u plvq=%u\n",
+	       " | chains=%u chainlv=%u palvq=%u plvq=%u | spares reused=%u put=%u held=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
 	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
 	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec,
-	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq);
+	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq, s_reused, s_spared, s_spare_n);
 	printf("[texlife] aged=%u back=%u same=%u\n", s_aged, s_back, s_back_same);
+	s_reused = s_spared = 0;
 	s_aged = s_back = s_back_same = 0;
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;

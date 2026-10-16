@@ -524,6 +524,15 @@ static void tex_params(const Tex* t, int vary)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, t->aniso);
 }
 
+// The pool entry a new texture must take: the first free one, as the scan from 0 finds it.
+static int first_free(void)
+{
+	for (int i = 0; i < PS3GL_MAX_TEXTURES; i++)
+		if (ps3gl.textures[i].glname == -1)
+			return i;
+	return -1;
+}
+
 static void op_tex_new(void)
 {
 	Tex* t = &g_tex[rndn(TEXS)];
@@ -537,7 +546,12 @@ static void op_tex_new(void)
 		t->name = 0;
 		return;
 	}
+	const int want = first_free();
 	glGenTextures(1, &t->name);
+	// PS3GL_FAST_GEN: the name has its entry before the bind; without it, only the bind makes one.
+	if ((ps3gl_texture_find(t->name) != NULL) != ((ps3gl.fast & PS3GL_FAST_GEN) != 0))
+		die("a new name has %s pool entry before its bind (fast bits %d)", ps3gl_texture_find(t->name) ? "a" : "no",
+		    ps3gl.fast);
 	t->wrap_s = PICK(k_wrap);
 	t->wrap_t = PICK(k_wrap);
 	t->min = PICK(k_min);
@@ -548,6 +562,9 @@ static void op_tex_new(void)
 	t->levels = 1;
 	glActiveTextureARB(GL_TEXTURE0_ARB);
 	glBindTexture(GL_TEXTURE_2D, t->name);
+	if (ps3gl.tmu[0].bound - ps3gl.textures != want)
+		die("a new texture took pool entry %d, the first free one is %d (fast bits %d)",
+		    (int)(ps3gl.tmu[0].bound - ps3gl.textures), want, ps3gl.fast);
 	tex_params(t, 0);
 	if (rndn(3) == 0 && t->wrap_s != GL_MIRRORED_REPEAT && t->wrap_t != GL_MIRRORED_REPEAT)
 	{
@@ -828,8 +845,8 @@ static void run(uint32_t seed, uint32_t frames, int bits)
 				op_draw();
 			else
 			{
-				// Both rows are live: the bits can change at any call.
-				const int to = (int)rndn(4);
+				// The rows are live: the bits can change at any call.
+				const int to = (int)rndn(8);
 #ifndef GLP_REF
 				if (g_switch)
 					ps3gl_fast_path(to);
@@ -860,20 +877,21 @@ int main(int argc, char** argv)
 	}
 	run(seed, frames, 0);
 	const uint64_t calls0 = g_calls, hash0 = g_call_hash;
-	uint64_t calls[5] = { calls0, 0, 0, 0, 0 };
-	static const char* const k_what[5] = { "", "bits 1 (the bind table)", "bits 2 (the compares)", "bits 3 (both)",
+	uint64_t calls[9] = { calls0, 0, 0, 0, 0, 0, 0, 0, 0 };
+	static const char* const k_what[9] = { "", "bits 1 (the bind table)", "bits 2 (the compares)", "bits 3",
+	                                       "bits 4 (new names)", "bits 5", "bits 6", "bits 7 (all)",
 	                                       "the bits changed in mid run" };
 	g_compare = 1;
-	for (int m = 1; m < 5; m++)
+	for (int m = 1; m < 9; m++)
 	{
 		g_what = k_what[m];
-		run(seed, frames, m < 4 ? m : -1);
+		run(seed, frames, m < 8 ? m : -1);
 		if (g_nsnap != g_nbase)
 			die("%s: %u draws, the run at 0 has %u", g_what, g_nsnap, g_nbase);
 		calls[m] = g_calls;
-		// The bind table changes no call. The compares only leave calls out.
-		if (m == 1 && (g_calls != calls0 || g_call_hash != hash0))
-			die("the bind table changes the RSX calls (%llu, %llu at 0)", (unsigned long long)g_calls,
+		// The bind table and the new-name entries change no call. The compares only leave calls out.
+		if (m < 8 && !(m & PS3GL_FAST_COMPARE) && (g_calls != calls0 || g_call_hash != hash0))
+			die("%s changes the RSX calls (%llu, %llu at 0)", g_what, (unsigned long long)g_calls,
 			    (unsigned long long)calls0);
 		if (g_calls > calls0)
 			die("%s: %llu RSX calls, more than the %llu at 0", g_what, (unsigned long long)g_calls,
@@ -884,6 +902,6 @@ int main(int argc, char** argv)
 	printf("cmp %u: %u draws and clears; RSX calls: %llu at 0, %llu with the compares (%.1f%%), %llu with changes; "
 	       "%llu draws with a dc program checked (%llu with the clamp and the weight)\n", seed,
 	       g_nbase, (unsigned long long)calls0, (unsigned long long)calls[3], 100.0 * (double)calls[3] / (double)calls0,
-	       (unsigned long long)calls[4], (unsigned long long)g_dc_checks, (unsigned long long)g_dc_xt_checks);
+	       (unsigned long long)calls[8], (unsigned long long)g_dc_checks, (unsigned long long)g_dc_xt_checks);
 	return 0;
 }

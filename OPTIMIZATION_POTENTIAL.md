@@ -219,10 +219,12 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 22 (parked for the end, Matt 2026-10-12; bundle 21 until 2026-10-13); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
 | P87 | Store-queue stores straight into the TA buffer | speed | Crazy Taxi, Looney Tunes race (their PREF follows the stores); not Sonic Adventure 2's main loop | probe ~40 lines; build ~100-200 lines | seventh review (2026-10-16); own work; after plan bundle 21 way 4 (dropped); build only if the probe shows a wait |
 | P88 | FSRRA as frsqrte plus Newton steps | speed | Sonic Adventure 2 (one FSRRA a vertex): 0.5-1.5% of the SH4 thread (estimate) | probe ~40 lines; build ~20-30 lines | seventh review (2026-10-16); own work; the hardware error bound is from Reicast |
-| P89 | One rule for the Kamui vsync wait loop | speed | Ikaruga, Rez, Spider-Man, Project Justice, Power Stone 2 | ~20-40 lines | seventh review (2026-10-16); plan bundle 21 way 5; Capcom vs. SNK 2 already has an address entry |
+| P89 | One rule for the Kamui vsync wait loop | speed | Ikaruga, Rez, Spider-Man, Project Justice, Power Stone 2 | ~20-40 lines | seventh review (2026-10-16); plan bundle 21 way 5; built 2026-10-16 (package of 14:25, acts with JIT IDLE HASH ON), HW SUCCESS 2026-10-16 (Ikaruga heavy part 77% -> 87%); it replaces Capcom vs. SNK 2's address entry |
 | P90 | Heavy scenes: four checks with no build | measurement | Ecco the Dolphin, the system work, Looney Tunes race, Sonic Shuffle | no code | seventh review (2026-10-16) |
 | P91 | Re-Volt: the menu and the HUD are cut by the near-plane cap | bug | Re-Volt (US, EU, JP); maybe NHL 2K2, Sturmwind, South Park Rally, Capcom vs. SNK Pro (P92 a) | way B ~20 lines with its row; way A ~30 lines and a product-ID check (estimates) | plan bundle 23 item 1 (new 2026-10-16, Matt); the cause is from an old HW log; nothing built |
 | P92 | Flycast's per-game lists that we lack | bug | 24 games that Flycast fixes per game (a-g); the Dricas login patches for GOALS.md G11 (h) | a, b, d, f, g small; c large; e is against plan section 4 | plan bundle 23 items 2-8 (new 2026-10-16, Matt); h goes to G11; nothing built |
+| P93 | Texture churn: a new texture takes an evicted one | speed | Garou (fights 84-98%); no other game of the HW logs evicts | ~150 lines with the checks | new 2026-10-16 (Matt: "apply the Garou fixes"); built, row Tex Recycle default OFF; HW: render-thread time down, no speed change (Garou is SH4-bound) |
+| P94 | One rule for the Shinobi task loop | speed | Garou; Sonic Shuffle and Border Down as before | ~30 lines | new 2026-10-16 (Matt: "2."); acts with JIT TASK IDLE (default LONG); HW SUCCESS 2026-10-16 (Garou 100%, 60 frames); it replaces the two address entries |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -1200,7 +1202,16 @@ Adventure intro FMV, `[stall] dma`.
 - HW measure: Sonic Adventure 2 at 25K+, SPEED and sleep, the same scene
   before and after. The picture must not change.
 
-### P89 One rule for the Kamui vsync wait loop  `[ ]` seventh review (2026-10-16); plan bundle 21 way 5
+### P89 One rule for the Kamui vsync wait loop  `[x]` HW SUCCESS 2026-10-16 (package of 14:25; Ikaruga heavy part 77% -> 87%, Rez and CvS2 clean; plan section 0); seventh review (2026-10-16); plan bundle 21 way 5
+
+- Built 2026-10-16 (Matt: "Let's work on P89"): `idle_kamui[]` and
+  `idle_kamui_form()` in `dc/sh4/rec_v2/idle_hash.h`, called by
+  `dec_idle_hash()`. It acts with JIT IDLE HASH ON (the default), as our
+  list does. Three forms: hook 7 (14 opcodes), hooks 7 and 12 (16:
+  Ikaruga, Rez), the same with other registers (16: Quake III Arena). The
+  HW logs and the 27 disc images on the PC hold no other form. Capcom vs.
+  SNK 2's address entry is removed: the rule covers it. Details and HW
+  steps: plan section 0.
 
 - Our own work (plan bundle 21, 2026-10-15). The Kamui library's vsync
   wait is the same code in 9 games of the logs (the `[idle] code` dumps):
@@ -1254,6 +1265,41 @@ Adventure intro FMV, `[stall] dma`.
 4. Sonic Shuffle at 18-22K vertices. Bundle 21 HW run 11 played 15-18K
    (99.6%, 29.8 frames a second, 177 ms/s sleep), but not 18-22K (74-92%
    in HW run 9). One play of that part with the current defaults.
+
+### P93 Texture churn: a new texture takes an evicted one (Garou)  `[~]` built 2026-10-16 (package of 16:57), row Tex Recycle default OFF; HW run 1: render-thread texture time 12-35% -> 1-1.6%, but no speed change (Matt: "Nothing changed"; Garou is SH4-bound) (plan section 0)
+
+- Our own work, from Garou's first HW log (plan section 0, the P89 block's
+  Garou bullets). Garou binds 590-833 textures a frame; the cache (1024
+  slots, 8-slot probe) is full, and each new texture evicts one used in the
+  last 4 frames. A new texture costs about 110 us of the render thread (a
+  fit of `tex split decode` against the counts): ps3gl's scans of its
+  4096-entry pool for a new name, and PSL1GHT's rsxMemalign (a first-fit
+  list whose headers are in RSX memory, `ppu/librt/heap.c`).
+- Built: row DRAW COST > Tex Recycle. Evicted textures with no mip chain
+  wait as spares; a new texture of the same size and layout takes one
+  evicted 2 or more frames before (the RSX is past it). ps3gl bit
+  `PS3GL_FAST_GEN`: glGenTextures takes the pool entry, and the free-entry
+  scan starts at a hint.
+- Scope: in 28 games of the HW logs only Garou evicts (Street Fighter Alpha
+  3: 0 evictions). Not built: more cache slots (with a memory cap), the
+  palette lookup in the shader.
+- HW measure: Garou fights, Tex Recycle ON against OFF (live): `[texfmt]
+  spares reused`, `[rend] busy`, SPEED and frames a second; no wrong sprite.
+
+### P94 One rule for the Shinobi task loop  `[x]` HW SUCCESS 2026-10-16 (package of 17:49): Garou fights 86-100% -> 100% at 60 frames with 330-400 ms/s sleep (plan section 0)
+
+- Our own work. JIT TASK IDLE (plan bundle 21) knew the idle fiber's
+  16-slot dispatch of Sega's Shinobi syMng by address only (Sonic Shuffle,
+  Border Down). Garou runs the same code (its test block 8C015E70, 96-148K
+  turns a second with no skip) and is SH4-bound (P93's HW run).
+- Built: the rule matches the loop test and the 30 words of the loop from
+  its `bf` target, the two words of the table's address free, at any
+  address (as P89 does for the Kamui loop). The address list is removed.
+- Scope: the HW logs show the loop in Sonic Shuffle, Border Down and Garou;
+  the 27 disc images on the PC have its test block in Shuffle and Border
+  Down only.
+- HW measure: Garou fights, SPEED and frames a second, the `[idle]` turns
+  of 8C015E70; the game must play as before (timers, sound).
 
 ---
 

@@ -4626,8 +4626,9 @@ static void rth_job_draw(int type, u64 hold)
 {
 	double t0 = os_GetSeconds();
 	double end_dt = 0.0, held = 0.0;
-	// Bundle 14: ps3gl's state path for this job's RSX calls (both rows are live).
-	ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0));
+	// Bundle 14: ps3gl's state path for this job's RSX calls (the rows are live). Tex Recycle: new names skip the scans.
+	ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0) |
+	                (g_tex_recycle_preset ? PS3GL_FAST_GEN : 0));
 	if (type == JOB_PRESENT)
 	{
 		REND_PHASE(PH_PRESENT);

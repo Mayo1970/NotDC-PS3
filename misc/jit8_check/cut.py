@@ -61,15 +61,15 @@ KNOWN = [
     ('Looney Tunes event wait, tail', 0x8C19D168, '88FF 8DF9 6D03', 'O'),
     ('Looney Tunes event wait, head', 0x8C19D160, '4A0B E407', '-'),
     ('Looney Tunes event wait, the scan call', 0x8C19D164, 'BD53 0009', '-'),
-    ('CvS2 vsync wait, tail', 0x8C21A2EE, '61F2 6312 2338 8BF1', 'O'),
+    ('CvS2 vsync wait, tail (the Kamui rule, not a list, since P89)', 0x8C21A2EE, '61F2 6312 2338 8BF1', '-'),
     ('CvS2 vsync wait, counter block (Reicast meant it: its entry lost a colon)', 0x8C21A2DE,
      '63F2 6232 72FF 2322 53F1 6232 32E0 8B03', '-'),
     ('CvS2 vsync wait, the hook call', 0x8C21A2DA, '4D0B E407', '-'),
     ('CvS2 hook dispatcher', 0x8C217FE0, '4F22 7FF8 6243 D30E 4208 2F42 4200 323C 6423 1F21 6122 410B 5441', 'R'),
     ('CvS2 hook dispatcher, its return', 0x8C217FFA, '7F08 4F26 000B E000', 'R'),
-    ('Sonic Shuffle task dispatch, loop test', 0x8C0158A0, 'E310 51F1 3133 8BE1', 'T'),
+    ('Sonic Shuffle task dispatch, loop test (the task rule, not a list, since P94)', 0x8C0158A0, 'E310 51F1 3133 8BE1', '-'),
     ('Sonic Shuffle task dispatch, the turn tail', 0x8C01589A, '52F1 7201 1F21 E310 51F1 3133 8BE1', '-'),
-    ('Border Down task dispatch, loop test', 0x8C04838C, 'E310 51F1 3133 8BE1', 'T'),
+    ('Border Down task dispatch, loop test (the task rule since P94)', 0x8C04838C, 'E310 51F1 3133 8BE1', '-'),
 ]
 LISTS = {'R': 'IDLE_LIST_REICAST', 'O': 'IDLE_LIST_OWN', 'T': 'IDLE_LIST_TASK', '-': 'IDLE_LIST_NONE'}
 rows = ''
@@ -79,6 +79,27 @@ for name, addr, text, lst in KNOWN:
         name, addr, len(words), ', '.join('0x%04X' % w for w in words), reicast_hash(addr, words, False),
         reicast_hash(addr, words, True), LISTS[lst])
 put('hash_known.inc', rows)
+
+# P89: Kamui's vsync wait in the [idle] dumps of the HW logs: tail block, form (0 hook 7, 1 hooks 7 and 12, 2 the same
+# with other registers), the loop from its jsr.
+K7 = '4D0B E407 63F2 6232 72FF 2322 53F1 6232 32E0 8B03 61F2 6312 2338 8BF1'
+K12 = '4E0B E407 4E0B E40C 63F2 6232 72FF 2322 53F1 6232 32D0 8B03 61F2 6312 2338 8BEF'
+KQ3 = '4E0B E407 4E0B E40C 62F2 6322 73FF 2232 52F1 6322 33D0 8B03 61F2 6312 2338 8BEF'
+KAMUI = [
+    ('Capcom vs. SNK 2', 0x8C21A2EE, 0, K7), ('Spider-Man', 0x8C016CAE, 0, K7), ('Project Justice', 0x0C2DB70E, 0, K7),
+    ('Power Stone 2', 0x0C2CBF2E, 0, K7), ('Donald Duck', 0x8C0E13AE, 0, K7), ('Rayman 2', 0x8C0DFF8E, 0, K7),
+    ('Re-Volt', 0x8C0261EE, 0, K7), ('Ikaruga', 0x8C0370D2, 1, K12), ('Rez', 0x8C046052, 1, K12),
+    ('Quake III Arena', 0x8C0CB69E, 2, KQ3),
+]
+put('kamui_known.inc', ''.join('{ "%s", 0x%08Xu, %d, %d, { %s } },\n' % (name, addr, form, len(text.split()),
+                               ', '.join('0x' + w for w in text.split())) for name, addr, form, text in KAMUI))
+
+# P94: the Shinobi task dispatch in the [idle] dumps (its loop test, the loop from the bf target); words 12-13 differ.
+T1, T2 = '51F1 4108 4100 D304 313C 1F12 6212 2228 8B04 A00C 0009 0000', '53F2 6232 54F2 5441 420B 0009 63F2 230B 2F32 52F1 7201 1F21 E310 51F1 3133 8BE1'
+TASKS = [('Sonic Shuffle', 0x8C0158A0, T1 + ' 2890 8C11 ' + T2), ('Border Down', 0x8C04838C, T1 + ' 5410 8C1A ' + T2),
+         ('Garou', 0x8C015E70, T1 + ' E0AC 8C18 ' + T2)]
+put('task_known.inc', ''.join('{ "%s", 0x%08Xu, { %s } },\n' % (name, addr, ', '.join('0x' + w for w in text.split()))
+                              for name, addr, text in TASKS))
 
 put('mac_ref.inc', cut(read('dc/sh4/rec_v2/shil.cpp'), 'extern "C" void sh4_mac_l(u32 a, u32 b, u32 oldl, u32 oldh, u32 srs)\n',
                        '// C call-out census', 'sh4_mac_l/w'))

@@ -52,9 +52,10 @@ volatile unsigned g_rend_phase, g_rend_phase_seq, g_sh4_phase, g_sh4_phase_seq;
 int yuv_conv_generation(u32, u32*) { return 0; }
 }
 
-static int o_mips, o_aniso, o_filter, o_vqfmt, o_slot = 1, o_yuvblk, o_bump = 1;
+static int o_mips, o_aniso, o_filter, o_vqfmt, o_slot = 1, o_yuvblk, o_bump = 1, o_recycle;
 extern "C" {
 int get_tex_slot_hash_preset() { return o_slot; }
+int get_tex_recycle_preset() { return o_recycle; }
 int get_yuv_block_preset() { return o_yuvblk; }
 int get_bump_map_preset() { return o_bump; }
 int get_mipmap_preset() { return o_mips; }
@@ -779,6 +780,58 @@ static bool def_span(const Def& d, u32* lo, u32* hi, u32* top_lo)
 
 static std::vector<Def> g_pool;
 
+// Tex Recycle: a pool whose textures all start in one cache slot (OLD slot function: TexAddr 8 KB apart, one TSP), in
+// three groups of size and layout, so binds evict each other and new textures take spares.
+static void churn_pool()
+{
+	o_slot = 0;
+	const u32 base = rnd(VRAM_SIZE / 8 - 64 * 1024);
+	for (u32 g = 0; g < 3; g++)
+	{
+		Def d;
+		d.tsp.full = rnd32();
+		d.tsp.TexU = d.tsp.TexV = rnd(3);
+		d.tsp.FlipU = d.tsp.FlipV = g == 1;
+		d.tcw.full = 0;
+		static const u32 k_fmt[3] = { 5, 1, 3 };
+		d.tcw.NO_PAL.PixelFmt = k_fmt[g];
+		// One in four groups has mip chains: those textures are never spares.
+		d.tcw.NO_PAL.MipMapped = rnd(4) == 0;
+		if (k_fmt[g] == 5)
+			d.tcw.PAL.PalSelect = rnd(64);
+		const u32 n = 9 + rnd(8);
+		for (u32 k = 0; k < n; k++)
+		{
+			d.tcw.NO_PAL.TexAddr = base + g * 21 * 1024 + k * 1024;
+			g_pool.push_back(d);
+		}
+	}
+}
+
+// Tex Recycle: a texture name that takes another texture must not have been bound in this frame or the one before
+// (the RSX may still sample it), as a new name would not be. g_frame counts begin_frame().
+struct NameUse { u32 frame, key0, key1; };
+static std::map<u32, NameUse> g_name_use;
+static u32 g_frame;
+static u64 g_name_reuses;
+
+static void check_name(const Def& d)
+{
+	const ps3gl_texture_t* const t = ps3gl.tmu[0].bound;
+	const bool mirror = (!d.tsp.ClampU && d.tsp.FlipU) || (!d.tsp.ClampV && d.tsp.FlipV);
+	const u32 key1 = (d.tsp.TexU << 3) | d.tsp.TexV | (d.tsp.IgnoreTexA << 6) | ((g_rr.pal_ram_ctrl & 3) << 7) |
+	                 (mirror << 9) | ((o_bump > 0 && d.tcw.NO_PAL.PixelFmt == 4) << 10);
+	const auto it = g_name_use.find((u32)t->glname);
+	if (it != g_name_use.end() && (it->second.key0 != d.tcw.full || it->second.key1 != key1))
+	{
+		if (g_frame < it->second.frame + 2)
+			die("texture name %d took tcw %08X in frame %u, after tcw %08X in frame %u", t->glname, d.tcw.full, g_frame,
+			    it->second.key0, it->second.frame);
+		g_name_reuses++;
+	}
+	g_name_use[(u32)t->glname] = { g_frame, d.tcw.full, key1 };
+}
+
 // New words in one texture's top level, when no other texture of the pool reads that span (its lower levels would
 // keep the old texels: they are not in the hash). tail: only its last 8 bytes, which a hash span too short misses.
 static void touch_one(bool tail)
@@ -812,6 +865,7 @@ static void begin_frame(const std::vector<DcParam>& params)
 {
 	ps3gl_flush_deferred_texture_frees();
 	ps3tex_frame_begin(params.data(), (u32)params.size());
+	g_frame++;
 }
 
 static bool bind(const Def& d, u32 pidx, bool pt)
@@ -834,6 +888,9 @@ static void run(bool model, u32 epochs)
 			o_vqfmt = rnd(3) != 0;
 			o_aniso = rnd(3) ? 0 : rnd(5);
 			o_filter = rnd(4) ? 0 : 1 + rnd(2);
+			o_recycle = rnd(3) != 0;
+			// ps3gl's bind table and new-name entries (PS3GL_FAST_GEN), in every mix.
+			ps3gl.fast = (int)rnd(8) & (PS3GL_FAST_BIND | PS3GL_FAST_GEN);
 		}
 		o_bump = rnd(4) != 0;
 		o_yuvblk = rnd(2);
@@ -851,7 +908,11 @@ static void run(bool model, u32 epochs)
 		fill_words(g_vram, VRAM_SIZE);
 		fill_words(g_palbuf, 4096 + 32);
 		g_pool.clear();
-		const u32 npool = 12 + rnd(28);
+		// The trace has churn pools too: with Tex Recycle OFF an evicted texture is freed, as in the frozen files.
+		const bool churn = rnd(3) == 0;
+		if (churn)
+			churn_pool();
+		const u32 npool = churn ? 0 : 12 + rnd(28);
 		for (u32 i = 0; i < npool; i++)
 			g_pool.push_back(random_def());
 
@@ -876,11 +937,12 @@ static void run(bool model, u32 epochs)
 			case 5:
 				if (model && rnd(3) == 0)
 				{
-					switch (rnd(4))
+					switch (rnd(5))
 					{
 					case 0: o_mips = !o_mips; break;
 					case 1: o_vqfmt = !o_vqfmt; break;
 					case 2: o_aniso = rnd(5); break;
+					case 3: o_recycle = !o_recycle; break;
 					default: o_filter = rnd(3);
 					}
 				}
@@ -890,7 +952,8 @@ static void run(bool model, u32 epochs)
 			g_seed = (u64)e * 1000 + f + 1;
 			g_lazy = (int)(f & 1);
 
-			const u32 n = 1 + rnd(10);
+			// A churn pool binds most of its textures each frame, as Garou does.
+			const u32 n = churn ? (u32)g_pool.size() / 2 + rnd((u32)g_pool.size() / 2) : 1 + rnd(10);
 			std::vector<u32> pick;
 			params.clear();
 			for (u32 i = 0; i < n; i++)
@@ -919,6 +982,7 @@ static void run(bool model, u32 epochs)
 						if (!ok)
 							die("ps3tex_bind refused tsp %08X tcw %08X", d.tsp.full, d.tcw.full);
 						verify(d, pt);
+						check_name(d);
 					}
 					else
 						fold_state(ok);
@@ -1041,6 +1105,10 @@ int main(int argc, char** argv)
 		if (ps3gl_frame_mip_uploads != g_n.img[1] + g_n.spu_lower)
 			die("ps3gl counted %u mip uploads for %llu glTexImage2D and %llu SPU lower levels", ps3gl_frame_mip_uploads,
 			    (unsigned long long)g_n.img[1], (unsigned long long)g_n.spu_lower);
+		printf("recycle: %llu binds of a name that held another texture, each 2 or more frames later\n",
+		       (unsigned long long)g_name_reuses);
+		if (!g_name_reuses)
+			die("Tex Recycle: no name took a new texture");
 		printf("PASS\n");
 		return 0;
 	}
