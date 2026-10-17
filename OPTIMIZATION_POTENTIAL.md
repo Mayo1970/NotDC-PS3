@@ -3351,6 +3351,49 @@ Capcom network code.
   table (P36), Fish Life's touch screen, Shenmue II disc 4, the Naomi
   lists.
 
+### P103 A DMA over compiled code drops the JIT code  `[x]` built 2026-10-17 (Matt: "Fix it in general, without page faults: keep a map of RAM pages that hold compiled code. When a disc DMA (or another DMA) writes into such a page, drop the compiled code, as Flycast does with its faults."), no row (on with JIT SMC CHECK, fixed at 1); HW run 1: the same freeze; with the I-cache rule (below) HW SUCCESS 2026-10-17 (Matt: "It worked!")
+
+- The fault: Shenmue II (PAL disc 1) freezes at t=456-457 s, PC
+  0x409C823E, in every run (plan section 0, HW run 16). Theory: a code
+  module that a disc DMA loads over RAM the JIT compiled before. The JIT
+  dropped blocks only at CCR.ICI and for the known-SMC list (DoCheck);
+  Shenmue II's entry 0x348000 caught the loads at 123 s and 261 s only.
+- Flycast: code pages are write-protected. A write by the CPU or by a DMA
+  (a host memcpy) faults; `bm_RamWriteAccess` drops the page's blocks and
+  unprotects the page; a block on an unprotected page checks its code at
+  entry. The PS3 gives no write faults.
+- Ours (`dc/sh4/rec_v2/driver.cpp`, region `jdma_check`): a bit per 32-byte
+  line of RAM that a compiled block with no entry guard reads (with 1 KB
+  pages, DMA data next to code would count). The GD-ROM DMA, the PVR DMA
+  to RAM, the G2 DMAs (AICA read, EXT1, EXT2) and the Maple replies call
+  `rdv_DmaWrite()` (`dc/sh4/rec_v2/jit_dma.h`) with the range they wrote.
+  A range with such a line clears the whole code cache: static links,
+  DYN_IC and BCACHE allow no smaller drop. A `[jdma]` line names each
+  clear.
+- Flycast's unprotected page: a 1 KB page hit again within 60 vblanks has
+  DMA data next to code that runs. It opens: its blocks get the entry
+  guard (DoCheck: first and last opcode) and stay out of the map, so its
+  DMAs clear no more. A reset closes the pages; other clears do not.
+- Not with the MMU JIT (an I-cache flush hashes its code pages again). Not
+  CPU stores (store queue, PIO copies): the known-SMC list covers those.
+- Cost: a bit test per 32 bytes a DMA writes; 4 TOC entries (an enum names
+  the DMA, not a string per call site): `.got` 0xFF20 of 0x10000.
+- PC: `misc/jdma_check` (the region against a model, 34 of 34 mutants);
+  report checks added to gd2_check (4 mutants), gdasync_check (1),
+  g2dma_check (4) and maple_check (5, one older mutant repaired).
+- HW run 1 (2026-10-17): the same freeze at t=558 s; 5 DMA clears, none
+  before it. The game's loaders find a code chunk in data already in RAM,
+  run the game's cache routine (caches off, then CCR |= 0x105 with no
+  ICI) and call the chunk's first word. A chunk that CPU stores placed
+  does not reach the DMA code drop (theory).
+- The I-cache rule (Matt: "Yes, let's go with it"): a CCR write that turns
+  the I-cache on (ICE 0 -> 1) clears the JIT code cache, as ICI does
+  (`dc/sh4/ccn.cpp`). Real hardware keeps its 8 KB of lines, but they have
+  turned over by then; the JIT keeps every block. Other games turn the
+  I-cache on 3-5 times, all at boot (24 boots of 2026-10-17); Shenmue II
+  16-18 times a session. Its line is pinned in jdma_check (35 mutants).
+- HW measure: plan section 0.
+
 ---
 
 ## 3. Features and references

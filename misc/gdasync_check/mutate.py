@@ -22,6 +22,8 @@ MUTANTS = [
      [('\t\tif (!get_gd_timing_preset())\n\t\t\treturn;\n\t\tgda_wait();\n\t}',
        '\t\tif (false)\n\t\t\treturn;\n\t\tgda_wait();\n\t}')]),
     ('all of len counted as moved', 'g', [('const u32 moved=len_backup-len;', 'const u32 moved=len_backup;')]),
+    ('the JIT is told of a cut DMA\'s whole length', 'g',
+     [('rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);', 'rdv_DmaWrite(SB_GDSTARD,len_backup,JDMA_GDROM);')]),
     ('no wait at SPI_CD_READ', 'g',
      [('\t\t\tgda_wait();   // P3: a fill still in flight (an aborted read) lands before read_buff is armed again\n',
        '')]),

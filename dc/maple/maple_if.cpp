@@ -11,6 +11,7 @@
 #include "plugins/plugin_manager.h"
 #include "dc/asic/asic.h"
 #include "dc/maple/maple_helper.h"
+#include "dc/sh4/rec_v2/jit_dma.h"
 #include "ps3/ps3_stall.h"
 
 maple_device* MapleDevices[4][6];
@@ -110,7 +111,10 @@ bool IsOnSh4Ram(u32 addr)
 static void maple_copy_replies()
 {
 	for (u32 i=0;i<s_out_n;i++)
+	{
 		memcpy(GetMemPtr(s_out[i].addr,s_out[i].words*4),&s_out_buf[s_out[i].first],s_out[i].words*4);
+		rdv_DmaWrite(s_out[i].addr,s_out[i].words*4,JDMA_MAPLE);
+	}
 	s_out_n=s_out_words=0;
 }
 
@@ -257,6 +261,9 @@ void maple_DoDma()
 				else
 					memcpy(p_out,out,words*4);
 			}
+			// The reply is in RAM now, unless it was dropped or waits for the end interrupt.
+			if (!drop && !delay)
+				rdv_DmaWrite(header_2,words*4,JDMA_MAPLE);
 
 			//goto next command
 			addr += 2 * 4 + plen * 4;

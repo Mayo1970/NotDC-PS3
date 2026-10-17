@@ -9,6 +9,7 @@
 #include "dc/sh4/sh4_registers.h"
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered GD-DMA completion
+#include "dc/sh4/rec_v2/jit_dma.h"
 #include "ps3/ps3_stall.h"
 #include "ps3/ps3_gdasync.h"
 #include "ps3_timebase.h"
@@ -1523,6 +1524,7 @@ void UpdateGDRom()
 			src+=buff_size;
 			len-=buff_size;
 		}
+		rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);
 	}
 	else
 	{

@@ -10,6 +10,7 @@
 #include "dc/sh4/sh4_sched.h"
 #include "gdromv3.h"
 #include "ps3_gdasync.h"
+#include "dc/sh4/rec_v2/jit_dma.h"
 
 uint64_t ps3_timebase_hz = 1000000000ull;
 
@@ -160,11 +161,25 @@ DMAC_DMAOR_type DMAC_DMAOR = { 0x8201 };
 static u8 g_ram[1 << 24];
 static u32 g_irq_dma, g_irq_cmd;
 
+// The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp): each report names exactly the words written since the last one.
+static u32 g_dw_lo = ~0u, g_dw_hi, g_dw_n;
 void WriteMem32_nommu(u32 addr, u32 data)
 {
 	if (addr & 3)
 		check_fail("unaligned DMA address", __FILE__, __LINE__);
 	memcpy(&g_ram[addr & 0xFFFFFC], &data, 4);
+	g_dw_lo = addr < g_dw_lo ? addr : g_dw_lo;
+	g_dw_hi = addr > g_dw_hi ? addr : g_dw_hi;
+	g_dw_n++;
+}
+void rdv_DmaWrite(u32 addr, u32 size, JitDma who)
+{
+	if (g_dw_n ? g_dw_lo != addr || g_dw_hi + 4 - addr != size || g_dw_n * 4 != size : size != 0)
+		fail("a DMA report is not the words written since the last one", size, g_dw_n * 4);
+	if (who != JDMA_GDROM)
+		fail("a GD-ROM DMA report names another DMA", who, JDMA_GDROM);
+	g_dw_lo = ~0u;
+	g_dw_hi = g_dw_n = 0;
 }
 void asic_RaiseInterrupt(HollyInterruptID id)
 {
@@ -1301,6 +1316,7 @@ int main(int argc, char** argv)
 			if (!strcmp(argv[2], k_models[i].name))
 			{
 				k_models[i].fn();
+				eq("DMA words not reported to the JIT", g_dw_n, 0);
 				printf("%s: model %s, %d errors\n", g_errors ? "FAIL" : "PASS", argv[2], g_errors);
 				return g_errors ? 1 : 0;
 			}

@@ -15,7 +15,8 @@ FILES = [F, D, C, N, L, R, V, X, P, M, PH, 'dc/maple/maple_if.h', 'dc/maple/mapl
          'misc/maple_check/fake/types.h', 'misc/maple_check/fake/config/config.h',
          'misc/maple_check/fake/dc/sh4/intc.h', 'misc/maple_check/fake/dc/mem/sb.h',
          'misc/maple_check/fake/dc/mem/sh4_mem.h', 'misc/maple_check/fake/dc/asic/asic.h',
-         'misc/maple_check/fake/plugins/plugin_manager.h', 'misc/maple_check/fake/ps3/ps3_stall.h']
+         'misc/maple_check/fake/plugins/plugin_manager.h', 'misc/maple_check/fake/ps3/ps3_stall.h',
+         'dc/sh4/rec_v2/jit_dma.h']
 
 PAD = "\t\t// P29: with the row, the pad answers the reset, kill and all-status commands as Flycast's does.\n"
 VMU = "\t\t// P29: with the row, the VMU answers the reset, kill and all-status commands as Flycast's does.\n"
@@ -35,8 +36,8 @@ MUTANTS = [
     ('a kept reply is one word short', F, 's_out[s_out_n].words=words;', 's_out[s_out_n].words=words-1;'),
     ('a kept reply goes one word too far', F, 's_out[s_out_n].addr=header_2;', 's_out[s_out_n].addr=header_2+4;'),
     ('a kept reply starts at the pool\'s start', F, 's_out[s_out_n].first=s_out_words;', 's_out[s_out_n].first=0;'),
-    ('the end keeps the pool', F, '\t\tmemcpy(GetMemPtr(s_out[i].addr,s_out[i].words*4),&s_out_buf[s_out[i].first],s_out[i].words*4);\n\ts_out_n=s_out_words=0;\n',
-     '\t\tmemcpy(GetMemPtr(s_out[i].addr,s_out[i].words*4),&s_out_buf[s_out[i].first],s_out[i].words*4);\n'),
+    ('the end keeps the pool', F, '\t\trdv_DmaWrite(s_out[i].addr,s_out[i].words*4,JDMA_MAPLE);\n\t}\n\ts_out_n=s_out_words=0;\n',
+     '\t\trdv_DmaWrite(s_out[i].addr,s_out[i].words*4,JDMA_MAPLE);\n\t}\n'),
     ('a reset keeps the waiting replies', F, '\tmaple_dma_pending=0;\n\tmaple_end_replies(false);\n', '\tmaple_dma_pending=0;\n'),
     # Maple Bus Speed
     ('REAL is 2 Mb/s both ways', F, '(u64)SH4_CLOCK_EFF*xfer_out/(740000/8)', '(u64)SH4_CLOCK_EFF*xfer_out/(2000000/8)'),
@@ -118,6 +119,12 @@ MUTANTS = [
     ('the UI is not ready at boot', R, '\t\tps3_vmulcd_init();\n', ''),
     ('the disc ID is the area text', X, 'maple_vmu_game((const char*)&ip[0x40]);', 'maple_vmu_game((const char*)&ip[0x30]);'),
     ('the overrun interrupt is bit 8', PH, 'holly_MAPLE_OVERRUN = holly_err | 0x09,', 'holly_MAPLE_OVERRUN = holly_err | 0x08,'),
+    # The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp drops the code compiled from what a DMA wrote)
+    ('a reply written at once is not told to the JIT', F, '\t\t\tif (!drop && !delay)\n\t\t\t\trdv_DmaWrite(header_2,words*4,JDMA_MAPLE);\n', ''),
+    ('a kept reply is not told to the JIT', F, '\t\trdv_DmaWrite(s_out[i].addr,s_out[i].words*4,JDMA_MAPLE);\n', ''),
+    ('the JIT is told one word short', F, 'rdv_DmaWrite(header_2,words*4,JDMA_MAPLE);', 'rdv_DmaWrite(header_2,words*4-4,JDMA_MAPLE);'),
+    ('a swapped reply is not told to the JIT', F, '\t\t\tif (!drop && !delay)\n', '\t\t\tif (direct)\n'),
+    ('the JIT is told of another DMA', F, 'rdv_DmaWrite(header_2,words*4,JDMA_MAPLE);', 'rdv_DmaWrite(header_2,words*4,JDMA_G2);'),
     # The rows
     ('Maple Reply Delay OFF by default', P, 'int g_maple_delay_preset   = 1;', 'int g_maple_delay_preset   = 0;'),
     ('Maple Bus Speed REAL by default', P, 'int g_maple_speed_preset   = 0;', 'int g_maple_speed_preset   = 1;'),

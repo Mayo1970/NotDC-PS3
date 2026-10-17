@@ -4,6 +4,7 @@
 #include "dc/mem/sb.h"
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"
+#include "dc/sh4/rec_v2/jit_dma.h"
 #include <stdlib.h>
 #include <unordered_map>
 
@@ -34,7 +35,22 @@ void libAICA_WriteMem_aica_reg(u32, u32, u32) {}
 void asic_RaiseInterrupt(HollyInterruptID i) { SB_ISTNRM |= 1u << (u32)i; }
 static std::unordered_map<u32, u32> g_mem;   // the real code's memory
 u32 ReadMem32_nommu(u32 a) { auto it = g_mem.find(a); return it == g_mem.end() ? a * 2654435761u : it->second; }
-void WriteMem32_nommu(u32 a, u32 v) { g_mem[a] = v; }
+// The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp): each report names exactly the words written since the last one.
+static u32 g_dw_lo = ~0u, g_dw_hi, g_dw_n, g_dw_bad;
+void WriteMem32_nommu(u32 a, u32 v)
+{
+	g_mem[a] = v;
+	g_dw_lo = a < g_dw_lo ? a : g_dw_lo;
+	g_dw_hi = a > g_dw_hi ? a : g_dw_hi;
+	g_dw_n++;
+}
+void rdv_DmaWrite(u32 a, u32 n, JitDma who)
+{
+	g_dw_bad += g_dw_n ? g_dw_lo != a || g_dw_hi + 4 - a != n || g_dw_n * 4 != n : n != 0;
+	g_dw_bad += who != JDMA_G2;
+	g_dw_lo = ~0u;
+	g_dw_hi = g_dw_n = 0;
+}
 static sh4_sched_callback* g_cb;
 static int g_cb_pend = -1;   // the deadline scheduler: cycles to the callback, -1 none
 int sh4_sched_register(int, sh4_sched_callback* f) { g_cb = f; return 0; }
@@ -219,6 +235,8 @@ static bool run(u32 ops)
 	extern s32 aica_dma_delay_cycles;
 	aica_dma_delay_cycles = 0;
 	g_mem.clear();
+	g_dw_lo = ~0u;
+	g_dw_hi = g_dw_n = g_dw_bad = 0;
 	M = Model();
 	M.pend = -1;
 	g_cb_pend = -1;
@@ -263,6 +281,8 @@ static bool run(u32 ops)
 			extern void Write_SB_ADST(u32 data);
 			Write_SB_ADST(d);
 			m_write_adst(d);
+			if (!check("the copy's report to the JIT", g_dw_bad + g_dw_n, 0))
+				return false;
 			if (d & 1)
 			{
 				if (g_race && running)

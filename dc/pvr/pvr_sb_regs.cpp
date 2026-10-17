@@ -7,6 +7,7 @@
 #include "pvr_sb_regs.h"
 #include "plugins/plugin_manager.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered PVR-DMA completion
+#include "dc/sh4/rec_v2/jit_dma.h"
 
 extern "C" int get_dma_fix_preset();
 
@@ -137,6 +138,7 @@ static void do_pvr_dma()
 			u32 value = ReadMem32_nommu(dst + offset);
 			WriteMem32_nommu(src + offset, value);
 		}
+		rdv_DmaWrite(src, (len + 3) & ~3u, JDMA_PVR);   // the loop writes whole words
 	}
 	else
 	{

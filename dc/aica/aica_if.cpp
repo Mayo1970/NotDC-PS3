@@ -6,6 +6,7 @@
 #include "dc/asic/asic.h"
 #include "dc/sh4/sh4_sched.h"   // SCHED preset: deadline-ordered AICA G2-DMA end
 #include "dc/sh4/sys_gate.h"
+#include "dc/sh4/rec_v2/jit_dma.h"
 
 #include <time.h>
 #include <stdio.h>
@@ -332,6 +333,7 @@ void Write_SB_ADST(u32 data)
         WriteMem32_nommu(dst + i, word);
     }
     g_aram_hz_dma = 0;
+    rdv_DmaWrite(dst, len, JDMA_G2);   // only a G2 DMA Read (SB_ADDIR 1) writes system RAM
 
     s_g2.starts++;
     s_g2.bytes += len;
@@ -426,6 +428,7 @@ void Write_SB_E1ST(u32 data)
         u32 word = ReadMem32_nommu(src + i);
         WriteMem32_nommu(dst + i, word);
     }
+    rdv_DmaWrite(dst, len, JDMA_G2_EXT1);
 
     SB_E1EN  = (SB_E1LEN & 0x80000000) ? 1 : 0;
 
@@ -475,6 +478,7 @@ void Write_SB_E2ST(u32 data)
         u32 word = ReadMem32_nommu(src + i);
         WriteMem32_nommu(dst + i, word);
     }
+    rdv_DmaWrite(dst, len, JDMA_G2_EXT2);
 
     SB_E2EN  = (SB_E2LEN & 0x80000000) ? 1 : 0;
 

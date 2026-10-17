@@ -33,6 +33,7 @@
 #include "blockmanager.h"
 #include "ngen.h"
 #include "decoder.h"
+#include "jit_dma.h"
 #include "../sh4_fullmmu.h"
 #include "../sh4_mmu_jit.h"
 
@@ -57,6 +58,7 @@ extern "C" int get_jit_sbp_preset();
 // code cache it describes is thrown away. No-op unless the preset is on.
 extern "C" void hotblocks_reset();
 extern "C" void fb_reset();
+extern u32 spg_VblankCountTotal;	// plugs/drkPvr/SPG.cpp
 #if HOST_OS == OS_PS3
 extern "C" int get_jit_code_cache_preset();	// ps3_presets.cpp: 0 = 6 MB, 1 = 12 MB, 2 = CODE_SIZE (plan 5.28)
 extern "C" char __executable_start[], __etext[];	// lv2.ld: the bounds of .text
@@ -242,6 +244,95 @@ void emit_WriteCodeCache()
 	}
 }
 
+// jdma_check: begin
+
+// DMA code drop (Shenmue II, 457 s): a DMA over RAM that holds compiled code clears the code cache, as Flycast's write
+// fault drops a page's blocks. CPU stores do not come here: the known-SMC list in DoCheck covers those.
+#define JDMA_LINE   5	// the code map: a bit per 32-byte line (the SH4's cache line), so DMA data beside code is no hit
+#define JDMA_LINES  (RAM_SIZE >> JDMA_LINE)
+#define JDMA_SHIFT  10	// the open rule: 1 KB pages, as the MMU JIT's code pages
+#define JDMA_PAGES  (RAM_SIZE >> JDMA_SHIFT)
+#define JDMA_REPEAT 60	// vblanks: a page hit again this soon holds DMA data next to code that runs
+static struct
+{
+	u32 code[JDMA_LINES / 32];	// a block with no entry guard reads this line; zeroed with the code cache
+	u8  open[JDMA_PAGES];	// Flycast's unprotected page: its blocks get the entry guard and stay out of code[]
+	u32 hit[JDMA_PAGES];	// vblank count + 1 at the page's last hit, 0 = none
+	u32 clears, opened;
+} s_jdma;
+
+// The units of 1 << shift bytes that [ram, ram + size) touches, size >= 1; RAM's end wraps, as the mirrors do.
+static inline u32 jdma_count(u32 ram, u32 size, u32 shift, u32 units)
+{
+	const u32 n = ((ram + size - 1) >> shift) - (ram >> shift) + 1;
+	return n < units ? n : units;
+}
+
+static void jdma_mark(u32 ram, u32 size)
+{
+	for (u32 i = 0, l = ram >> JDMA_LINE, n = jdma_count(ram, size, JDMA_LINE, JDMA_LINES); i < n;
+	     i++, l = (l + 1) & (JDMA_LINES - 1))
+		s_jdma.code[l >> 5] |= 1u << (l & 31);
+}
+
+static bool jdma_open(u32 ram, u32 size)
+{
+	for (u32 i = 0, p = ram >> JDMA_SHIFT, n = jdma_count(ram, size, JDMA_SHIFT, JDMA_PAGES); i < n;
+	     i++, p = (p + 1) & (JDMA_PAGES - 1))
+		if (s_jdma.open[p])
+			return true;
+	return false;
+}
+
+static void jdma_cleared() { memset(s_jdma.code, 0, sizeof(s_jdma.code)); }
+static void jdma_reset() { memset(&s_jdma, 0, sizeof(s_jdma)); }
+
+static const char* const k_jdma_names[] = { "GD-ROM", "PVR", "G2", "G2 EXT1", "G2 EXT2", "Maple" };
+
+// The GD-ROM, PVR, G2 and Maple DMAs report the guest memory they wrote. Not with the MMU JIT: an I-cache flush hashes
+// its code pages again (sh4_mmu_jit.cpp).
+void rdv_DmaWrite(u32 addr, u32 size, JitDma who)
+{
+	if (!size || !IsOnRam(addr) || g_jit_mmu || !get_jit_sbp_preset())
+		return;
+	u32 ram = addr & RAM_MASK, span = size;
+	// Nearly all of RAM is all of it from line 0, so the loop meets each page in one run.
+	if (span > RAM_SIZE - (1u << JDMA_SHIFT))
+	{
+		ram = 0;
+		span = RAM_SIZE;
+	}
+	const u32 now = spg_VblankCountTotal + 1, opened = s_jdma.opened;
+	u32 hits = 0, first = 0, page = ~0u;
+	for (u32 i = 0, l = ram >> JDMA_LINE, n = jdma_count(ram, span, JDMA_LINE, JDMA_LINES); i < n;
+	     i++, l = (l + 1) & (JDMA_LINES - 1))
+	{
+		if (!(s_jdma.code[l >> 5] & (1u << (l & 31))))
+			continue;
+		if (!hits++)
+			first = l;
+		const u32 p = l >> (JDMA_SHIFT - JDMA_LINE);
+		if (p == page)
+			continue;
+		page = p;
+		if (s_jdma.hit[p] && now - s_jdma.hit[p] < JDMA_REPEAT)
+		{
+			s_jdma.open[p] = 1;
+			s_jdma.opened++;
+		}
+		s_jdma.hit[p] = now;
+	}
+	if (!hits)
+		return;
+	s_jdma.clears++;
+	// One format string: each costs a TOC entry. "opened": pages hit again within JDMA_REPEAT vblanks.
+	printf("[jdma] %s DMA to %08X, %u bytes, over compiled code (%u lines of 32 bytes from %08X, %u pages opened):"
+	       " code cache clear #%u, %u pages open\n", k_jdma_names[who], addr, size, hits,
+	       0x0C000000u + (first << JDMA_LINE), s_jdma.opened - opened, s_jdma.clears, s_jdma.opened);
+	recSh4_ClearCache();
+}
+// jdma_check: end
+
 // Drops every compiled block; the write pointer goes back to the end of the main loop (LastAddr_min).
 void recSh4_ClearCache()
 {
@@ -265,6 +356,7 @@ void recSh4_ClearCache()
 	// dropped, so its counters and code pointers are meaningless now.
 	hotblocks_reset();
 	fb_reset();   // P101: the miss counters described the dropped blocks
+	jdma_cleared();
 
 #if JIT_MANAGED_CACHE
 	// Blocks and patches are synced when written. This second pass covers what was written since the last
@@ -294,6 +386,10 @@ static bool DoCheck(u32 pc, u32 len)
 		return false;
 
 	if (mode >= 2)
+		return true;
+
+	// DMA code drop: the blocks of an open page guard themselves.
+	if (jdma_open(pc & RAM_MASK, len ? len : 2))
 		return true;
 
 	switch (pc & 0xFFFFFF)
@@ -375,7 +471,11 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 #endif
 
 	// The MMU JIT's guard is its page check (sh4_mmu_jit.cpp): GetMemPtr would read a virtual pc.
-	DynarecCodeEntry* rv = ngen_Compile(blk, !g_jit_mmu && DoCheck(blk->start, blk->sh4_code_size));
+	const bool guard = !g_jit_mmu && DoCheck(blk->start, blk->sh4_code_size);
+	DynarecCodeEntry* rv = ngen_Compile(blk, guard);
+	// DMA code drop: a RAM block with no entry guard puts its lines in the map.
+	if (rv && !guard && !g_jit_mmu && IsOnRam(blk->start))
+		jdma_mark(blk->start & RAM_MASK, blk->sh4_code_size ? blk->sh4_code_size : 2);
 
 #if JIT_MANAGED_CACHE
 	if (rv)
@@ -554,6 +654,7 @@ void recSh4_Skip()  { Sh4_int_Skip(); }
 void recSh4_Reset(bool Manual)
 {
 	Sh4_int_Reset(Manual);
+	jdma_reset();
 	recSh4_ClearCache();
 }
 

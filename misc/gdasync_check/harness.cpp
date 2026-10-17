@@ -14,6 +14,7 @@
 #include "dc/sh4/sh4_sched.h"
 #include "gdromv3.h"
 #include "ps3_gdasync.h"
+#include "dc/sh4/rec_v2/jit_dma.h"
 #include <sys/thread.h>
 #include <sys/sem.h>
 #include <sys/mutex.h>
@@ -272,6 +273,8 @@ DMAC_DMAOR_type DMAC_DMAOR = { 0x8201 };
 static u8 g_ram[1 << 24];
 static u32 g_irq_dma, g_irq_cmd;
 
+// The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp): each report names exactly the words written since the last one.
+static u32 g_dw_lo = ~0u, g_dw_hi, g_dw_n;
 void WriteMem32_nommu(u32 addr, u32 data)
 {
 	if (!on_main())
@@ -282,6 +285,16 @@ void WriteMem32_nommu(u32 addr, u32 data)
 		return;
 	}
 	memcpy(&g_ram[addr & 0xFFFFFF], &data, 4);
+	g_dw_lo = addr < g_dw_lo ? addr : g_dw_lo;
+	g_dw_hi = addr > g_dw_hi ? addr : g_dw_hi;
+	g_dw_n++;
+}
+void rdv_DmaWrite(u32 addr, u32 size, JitDma)
+{
+	if (g_dw_n ? g_dw_lo != addr || g_dw_hi + 4 - addr != size || g_dw_n * 4 != size : size != 0)
+		err("a DMA report is not the words written since the last one", size, g_dw_n * 4);
+	g_dw_lo = ~0u;
+	g_dw_hi = g_dw_n = 0;
 }
 void asic_RaiseInterrupt(HollyInterruptID id)
 {
@@ -983,6 +996,8 @@ int main(int argc, char** argv)
 	phase_len0();
 	phase_swap();
 	gda_stop();
+	if (g_dw_n)
+		err("DMA words not reported to the JIT", g_dw_n, 0);
 
 	printf("%s: level %d, miss %d, speed %d, timing %d, read ahead %d, %u reads, %u CD-DA sectors (%u held), %d errors\n",
 	       g_errors ? "FAIL" : "PASS", g_level, g_miss, g_speed, g_timing, g_dra, g_reads, g_pulls, g_held,

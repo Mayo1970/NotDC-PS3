@@ -88,6 +88,14 @@ MUTANTS = [
      '\t\t\tif (!fix && !gd_swapped)\n\t\t\t{\n\t\t\t\tverify(!(SB_GDST&1));\n\t\t\t}\n', '\t\t\tverify(!(SB_GDST&1));\n'),
     ('an idle long DMA runs on', 'if ((fix || gd_swapped) && read_buff.cache_size==read_buff.cache_index && read_params.remaining_sectors==0)\n\t\treturn;',
      ''),
+    # The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp drops the code compiled from what a DMA wrote)
+    ('the JIT is not told of a GD-ROM DMA', '\t\trdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);\n', ''),
+    ('the JIT is told of the whole length', 'rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);',
+     'rdv_DmaWrite(SB_GDSTARD,len_backup,JDMA_GDROM);'),
+    ('the JIT is told of the next address', 'rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);',
+     'rdv_DmaWrite(src,len_backup-len,JDMA_GDROM);'),
+    ('the JIT is told of another DMA', 'rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_GDROM);',
+     'rdv_DmaWrite(SB_GDSTARD,len_backup-len,JDMA_PVR);'),
     # GD-ROM Speed
     ('chunks of 20 KB', '#define GD_DMA_CHUNK 10240', '#define GD_DMA_CHUNK 20480'),
     ('3.6 MB/s', 'SH4_CLOCK_EFF*GD_DMA_CHUNK/1800000', 'SH4_CLOCK_EFF*GD_DMA_CHUNK/3600000'),

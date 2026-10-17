@@ -107,6 +107,10 @@ static void CCN_CCR_write(u32 value)
         sh4_cpu.ResetCache();
         temp.ICI = 0;
     }
+    // The I-cache turned on again: drop the JIT code, as ICI does. Shenmue II turns it off and on, with no ICI, before it
+    // calls code it just wrote; the hardware's 8 KB cache has turned over by then, the JIT's blocks have not.
+    else if (temp.ICE && !CCN_CCR.ICE)
+        sh4_cpu.ResetCache();
 
     // Operand cache invalidate (OCI is self-clearing)
     // No OC emulation, but the bit must still be cleared per spec.

@@ -13,6 +13,74 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-17)
 
+**P103 DMA code drop and the I-cache rule (`OPTIMIZATION_POTENTIAL.md`
+P103), built 2026-10-17 for the Shenmue II freeze (HW run 16 below; Matt:
+"Apply this, the step 3: Fix it in general, without page faults ...", then
+for the I-cache rule "Yes, let's go with it"). Package of 20:39
+(`build/notdc_ps3.pkg`, 1789040 bytes) = the package of 18:35 + both. Not
+committed. No rows: both act while JIT SMC CHECK is 1 (fixed in code). HW
+run 1 (DMA code drop only): the same freeze. HW run 2 (both): HW SUCCESS
+(Matt: "It worked!").**
+- HW run 2 (package of 20:39, the same listener, `ps3log_p101_run1.txt`
+  from line 160966, cut as `s2_p103_run2.txt`): Shenmue II to t=456 s,
+  then an XMB exit (flash saved). No freeze lines. Each of the 19 `CCN:
+  I-cache enabled` lines has its `recSh4: cache clear` line just before;
+  2 DMA clears. SPEED at t=40-456 s: average 98.3% (run 1: 98.7%), 19
+  windows below 90% (run 1: 11), the dips at the scene loads.
+- HW run 3 (the same package and log from line 174070, cut as
+  `lt_p103_run3.txt`; Looney Tunes Space Race; Matt: "a success so far"):
+  no fault. Race SPEED against HW run 15: 26-28K 99.4% (96.9), 28-30K
+  97.7% (98.5), 30-32K 100.8% (99.5), 32-34K 97.8% (99.5), 34-36K 98.2%
+  (92.2), 36-40K 91.7-91.8% (new loads); 2-12 s a band. Boot videos: 5 s
+  at 40-62% (run 15: about 6 s at 47-61%). 5 I-cache enables and 1 DMA
+  clear, all at boot (t=70-86 s); no clear in the race (its one dip, 76%
+  at t=213 s, is a compile burst of 939 KB/s).
+- HW run 1 (package of 20:03; the listener of session 0e77a736 still ran:
+  its `ps3log_p101_run1.txt` from line 147111, cut as `s2_p103_run1.txt`
+  in session ca788789's scratchpad): Shenmue II froze at t=558 s, PC
+  0x409C823E, with the lines of HW run 16. 5 DMA clears (8C00B800 at boot,
+  4 at 0C348000), none from the streaming reads, none before the freeze.
+  The freeze follows the game's cache routine (8C04FC00: the caches off;
+  8C04FC68: CCR |= 0x105, no ICI), as in HW run 16.
+- The game's loaders (8C057780 and 13 more call sites) find a code chunk
+  ('AREA', 'SYSP') in data already in RAM (8C09C5A0), run the cache
+  routine, then call the chunk's first word (`jsr @r10`) and relocate its
+  pointer table. A chunk that CPU stores placed (the disc has 450 .GZ
+  files) does not reach the DMA code drop: theory, not proven.
+- The I-cache rule: a CCR write that turns the I-cache on (ICE 0 -> 1)
+  clears the JIT code cache, as ICI does (`dc/sh4/ccn.cpp`). In the 24
+  boots of 2026-10-17 the other games turn the I-cache on 3-5 times, all at
+  boot; Shenmue II 16-18 times a session. Log: a `recSh4: cache clear` line
+  right before each `CCN: I-cache enabled` line.
+- A DMA that writes a 32-byte line of RAM that compiled code reads clears
+  the code cache: the GD-ROM DMA, the PVR DMA to RAM, the G2 DMAs (AICA
+  read, EXT1, EXT2) and the Maple replies. Line `[jdma] <DMA> DMA to
+  <addr>, <n> bytes, over compiled code (<k> lines of 32 bytes from <line>,
+  <m> pages opened): code cache clear #<n>, <p> pages open`, then the usual
+  `recSh4: cache clear` line.
+- A 1 KB page hit again within 60 vblanks opens (Flycast's unprotected
+  page): its blocks check their first and last opcode at entry and leave
+  the map, so its DMAs clear no more.
+- Not with the MMU JIT; not CPU stores (the known-SMC list stays).
+- PC (WSL): `misc/jdma_check` PASS, `mutate.py` 34 of 34; gd2_check,
+  gdasync_check, g2dma_check, maple_check (with new DMA report checks),
+  sysgate, timebase, clock, flash and cold checks PASS; the new mutants of
+  gd2 (4), gdasync (1), g2dma (4) and maple (5) are caught. The I-cache
+  rule: its line is pinned in jdma_check (35 of 35 mutants), mmu_check
+  PASS. No new build warning. `.got` 0xFF20 of 0x10000 (0xE0 bytes left),
+  0 r2off.
+- Risk: a DMA into a line of code that runs, at intervals of more than 1 s,
+  clears the cache each time (a short stall at each clear, not a fault). A
+  game that turns the I-cache on often clears at each turn.
+- HW steps (listener on 18194 runs):
+  1. Shenmue II PAL disc 1 as in HW runs 16 and 1, on past t=457 s and
+     t=558 s.
+  2. Look for: the freeze at PC 0x409C823E; a `recSh4: cache clear` line
+     before each `CCN: I-cache enabled` line; the `[jdma]` lines.
+  3. Crazy Taxi and the Looney Tunes race as in HW runs 12 and 15: SPEED by
+     band against those runs, the count of `[jdma]` lines (expected: none,
+     or a few at loads).
+
 **P101 fallback per block and P102 8C BASE REG (`OPTIMIZATION_POTENTIAL.md`
 P101, P102), built 2026-10-17 (Matt: "Go for it. Also, while you're at it:
 Check for a faster memory. And the 4-5 op sequence ..."). Package of 17:37
@@ -68,6 +136,16 @@ before boot. No HW run yet.**
   JIT SCHEDULE + LIST and JIT SHORT FORMS 8C BASE REG are default ON in
   source; package of 18:35 (1788144 bytes). Not committed. An install keeps
   its settings, so these reach only a new cfg.
+- HW run 16 (same log, Shenmue II PAL disc 1, the same rows): about 100%
+  for 457 s, then a freeze at PC 0x409C823E (AICA RAM, garbage code). The
+  run of 2026-10-17 night (before P99-P102) froze at the same PC and time
+  with the same lines: an old fault. Theory, not proven: stale JIT code
+  after a module load at a scene change (the game's cache routine
+  8C04FC00/8C04FC68 runs just before; the known-SMC list checks only
+  0x348000 for Shenmue 2; no DMA write drops compiled blocks). Proposed,
+  not built: a row JIT SMC CHECK = ALL RAM to confirm it and log the
+  changed blocks. Built instead (Matt: step 3 of that proposal): P103, the
+  DMA code drop (top of this section).
 - HW steps (listener on 18194 runs):
   1. Rows as in runs 7-9 (COLD SPLIT + EXITS, SCHEDULE + LIST), JIT SHORT
      FORMS 8C PREFIX. Looney Tunes: the boot videos, then the race.

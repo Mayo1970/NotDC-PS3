@@ -104,6 +104,11 @@ void ps3_vmulcd_push(u32 bus, u32 port, const u8* img)
 }
 void ps3_vmulcd_reset() {}
 
+// The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp): test_dma_hook wants each reply's RAM in one of these ranges.
+#include "dc/sh4/rec_v2/jit_dma.h"
+static std::vector<std::pair<u32, u32>> g_dma_rep;
+void rdv_DmaWrite(u32 addr, u32 size, JitDma who) { g_dma_rep.push_back({ addr, who == JDMA_MAPLE ? size : 0 }); }
+
 // -- The code under test, and the old bus code in its own namespace -------------
 #include "dc/maple/maple_helper.cpp"
 #include "dc/maple/maple_devs.cpp"
@@ -768,6 +773,63 @@ static void test_devices()
 	g_players = 1;
 }
 
+// -- 9. The JIT's DMA hook -------------------------------------------------------
+// The words of the first MB that changed since before and that no report covers.
+static u32 dma_unreported(const std::vector<u8>& before)
+{
+	u32 n = 0;
+	for (u32 a = 0; a < WIN_BYTES; a += 4)
+	{
+		if (!memcmp(&before[a], (const u8*)g_ram + a, 4))
+			continue;
+		bool in = false;
+		for (const auto& r : g_dma_rep)
+			in = in || (((r.first >> 26) & 7) == 3 && a - (r.first & (RAM_BYTES - 1)) < r.second);
+		n += !in;
+	}
+	return n;
+}
+// Random tables with the rows that change where a reply goes: each RAM word a DMA writes must reach the JIT.
+static void test_dma_hook(int cases)
+{
+	int bad = 0;
+	for (int c = 0; c < cases && bad < 3; c++)
+	{
+		g_seed = 9000 + c;
+		rows_off();
+		g_maple_delay_preset = c & 1;
+		g_maple_guard_preset = (c >> 1) & 1;
+		g_maple_frame_preset = (c >> 2) & 1;
+		world_reset();
+		SB_MMSEL = (c >> 3) & 1;
+		table_write(table_random(true), g_maple_frame_preset && !SB_MMSEL);
+		u32 miss = 0;
+		for (int end = 0; end < 2; end++)
+		{
+			const std::vector<u8> before((u8*)g_ram, (u8*)g_ram + WIN_BYTES);
+			g_dma_rep.clear();
+			try
+			{
+				if (end)
+					dma_end();
+				else
+					dma_start();
+			}
+			catch (const VerifyFail&)
+			{
+			}
+			miss += dma_unreported(before);
+		}
+		if (miss)
+		{
+			bad++;
+			fprintf(stdout, "FAIL: DMA hook, table %d: %u RAM words with no report\n", 9000 + c, miss);
+		}
+	}
+	EXPECT(bad == 0, "DMA hook: %d tables wrote RAM the JIT was not told of", bad);
+	rows_off();
+}
+
 int main(int argc, char** argv)
 {
 	const int cases = argc > 1 ? atoi(argv[1]) : 150;
@@ -784,6 +846,7 @@ int main(int argc, char** argv)
 	test_frames();
 	test_vmu();
 	test_devices();
+	test_dma_hook(cases);
 	mcfg_DestroyDevices();
 	fprintf(stdout, "%s: maple_check, %d checks, %d random tables\n", g_fail ? "FAIL" : "PASS", g_checks, cases * 2);
 	return g_fail ? 1 : 0;

@@ -39,4 +39,9 @@ try "read without the row" 's/if (rd \&\& !get_g2_dma_read_preset())/if (0)/'
 try "read refused with the row" 's/if (rd \&\& !get_g2_dma_read_preset())/if (rd)/'
 try "read copies from the system address" 's/u32 src = rd ? SB_ADSTAG : SB_ADSTAR;/u32 src = SB_ADSTAR;/'
 try "read copies to the G2 address" 's/u32 dst = rd ? SB_ADSTAR : SB_ADSTAG;/u32 dst = SB_ADSTAG;/'
+# The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp drops the code compiled from what a DMA wrote)
+try "the JIT is not told of a G2 DMA" 's/rdv_DmaWrite(dst, len, JDMA_G2);/;/'
+try "the JIT is told of the source" 's/rdv_DmaWrite(dst, len, JDMA_G2);/rdv_DmaWrite(src, len, JDMA_G2);/'
+try "the JIT is told one word short" 's/rdv_DmaWrite(dst, len, JDMA_G2);/rdv_DmaWrite(dst, len - 4, JDMA_G2);/'
+try "the JIT is told of another DMA" 's/rdv_DmaWrite(dst, len, JDMA_G2);/rdv_DmaWrite(dst, len, JDMA_G2_EXT1);/'
 echo "$caught of $total mutations caught"

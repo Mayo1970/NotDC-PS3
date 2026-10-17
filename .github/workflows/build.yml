@@ -5,7 +5,7 @@ on: [ push, pull_request, workflow_dispatch ]
 jobs:
   build_pkg:
     runs-on: ubuntu-22.04
-    container: hldtux/ps3dev:latest
+    container: mayo2853/ps3dev-latest:latest
     steps:
 
     - name: Checkout

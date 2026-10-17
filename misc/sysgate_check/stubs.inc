@@ -33,6 +33,9 @@ int g_vblank_int_reset_preset;
 int g_fb_line_double_preset;
 void FbShown(u32 a) { (void)a; }
 u32 g_aram_hz_dma;
+// The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp), named by aica_if.cpp's G2 DMAs.
+#include "dc/sh4/rec_v2/jit_dma.h"
+void rdv_DmaWrite(u32 a, u32 n, JitDma w) { (void)a; (void)n; (void)w; }
 void aica_fix_dump(double s) { (void)s; }
 // Named by SPG.cpp since bundle 9 (the ARM7 census line).
 void arm_p49_dump(double s) { (void)s; }

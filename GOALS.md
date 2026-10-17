@@ -13,7 +13,8 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
 Active goal: none. G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well."). The open goals
-are G10, G11, G15 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13.
+are G10, G11, G15, G16 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13. G16 (added
+2026-10-17, menu ideas, an open list) is the latest goal; its run order is not set yet.
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
 as bundles 10-22 since the re-cut of 2026-10-12 and the new bundle 21 of 2026-10-13, bundles 1-9 are closed) and `OPTIMIZATION_POTENTIAL.md` (P1-P85, six reference reviews).
@@ -426,6 +427,56 @@ Each item keeps its own row and HW run on Matt's PS3, SH4 Clock 200.
 5. HW test: close a game and boot another one, with no hang and the saves kept; RUMBLE and a second VMU in a slot work
    in a game; a save editor opens a VMU file from the PS3; with one pad the game sees one controller, and a second
    pad adds port B.
+
+## G16 - Menu ideas  `[ ]` (added 2026-10-17 at Matt's request; nothing built; an open list, Matt may add items)
+Matt 2026-10-17: menu ideas, checked for "doable or not". All are doable. Items 3, 4 and 5 are the newer form of G15
+items 4, 2 and 1; item 1 is the newer form of the G13 note of 2026-10-16. Run order: not set yet. Each item keeps its
+own row and HW run on Matt's PS3, SH4 Clock 200.
+1. Advanced options. Matt: "Hide most JIT/Render/Debug and such features behind an "Advanced options" voice".
+   - The menu has 15 pages and 225 rows in `s_opt_pages` (`ps3/ps3_menu.cpp`), and CONTROLS has 19.
+   - A flag per page hides a page. A "basic" page can point at the same variables as the advanced rows:
+     `for_each_option()` already skips the second row of one variable. The SELECT menu uses the same pages.
+   - `MAX_INGAME_OPTS` is 256: a basic page of more than 31 rows needs it raised.
+   - Open: which rows are basic.
+2. UDP log row. Matt: "the homebrew sending its log files to the UDP port as toggleable option".
+   - A flag in `ps3_log_vprintf()` (`ps3/ps3_main.cpp`) skips `vsnprintf` and `sendto`, so OFF can only save time.
+   - The log starts before `cfgOpen()`, so the first 3 boot lines go out before the flag is read.
+   - The IP is a build constant (`PS3_LOG_IP`, 192.168.178.99), so for other users the log goes nowhere.
+   - A new key takes the source default also on Matt's install: with OFF, his logs stop until he sets ON.
+   - Open: the default.
+3. Controller detector. Matt: "Depending how many controllers are plugged in, the game will detect them and will act
+   accordingly (so we can't assign 4 pads, if 2 are connected, for example)".
+   - Today CONTROLS > Players (1-4) makes the maple ports at boot, pads or not. `ps3_find_pad()`
+     (`ps3/ps3_input.cpp`) gives DC port N the Nth connected PS3 pad.
+   - Step A: Players capped at `pad_count()` (`ps3/ps3_menu.cpp`), or a value AUTO (the pads at boot).
+   - Step B: plug and unplug during a game. The devices are made one time in `mcfg_CreateDevices()`
+     (`dc/maple/maple_cfg.cpp`), and each game reacts in its own way. A later step.
+   - Open: cap or AUTO.
+4. Slot devices. Matt: "Controllers will be able to pick what's included in slot A and Slot B. So they can choose if
+   both slots have a VMU, or one of them has the rumble pack and so on".
+   - Each player and slot: NONE, VMU or RUMBLE PACK. Today slot 1 is a VMU, slot 2 a VMU or the pack (one row).
+   - VMU files are already per slot (`vmu_save_A1.bin` to `D2`), and the rumble already goes to each player's DS3.
+   - Risk: a game can look for the pack in one slot only. Build with item 6.
+5. Close game. Matt: "Add a "Close game" feature that will stop the emu so we can pick another game".
+   - `EmuMain()` keeps the DC memory, the SPU jobs and the render thread until the process ends (`nullDC.cpp`). So
+     G15 way B (a second `EmuMain()` in one process) is large.
+   - Way A: save the presets and the flash (VMUs save at each write), `gda_stop()`, then `sysProcessExitSpawn2`
+     (PSL1GHT `lv2/process.h`) of our own `EBOOT.BIN`. The browser opens again; a restart takes a few seconds.
+   - HW risk: the SPUs and the RSX must be free after the respawn. The forced exit of the monitor thread already ends
+     the process with threads running.
+6. VMU manager. Matt: "Add a VMU manager that will let us create more than one VMU. Thus acting like in real life where
+   we can choose. Then users will choose which VMU to use." Related: G15 item 3.
+   - A screen lists the cards in `/dev_hdd0/savedata/vmu/`, makes blank cards (`vmu_format()`), and gives each slot a
+     card (a `[ps3]` key per slot). `open_card()` (`dc/maple/maple_devs.cpp`) takes that name, not `vmu_file_name()`.
+   - Names: automatic (VMU_01, VMU_02 ...) or the PS3 on-screen keyboard (PSL1GHT `sysutil/osk.h`, not used yet,
+     needs a HW bring-up). Optional: list the saves on each card.
+   - A swap during a game is a risk: a game can keep the old card's directory, so it needs an unplug first. First
+     version: set before boot.
+   - Open: the manager's card or VMU Per Game, which wins; the names.
+7. HW test: the basic menu shows only the basic rows and Advanced shows all; UDP OFF sends nothing and ON logs as
+   today; with 2 pads Players stops at 2; a rumble pack and a second VMU work per slot in a game; Close Game boots
+   another game with no hang and the saves kept; a new card from the manager saves in a game, and a second card
+   swaps in at boot.
 
 ## G13 - Release candidate settings  `[ ]` (added 2026-10-08 at Matt's request; release material, stays the last goal)
 An RC build shows only a few option rows. Every other setting runs its source default.
