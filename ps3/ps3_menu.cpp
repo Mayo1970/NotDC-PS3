@@ -341,6 +341,9 @@ static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };
 static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };
 static const char* k_autochk[]   = { "OLD", "FRAMES", "+ X3 TRY", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
+static const char* k_coldsplit[] = { "OFF", "ON", "+ EXITS", NULL };
+static const char* k_shortforms[] = { "OFF", "ON", "8C PREFIX", NULL };
+static const char* k_jitsched[]  = { "OFF", "FORMS", "+ LIST", NULL };
 static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
@@ -508,6 +511,8 @@ static Option s_video[] = {
 	  "A store-queue flush to main RAM copies straight into RAM, not 3 calls (5.44). Live." },
 	{ "MMU SQ Direct",   &g_mmu_sq_direct_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "With the MMU on (Ikaruga, Rez), TA SQ Direct and RAM SQ Direct act too (P74). Live." },
+	{ "TA Line Zero",    &g_ta_line_zero_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The TA buffer's next cache line is zeroed before use, so the PPE reads no memory for it (P98). Live." },
 	{ "TA Peak Frame",   &g_ta_peak_frame_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The [rend] peak= stat is noted per frame, not per TA record. Set before boot." },
 	{ "Frame Drop",      &g_drop_policy_preset,   OPT_CHOICE, k_drop,      0, 0,0,0, NULL,
@@ -546,12 +551,16 @@ static Option s_video[] = {
 	  "Logs [CC] C call-outs, [mem64] and the [stall] slowest frame each second. Live." },
 	{ "JIT HOTBLOCKS",   &g_hotblocks_preset,     OPT_CHOICE, k_hotblocks, 0, 0,0,0, NULL,
 	  "[HOTC] census, dumps. ON: 3K+ vertex frames; ALL WINDOWS: every second. Slower. Set before boot." },
+	{ "SH4 Time Profile", &g_sh4_profile_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "[prof] each 5 s: the SH4 thread's time by game block and C part, with code dumps. Set before boot." },
 	{ "SPE Doorbell",    &g_spe_bell_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "SPE wake test at boot, [spe] counts in play. Set before boot." },
 	{ "SPE Draw",        &g_spe_draw_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "TA decode on an SPE; the render thread draws its lists. Set before boot." },
 	{ "SPE Wait Yield",  &g_spe_wait_yield_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
 	  "The render thread's SPE wait leaves the core to the SH4. Set before boot." },
+	{ "Render Low Priority", &g_rend_low_prio_preset, OPT_CHOICE, k_onoff, 0, 0,0,0, NULL,
+	  "The render thread draws at the PPE's low thread priority, so the SH4 gets more of the core. Live." },
 	{ "SPE Build",       &g_spe_build_preset,     OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
 	  "An SPE builds the merged vertex runs; CHECK compares them. Set before boot." },
 	{ "SPE Tex Hash",    &g_spe_tex_preset,       OPT_CHOICE, k_jit3,      0, 0,0,0, NULL,
@@ -624,6 +633,14 @@ static Option s_jit[] = {
 	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Shuffle, Border Down, Garou). Set before boot." },
 	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,
 	  "FRAMES: AUTO tests frames and loads. + X3 TRY: an X3 try must give more frames than X30. Live." },
+	{ "JIT TA SLOT",     &g_jit_ta_slot_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "SQ stores also write the TA buffer, so the PREF reads nothing back (P87). Set before boot." },
+	{ "JIT COLD SPLIT",  &g_jit_cold_split_preset, OPT_CHOICE, k_coldsplit, 0, 0,0,0, NULL,
+	  "Slow paths move to the cache top, so hot code packs; + EXITS moves lookups too (P99). Set before boot." },
+	{ "JIT SHORT FORMS", &g_jit_short_forms_preset, OPT_CHOICE, k_shortforms, 0, 0,0,0, NULL,
+	  "ON: area check in 2 ops. 8C PREFIX: 0x8C, or 0x0C in 0x0C blocks, 5 ops (P101). Set before boot." },
+	{ "JIT SCHEDULE",    &g_jit_schedule_preset,  OPT_CHOICE, k_jitsched,  0, 0,0,0, NULL,
+	  "FORMS: RAM check and address side by side. + LIST: block ops reordered for the PPE (P100). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -660,6 +677,8 @@ static Option s_gdrom[] = {
 	  "A backslash in a GDI track path opens as a slash (P57). Set before boot." },
 	{ "Disc Swap",       &g_disc_swap_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "TRIANGLE in the in-game menu changes the disc (P34). Live." },
+	{ "GD-ROM Read Ahead", &g_gd_read_ahead_preset, OPT_CHOICE, k_onoff,   0, 0,0,0, NULL,
+	  "The worker reads the data after each disc read; the next read comes from RAM (Crazy Taxi). Live." },
 };
 
 // Plan section 7, bundle 3: one row per item; the first value is the old path.
@@ -1406,7 +1425,10 @@ static int* const k_live_opts[] = {
 	&g_arm7_rate_preset, &g_arm7_interleave_preset,
 	&g_adpcm_loop_preset, &g_key_census_preset,
 	&g_mmu_sq_direct_preset,
+	&g_gd_read_ahead_preset,
 	&g_rtt_async_preset, &g_ta_ctx_split_preset,
+	&g_rend_low_prio_preset,
+	&g_ta_line_zero_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

@@ -12,6 +12,7 @@
 #include <sys/systime.h>
 
 extern "C" int get_gd_async_preset();
+extern "C" int get_gd_read_ahead_preset();
 void libGDR_ReadSectorLocked(u8* buff, u32 StartSector, u32 SectorCount, u32 secsz);   // plugs/ImgReader
 
 #define RA_SLOTS 64            // ~0.85 s of CD-DA, slot = FAD & (RA_SLOTS - 1)
@@ -22,6 +23,11 @@ void libGDR_ReadSectorLocked(u8* buff, u32 StartSector, u32 SectorCount, u32 sec
 #define RA_NONE  0xFFFFFFFFu
 #define SECT     2352
 #define PRIO     999           // above the SH4 (1001) and render (1000) threads: it spends its time on the disk
+// Row GD-ROM Read Ahead: the data sectors after the last fill, slot = FAD & (DRA_SLOTS - 1); the window is read in
+// DRA_BATCH steps, after the fills and the CD-DA ring.
+#define DRA_SLOTS  128
+#define DRA_WINDOW 64
+#define DRA_BATCH  32
 
 #define LOAD(v)     __atomic_load_n(&(v), __ATOMIC_RELAXED)
 #define STORE(v, x) __atomic_store_n(&(v), (x), __ATOMIC_RELAXED)
@@ -52,11 +58,22 @@ static u32 s_ra_flush;            // SH4: a disc swap; the worker drops the ring
 static u64 s_ra_loop = ~0ull;     // SH4: a play's loop start (high word) and end FAD; all ones for none
 static u32 s_lh_start = RA_NONE, s_lh_next;   // worker only: the loop head read so far, [s_lh_start, s_lh_next)
 
+// The data ring. A tag is the FAD with the sector format in its top byte, so a read in another format misses.
+static u64 s_dra[DRA_SLOTS][SECT / 8];
+static u32 s_dra_tag[DRA_SLOTS];
+static u8 s_dra_stage[DRA_BATCH * SECT + 8];   // 8 bytes of slack: a 2340-byte sector is copied in whole words
+static u32 s_dra_want = RA_NONE;  // SH4: the first sector of the window
+static u32 s_dra_fmt;             // SH4: the format of the window
+static u32 s_dra_req;             // SH4: read the window
+static u32 s_dra_run, s_dra_next, s_dra_rfmt;   // worker only: the run [s_dra_run, s_dra_next) and its format
+static u32 s_last_end = RA_NONE, s_last_fmt;   // SH4: where the last fill ended
+
 // [gdr] counters. The worker's only grow and the dump prints deltas; the SH4 thread's are cleared per dump.
 struct Count { u32 n, sec; u64 ticks, max; };
 static Count st_sh4[GDR_N], st_wait;
 static u32 st_hit, st_miss, st_lh;
-static Count w_fill, w_ra, s_fill_seen, s_ra_seen;
+static u32 st_fills, st_seq, st_dra_hit;   // fills, those that start where the last one ended, those the ring gave
+static Count w_fill, w_ra, w_dra, s_fill_seen, s_ra_seen, s_dra_seen;
 
 static void add(Count& c, u32 sec, u64 t)
 {
@@ -112,6 +129,50 @@ static bool ra_get(uint8_t* dst, u32 slot, u32 fad)
 	return LOAD(s_ra_tag[slot]) == fad;
 }
 
+// The formats a data fill takes; 0 = not kept in the data ring.
+static u32 dra_code(u32 secsz)
+{
+	return secsz == 2048 ? 1 : secsz == 2336 ? 2 : secsz == 2340 ? 3 : secsz == 2352 ? 4 : 0;
+}
+
+static u32 dra_tag(u32 fad, u32 secsz)
+{
+	return (fad & 0x00FFFFFFu) | (dra_code(secsz) << 24);
+}
+
+// As ra_put and ra_get, for secsz bytes.
+static void dra_put(u32 slot, u32 tag, const u8* src, u32 secsz)
+{
+	STORE(s_dra_tag[slot], RA_NONE);
+	__atomic_thread_fence(__ATOMIC_RELEASE);
+	for (u32 w = 0; w < (secsz + 7) / 8; w++)
+	{
+		u64 v;
+		memcpy(&v, src + w * 8, 8);
+		STORE(s_dra[slot][w], v);
+	}
+	REL(s_dra_tag[slot], tag);
+}
+
+static bool dra_get(u8* dst, u32 slot, u32 tag, u32 secsz)
+{
+	if (ACQ(s_dra_tag[slot]) != tag)
+		return false;
+	const u32 full = secsz / 8;
+	for (u32 w = 0; w < full; w++)
+	{
+		const u64 v = LOAD(s_dra[slot][w]);
+		memcpy(dst + w * 8, &v, 8);
+	}
+	if (secsz & 7)
+	{
+		const u64 v = LOAD(s_dra[slot][full]);
+		memcpy(dst + full * 8, &v, secsz & 7);
+	}
+	__atomic_thread_fence(__ATOMIC_ACQUIRE);
+	return LOAD(s_dra_tag[slot]) == tag;
+}
+
 // One batch of the window [want, want + RA_SLOTS); false when it has nothing to read.
 static bool ra_batch()
 {
@@ -165,6 +226,33 @@ static bool lh_batch()
 	return true;
 }
 
+// Row GD-ROM Read Ahead: one whole batch when the window [want, want + DRA_WINDOW) lacks one, so each disc read is long;
+// a jump or a new format starts a new run.
+static bool dra_batch()
+{
+	const u32 want = ACQ(s_dra_want), fmt = ACQ(s_dra_fmt);
+	if (want == RA_NONE || !dra_code(fmt))
+		return false;
+	if (fmt != s_dra_rfmt || want < s_dra_run || want > s_dra_next || s_dra_next - want > DRA_SLOTS - DRA_BATCH)
+	{
+		s_dra_run = s_dra_next = want;
+		s_dra_rfmt = fmt;
+	}
+	if (s_dra_next + DRA_BATCH > want + DRA_WINDOW)
+		return false;
+	const u32 n = DRA_BATCH;
+	const u64 t0 = gettime();
+	libGDR_ReadSectorLocked(s_dra_stage, s_dra_next, n, fmt);
+	for (u32 k = 0; k < n; k++)
+	{
+		const u32 fad = s_dra_next + k;
+		dra_put(fad & (DRA_SLOTS - 1), dra_tag(fad, fmt), s_dra_stage + k * fmt, fmt);
+	}
+	s_dra_next += n;
+	w_add(w_dra, n, gettime() - t0);
+	return true;
+}
+
 static void worker(void*)
 {
 	while (!ACQ(s_quit))
@@ -174,7 +262,10 @@ static void worker(void*)
 		{
 			for (u32 i = 0; i < RA_ALL; i++)
 				STORE(s_ra_tag[i], RA_NONE);
+			for (u32 i = 0; i < DRA_SLOTS; i++)
+				STORE(s_dra_tag[i], RA_NONE);
 			s_ra_run = s_ra_next = 0;
+			s_dra_run = s_dra_next = 0;
 			s_lh_start = RA_NONE;
 			REL(s_ra_ready, 0u);
 			REL(s_ra_flush, 0u);
@@ -189,6 +280,13 @@ static void worker(void*)
 		{
 			// A data fill goes first; the next request finishes the window, then the loop head.
 			while (!ACQ(s_busy) && !ACQ(s_quit) && !ACQ(s_ra_flush) && (ra_batch() || lh_batch()))
+				;
+			continue;
+		}
+		// The data window after both: a CD-DA request stops it, and the next fill asks again.
+		if (__atomic_exchange_n(&s_dra_req, 0u, __ATOMIC_ACQ_REL))
+		{
+			while (!ACQ(s_busy) && !ACQ(s_quit) && !ACQ(s_ra_flush) && !ACQ(s_ra_req) && dra_batch())
 				;
 			continue;
 		}
@@ -279,8 +377,37 @@ bool gda_async()
 	return s_up;
 }
 
+// Row GD-ROM Read Ahead: the window starts where this fill ends.
+static void dra_ask(u32 want, u32 secsz)
+{
+	REL(s_dra_fmt, secsz);
+	REL(s_dra_want, want);
+	if (!LOAD(s_dra_req))
+	{
+		REL(s_dra_req, 1u);
+		sysSemPost(s_sem, 1);
+	}
+}
+
 void gda_fill(uint8_t* dst, uint32_t fad, uint32_t count, uint32_t secsz)
 {
+	st_fills++;
+	st_seq += fad == s_last_end && secsz == s_last_fmt;
+	s_last_end = fad + count;
+	s_last_fmt = secsz;
+	// The ring holds every sector: they are here now, and no fill goes to the worker.
+	if (get_gd_read_ahead_preset() && dra_code(secsz))
+	{
+		u32 k = 0;
+		while (k < count && dra_get(dst + k * secsz, (fad + k) & (DRA_SLOTS - 1), dra_tag(fad + k, secsz), secsz))
+			k++;
+		dra_ask(fad + count, secsz);
+		if (k == count)
+		{
+			st_dra_hit++;
+			return;
+		}
+	}
 	s_dst = dst;
 	s_fad = fad;
 	s_count = count;
@@ -368,13 +495,14 @@ void gda_cdda_loop(uint32_t start, uint32_t end)
 		REL(s_ra_loop, v);
 }
 
-// P34: before the next image opens. Returns when the worker has dropped its run and every ring tag.
+// P34: before the next image opens. Returns when the worker has dropped its runs and every ring tag (CD-DA and data).
 void gda_cdda_reset()
 {
-	if (s_level < 2)
+	if (!s_up)
 		return;
 	REL(s_ra_loop, ~0ull);
 	REL(s_ra_want, RA_NONE);
+	REL(s_dra_want, RA_NONE);
 	REL(s_ra_flush, 1u);
 	sysSemPost(s_sem, 1);
 	while (ACQ(s_ra_flush))
@@ -411,8 +539,8 @@ static Count take(Count& w, Count& seen)
 
 void gda_stats(double secs)
 {
-	const Count f = take(w_fill, s_fill_seen), r = take(w_ra, s_ra_seen);
-	bool any = f.n || r.n || st_wait.n || st_hit || st_miss || st_lh;
+	const Count f = take(w_fill, s_fill_seen), r = take(w_ra, s_ra_seen), d = take(w_dra, s_dra_seen);
+	bool any = f.n || r.n || d.n || st_wait.n || st_hit || st_miss || st_lh || st_fills;
 	for (int k = 0; k < GDR_N; k++)
 		any = any || st_sh4[k].n;
 	if (any)
@@ -421,15 +549,17 @@ void gda_stats(double secs)
 		const Count* s = st_sh4;
 		printf("[gdr] %.2f s async=%d sh4: dma %u/%u %.1f(%.1f) pio %u/%u %.1f(%.1f) cdda %u/%u %.1f(%.1f)"
 		       " wait %u %.1f(%.1f) seek %u %.1f | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u"
-		       " lh %u\n",
+		       " lh %u | fills %u seq %u dra %d hit %u read %u/%u %.1f(%.1f)\n",
 		       secs, s_level,
 		       s[GDR_DMA].n, s[GDR_DMA].sec, ms(s[GDR_DMA].ticks), ms(s[GDR_DMA].max),
 		       s[GDR_PIO].n, s[GDR_PIO].sec, ms(s[GDR_PIO].ticks), ms(s[GDR_PIO].max),
 		       s[GDR_CDDA].n, s[GDR_CDDA].sec, ms(s[GDR_CDDA].ticks), ms(s[GDR_CDDA].max),
 		       st_wait.n, ms(st_wait.ticks), ms(st_wait.max), s[GDR_SEEK].n, ms(s[GDR_SEEK].ticks),
-		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss, st_lh);
+		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss, st_lh,
+		       st_fills, st_seq, get_gd_read_ahead_preset(), st_dra_hit, d.n, d.sec, ms(d.ticks), ms(d.max));
 	}
 	memset(st_sh4, 0, sizeof(st_sh4));
 	memset(&st_wait, 0, sizeof(st_wait));
 	st_hit = st_miss = st_lh = 0;
+	st_fills = st_seq = st_dra_hit = 0;
 }

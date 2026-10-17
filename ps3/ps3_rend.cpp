@@ -207,6 +207,34 @@ static inline void raw_note_peak(const TaContext* c)
 // stats line note the peak instead. The stream only grows between list inits, so the peak is the same.
 static bool s_peak_frame;
 
+// P87 JIT TA SLOT: where the JIT's store-queue stores of a record also go: s_ta's next record, or 32 spare bytes when
+// it has no room. Never below raw_used, so those stores never touch a stored record; only the SH4 thread moves it.
+u32 g_ta_slot;
+static u8 s_ta_slot_spare[32] __attribute__((aligned(32)));
+static u32 s_stat_slot_hit, s_stat_slot_copy;
+
+// The JIT loads the slot with lwz, so a buffer must end below 2 GB to have one.
+static inline void ta_slot_sync()
+{
+	const TaContext* c = s_ta;
+	const bool room = c->raw && (uintptr_t)c->raw < 0x7FE00000u && c->raw_used + 32 <= TA_RAW_SIZE;
+	g_ta_slot = (u32)(uintptr_t)(room ? c->raw + c->raw_used : s_ta_slot_spare);
+}
+
+// P98 TA Line Zero: dcbz takes a 128-byte line into the L2 as zeros, with no read from memory. raw is memalign(128).
+#define TA_DCBZ(p) __asm__ volatile("dcbz 0,%0" : : "r"(p) : "memory")
+static u32 s_stat_ta_zero;
+
+// P98 TA Line Zero: a record at the start of a line zeroes the next line, which holds no record yet.
+static inline __attribute__((always_inline)) void ta_line_zero(const TaContext* c)
+{
+	if (g_ta_line_zero_preset && !(c->raw_used & 127) && c->raw_used + 256 <= TA_RAW_SIZE)
+	{
+		TA_DCBZ(c->raw + c->raw_used + 128);
+		s_stat_ta_zero++;
+	}
+}
+
 // Intensity polys scale this face color per vertex (PolyParam 1/2B/4B).
 static float s_face_a = 1, s_face_r = 1, s_face_g = 1, s_face_b = 1;
 // P8 Intensity Clamp: the face colour and the face offset colour as saturated ARGB bytes, taken at the header.
@@ -353,6 +381,7 @@ static void reset_raw(TaContext* c)
 	c->opt = ta_opts_now();
 	if (g_spe_on)
 		ps3spe_reset((u32)(c - s_ctx), c->opt);
+	ta_slot_sync();
 }
 
 // 5.12: sends the stored bytes the SPE has not seen yet.
@@ -389,6 +418,7 @@ static void reset_all_contexts()
 		reset_raw(&s_ctx[i]);
 	}
 	s_ta = s_dec = s_rc = &s_ctx[0];
+	ta_slot_sync();
 }
 
 // rttq_check: begin slots
@@ -443,6 +473,7 @@ static void set_ta_context(u32 addr)
 		reset_raw(c);
 	}
 	s_ta = c;
+	ta_slot_sync();
 }
 
 // P95 TA Context Split: the TA's address moves to a slot no job holds (no address first, then one a STARTRENDER
@@ -462,6 +493,7 @@ static bool ctx_move()
 			s_ta->addr = 0xFFFFFFFF;
 			reset_lists(c);
 			s_ta = c;
+			ta_slot_sync();
 			s_stat_ctx_moves++;
 			return true;
 		}
@@ -1227,8 +1259,10 @@ static inline void store_sq(u32* data)
 	if (c->raw && c->raw_used + 32 <= TA_RAW_SIZE)
 	{
 		u8* dst = c->raw + c->raw_used;
+		ta_line_zero(c);
 		memcpy(dst, data, 32);
 		c->raw_used += 32;
+		ta_slot_sync();
 		if (!s_peak_frame)
 			raw_note_peak(c);
 		rec = (Ta_Dma*)dst;
@@ -1350,8 +1384,10 @@ static inline __attribute__((always_inline)) void sqw_ta_flat(u32 dest, bool pea
 	// The PCW comes from the source, so the FSM never reloads the copy it just stored.
 	const u32 pcw = data[0];
 	u8* dst = c->raw + c->raw_used;
+	ta_line_zero(c);
 	memcpy(dst, data, 32);
 	c->raw_used += 32;
+	ta_slot_sync();
 	if (peak)
 		raw_note_peak(c);
 	const u32 e = ta_fsm_entry(s_fsm_state, pcw);
@@ -1387,6 +1423,63 @@ void FASTCALL do_sqw_nommu(u32 dest)
 void FASTCALL do_sqw_nommu_frame(u32 dest)
 {
 	do_sqw_flat<false>(dest);
+}
+
+// P87 JIT TA SLOT: the record's stores are at slot already (mask bit i: word i; bit 0: pcw is word 0), so nothing is
+// read back from the store queue. A slot that is not s_ta's next record (r11 poisoned) or an unaligned PREF: the copy.
+template<bool peak>
+static inline __attribute__((always_inline)) void do_sqw_slot_t(u32 dest, u32 slot, u32 pcw, u32 mask)
+{
+	if (++g_ta_split.calls == g_ta_split.next)
+		return sqw_sampled(dest);
+	if (!sqw_flat_target(dest))
+	{
+		if (!sqw_ram_target(dest))
+			return sqw_chain(dest);
+		CCALL(CC_SQW);
+		return sqw_ram_copy(dest, dest);
+	}
+	// g_ta_slot is the spare when s_ta has no room, and the spare is never s_ta's next record.
+	TaContext* c = s_ta;
+	if (slot != g_ta_slot || slot != (u32)(uintptr_t)(c->raw + c->raw_used) || (dest & 0x1F))
+	{
+		s_stat_slot_copy++;
+		return sqw_ta_flat(dest, peak);
+	}
+	CCALL(CC_SQW);
+	s_stat_slot_hit++;
+	u8* dst = c->raw + c->raw_used;
+	ta_line_zero(c);
+	if (mask != 0xFF)
+	{
+		// The words the block did not store were stored long before: no wait on their read.
+		const u32* q = (const u32*)&sq_both[dest & 0x20];
+		u32* w = (u32*)dst;
+		if (!(mask & 1))
+			pcw = q[0];
+		for (u32 i = 0; i < 8; i++)
+			if (!(mask & (1u << i)))
+				w[i] = q[i];
+	}
+	c->raw_used += 32;
+	ta_slot_sync();
+	if (peak)
+		raw_note_peak(c);
+	const u32 e = ta_fsm_entry(s_fsm_state, pcw);
+	if ((e & TAS_SLOW) || (g_spe_on && c->raw_used - c->spe_pub >= SPE_BATCH))
+		return sqw_finish(pcw, (Ta_Dma*)dst);
+	s_fsm_state = (u8)e;
+	TaCalls++;
+}
+
+void FASTCALL do_sqw_slot(u32 dest, u32 slot, u32 pcw, u32 mask)
+{
+	do_sqw_slot_t<true>(dest, slot, pcw, mask);
+}
+
+void FASTCALL do_sqw_slot_frame(u32 dest, u32 slot, u32 pcw, u32 mask)
+{
+	do_sqw_slot_t<false>(dest, slot, pcw, mask);
 }
 
 // P74 MMU SQ Direct: with MMUCR.AT on, the UTLB's sq_remap slot gives the target, as in do_sqw<true>. TA polygon
@@ -1473,6 +1566,7 @@ void ps3ta_store_dma(u32* data, u32 size)
 		u8* dst = c->raw + c->raw_used;
 		memcpy(dst, data, bytes);
 		c->raw_used += bytes;
+		ta_slot_sync();
 		if (!s_peak_frame)
 			raw_note_peak(c);
 		p = (Ta_Dma*)dst;
@@ -4411,6 +4505,22 @@ static void rth_print_stats()
 		       (u32)(s_stat_rtt_sh4 * 1000.0 / (now - s_stat_t0)), s_stat_ctx_moves, s_stat_ctx_full);
 	s_stat_rtt_q = s_stat_rtt_direct = s_stat_ctx_moves = s_stat_ctx_full = 0;
 	s_stat_rtt_sh4 = 0.0;
+	// P87 JIT TA SLOT: flushes that found their record in place, those that took the copy, records compiled since boot.
+	if (g_jit_ta_slot_preset)
+		printf("[taslot] hit=%u copy=%u records=%u\n", s_stat_slot_hit, s_stat_slot_copy, g_jit_ts_groups);
+	s_stat_slot_hit = s_stat_slot_copy = 0;
+	// Row Render Low Priority: the windows from a change on run with the new value.
+	static int s_low_prio_logged = -1;
+	if (g_rend_low_prio_preset != s_low_prio_logged)
+	{
+		printf("[rprio] Render Low Priority %s\n", g_rend_low_prio_preset ? "ON" : "OFF");
+		s_low_prio_logged = g_rend_low_prio_preset;
+	}
+	// P98 TA Line Zero: the TA buffer lines zeroed ahead of the SH4's writes.
+	if (g_ta_line_zero_preset || s_stat_ta_zero)
+		printf("[tazero] TA Line Zero %s, lines zeroed %u/s\n", g_ta_line_zero_preset ? "ON" : "OFF",
+		       (u32)(s_stat_ta_zero / (now - s_stat_t0)));
+	s_stat_ta_zero = 0;
 	// Bundle 12: the rows; renders drawn wide and WIDE renders kept at 4:3 by their clip; the last render's canvas.
 	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots)
 		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u\n", g_screen_format_preset,
@@ -4784,11 +4894,14 @@ static void rth_thread(void* arg)
 		s_job_pending = false;
 		sysMutexUnlock(s_rmx);
 
+		// Row Render Low Priority: the job runs at the PPE's low thread priority (or 1,1,1), then medium again.
+		if (g_rend_low_prio_preset) __asm__ volatile("or 1,1,1" ::: "memory");
 		if (type == JOB_RENDER || type == JOB_RTT)
 			rth_job_decode(c, raw_end, cont_end, fence);
 		rth_job_draw(type, hold);
 		// Before the job slot frees: the next fence's RESET may wait on this one (5.12 S3).
 		ps3spe_release(fence);
+		__asm__ volatile("or 2,2,2" ::: "memory");
 
 		sysMutexLock(s_rmx, 0);
 		// P60: the game showed the held frame's buffer while this job ran.
@@ -5043,6 +5156,7 @@ bool InitRenderer()
 		if (!s_ctx[i].raw)
 			printf("[ps3rend] TA raw buffer %u alloc failed; that context drops records\n", i);
 	}
+	ta_slot_sync();
 	// Keep running headless if the RSX fails: the UDP log still shows why.
 	if (!ps3_video_init())
 		printf("[ps3rend] RSX init failed, running headless\n");
@@ -5086,6 +5200,7 @@ void TermRenderer()
 		free(s_ctx[i].raw);
 		s_ctx[i].raw = 0;
 	}
+	ta_slot_sync();
 	ps3tex_reset();
 	s_fb_tex = 0;
 	memset(s_fb_rtex, 0, sizeof(s_fb_rtex));

@@ -1,5 +1,5 @@
 // P3 PC check (WSL): the real gdromv3.cpp and ps3_gdasync.cpp on pthreads and a fake drive, against a plain model.
-// Args: level, iterations, seed, CD-DA Miss (0-3, bundles 2 and 19), GD-ROM Speed; the P34 disc swap at every level.
+// Args: level, iterations, seed, CD-DA Miss (0-3), GD-ROM Speed, Timing, Read Ahead; a P34 disc swap at each level.
 #include <pthread.h>
 #include <unistd.h>
 #include <errno.h>
@@ -130,7 +130,7 @@ bool g_stall_on;
 void stall_push_on(int) {}
 void stall_pop_on() {}
 
-static int g_level, g_miss, g_dma_fix, g_speed, g_timing;
+static int g_level, g_miss, g_dma_fix, g_speed, g_timing, g_dra;
 extern "C" {
 int get_gd_async_preset() { return g_level; }
 int get_debug_loop() { return 0; }
@@ -144,6 +144,7 @@ int get_gd_scd_q_preset() { return 0; }
 int get_cdda_rules_preset() { return 0; }
 int get_gd_speed_preset() { return g_speed; }
 int get_gd_timing_preset() { return g_timing; }
+int get_gd_read_ahead_preset() { return g_dra; }
 int get_gd_dma_fix_preset() { return g_dma_fix; }
 int get_gd_cmd_fix_preset() { return 0; }
 int get_gd_set_mode_preset() { return 0; }
@@ -187,6 +188,8 @@ static u32 rnd_t()
 static std::atomic<u32> g_disc{0};      // P34: the disc in the drive; each one has its own bytes
 static std::atomic<u32> g_cdda_reads{0};   // disc reads the SH4 thread did inside a CD-DA pull
 static std::atomic<u32> g_worker_reads{0};
+static std::atomic<u32> g_worker_fills{0};   // worker reads shorter than a read-ahead batch (32)
+static std::atomic<u32> g_worker_busy{0};
 static bool g_in_pull;
 static inline u8 pat(u32 fad, u32 secsz, u32 j)
 {
@@ -200,7 +203,11 @@ void libGDR_ReadSectorLocked(u8* buff, u32 fad, u32 n, u32 secsz)
 	while (!on_main() && g_block_worker.load())
 		usleep(100);
 	if (!on_main())
+	{
 		g_worker_reads++;
+		g_worker_fills += n < 32;
+		g_worker_busy++;
+	}
 	gda_lock();
 	if (g_in_drive.fetch_add(1) != 0)
 		err("two threads in the drive", fad, n);
@@ -217,6 +224,8 @@ void libGDR_ReadSectorLocked(u8* buff, u32 fad, u32 n, u32 secsz)
 	}
 	g_in_drive.fetch_sub(1);
 	gda_unlock();
+	if (!on_main())
+		g_worker_busy--;
 }
 
 void FASTCALL libGDR_ReadSector(u8* buff, u32 fad, u32 n, u32 secsz)
@@ -722,6 +731,62 @@ static void phase_timing()
 		err("HOST: no DMA waited for a slow disc", 0, 0);
 }
 
+// Row GD-ROM Read Ahead: 8-sector steps in each format, twice from 1000 sectors back; with the row far fewer disc reads
+// than steps, without it one each. Then the ring's 2352-byte sectors read as 2048 bytes must come from the disc.
+static void phase_stream()
+{
+	g_delay_us = 200;
+	static const u32 fmts[3] = { 2048, 2340, 2352 };
+	u32 reads = 0, steps = 0, fad = 0;
+	for (u32 f = 0; f < 3; f++)
+	{
+		fad = 150 + rnd() % 400000;
+		for (u32 pass = 0; pass < 2; pass++)
+		{
+			const u32 w0 = g_worker_reads;
+			for (u32 i = 0; i < 60; i++, fad += 8)
+			{
+				test_read(fad, 8, fmts[f], false);
+				usleep(500);
+			}
+			reads += g_worker_reads - w0;
+			steps += 60;
+			if (pass == 0)
+				fad -= 1000;
+		}
+	}
+	usleep(3000);
+	test_read(fad, 8, 2048, false);
+	printf("  stream: %u disc reads for %u steps of 8 sectors\n", reads, steps);
+	if (g_dra && reads > steps / 2)
+		err("Read Ahead: the steps still read the disc", reads, steps);
+	if (!g_dra && reads < steps)
+		err("no Read Ahead: fewer disc reads than steps", reads, steps);
+
+	// A step back to just before the run, then the step it skipped: the run starts again at the step back, so only
+	// the first step and the step back read the disc (2 of 5). Each step waits for an idle worker.
+	const s32 at[5] = { 0, 8, 16, -8, 0 };
+	u32 fills = 0;
+	for (u32 i = 0; i < 10; i++)
+	{
+		const u32 f0 = 150 + 8 + rnd() % 400000, w0 = g_worker_fills;
+		for (u32 k = 0; k < 5; k++)
+		{
+			test_read(f0 + at[k], 8, 2048, false);
+			for (u32 still = 0; still < 20; )
+			{
+				const u32 w = g_worker_reads;
+				usleep(100);
+				still = (w == g_worker_reads && g_worker_busy == 0) ? still + 1 : 0;
+			}
+		}
+		fills += g_worker_fills - w0;
+	}
+	printf("  stream back: %u disc fills for 50 steps\n", fills);
+	if (g_dra && fills > 25)
+		err("Read Ahead: no new run after a step back", fills, 20);
+}
+
 // P22 with the worker: SB_GDLEN 0 on an empty buffer. The fill is in flight, nothing moves, and the DMA must not end.
 static void phase_len0()
 {
@@ -856,6 +921,23 @@ static void phase_swap()
 			g_block_worker = 0;
 		}
 		test_read(150 + rnd() % 400000, pick_count(2048, 40), 2048, true);
+		// Read Ahead: the ring held the sectors after a read of the old disc; the same read now needs the new bytes.
+		if (g_dra)
+		{
+			const u32 f = 150 + rnd() % 400000;
+			test_read(f, 8, 2048, false);
+			usleep(3000);
+			gdrom_disc_swap("next disc");
+			M.playing = false;
+			for (u32 c = 0; c < 200000000u + 2 * 14336; c += 14336)
+				gdrom_spinup_tick(14336);
+			u8 q[12] = {0};
+			q[0] = 0x70;
+			spi(q);
+			want_sense(6, 0x28, 0);
+			want_sense(0, 0, 0);
+			test_read(f + 8, 8, 2048, false);
+		}
 	}
 	printf("  swap: 24 disc swaps\n");
 }
@@ -868,6 +950,7 @@ int main(int argc, char** argv)
 	g_miss = argc > 4 ? atoi(argv[4]) : 0;
 	g_speed = argc > 5 ? atoi(argv[5]) : 0;
 	g_timing = argc > 6 ? atoi(argv[6]) : 0;
+	g_dra = argc > 7 ? atoi(argv[7]) : 0;
 	g_main = pthread_self();
 
 	gdrom_reg_Init();
@@ -893,12 +976,16 @@ int main(int argc, char** argv)
 		}
 	}
 	if (g_level >= 1)
+	{
+		phase_stream();
 		phase_timing();
+	}
 	phase_len0();
 	phase_swap();
 	gda_stop();
 
-	printf("%s: level %d, miss %d, speed %d, timing %d, %u reads, %u CD-DA sectors (%u held), %d errors\n",
-	       g_errors ? "FAIL" : "PASS", g_level, g_miss, g_speed, g_timing, g_reads, g_pulls, g_held, g_errors.load());
+	printf("%s: level %d, miss %d, speed %d, timing %d, read ahead %d, %u reads, %u CD-DA sectors (%u held), %d errors\n",
+	       g_errors ? "FAIL" : "PASS", g_level, g_miss, g_speed, g_timing, g_dra, g_reads, g_pulls, g_held,
+	       g_errors.load());
 	return g_errors ? 1 : 0;
 }

@@ -131,7 +131,9 @@ int g_gd_scd_q_preset      = 1;   // 1 = GET_SCD format 1 is 14 bytes of Q data,
 int g_cdda_rules_preset    = 1;   // 1 = Flycast's CD-DA end, resume and repeat rules (P61, HW), 2 = also the lead-out stop (P82)
 int g_toc_fields_preset    = 1;   // 1 = TOC entries with ADR 1, a data lead-out, the GD low-density lead-out after track 2 (P23, HW)
 int g_gd_speed_preset      = 1;   // 1 = GD-DMA paced at 1.8 MB/s, a last small chunk at 25 MB/s (P22, HW)
-int g_gd_timing_preset     = 1;   // 1 = the SH4 waits for a late disc read, 2, 3 = also a 100, 330 ms seek on DMA reads
+int g_gd_timing_preset     = 0;   // 1 = the SH4 waits for a late disc read, 2, 3 = also a 100, 330 ms seek on DMA reads;
+                                  // HOST (0) again since 2026-10-16 (Matt): FIXED's waits made Crazy Taxi stutter (HW)
+int g_gd_read_ahead_preset = 0;   // 1 = the worker reads the 64 data sectors after each fill; a fill they hold needs no disc read
 int g_gd_dma_fix_preset    = 1;   // 1 = SB_GDLEN 0 is 32 MB, a DMA longer than its read stops at the read's end (P22, P9, HW)
 int g_cdda_miss_preset     = 2;   // 1 = read-ahead from CD_PLAY, 2 = a ring miss plays silence (5.34, HW), 3 = also the loop head
 int g_gd_cmd_fix_preset    = 1;   // 1 = unknown ATA, EXEC_DIAG, slave drive, CD_READ2 length and length clamps as Flycast (P22, HW)
@@ -197,6 +199,13 @@ int g_jit_task_idle_preset = 2;   // 1 = an idle SDK task-loop turn skips IDLE_T
                                   // 2 = IDLE_TASK_LONG, and an interrupt drops the rest of the skip (HW; LONG, Matt)
 int g_jit_auto_checks_preset = 2; // 1 = FRAMES: the AUTO rows test frames and loads (ps3_idle_auto.h), live (HW);
                                   // 2 = + X3 TRY: an X3 try needs a frame to win and must win it (bundle 22, HW; Matt)
+int g_jit_ta_slot_preset   = 0;   // 1 = store-queue stores also write the TA buffer; the PREF reads nothing back (P87)
+int g_sh4_profile_preset   = 0;   // 1 = a sampler prints the SH4 thread's time by game block and C part (ps3_prof.cpp)
+int g_rend_low_prio_preset = 0;   // 1 = the render thread draws at the PPE's low thread priority, live
+int g_ta_line_zero_preset  = 0;   // 1 = the TA buffer's next 128-byte line is zeroed (dcbz) before the SH4 writes it, live (P98)
+int g_jit_cold_split_preset = 0;  // 1 = cold paths go to the top of the code cache, a `b` slot each; 2 = + dynamic exits' lookups
+int g_jit_short_forms_preset = 0; // 1 = a 2-op RAM check, 2 = 8C PREFIX (P101); both fold @(disp,Rn) disp (P99)
+int g_jit_schedule_preset  = 0;   // 1 = FORMS: RAM check and host address side by side; 2 = + LIST: blocks reordered (P100)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
@@ -397,6 +406,7 @@ static const CfgItem s_items[] = {
 	{ "GdiParser",     &g_gdi_parser_preset },
 	{ "GdiPaths",      &g_gdi_paths_preset },
 	{ "DiscSwap",      &g_disc_swap_preset },
+	{ "GdReadAhead",   &g_gd_read_ahead_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -456,6 +466,13 @@ static const CfgItem s_items[] = {
 	{ "JitX30Fwd",     &g_jit_x30_fwd_preset },
 	{ "JitTaskIdle",   &g_jit_task_idle_preset },
 	{ "JitAutoChecks", &g_jit_auto_checks_preset },
+	{ "JitTaSlot",     &g_jit_ta_slot_preset },
+	{ "Sh4Profile",    &g_sh4_profile_preset },
+	{ "RendLowPrio",   &g_rend_low_prio_preset },
+	{ "TaLineZero",    &g_ta_line_zero_preset },
+	{ "JitColdSplit",  &g_jit_cold_split_preset },
+	{ "JitShortForms", &g_jit_short_forms_preset },
+	{ "JitSchedule",   &g_jit_schedule_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
 	{ "MapleDelay",    &g_maple_delay_preset },
 	{ "MapleSpeed",    &g_maple_speed_preset },
@@ -589,6 +606,7 @@ static const CfgItem s_gd_items[] = {
 	{ "GdiParser",     &g_gdi_parser_preset },
 	{ "GdiPaths",      &g_gdi_paths_preset },
 	{ "DiscSwap",      &g_disc_swap_preset },
+	{ "GdReadAhead",   &g_gd_read_ahead_preset },
 };
 #define GD_ITEMS (sizeof(s_gd_items) / sizeof(s_gd_items[0]))
 
@@ -1020,6 +1038,11 @@ int get_jit_x30_fwd_preset()   { return g_jit_x30_fwd_preset; }
 int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset==2 ? g_jit_x30_fwd_now : g_jit_x30_fwd_preset; }
 int get_jit_task_idle_preset() { return g_jit_task_idle_preset; }
 int get_jit_auto_checks_preset() { return g_jit_auto_checks_preset; }
+int get_jit_ta_slot_preset()   { return g_jit_ta_slot_preset; }
+int get_sh4_profile_preset()   { return g_sh4_profile_preset; }
+int get_jit_cold_split_preset() { return g_jit_cold_split_preset; }
+int get_jit_short_forms_preset() { return g_jit_short_forms_preset; }
+int get_jit_schedule_preset()  { return g_jit_schedule_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
 int get_flash_defaults_preset() { return g_flash_defaults_preset; }
 int get_rtc_local_preset()     { return g_rtc_local_preset; }
@@ -1065,6 +1088,7 @@ int get_cdda_rules_preset()    { return g_cdda_rules_preset; }
 int get_toc_fields_preset()    { return g_toc_fields_preset; }
 int get_gd_speed_preset()      { return g_gd_speed_preset; }
 int get_gd_timing_preset()     { return g_gd_timing_preset; }
+int get_gd_read_ahead_preset() { return g_gd_read_ahead_preset; }
 int get_gd_dma_fix_preset()    { return g_gd_dma_fix_preset; }
 int get_cdda_miss_preset()     { return g_cdda_miss_preset; }
 int get_gd_cmd_fix_preset()    { return g_gd_cmd_fix_preset; }

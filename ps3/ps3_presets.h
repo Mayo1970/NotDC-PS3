@@ -119,6 +119,7 @@ extern int g_cdda_rules_preset;
 extern int g_toc_fields_preset;
 extern int g_gd_speed_preset;
 extern int g_gd_timing_preset;
+extern int g_gd_read_ahead_preset;
 extern int g_gd_dma_fix_preset;
 extern int g_cdda_miss_preset;
 extern int g_gd_cmd_fix_preset;
@@ -173,6 +174,13 @@ extern int g_jit_x30_fwd_preset;
 extern int g_jit_x30_fwd_now;
 extern int g_jit_task_idle_preset;
 extern int g_jit_auto_checks_preset;
+extern int g_jit_ta_slot_preset;
+extern int g_sh4_profile_preset;
+extern int g_rend_low_prio_preset;
+extern int g_ta_line_zero_preset;
+extern int g_jit_cold_split_preset;
+extern int g_jit_short_forms_preset;
+extern int g_jit_schedule_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
 extern int g_stick_deadzone_preset;

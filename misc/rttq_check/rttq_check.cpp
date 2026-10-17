@@ -246,6 +246,9 @@ static void reset_raw(TaContext* c)
 	memset(c->raw, 0xEE, sizeof(c->raw));
 }
 
+// P87's slot follows s_ta; ramsq_check and taslot_check test it.
+static void ta_slot_sync() {}
+
 static void reset_lists(TaContext* c)
 {
 	const u32 last = g_fence;

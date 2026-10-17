@@ -27,6 +27,8 @@
 #include "ps3/ps3_jit_frchg.h"
 #include "ps3/ps3_jit_pref.h"
 #include "ps3/ps3_jit_greuse.h"
+#include "ps3/ps3_jit_taslot.h"
+#include "ps3/ps3_prof.h"
 #include "ps3/ps3_jit_carry.h"
 #include "ps3/ps3_jit_div32.h"
 #include "ps3/ps3_jit_mac.h"
@@ -34,6 +36,8 @@
 #include "ps3/ps3_jit_exit.h"
 #include "ps3/ps3_jit_gate.h"
 #include "ps3/ps3_jit_link.h"
+#include "ps3/ps3_jit_fmem.h"
+#include "ps3/ps3_jit_sched.h"
 #include "ps3/ps3_jit_mmu.h"
 #include "ps3/ps3_idle_auto.h"
 #include "dc/sh4/sys_gate.h"
@@ -369,6 +373,52 @@ extern "C" int get_jit_guard_reuse_preset();
 static GrPlan s_gr;
 static u8 s_gr_kind[GR_MAX_OPS];
 static u32 s_gr_validates, s_gr_reuses;
+
+// P87 JIT TA SLOT, latched when the main loop is emitted: this block's records; records compiled since boot. r11
+// points at s_ts_poison after a cold path or another flush, so that record's flush takes the copy.
+extern "C" int get_jit_ta_slot_preset();
+extern u32 g_ta_slot;
+static bool s_ta_slot;
+static TsPlan s_ts;
+u32 g_jit_ts_groups;
+static u8 s_ts_poison[32] __attribute__((aligned(32)));
+
+// Rows JIT COLD SPLIT, JIT SHORT FORMS (P99, P101) and JIT SCHEDULE (P100), latched when the main loop is emitted, with
+// the counts of the [jopt] line. exit_cold: + EXITS, the cold code of the dynamic exit being emitted.
+extern "C" int get_jit_cold_split_preset();
+extern "C" int get_jit_short_forms_preset();
+extern "C" int get_jit_schedule_preset();
+static struct
+{
+	int split, sched, shortf;
+	FmForm form;
+	SchedEnv env;
+	SchedStats st;
+	u32 bias_hi[2];   // 8C PREFIX's addis immediates: [0] for 0x8C, [1] for 0x0C
+	u32 blocks, islands, cold_bytes, exits, folds, forms, sq_forms, p0_blocks;
+	u32* exit_cold;
+} s_jo;
+static SchedWork s_sw;
+static void exit_cold_begin();
+static void exit_cold_end();
+
+// Row SH4 Time Profile, latched when the main loop is emitted: blocks and stubs store where the SH4 thread is.
+extern "C" int get_sh4_profile_preset();
+static bool s_prof;
+static u32 s_prof_pc;	// the block being compiled: its C calls store it again when they return
+
+// g_prof_where = v through r0 and r12, free wherever this is emitted (r12 is P87's word 0 only up to its flush).
+static void emit_prof(u32 v)
+{
+	if (!s_prof)
+		return;
+	const u32 a=(u32)(uintptr_t)&g_prof_where;
+	const s32 lo=(s16)(a&0xFFFF);
+	ppc_addis(ppc_r12,0,(a-(u32)lo)>>16);
+	ppc_addis(ppc_r0,0,v>>16);
+	ppc_ori(ppc_r0,ppc_r0,v&0xFFFF);
+	ppc_stw(ppc_r0,ppc_r12,(u32)lo);
+}
 
 // DYN_IC (plan 5.3), since boot: sites compiled and misses of filled sites (counted at site+16), each by kind
 // (call, jump, ret), and sites filled. Generated code reaches s_ic_miss with addis from 0: it must lie below 2 GB.
@@ -1287,6 +1337,9 @@ void ngen_End(DecodedBlock* block)
 			{
 				verify((uintptr_t)&s_ic_miss[3] < 0x7FFF0000u);
 				emit_dynic_site(ngen_LinkBlock_Dynamic_IC_stub);
+				// JIT COLD SPLIT + EXITS: the miss path, which only a miss runs, goes to the cold stream.
+				if (s_jo.split>=2)
+					exit_cold_begin();
 				emit_dynic_miss_count(ppc_rarg2,ppc_rarg3,&s_ic_miss[kind]);
 				s_ic_sites[kind]++;
 			}
@@ -1335,6 +1388,7 @@ void ngen_End(DecodedBlock* block)
 		}
 		//jmp no update
 		ppc_jump(loop_no_update);
+		exit_cold_end();
 		break;
 
 	case BET_StaticIntr:
@@ -1358,6 +1412,7 @@ void ngen_End(DecodedBlock* block)
 			ppc_sh_store(reg,reg_nextpc);
 			// UpdateINTC -> Do_Exception reads r[15] and swaps the register bank: flush pinned GPRs before, reload after.
 			reg_flush_all();
+			emit_prof(PROF_PART(PROF_INT));
 			ppc_call_c(&UpdateINTC);
 			reg_reload_all();
 
@@ -1934,6 +1989,8 @@ static void hot_sums_clear()
 // Called from recSh4_ClearCache (dc/sh4/rec_v2/driver.cpp): the code these entries describe is gone.
 extern "C" void hotblocks_reset()
 {
+	if (s_prof)
+		prof_reset_blocks();
 	if (s_hb_dense_n)
 		hot_census("cache clear");
 	s_hb_n = 0;
@@ -2268,6 +2325,17 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	if (get_jit_idle_skip_preset() && seconds>0.0)
 		idle_dump(seconds);
 
+	// P99, P100: blocks compiled since boot with the rows' work; cycles: the scheduler's estimate before and after.
+	static u32 jo_last;
+	if ((s_jo.split || s_jo.shortf || s_jo.sched) && s_jo.blocks!=jo_last)
+	{
+		jo_last=s_jo.blocks;
+		printf("[jopt] blocks=%u | split islands=%u cold KB=%u exits=%u | forms=%u sq=%u folds=%u 0c blocks=%u | sched"
+		       " regions=%u words=%u moved=%u cycles %u -> %u\n", s_jo.blocks, s_jo.islands, s_jo.cold_bytes/1024,
+		       s_jo.exits, s_jo.forms, s_jo.sq_forms, s_jo.folds, s_jo.p0_blocks, s_jo.st.regions, s_jo.st.words,
+		       s_jo.st.moved, s_jo.st.cyc_before, s_jo.st.cyc_after);
+	}
+
 	// Plan 5.3's [dynic] line: sites compiled by kind and filled since boot, misses of filled sites per second.
 	static u32 ic_last[5];
 	if (get_dyn_ic_preset() && seconds>0.0)
@@ -2341,6 +2409,8 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 void FASTCALL do_sqw_mmu(u32 dst);
 void FASTCALL do_sqw_nommu(u32 dst);
 void FASTCALL do_sqw_nommu_frame(u32 dst);
+void FASTCALL do_sqw_slot(u32 dst, u32 slot, u32 pcw, u32 mask);
+void FASTCALL do_sqw_slot_frame(u32 dst, u32 slot, u32 pcw, u32 mask);
 
 // Plan 5.36 TA Peak Frame, latched when the main loop is emitted: PREF calls the flush without the per-record peak.
 static bool s_ta_peak_frame;
@@ -2479,6 +2549,8 @@ struct ColdFrag
 	// before the C call; 2 (plan 5.27) tests for the store queue first.
 	u8         vmem_tier;
 	u8         gr_bit;  // plan 5.31: the CR flag its entry clears (the check it validates failed), 0xFF = none
+	u8         taslot;  // P87: inside a record's window, so the fragment points r11 at s_ts_poison
+	u16        disp;    // JIT SHORT FORMS: the displacement the access folded; the address is areg + disp
 	// MMU JIT (P38): kinds 4-7 = the JTC miss of 0-3, 8 = SR.FD at the block start, 9 = an ifb that took an exception.
 	u32        epc;     // the SPC of the op's exception
 };
@@ -2492,6 +2564,9 @@ static ColdFrag& cold_new()
 {
 	ColdFrag& c = s_cold[s_cold_n++];
 	c.gr_bit = 0xFF;
+	c.taslot = 0;
+	c.disp = 0;
+	c.done = 0;
 	return c;
 }
 
@@ -2681,19 +2756,47 @@ static void flush_mmu_cold(const ColdFrag& c)
 	}
 }
 
+// JIT COLD SPLIT: an island slot is a `b` after the block's exits that a cold path's branch reaches; tw traps if one
+// is never patched. Bounds in bytes of a fragment and of a cycle exit or a dynamic exit's miss path (verified).
+#define ISLAND_TRAP   0x7FE00008u
+#define COLD_FRAG_MAX 512
+#define COLD_EXIT_MAX 128
+
+static void island_slot(ppc_label* l)
+{
+	const snat d=(u8*)emit_GetCCPtr()-(u8*)l;
+	verify(d>0 && d<32768);
+	l->MarkLabel();
+	ppc_emit(ISLAND_TRAP);
+}
+
+// The slot's `b` to the cold code that starts here.
+static void island_patch(u32* slot)
+{
+	const snat d=(u8*)emit_GetCCPtr()-(u8*)slot;
+	verify(*slot==ISLAND_TRAP && d<33554432 && d>-33554432);
+	*slot=0x48000000u | ((u32)d & 0x03FFFFFCu);
+}
+
 // cold_ctr (JIT HOTBLOCKS): count each fragment's entries, 20 B more per fragment, only while hot body + cold
-// area stay far inside the 32 KB branch reach. Returns the fragments counted.
-static u32 FlushCold(u32* cold_ctr)
+// area stay far inside the 32 KB branch reach. island: JIT COLD SPLIT's slots. Returns the fragments counted.
+static u32 FlushCold(u32* cold_ctr,u32* island=0)
 {
 	const u32 frags = s_cold_n;
-	const bool count = cold_ctr && frags && frags<=128 && (u8*)emit_GetCCPtr()-(u8*)s_cold[0].beq < 16384;
+	const bool count = cold_ctr && frags && frags<=128 && (island || (u8*)emit_GetCCPtr()-(u8*)s_cold[0].beq < 16384);
 	for (u32 i = 0; i < s_cold_n; i++)
 	{
 		ColdFrag& c = s_cold[i];
-		// The forward branch has a 16-bit displacement; ngen_Compile's 16 KB limit keeps cold code in range.
-		snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
-		verify(beq_disp >= 0 && beq_disp < 32768);
-		c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
+		u8* const frag_at=(u8*)emit_GetCCPtr();
+		if (island)
+			island_patch(&island[i]);
+		else
+		{
+			// The forward branch has a 16-bit displacement; ngen_Compile's 16 KB limit keeps cold code in range.
+			snat beq_disp = (u8*)emit_GetCCPtr() - (u8*)c.beq;
+			verify(beq_disp >= 0 && beq_disp < 32768);
+			c.beq->MarkLabel();              // patch the forward beq -> here (cold entry)
+		}
 		if (c.kind>=4)
 		{
 			flush_mmu_cold(c);           // MMU JIT: the counter's scratch could be a write's data
@@ -2703,6 +2806,15 @@ static u32 FlushCold(u32* cold_ctr)
 			emit_hot_cold_count(cold_ctr,c.kind);
 		if (c.gr_bit!=0xFF)
 			emit_gr_clear(c.gr_bit);     // plan 5.31: its check failed, so the ops that reuse it go cold too
+		// P87: every exit of this fragment leaves r11 poisoned; the C call below poisons it again.
+		if (c.taslot)
+			emit_ts_poison((u32)(uintptr_t)s_ts_poison);
+		// JIT SHORT FORMS: a folded @(disp,Rn), or a pair that kept its own address register: rarg0 = the address.
+		if (c.disp || ((c.kind&1) && c.areg!=ppc_rarg0))
+		{
+			ppc_addi(ppc_rarg0,c.areg,c.disp);
+			c.areg=ppc_rarg0;
+		}
 
 		if (c.vmem_tier==2)
 		{
@@ -2721,6 +2833,7 @@ static u32 FlushCold(u32* cold_ctr)
 		}
 
 		emit_cycles_store();             // P11: every path below is a C call
+		emit_prof(PROF_PART(PROF_MEM));
 
 		if (c.kind==0)                   // --- read scalar: ReadMem(addr)->rrv0 ---
 		{
@@ -2792,7 +2905,11 @@ static u32 FlushCold(u32* cold_ctr)
 			ppc_call_c(&WriteMem64);
 		}
 
+		if (c.taslot)
+			emit_ts_poison((u32)(uintptr_t)s_ts_poison);
+		emit_prof(s_prof_pc);
 		ppc_bx(c.done,0);                // backward unconditional b -> done (join)
+		verify(!island || (u8*)emit_GetCCPtr()-frag_at <= COLD_FRAG_MAX);
 	}
 	s_cold_n = 0;
 	return count ? frags : 0;
@@ -3244,6 +3361,108 @@ static void gr_prepare(DecodedBlock* block)
 	s_gr_reuses+=s_gr.reuses;
 }
 
+// P87 JIT TA SLOT: the records of this block, for the writem, readm and pref cases below. The stores take JIT SQ
+// STORES' inline shape, which only the inline-guard memory path has.
+static void ts_prepare(DecodedBlock* block)
+{
+	s_ts.n=0;
+	if (!s_ta_slot || !fm_on() || mmucr_at() || s_jm || !get_jit_sq_store_preset())
+		return;
+	ts_plan(s_ts,*block,get_jit_fsqrt_preset()!=0,get_jit_fschg_preset()!=0);
+	g_jit_ts_groups+=s_ts.groups;
+}
+
+// JIT SHORT FORMS or SCHEDULE FORMS take a RAM access that plans no guard reuse and no TA slot role.
+static inline bool fm_forms(u8 gr,bool taslot)
+{
+	return (s_jo.shortf || s_jo.sched) && gr==GR_NORMAL && !taslot;
+}
+
+// JIT SHORT FORMS: an @(disp,Rn) word or pair access through a pinned Rn (0 <= disp <= FM_FOLD_MAX), or a pair
+// through a pinned Rn, keeps Rn as its address and the access takes disp. Returns disp, or -1. sq: an SQ guess.
+static s32 fm_fold(const shil_opcode* op,u32 i,bool sq)
+{
+	if (!s_jo.shortf || !fm_on() || sq || (op->flags!=4 && op->flags!=8) || !op->rs1.is_reg() ||
+	    GetIntReg(op->rs1._reg)==ppc_rinvalid || gr_role(s_gr,i)!=GR_NORMAL || ts_role(s_ts,i))
+		return -1;
+	if (op->rs3.is_imm() && (s32)op->rs3._imm>=0 && (s32)op->rs3._imm<=FM_FOLD_MAX)
+		return (s32)op->rs3._imm;
+	return op->rs3.is_null() && op->flags==8 ? 0 : -1;
+}
+
+// A 32-bit or pair store's store-queue guess (writem): JIT SQ STORES' own, JIT SQ MISS's look-ahead (la) or JIT SQ
+// COPY's (cp).
+static bool wm_sq_guess(DecodedBlock* block,size_t i,bool& la,bool& cp)
+{
+	const shil_opcode* op=&block->oplist[i];
+	const int sqm=get_jit_sq_miss_preset();
+	const bool sq_size=op->flags==4 || op->flags==8;
+	la=cp=false;
+	bool g=get_jit_sq_store_preset() && sq_size && sq_store_guess(block,i);
+	if (!g && sqm>=2 && get_jit_sq_store_preset() && sq_size)
+		g=la=sqla_guess(block,i,sqla_read16,sqm>=3,sqm>=4 ? SQLA_SCAN_LONG : SQLA_SCAN_OPS);
+	// JIT SQ COPY: the PREF goes through a copy of the base register.
+	if (!g && get_jit_sq_copy_preset() && get_jit_sq_store_preset() && sq_size)
+		g=cp=sqcp_guess(block,i);
+	return g;
+}
+
+// The block's cycle exit (JIT CYCLE CHECK 1 and 2): the gate, which may enter the block again, or the update.
+static void emit_cycle_exit(const DecodedBlock* block,DynarecCodeEntry* rv)
+{
+	ppc_li(ppc_next_pc,block->start);
+	if (loop_gate)
+	{
+		// SYS GATE + RESUME: with no event due, enter the block again here, as bm_GetCode would.
+		ppc_call(loop_gate);
+		emit_cycles_store();	// P11: the next slice's count
+		ppc_jump((void*)rv);
+	}
+	else
+		ppc_jump(loop_do_update_write);
+}
+
+// JIT SCHEDULE + LIST: the body [lo, now) reordered between anchors; the cold paths' joins start regions.
+static void sched_body(u32* lo)
+{
+	static const void* joins[1024];
+	u32 n=0;
+	for (u32 k=0;k<s_cold_n;k++)
+		if (s_cold[k].done)
+			joins[n++]=s_cold[k].done;
+	sched_range(s_sw,lo,(u32*)emit_GetCCPtr(),joins,n,s_jo.env,s_jo.st);
+}
+
+// JIT COLD SPLIT + EXITS: site+16 of a dynamic exit becomes a `b` to the cold stream, where its miss path goes on
+// until exit_cold_end(). Without room, the path stays here.
+static void exit_cold_begin()
+{
+	u32* const cold=emit_ColdBegin(COLD_EXIT_MAX);
+	if (!cold)
+		return;
+	u32* const slot=(u32*)emit_GetCCPtr();
+	const snat d=(u8*)cold-(u8*)slot;
+	verify(d<33554432 && d>-33554432);
+	ppc_emit(0x48000000u | ((u32)d & 0x03FFFFFCu));
+	s_jo.exit_cold=cold;
+	emit_ptr=cold;
+	s_jo.exits++;
+}
+
+static void exit_cold_end()
+{
+	if (!s_jo.exit_cold)
+		return;
+	u32* const end=emit_ptr;
+	const u32 bytes=(u32)((u8*)end-(u8*)s_jo.exit_cold);
+	verify(bytes<=COLD_EXIT_MAX);
+	make_address_range_executable(s_jo.exit_cold,bytes);
+	s_jo.cold_bytes+=bytes;
+	emit_ColdEnd(end);
+	emit_ptr=0;
+	s_jo.exit_cold=0;
+}
+
 // ---- MMU JIT (P38): the accesses of an MMU block compiled with AT on ----
 extern u32 g_dec_code_delta;	// decoder.cpp: physical - virtual pc of the block in hand
 
@@ -3420,6 +3639,17 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	// Bail out early if there isn't enough space for a worst-case block
 	if (emit_FreeSpace() < 16384) // 16*1024
 		return 0;
+	// JIT COLD SPLIT (not MMU blocks): room for the cold code too, a fragment at most per memory op or call, and
+	// 64 KB for the hot code and the island: a 224-cycle block of FPU ops can pass the 16 KB above.
+	const bool split=s_jo.split && !g_jit_mmu;
+	if (split)
+	{
+		u32 frags=0;
+		for (const shil_opcode& o : block->oplist)
+			frags+=o.op==shop_readm || o.op==shop_writem || o.op==shop_ifb || o.op==shop_pref;
+		if (emit_FreeSpace() < 65536+2*COLD_EXIT_MAX+frags*COLD_FRAG_MAX)
+			return 0;
+	}
 
 	// JIT_ALIGN: pad the block entry to a 32-byte line. The nops follow an unconditional branch, so they never
 	// run, and they sit in the line the previous flush already covers.
@@ -3454,6 +3684,16 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	}
 	tcopy_begin(compile_state.tc,get_jit_tcopy_preset() ? block : 0);
 	gr_prepare(block);
+	ts_prepare(block);
+	// P101 8C PREFIX: a block at 0x0C... checks 0x0C (Crazy Taxi, Power Stone 2 keep code and data there), others 0x8C.
+	if (s_jo.shortf==2)
+	{
+		const u32 p0=(block->start>>24)==0x0C;
+		s_jo.form.prefix=p0 ? 0x0C : 0x8C;
+		s_jo.form.bias_hi=s_jo.bias_hi[p0];
+		s_jo.env.bias_hi=s_jo.form.bias_hi;
+		s_jo.p0_blocks+=p0;
+	}
 
 	// JIT_HOTBLOCKS: count real body entries (after the SMC check and the cycle exit); rarg0/rarg1 are free.
 	const s32 hb = hotblocks_slot(block);
@@ -3466,6 +3706,10 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		ppc_addi(ppc_rarg0,ppc_rarg0,1);
 		ppc_stw(ppc_rarg0,ppc_rarg1,lo);
 	}
+	// SH4 Time Profile: from here the samples are this block's.
+	s_prof_pc=block->start;
+	emit_prof(s_prof_pc);
+	u32* const body_lo=(u32*)emit_GetCCPtr();	// JIT SCHEDULE + LIST: the body starts here
 
 	for (size_t i = 0; i < block->oplist.size(); i++)
 	{
@@ -3513,6 +3757,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				// Address source for the runtime fast path (set in the rs1-reg
 				// branch below). Defaults to rarg0 (the const/imm + pair paths).
 				u32 areg = ppc_rarg0;
+				s32 fold = -1;	// JIT SHORT FORMS: the folded displacement, -1 for none
 
 				// FPU_PIN: a pinned FR dest loads straight into the FPR (runtime addresses; flags 4 scalar, 8 pair with
 				// both fr pinned). JIT_FMOV adds the fastmem shapes, which the DSI decoder accepts unconditionally.
@@ -3565,7 +3810,10 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				{
 					// areg: a plain @Rn uses rs1's pinned reg directly (no mr); an offset needs the address in rarg0.
 					areg = ppc_rarg0;
-					if (op->rs3.is_imm())
+					fold = fm_fold(op,(u32)i,false);
+					if (fold>=0)
+						areg = (u32)GetIntReg(op->rs1._reg);	// JIT SHORT FORMS: the access takes the displacement
+					else if (op->rs3.is_imm())
 					{
 						verify(op->rs3.is_imm_s16());
 						// addr = rs1 + imm -> addi can read pinned rs1 in place and
@@ -3665,60 +3913,82 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					c.areg=(u8)areg;   c.fuct=fuct;
 					c.fdreg=fdirect?(u8)fd0:0xFF; c.fofs=(u16)fofs;
 					c.vmem_tier=1;
+					c.taslot=(ts_role(s_ts,(u32)i)&TS_WIN)!=0;
 
 					// JIT GUARD REUSE (plan 5.31): an earlier check of this base register stands in for the guard.
 					const u8 gr=gr_role(s_gr,(u32)i);
-					if (gr==GR_REUSE)
-						c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
-					else
+					if (fm_forms(gr,c.taslot))
 					{
-						fm_emit_guard(areg);
-						c.beq=ppc_CreateLabel();
-						ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
-						if (gr==GR_VALIDATE)
-						{
-							emit_gr_set(s_gr.bit[i]);
-							c.gr_bit=s_gr.bit[i];
-						}
-					}
-
-					if (op->flags==8)
-					{
-						// Pair: rarg2 holds the native address because rrv0/rrv1
-						// (r3/r4) are the destinations and r3 is also the address.
-						fm_emit_addr(ppc_rarg2,areg,4);
-						if (fdirect)
-						{
-							ppc_lfs(fd0,ppc_rarg2,0);
-							ppc_lfs(fd1,ppc_rarg2,4);
-						}
-						else
-						{
-							ppc_lwz(ppc_rrv1,ppc_rarg2,4);
-							ppc_lwz(ppc_rrv0,ppc_rarg2,0);
-						}
+						// JIT SHORT FORMS / SCHEDULE FORMS (ps3_jit_fmem.h). A FORMS read keeps its address register
+						// apart from the host address, which it computes before the branch.
+						FmAcc a;
+						a.kind=c.kind;
+						a.sz=c.sz;
+						a.areg=(u8)areg;
+						a.rt=(u8)(op->flags==8 ? ppc_rarg2 : s_jo.sched && areg==ppc_rarg0 ? ppc_rarg1 : ppc_rarg0);
+						a.fpr=fdirect;
+						a.d0=(u8)(fdirect ? fd0 : op->flags==8 ? (u32)ppc_rrv0 : rdreg);
+						a.d1=(u8)(fdirect ? fd1 : (u32)ppc_rrv1);
+						a.disp=(u16)(fold>0 ? fold : 0);
+						c.disp=a.disp;
+						c.beq=fm_emit(s_jo.form,a,&c.done);
+						s_jo.forms++;
+						s_jo.folds+=fold>=0;
 					}
 					else
 					{
-						const u32 sz=op->flags;
-						fm_emit_addr(ppc_rarg0,areg,sz);
-						if (fdirect)
-							ppc_lfs(fd0,ppc_rarg0,0);
-						else if (sz==1)
+						if (gr==GR_REUSE)
+							c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
+						else
 						{
-							ppc_lbz(rdreg,ppc_rarg0,0);
-							ppc_extsbx(rdreg,rdreg,0);
+							fm_emit_guard(areg);
+							c.beq=ppc_CreateLabel();
+							ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
+							if (gr==GR_VALIDATE)
+							{
+								emit_gr_set(s_gr.bit[i]);
+								c.gr_bit=s_gr.bit[i];
+							}
 						}
-						else if (sz==2)
+
+						if (op->flags==8)
 						{
-							ppc_lhz(rdreg,ppc_rarg0,0);
-							ppc_extshx(rdreg,rdreg,0);
+							// Pair: rarg2 holds the native address because rrv0/rrv1
+							// (r3/r4) are the destinations and r3 is also the address.
+							fm_emit_addr(ppc_rarg2,areg,4);
+							if (fdirect)
+							{
+								ppc_lfs(fd0,ppc_rarg2,0);
+								ppc_lfs(fd1,ppc_rarg2,4);
+							}
+							else
+							{
+								ppc_lwz(ppc_rrv1,ppc_rarg2,4);
+								ppc_lwz(ppc_rrv0,ppc_rarg2,0);
+							}
 						}
 						else
-							ppc_lwz(rdreg,ppc_rarg0,0);
-					}
+						{
+							const u32 sz=op->flags;
+							fm_emit_addr(ppc_rarg0,areg,sz);
+							if (fdirect)
+								ppc_lfs(fd0,ppc_rarg0,0);
+							else if (sz==1)
+							{
+								ppc_lbz(rdreg,ppc_rarg0,0);
+								ppc_extsbx(rdreg,rdreg,0);
+							}
+							else if (sz==2)
+							{
+								ppc_lhz(rdreg,ppc_rarg0,0);
+								ppc_extshx(rdreg,rdreg,0);
+							}
+							else
+								ppc_lwz(rdreg,ppc_rarg0,0);
+						}
 
-					c.done=emit_GetCCPtr();
+						c.done=emit_GetCCPtr();
+					}
 				}
 				else if (!isram)
 				{
@@ -3839,7 +4109,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				// Full address first, then the data: the rs3 register-index path uses rarg3 as scratch, which clobbered a
 				// pair store's low word (fmov.d FRm,@(R0,Rn)). areg: a plain @Rn reads rs1's pinned reg in place.
 				u32 areg = ppc_rarg0;
-				if (op->rs3.is_imm())
+				bool wm_la, wm_cp;
+				const bool wm_sq=wm_sq_guess(block,i,wm_la,wm_cp);
+				const s32 fold=fm_fold(op,(u32)i,wm_sq);
+				if (fold>=0)
+					areg = (u32)GetIntReg(op->rs1._reg);	// JIT SHORT FORMS: the access takes the displacement
+				else if (op->rs3.is_imm())
 				{
 					verify(op->rs3.is_imm_s16());
 					// addr = rs1 + imm: addi reads pinned rs1 in place -> rarg0.
@@ -3971,43 +4246,54 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					c.areg=(u8)areg;      c.fuct=0;
 					c.fdreg=fdirect?(u8)fs0:0xFF; c.fofs=(u16)fofs;
 					c.vmem_tier=1;
+					const u8 ts=ts_role(s_ts,(u32)i);
+					c.taslot=(ts&TS_WIN)!=0;
 
 					// 5.27 JIT SQ MISS: 2 also looks for the PREF in the static successors (3, plan 5.43: past constant
 					// steps of the base too), 1 puts the SQ test first in the cold path of the other 32-bit and pair stores.
 					const int sqm=get_jit_sq_miss_preset();
 					const bool sq_size=op->flags==4 || op->flags==8;
-					bool sq_guess=get_jit_sq_store_preset() && sq_size && sq_store_guess(block,i);
-					bool sq_la=false;
-					if (!sq_guess && sqm>=2 && get_jit_sq_store_preset() && sq_size)
-						sq_guess=sq_la=sqla_guess(block,i,sqla_read16,sqm>=3,sqm>=4 ? SQLA_SCAN_LONG : SQLA_SCAN_OPS);
-					// JIT SQ COPY: the PREF goes through a copy of the base register.
-					bool sq_cp=false;
-					if (!sq_guess && get_jit_sq_copy_preset() && get_jit_sq_store_preset() && sq_size)
-						sq_guess=sq_cp=sqcp_guess(block,i);
+					const bool sq_guess=wm_sq, sq_la=wm_la, sq_cp=wm_cp;
 
 					// JIT GUARD REUSE (plan 5.31): an earlier check of this base register stands in for this one.
 					const u8 gr=gr_role(s_gr,(u32)i);
 					verify(gr==GR_NORMAL || s_gr_kind[i]==(sq_guess?GR_SQ:GR_RAM));
+					verify(!(ts&TS_STORE) || sq_guess);
 					if (sq_guess)
 					{
 						// A pair keeps its address in rarg0 (areg) and data in rarg2:rarg3; EA in rarg1.
 						const bool pair=op->flags==8;
 						const u32 sqb=(u32)(uintptr_t)sq_both;
 						verify((sqb&63)==0 && (uintptr_t)sq_both<0x7FFF0000u);
-						if (gr==GR_REUSE)
-							c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
+						const u32 ea=pair?ppc_rarg1:ppc_rarg2;
+						const u32 d0=fdirect?fs0:(pair?(u32)ppc_rarg2:datareg), d1=fdirect?fs1:(u32)ppc_rarg3;
+						// P87: r11 = the slot before the check, so a cold first store still leaves it set (poisoned).
+						if (ts&TS_FIRST)
+							emit_ts_load((u32)(uintptr_t)&g_ta_slot);
+						if (s_jo.sched && gr==GR_NORMAL && !ts)
+						{
+							c.beq=fm_emit_sq_sched(areg,ea,pair,fdirect,d0,d1,sqb);	// JIT SCHEDULE FORMS
+							s_jo.sq_forms++;
+						}
 						else
 						{
-							c.beq=emit_sq_check(areg);
-							if (gr==GR_VALIDATE)
+							if (gr==GR_REUSE)
+								c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
+							else
 							{
-								emit_gr_set(s_gr.bit[i]);
-								c.gr_bit=s_gr.bit[i];
+								c.beq=emit_sq_check(areg);
+								if (gr==GR_VALIDATE)
+								{
+									emit_gr_set(s_gr.bit[i]);
+									c.gr_bit=s_gr.bit[i];
+								}
 							}
+							emit_sq_body(areg,ea,pair,fdirect,d0,d1,sqb);
 						}
-						emit_sq_body(areg,pair?ppc_rarg1:ppc_rarg2,pair,fdirect,
-						             fdirect?fs0:(pair?(u32)ppc_rarg2:datareg),
-						             fdirect?fs1:(u32)ppc_rarg3,sqb);
+						if (ts&TS_STORE)
+							emit_ts_store(areg,ea,pair,fdirect,d0,d1);
+						if (ts&TS_PCW)
+							ppc_ori(TS_PCWR,datareg,0);	// mr r12,datareg
 						g_jit_sq_sites++;
 						g_jit_sq_la_sites+=sq_la;
 						g_jit_sq_cp_sites+=sq_cp;
@@ -4019,49 +4305,70 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 							c.vmem_tier=2;
 							g_jit_sq_cold_sites++;
 						}
-						if (gr==GR_REUSE)
-							c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
+						if (fm_forms(gr,c.taslot))
+						{
+							// JIT SHORT FORMS / SCHEDULE FORMS (ps3_jit_fmem.h): the store stays after its branch.
+							FmAcc a;
+							a.kind=c.kind;
+							a.sz=c.sz;
+							a.areg=(u8)areg;
+							a.rt=(u8)(op->flags==8 ? ppc_rarg1 : ppc_rarg2);
+							a.fpr=fdirect;
+							a.d0=(u8)(fdirect ? fs0 : op->flags==8 ? (u32)ppc_rarg2 : datareg);
+							a.d1=(u8)(fdirect ? fs1 : (u32)ppc_rarg3);
+							a.disp=(u16)(fold>0 ? fold : 0);
+							c.disp=a.disp;
+							void* done;
+							c.beq=fm_emit(s_jo.form,a,&done);
+							s_jo.forms++;
+							s_jo.folds+=fold>=0;
+						}
 						else
 						{
-							fm_emit_guard(areg);
-							c.beq=ppc_CreateLabel();
-							ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
-							if (gr==GR_VALIDATE)
+							if (gr==GR_REUSE)
+								c.beq=emit_gr_branch(s_gr.bit[i]);	// flag clear -> cold
+							else
 							{
-								emit_gr_set(s_gr.bit[i]);
-								c.gr_bit=s_gr.bit[i];
+								fm_emit_guard(areg);
+								c.beq=ppc_CreateLabel();
+								ppc_bcx(BO_FALSE,BI_CR0_LT,0,0,0);	// bge cold (not main RAM)
+								if (gr==GR_VALIDATE)
+								{
+									emit_gr_set(s_gr.bit[i]);
+									c.gr_bit=s_gr.bit[i];
+								}
 							}
-						}
 
-						if (op->flags==8)
-						{
-							// Pair: address in rarg0, data in rarg2:rarg3, so the
-							// native address goes to rarg1.
-							fm_emit_addr(ppc_rarg1,ppc_rarg0,4);
-							if (fdirect)
+							if (op->flags==8)
 							{
-								ppc_stfs(fs0,ppc_rarg1,0);
-								ppc_stfs(fs1,ppc_rarg1,4);
+								// Pair: address in rarg0, data in rarg2:rarg3, so the
+								// native address goes to rarg1.
+								fm_emit_addr(ppc_rarg1,ppc_rarg0,4);
+								if (fdirect)
+								{
+									ppc_stfs(fs0,ppc_rarg1,0);
+									ppc_stfs(fs1,ppc_rarg1,4);
+								}
+								else
+								{
+									ppc_stw(ppc_rarg2,ppc_rarg1,0);
+									ppc_stw(ppc_rarg3,ppc_rarg1,4);
+								}
 							}
 							else
 							{
-								ppc_stw(ppc_rarg2,ppc_rarg1,0);
-								ppc_stw(ppc_rarg3,ppc_rarg1,4);
+								const u32 sz=op->flags;
+								// stb/sth store the low byte/halfword, so no data mask.
+								fm_emit_addr(ppc_rarg2,areg,sz);
+								if (fdirect)
+									ppc_stfs(fs0,ppc_rarg2,0);
+								else if (sz==1)
+									ppc_stb(datareg,ppc_rarg2,0);
+								else if (sz==2)
+									ppc_sth(datareg,ppc_rarg2,0);
+								else
+									ppc_stw(datareg,ppc_rarg2,0);
 							}
-						}
-						else
-						{
-							const u32 sz=op->flags;
-							// stb/sth store the low byte/halfword, so no data mask.
-							fm_emit_addr(ppc_rarg2,areg,sz);
-							if (fdirect)
-								ppc_stfs(fs0,ppc_rarg2,0);
-							else if (sz==1)
-								ppc_stb(datareg,ppc_rarg2,0);
-							else if (sz==2)
-								ppc_sth(datareg,ppc_rarg2,0);
-							else
-								ppc_stw(datareg,ppc_rarg2,0);
 						}
 					}
 
@@ -4196,7 +4503,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 					ppc_li(ppc_rarg2,op->delay_slot);
 				}
 				emit_cycles_store();		// P11: the handler may read or write a TMU register
+				emit_prof(PROF_PART(PROF_IFB));
 				ppc_call_c(s_jm ? (void*)jmmu_ifb : (void*)OpDesc[op->rs3._imm]->oph);
+				emit_prof(s_prof_pc);
 
 				if (br.fpu)
 					reg_reload_all_fpu();
@@ -4690,10 +4999,12 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_andi(ppc_r0,ppc_rarg4,2);
 				ppc_label* done=ppc_CreateLabel();
 				ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq -> done
+				emit_prof(PROF_PART(PROF_OTHER));
 				if (is_l)
 					ppc_call_c(sh4_mac_l);
 				else
 					ppc_call_c(sh4_mac_w);
+				emit_prof(s_prof_pc);
 				done->MarkLabel();
 			}
 			break;
@@ -4895,7 +5206,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		// return is ignored: every sync_sr block ends in BET_*Intr, which runs UpdateINTC.
 		case shop_sync_sr:
 			reg_flush_all();
+			emit_prof(PROF_PART(PROF_SYNC));
 			ppc_call_c(&UpdateSR);
+			emit_prof(s_prof_pc);
 			reg_reload_all();
 			break;
 
@@ -4920,7 +5233,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_bx(0,0,0);					// b done
 				full->MarkLabel();
 				reg_flush_all_fpu();
+				emit_prof(PROF_PART(PROF_SYNC));
 				ppc_call_c(&UpdateFPSCR);
+				emit_prof(s_prof_pc);
 				reg_reload_all_fpu();
 				done->MarkLabelLong();
 				s_frchg_sites++;
@@ -4928,7 +5243,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			else
 			{
 				reg_flush_all_fpu();
+				emit_prof(PROF_PART(PROF_SYNC));
 				ppc_call_c(&UpdateFPSCR);
+				emit_prof(s_prof_pc);
 				reg_reload_all_fpu();
 			}
 			break;
@@ -4960,12 +5277,29 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 				ppc_cmpi(ppc_cr0,ppc_rarg1,0x38,0);		// SQ region?
 				ppc_label* skip=ppc_CreateLabel();
 				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);		// bne skip (not SQ -> no-op)
+				const u8 ts=ts_role(s_ts,(u32)i);
+				if (ts&TS_END)
+				{
+					// P87: the record's slot, its word 0 and the words its stores wrote there.
+					const u32 mask=s_ts.mask[i];
+					ppc_ori(ppc_rarg1,TS_SLOT,0);
+					if (mask&1)
+						ppc_clrldi32(ppc_rarg2,TS_PCWR);
+					ppc_li(ppc_rarg3,mask);
+				}
+				emit_prof(PROF_PART(PROF_TA));	// after r12 went to rarg2
 				if (mmucr_at())
 					ppc_call_c(&do_sqw_mmu);			// do_sqw reloads rarg0=addr arg
+				else if (ts&TS_END)
+					ppc_call_c(s_ta_peak_frame ? &do_sqw_slot_frame : &do_sqw_slot);
 				else if (s_ta_peak_frame)
 					ppc_call_c(&do_sqw_nommu_frame);
 				else
 					ppc_call_c(&do_sqw_nommu);
+				emit_prof(s_prof_pc);
+				// P87: a flush inside a record's window moved the slot, so that record's flush must take the copy.
+				if ((ts&(TS_WIN|TS_END))==TS_WIN)
+					emit_ts_poison((u32)(uintptr_t)s_ts_poison);
 				if (get_jit_prefetch_preset() && s_fm_ok && !mmucr_at())
 				{
 					ppc_label* done=ppc_CreateLabel();
@@ -5000,7 +5334,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			else
 			{
 				ppc_sh_load_f32(ppc_farg0,op->rs1);
+				emit_prof(PROF_PART(PROF_OTHER));
 				ppc_call_c(&rec_fsqrt);
+				emit_prof(s_prof_pc);
 				ppc_sh_store_f32(ppc_frv0,op->rd);
 			}
 			break;
@@ -5019,7 +5355,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			else
 			{
 				ppc_sh_load_f32(ppc_farg0,op->rs1);
+				emit_prof(PROF_PART(PROF_OTHER));
 				ppc_call_c(&rec_fsrra);
+				emit_prof(s_prof_pc);
 				ppc_sh_store_f32(ppc_frv0,op->rd);
 			}
 			break;
@@ -5034,7 +5372,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 			// params to &Sh4cntx.fr[n]), so pinned registers are flushed before and reloaded after.
 			reg_flush_all();
 			reg_flush_all_fpu();
+			emit_prof(PROF_PART(PROF_OTHER));
 			shil_chf[op->op](op);
+			emit_prof(s_prof_pc);
 			reg_reload_all();
 			reg_reload_all_fpu();
 			break;
@@ -5043,32 +5383,64 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		tcopy_op_end(compile_state.tc,*op);
 	}
 
+	// JIT SCHEDULE + LIST (not MMU blocks): the body reordered before the exits are emitted.
+	if (s_jo.sched>=2 && !s_jm)
+		sched_body(body_lo);
+	s_jo.blocks++;
+
 	ngen_End(block);
 
 	// JIT_HOTBLOCKS split: up to here is the hot body; FlushCold's out-of-line paths are reported separately.
 	u8 *const _hb_cold_start = (u8*)emit_GetCCPtr();
-
-	// JIT CYCLE CHECK 1 and 2: the block's cycle exit, first in the cold area so its 16-bit blt reaches it.
-	if (s_cycle_exit)
+	u32 hb_frags, cold_bytes=0;
+	if (split)
 	{
-		const snat d=(u8*)emit_GetCCPtr()-(u8*)s_cycle_exit;
-		verify(d>0 && d<32768);
-		s_cycle_exit->MarkLabel();
+		// JIT COLD SPLIT: a slot after the exits for each cold path's branch, the cold code at the top of the cache.
+		u32* const island=(u32*)emit_GetCCPtr();
+		const bool cyc=s_cycle_exit!=0;
+		if (cyc)
+			island_slot(s_cycle_exit);
+		for (u32 k=0;k<s_cold_n;k++)
+			island_slot(s_cold[k].beq);
 		s_cycle_exit=0;
-		ppc_li(ppc_next_pc,block->start);
-		if (loop_gate)
+		const u32 nslot=(u32)cyc+s_cold_n;
+		s_jo.islands+=nslot;
+		// Without room up there (a block past the size the start check allows) the cold code follows the island.
+		u32* const cold=emit_ColdBegin(COLD_EXIT_MAX+s_cold_n*COLD_FRAG_MAX);
+		if (cold)
+			emit_ptr=cold;
+		if (cyc)
 		{
-			// SYS GATE + RESUME: with no event due, enter the block again here, as bm_GetCode would.
-			ppc_call(loop_gate);
-			emit_cycles_store();	// P11: the next slice's count
-			ppc_jump((void*)rv);
+			island_patch(island);
+			emit_cycle_exit(block,rv);
 		}
-		else
-			ppc_jump(loop_do_update_write);
+		hb_frags=FlushCold(hb>=0 ? &s_hb_cold[hb] : 0,island+cyc);
+		for (u32 k=0;k<nslot;k++)
+			verify(island[k]!=ISLAND_TRAP);
+		if (cold)
+		{
+			cold_bytes=(u32)((u8*)emit_ptr-(u8*)cold);
+			make_address_range_executable(cold,cold_bytes);
+			emit_ColdEnd(emit_ptr);
+			emit_ptr=0;
+			s_jo.cold_bytes+=cold_bytes;
+		}
 	}
+	else
+	{
+		// JIT CYCLE CHECK 1 and 2: the block's cycle exit, first in the cold area so its 16-bit blt reaches it.
+		if (s_cycle_exit)
+		{
+			const snat d=(u8*)emit_GetCCPtr()-(u8*)s_cycle_exit;
+			verify(d>0 && d<32768);
+			s_cycle_exit->MarkLabel();
+			s_cycle_exit=0;
+			emit_cycle_exit(block,rv);
+		}
 
-	// Emit the out-of-line mem slow paths after the block tail.
-	const u32 hb_frags = FlushCold(hb>=0 ? &s_hb_cold[hb] : 0);
+		// Emit the out-of-line mem slow paths after the block tail.
+		hb_frags = FlushCold(hb>=0 ? &s_hb_cold[hb] : 0);
+	}
 	make_address_range_executable((u8*)rv, (u8*)emit_GetCCPtr()-(u8*)rv);
 
 	// Sizes and classes cover the hot body (it runs on every entry) without the probe's own counter.
@@ -5085,6 +5457,9 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 		             (uintptr_t)CodeCache, (uintptr_t)CodeCache+CODE_SIZE, h.cls);
 	}
 
+	if (s_prof)
+		prof_note_block(block->start,(void*)rv,(u32)(_hb_cold_start-(u8*)rv),(u32)((u8*)emit_GetCCPtr()-(u8*)rv),
+		                block->sh4_code_size);
 	if (get_jit_idle_rule_preset()==4 || get_jit_x30_fwd_preset()==2)
 		idle_bill_note(block);
 
@@ -5251,9 +5626,12 @@ static void ps3_jit_dump_toggles()
 	printf("[jitcfg] gbatch=%d ramsq=%d fschg=%d clk=%d slice=%d cpuslice=%d finetcnt=%d\n",
 	       get_sys_gate_batch_preset(), get_ram_sq_direct_preset(), get_jit_fschg_preset(), get_sh4_clock_preset(),
 	       sh4_GetTimeslice(), sh4_GetCpuTimeslice(), get_tmu_fine_tcnt_preset());
-	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d x30fwd=%d taskidle=%d autochk=%d\n",
+	printf("[jitcfg] idlerule=%d prmoves=%d rmany=%d idlehash=%d sqcopy=%d x30fwd=%d taskidle=%d autochk=%d taslot=%d\n",
 	       get_jit_idle_rule_preset(), get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(),
-	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset(), get_jit_auto_checks_preset());
+	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset(), get_jit_auto_checks_preset(),
+	       get_jit_ta_slot_preset());
+	printf("[jitcfg] coldsplit=%d shortforms=%d schedule=%d\n", get_jit_cold_split_preset(), get_jit_short_forms_preset(),
+	       get_jit_schedule_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each
@@ -5297,6 +5675,44 @@ static void ps3_ni_probe()
 	__asm__ volatile("mtfsf 0xFF,%0" :: "f"(saved) : "memory");
 }
 
+// P87 (JIT TA SLOT) step 1, once at boot: 8 word stores then 4 doubleword loads of the same 32 bytes (the TA flush's
+// read-back of the store queue), against the loads after ~200 cycles of other work, the other half, the stores alone.
+#define P87_ST8 "stw %5,0(%4)\n\tstw %5,4(%4)\n\tstw %5,8(%4)\n\tstw %5,12(%4)\n\t" \
+                "stw %5,16(%4)\n\tstw %5,20(%4)\n\tstw %5,24(%4)\n\tstw %5,28(%4)\n\t"
+#define P87_LD4(o) "ld %0," #o "+0(%4)\n\tld %1," #o "+8(%4)\n\tld %2," #o "+16(%4)\n\tld %3," #o "+24(%4)\n\t"
+#define P87_WAIT "mr %0,%5\n\t.rept 100\n\taddi %0,%0,1\n\t.endr\n\t"
+static void ps3_p87_probe()
+{
+	static u64 s_line[16] __attribute__((aligned(128)));
+	u8* const p=(u8*)s_line;
+	const u32 N=20000, v=0x5A5A1234;
+	u64 a,b,c,d,t[6];
+	t[0]=gettime();
+	for (u32 i=0;i<N;i++)
+		__asm__ volatile(P87_ST8 P87_LD4(0) : "=&r"(a),"=&r"(b),"=&r"(c),"=&r"(d) : "b"(p),"r"(v) : "memory");
+	t[1]=gettime();
+	for (u32 i=0;i<N;i++)
+		__asm__ volatile(P87_ST8 P87_WAIT P87_LD4(0) : "=&r"(a),"=&r"(b),"=&r"(c),"=&r"(d) : "b"(p),"r"(v) : "memory");
+	t[2]=gettime();
+	for (u32 i=0;i<N;i++)
+		__asm__ volatile(P87_ST8 P87_WAIT : "=&r"(a),"=&r"(b),"=&r"(c),"=&r"(d) : "b"(p),"r"(v) : "memory");
+	t[3]=gettime();
+	for (u32 i=0;i<N;i++)
+		__asm__ volatile(P87_ST8 P87_LD4(32) : "=&r"(a),"=&r"(b),"=&r"(c),"=&r"(d) : "b"(p),"r"(v) : "memory");
+	t[4]=gettime();
+	for (u32 i=0;i<N;i++)
+		__asm__ volatile(P87_ST8 : "=&r"(a),"=&r"(b),"=&r"(c),"=&r"(d) : "b"(p),"r"(v) : "memory");
+	t[5]=gettime();
+	const double ns=1e9/(double)ps3_timebase_hz/N;
+	const double now=(t[1]-t[0])*ns, late=(t[2]-t[1])*ns, wait=(t[3]-t[2])*ns, other=(t[4]-t[3])*ns, st=(t[5]-t[4])*ns;
+	printf("[taslot] ns: 8 stores + 4 loads of them %.1f, the loads after the wait %.1f (wait alone %.1f), loads of the"
+	       " other half %.1f, stores alone %.1f | the read-back's own wait %.1f ns\n",
+	       now,late,wait,other,st,(now-st)-(late-wait));
+}
+#undef P87_ST8
+#undef P87_LD4
+#undef P87_WAIT
+
 void ngen_mainloop()
 {
 	// FASTMEM init before the first compile, after the presets and _vmem_reserve(). The PS3 window is
@@ -5307,9 +5723,39 @@ void ngen_mainloop()
 	{
 		ps3_jit_dump_toggles();
 		ps3_ni_probe();
+		ps3_p87_probe();
 		s_jit_exit=get_jit_exit_preset()!=0;
 		s_sys_gate=get_sys_gate_preset();
 		s_ta_peak_frame=get_ta_peak_frame_preset()!=0;
+		s_ta_slot=get_jit_ta_slot_preset()!=0;
+		verify((uintptr_t)s_ts_poison<0x7FFF0000u && (uintptr_t)&g_ta_slot<0x7FFF0000u);
+		// P99, P100: the forms need fastmem's RAM base; the scheduler knows r30 and RAM with its pad.
+		s_jo.split=get_jit_cold_split_preset();
+		// P101 8C PREFIX: its addis adds RAM - 0x8C000000, which must fit 32 signed bits; else the 2-op guard.
+		const s64 fm_bias=(s64)(uintptr_t)mem_b.data-0x8C000000LL;
+		s_jo.shortf=s_fm_ok ? get_jit_short_forms_preset() : 0;
+		if (s_jo.shortf>=2 && fm_bias<-0x80000000LL)
+		{
+			printf("[jitcfg] 8C PREFIX needs RAM at 0x0C000000 or above (%p): 2-op guard\n",mem_b.data);
+			s_jo.shortf=1;
+		}
+		s_jo.shortf=s_jo.shortf>2 ? 2 : s_jo.shortf;
+		s_jo.sched=s_fm_ok ? get_jit_schedule_preset() : 0;
+		s_jo.form.guard=(u8)s_jo.shortf;
+		s_jo.form.sched=s_jo.sched>=1;
+		s_jo.form.ram_hi=s_fm_ram_hi;
+		s_jo.form.bias_hi=(u32)(fm_bias>>16)&0xFFFF;
+		s_jo.form.prefix=0x8C;
+		s_jo.bias_hi[0]=s_jo.form.bias_hi;
+		s_jo.bias_hi[1]=(u32)(((s64)(uintptr_t)mem_b.data-0x0C000000LL)>>16)&0xFFFF;
+		s_jo.env.ctx=(u32)(uintptr_t)&Sh4cntx;
+		s_jo.env.ram_hi=s_fm_ram_hi;
+		s_jo.env.ram_lo=(s64)(uintptr_t)mem_b.data;
+		s_jo.env.ram_end=s_jo.env.ram_lo+RAM_SIZE+4096;
+		s_jo.env.bias_hi=s_jo.shortf==2 ? s_jo.form.bias_hi : 0;
+		s_prof=get_sh4_profile_preset()!=0 && (uintptr_t)&g_prof_where<0x7FFF0000u;
+		if (s_prof)
+			prof_start((uintptr_t)CodeCache,(uintptr_t)CodeCache+CODE_SIZE);
 		if (s_sys_gate)
 			sys_gate_install();
 		s_fine_tcnt=get_tmu_fine_tcnt_preset()!=0;
@@ -5363,6 +5809,7 @@ void ngen_mainloop()
 			loop_no_update=emit_GetCCPtr();
 
 			//handy function !
+			emit_prof(PROF_PART(PROF_LOOKUP));
 			ppc_call_and_jump_c(bm_GetCode);
 
 			//do_update_write
@@ -5384,6 +5831,10 @@ void ngen_mainloop()
 			}
 			void* const loop_update=emit_GetCCPtr();
 
+			// Row Render Low Priority: the SH4 thread sets the PPE's medium thread priority again (or 2,2,2), in case
+			// the low one of the render thread stayed on this hardware thread.
+			ppc_emit(0x7C421378);
+			emit_prof(PROF_PART(PROF_SYS));
 			// UpdateSystem_no_event runs every timeslice without flushing pinned GPRs; only a pending interrupt
 			// flushes, runs the GPR-touching handler and reloads.
 			if (s_sys_gate)
@@ -5396,6 +5847,7 @@ void ngen_mainloop()
 			ppc_label* exit_lbl=0;
 			{
 				reg_flush_all();
+				emit_prof(PROF_PART(PROF_INT));
 				ppc_call_c(UpdateSystem_handle_event);
 				if (s_jit_exit)
 				{
@@ -5450,6 +5902,7 @@ void ngen_mainloop()
 		//ngen_FailedToFindBlock
 		ngen_FailedToFindBlock=(void(*)())emit_GetCCPtr();
 		{
+			emit_prof(PROF_PART(PROF_COMPILE));
 			ppc_call_and_jump_c(&rdv_FailedToFindBlock);
 		}
 
@@ -5457,7 +5910,7 @@ void ngen_mainloop()
 
 		ngen_LinkBlock_Static_stub=emit_GetCCPtr();
 		{
-			//not used for now
+			emit_prof(PROF_PART(PROF_LINK));
 			ppc_mfspr(ppc_rarg1,ppc_spr_lr);
 			
 			ppc_addi(ppc_rarg1,ppc_rarg1,(u32)-12);
@@ -5480,12 +5933,14 @@ void ngen_mainloop()
 		// DYN_IC fill stub, entered by slot 0's `bl`: LR = site+4, rarg0 = target pc; patch and jump to the result.
 		ngen_LinkBlock_Dynamic_IC_stub=emit_GetCCPtr();
 		{
+			emit_prof(PROF_PART(PROF_LINK));
 			emit_dynic_stub_args(ppc_rarg0,ppc_rarg1);
 			ppc_call_and_jump_c(&ngen_LinkBlock_Dynamic_IC);
 		}
 
 		ngen_BlockCheckFail_stub=emit_GetCCPtr();
 		{
+			emit_prof(PROF_PART(PROF_COMPILE));
 			ppc_call_and_jump_c(&rdv_BlockCheckFail);
 		}
 

@@ -387,15 +387,16 @@ static u8* ps3_dc_mem;
 
 bool _vmem_reserve()
 {
-    // 64 KB alignment is required by _vmem_map_block.
+    // 64 KB alignment is required by _vmem_map_block. RAM is last; the 4 KB pad after it takes a JIT SHORT FORMS
+    // access whose folded displacement runs past the 16 MB mirror's end.
     const u32 total = ARAM_SIZE + VRAM_SIZE + RAM_SIZE;
-    ps3_dc_mem = (u8*)memalign(65536, total);
+    ps3_dc_mem = (u8*)memalign(65536, total + 4096);
     if (!ps3_dc_mem)
     {
         printf("[vmem] memalign(%u KB) FAILED\n", total / 1024u);
         return false;
     }
-    memset(ps3_dc_mem, 0, total);
+    memset(ps3_dc_mem, 0, total + 4096);
 
     u8* ram_alloc = ps3_dc_mem;
     aica_ram.size = ARAM_SIZE;

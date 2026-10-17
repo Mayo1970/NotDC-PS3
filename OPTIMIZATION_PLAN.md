@@ -11,12 +11,271 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-16)
+## 0. Resume here (updated 2026-10-17)
+
+**P101 JIT SHORT FORMS 8C PREFIX (`OPTIMIZATION_POTENTIAL.md` P101), built
+2026-10-17 (Matt: "Let's go with the 4-5 op sequence, try checking for
+prefix 8c and if (addr>>24 !=8c) goto slowpath; data = *(biasedmembase +
+addr)."). Package of 15:46 (`build/notdc_ps3.pkg`, 1786480 bytes) = the
+package of 15:05 (below) + this. Not committed. A third value on row JIT
+SPEED > JIT SHORT FORMS (OFF / ON / 8C PREFIX), default OFF, set before
+boot. HW run 1: REGRESSION in Crazy Taxi.**
+- HW run 1 (log `ps3log_p101_run1.txt` of session 0e77a736; COLD SPLIT and
+  SCHEDULE OFF): Crazy Taxi 8-10K 85.6%, 10-12K 74.9%, 12-14K 73.5% (was
+  99-100%). Cause: Crazy Taxi runs code and data at 0x0C..., so every RAM
+  access went cold. 0x0C games: Crazy Taxi 1 and 2, House of the Dead 2,
+  Power Stone 2, Shenmue, VF3tb; most others are 0x8C games.
+- HW run 2 (same log, Looney Tunes race, a 0x8C game, 8C PREFIX only; no
+  ON run): no fault. SPEED against the two TA Line Zero runs of the night
+  before (old form): 24-26K 96.5% (89.6, 98.8), 26-28K 95.4% (88.7, 88.6),
+  28-30K 93.5% (91.6, 91.8), 30-32K 93.6% (87.7, 89.9), 32-34K 90.9% (86.1,
+  90.4). Not yet against ON (2-op guard and the same fold).
+- HW run 3 (same log, Looney Tunes race, ON, the rest the same): no fault.
+  8C PREFIX against ON: 22-24K 97.9/95.8, 24-26K 96.5/96.9, 26-28K
+  95.4/94.3, 28-30K 93.5/91.2, 30-32K 93.6/89.4, 32-34K 90.9/86.6; about
+  +2.6 points (seconds-weighted, 22-34K), more as the load grows. ON itself
+  is about equal to the old form of the night before.
+- HW run 4 (same log, Crazy Taxi, ON): 8-12K 100%, 12-14K 94.8%, 14-16K
+  90.4%, 16-20K 88-92% (2-4 s a band): the baseline for the next step.
+- Prefix per block, built 2026-10-17 (Matt: "sure, build it"), package of
+  16:23 (`build/notdc_ps3.pkg`, 1786544 bytes): a block at 0x0C... checks
+  0x0C (its own bias), every other block 0x8C. `[jopt] ... 0c blocks=N`.
+  PC: fmem_check PASS with both prefixes, `mutate.py` 29 of 29. HW steps:
+  1. JIT SHORT FORMS at 8C PREFIX (COLD SPLIT and SCHEDULE OFF, as in runs
+     1-4). Crazy Taxi: the same dense drive as run 4.
+  2. Looney Tunes race as in runs 2 and 3 (no change expected).
+  3. Log: `[jopt] 0c blocks=` (Crazy Taxi: most blocks), SPEED by band
+     against run 4 (Crazy Taxi) and run 2 (Looney Tunes).
+- HW run 5 (same log, Crazy Taxi, 8C PREFIX per block): the regression is
+  gone. 8-10K 100.0% (ON 100.4%), 10-12K 99.6% (100.2%), 12-14K 99.1%
+  (94.8%), 14-16K 96.4% (90.4%), 16-18K 89.4% (92.2%), 18-20K 89.0%
+  (87.9%); the last four bands have 2-11 s each. `0c blocks=17822` of
+  23826; the other blocks (BIOS, SDK code at 0x8C/0xAC) have about 6% of
+  the heartbeats. Looney Tunes not run again (its blocks are all 0x8C).
+- HW run 6 (same log, VF3tb fights, 8C PREFIX, COLD SPLIT and SCHEDULE
+  OFF): 12-14K 91.1%, 14-16K 90.8%, 16-18K 87.1%; as on 2026-10-16.
+- HW run 7 (same log, VF3tb, 8C PREFIX + COLD SPLIT + EXITS + SCHEDULE +
+  LIST), the first log of P99/P100: no fault. 14-16K 94.8% (39 s; run 6
+  90.8%), 16-18K 92.0% (10 s; 87.1%): about +4 points, 56.8 fps at 14-16K.
+  Still host-bound (slept=0 in 47 of 49 fight seconds). `[jopt]`: 25256
+  blocks, 67391 islands, 4699 KB cold, 7641 exits; LIST moved 117358 words,
+  estimate 741021 -> 690116 cycles (-6.9%). `[jcache]` 5202 KB used, 3200
+  KB cold.
+- HW run 8 (same log, Crazy Taxi, the same three rows): no fault. 8-12K
+  100% (96 s), 12-14K 99.7%, 14-16K 99.6%, 16-18K 93.9%, 18-20K 90.8% (2-10
+  s a band above 12K); 8C PREFIX alone (run 5) 99.1 / 96.4 / 89.4 / 89.0,
+  ON (run 4) 94.8 / 90.4 / 92.2 / 87.9. The limiter sleeps in most 9K+
+  seconds. LIST estimate 687848 -> 639730 cycles (-7.0%).
+- HW run 9 (same log, Looney Tunes race, the same three rows): no fault.
+  24-28K 100-101%, 28-30K 98.0% (27 s), 30-32K 99.0%, 32-34K 94.9%, 34-36K
+  93.8%; 8C PREFIX alone (run 2) 96.5 / 95.4 / 93.5 / 93.6 / 90.9 / -, ON
+  (run 3) 96.9 / 94.3 / 91.2 / 89.4 / 86.6 / 85.8. Cold cache 10368 KB.
+- Fault of 8C PREFIX found in runs 2 and 9: the Looney Tunes boot videos
+  (no 3D) run about 20 s at 36-75% SPEED; with ON (run 3) and the old
+  form (2026-10-17 night) about 5 s at 57-80%. Likely the video code
+  reaches its buffers through another mirror (or a junk upper half), so
+  its accesses go cold. Not fixed.
+- Matt's HW runs of the 15:05 package: their log is not on this PC (no
+  listener ran on UDP 18194, and the PS3 logs only over UDP). Not read.
+- The form: `rldicl r0,A,40,24; cmpldi r0,0x8C; bne cold; addis
+  rT,A,bias; lwz rD,disp(rT)`, 5 words a 32-bit load or store (old 7-8,
+  ON 6). Every other RAM mirror and every junk upper half go cold.
+- PC (WSL): `misc/fmem_check` PASS, `mutate.py` 28 of 28;
+  `misc/sched_check` PASS, `mutate.py` 45 of 45; the checks that read the
+  changed files PASS. No new build warning. `.got` 0xFEC0: 0x140 left.
+- HW steps (UDP listener only when Matt says so):
+  1. JIT SPEED: JIT SHORT FORMS ON; the other rows as in your last run.
+     Crazy Taxi: a dense drive of about 60 s.
+  2. JIT SHORT FORMS to 8C PREFIX, restart Crazy Taxi, the same drive.
+  3. The same two runs in the Looney Tunes race (25K+) and Sonic
+     Adventure 2.
+  4. Look for: a freeze, a `Verify Failed` message, wrong polygons or game
+     logic, sound faults.
+  5. Log: `[jitcfg] shortforms=2` per boot, `[jopt] forms= folds=`, SPEED
+     and sleep by 2K vertex band, step 2 against step 1.
+
+**P99 and P100, the heavy-scene stall work (`OPTIMIZATION_POTENTIAL.md` P99,
+P100), built 2026-10-17 (Matt: "Let's go with option 2 and 3."). Package of
+15:05 (`build/notdc_ps3.pkg`, 1786160 bytes) = commit 311d430 + P96 + P87 +
+GD-ROM Timing HOST + P97 + P98 + this. Not committed. Three rows on JIT
+SPEED, all default OFF and set before boot. No HW run yet.**
+- Why (the answer to "What are our options", 2026-10-17): in heavy scenes
+  the game code runs at about 1 PPC instruction every 4-6 cycles; the
+  vertex loops at about 1 a cycle are only 3-5% of the time. Theory, not
+  measured: code-cache and L2 misses (option 2) and in-order pipeline
+  waits (option 3). Option 1, the measure-first package, was not taken.
+- Rows: JIT COLD SPLIT (`JitColdSplit`: OFF / ON / + EXITS), JIT SHORT
+  FORMS (`JitShortForms`: OFF / ON), JIT SCHEDULE (`JitSchedule`: OFF /
+  FORMS / + LIST). With all three OFF the JIT emits the code of before.
+  Lines: `[jitcfg] coldsplit= shortforms= schedule=` at boot; `[jopt]`
+  each stats window while one is on; `[jcache] ... cold N KB`.
+- New verifies (a fault stops the emulator with a `Verify Failed` line and
+  its source line): every island slot patched, a cold fragment of 512 B at
+  most, a dynamic exit's cold path of 128 B at most, the hot code below the
+  cold chunks.
+- PC (WSL): `misc/cold_check`, `misc/fmem_check` and `misc/sched_check`
+  PASS (new), their `mutate.py` 6 of 6, 19 of 19 and 43 of 43. The 24 older
+  checks that read the changed files PASS. No new build warning. The
+  scheduler's own estimate on 285 real block bodies of the HW dumps (old
+  forms, cache hits): 9.2% fewer cycles in its regions; not a speed claim.
+- `.got` 0xFEB8 of 0x10000 (was 0xFDB8): 0x148 bytes left.
+- Risk: the rows change the code of every block. A fault shows as a freeze,
+  a `Verify Failed` message, wrong polygons, wrong game logic or a sound
+  fault.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package. JIT SPEED page: the three new rows OFF; the other
+     rows as in the last runs; VIDEO / DEBUG: SH4 Time Profile OFF.
+  2. Crazy Taxi: a dense drive of about 60 s (the baseline).
+  3. JIT COLD SPLIT to + EXITS, restart Crazy Taxi, the same drive.
+  4. JIT SHORT FORMS ON as well, restart, the same drive.
+  5. JIT SCHEDULE to FORMS as well, restart, the same drive.
+  6. JIT SCHEDULE to + LIST, restart, the same drive.
+  7. All three still on: the Looney Tunes race (25K+), Sonic Adventure 2,
+     and a 2D game.
+  8. Look for: a freeze, a `Verify Failed` message, wrong polygons or game
+     logic, sound faults.
+  9. Log: `[jitcfg]` per boot, `[jopt]` (islands, cold KB, forms, folds,
+     moved words, the cycle estimate), `[jcache]` (cold KB, clears), SPEED
+     and sleep by 2K vertex band against step 2.
+
+**P98 TA Line Zero, a stall test on the TA buffer (`OPTIMIZATION_POTENTIAL.md`
+P98), built 2026-10-17 (Matt: "Let's go with the cheap stall test on the TA
+buffer."). Package of 01:07 (`build/notdc_ps3.pkg`, 1774000 bytes) = commit
+311d430 + P96 + P87 + GD-ROM Timing HOST + P97 + this. Not committed. Row
+default OFF. HW run 1 2026-10-17: clean, NO GAIN (below).**
+- HW run 1 (`ps3log_p89_run1.txt` from line 190941): the row was ON for
+  both whole boots and SH4 Time Profile OFF, so the baseline is the older
+  boots with the same rows (JIT TA SLOT ON then, which gives nothing).
+  Clean, no wrong polygons (Matt). Lines zeroed: Crazy Taxi 100-220K/s,
+  the Looney Tunes race 80-190K/s. SPEED: Crazy Taxi 12-20K within 1 point
+  of the boot at line 138002; the Looney Tunes race 24K+ 87.1% in both (56
+  and 46 s). So the TA flush's time is not the wait for new TA buffer
+  lines from memory. `[ta-split]` ns cannot be compared across these
+  packages: they moved with the package of 00:12, before this row.
+- Row VIDEO / DEBUG > TA Line Zero (`TaLineZero`, live): when a TA record
+  starts a 128-byte line of the TA buffer, `dcbz` zeroes the next line, so
+  the L2 takes it with no read from memory. Line `[tazero] TA Line Zero
+  ON|OFF, lines zeroed N/s` each 5 s while the row is ON.
+- PC (WSL): `misc/ramsq_check` PASS (seeds 1, 3, 7) with the new tests;
+  `mutate.py` 70 of 70 (10 new). The 26 other checks that read the changed
+  files PASS. No new build warning.
+- `.got` 0xFDB8 of 0x10000 (was 0xFDA0): 0x248 bytes left.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package.
+  2. VIDEO / DEBUG: SH4 Time Profile ON (set before boot), TA Line Zero
+     OFF. Other rows as in the last run.
+  3. Crazy Taxi: about 60 s on the dense streets. Then TA Line Zero ON
+     (live, same page) and the same streets again.
+  4. The Looney Tunes race: the same, row OFF then ON.
+  5. Look for: missing or wrong polygons with the row ON, a freeze.
+  6. Log: SPEED by vertex band and the `[prof]` ta and game shares, OFF
+     against ON; `[ta-split]` copy ns.
+
+**P97, heavy scenes: a time profile of the SH4 thread and the render thread
+at low SMT priority (`OPTIMIZATION_POTENTIAL.md` P97), built 2026-10-17
+(Matt: "Go with option 3."). Package of 00:12 (`build/notdc_ps3.pkg`,
+1773680 bytes) = commit 311d430 + P96 + P87 + GD-ROM Timing HOST default +
+this. Not committed. Both rows default OFF; HW runs 1-3 done 2026-10-17
+(below).**
+- Rows on VIDEO / DEBUG: SH4 Time Profile (`Sh4Profile`, set before boot)
+  and Render Low Priority (`RendLowPrio`, live). Lines: `[prof] SH4 Time
+  Profile on` at boot; each 5 s `[prof] .. game N% | ta .. mem .. sys ..`,
+  `[prof] top 1-8: ..` (24 blocks), and dumps of new top blocks
+  (`[prof] --- block ..`, `[prof] sh4 ..`, `[prof] ppc ..`); `[rprio]
+  Render Low Priority ON|OFF` at each change.
+- PC (WSL): the 32 PC checks that read the changed files PASS
+  (idleauto_check names the end of ngen_Compile: the new block note goes
+  before it). No new build warning.
+- `.got` 0xFDA0 of 0x10000 (was 0xFCA0): 0x260 bytes left.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package.
+  2. VIDEO / DEBUG: SH4 Time Profile ON (set before boot); Render Low
+     Priority OFF.
+  3. Crazy Taxi: about 60 s on the dense streets. Then Render Low Priority
+     ON (live, same page) and the same streets again.
+  4. The Looney Tunes race (25K+ vertices): the same, row OFF then ON.
+  5. Look for: a slower or stuttering picture with the row ON (the render
+     thread runs late), sound trouble, a freeze.
+- HW runs 1-2 (2026-10-17, `ps3log_p89_run1.txt`, scratchpad of session
+  a86c2d7d): clean. Split of the SH4 thread in heavy 5 s reports:
+  - Crazy Taxi 16K (87%): game 73.7, ta 9.3, sys 8.2, mem 4.4, sync 2.8,
+    lookup 1.1.
+  - Looney Tunes race 19K (84%): game 58.9, sys 27.4 (with the pacer's
+    sleep), ta 6.0, mem 3.5, sync 1.6. 31K (77%): game 70.1, sys 14.7,
+    ta 7.2, mem 3.6, sync 2.0, lookup 1.2.
+  - The top 30 blocks are 16-26% of the time; the vertex loops 3-5%, at
+    about 1 instruction a cycle. The rest of the game code runs far
+    slower: the cost is stalls, not instruction count.
+  - Render Low Priority: no SPEED change (Crazy Taxi, and OFF/ON in one
+    Looney Tunes boot).
+- HW run 3 (2026-10-17, Crazy Taxi, JIT FRCHG ON, JIT C-Calls ON, JIT TA
+  SLOT OFF): clean. sync_fpscr 117K/s -> 2-4K/s, profile sync 2.7 -> 0.1%,
+  but game code +2 points (the inline swap costs about as much as the
+  call). SPEED +1.1 points at 10-12K (29-36 s), noise above (2-4 s a
+  band). No clear gain, as in 5.29. The default is Matt's call.
+
+**GD-ROM Timing HOST is the default again (Matt 2026-10-16: "Yes, set it as
+the default").** Package of 23:42. FIXED made Crazy Taxi stutter: 15 of its
+17 slow driving seconds were disc waits; with HOST, 3 of 44 and none from
+the disc. FIXED was the default from 2026-10-15 for a Sega Rally 2 theory
+that its HW run disproved.
+
+**P96 GD-ROM Read Ahead and P87 JIT TA SLOT, for Crazy Taxi's slow parts
+(`OPTIMIZATION_POTENTIAL.md` P96, P87), built 2026-10-16 (Matt: "Do option 2
+and 3. Do they break other games?"). Package of 22:42 (`build/notdc_ps3.pkg`,
+1770544 bytes) = commit 311d430 (the package of 21:00) + this. Not committed.
+Both rows default OFF; no HW run yet.**
+- Why: Crazy Taxi's slow parts (14-25K vertices, 86-94%) are SH4-bound. In
+  today's 16 slow seconds the SH4 waited 73 ms/s for disc reads (GD-ROM
+  Timing FIXED), and the TA store-queue path took ~12% (1.0-1.2M flushes a
+  second, ~215 ns each).
+- Row GD-ROM > GD-ROM Read Ahead (`GdReadAhead`, live): after each fill the
+  worker reads the next 64 data sectors (batches of 32) into a ring of 128;
+  a fill the ring holds is a RAM copy. The `[gdr]` line ends with `fills N
+  seq N dra 0|1 hit N read N/N ms(max)` (seq: fills that start where the
+  last one ended; this count is there with the row OFF too).
+- Row JIT SPEED > JIT TA SLOT (`JitTaSlot`, set before boot): the stores of
+  a TA record also go into the TA buffer's next record, so the flush reads
+  nothing back (P87 has the design). Lines: `[taslot] ns: ...` at every
+  boot (the probe: the read-back's own wait), `[taslot] hit= copy=
+  records=` each second with the row ON, `[jitcfg] ... taslot=`.
+- PC (WSL): `misc/taslot_check` (new) PASS, `mutate.py` 32 of 32 (22 on the
+  fuzz alone; two equal-code mutants left out); `misc/ramsq_check` PASS with
+  `do_sqw_slot`, `mutate.py` 60 of 60 (16 new, 4 repaired); `misc/gdasync_check`
+  PASS (all runs), its read-ahead mutants 10 of 10 (one needed a new
+  step-back test) and the 2 repaired swap mutants; `misc/rttq_check` PASS
+  (a stub). The 31 other checks that read the changed files PASS. No new
+  build warning.
+- `.got` 0xFCA0 of 0x10000 (was 0xFB80): 0x360 bytes left.
+- Do they break other games: with both rows OFF nothing changes. Read
+  Ahead gives the same bytes; a fill or a CD-DA refill can wait behind one
+  batch read (~9-15 ms); a disc swap empties the ring. JIT TA SLOT changes
+  the JIT code of every block that stores TA records through the store
+  queue and flushes them in the same block: a fault would show as broken
+  or missing polygons, or a crash, in 3D games.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package.
+  2. Boot Crazy Taxi with both rows OFF. The `[taslot] ns:` line at boot
+     gives the probe.
+  3. A dense drive (the streets of the runs of 2026-10-15/16): SPEED by
+     vertex band, `[gdr]` wait and the new counts.
+  4. GD-ROM Read Ahead ON (live, GD-ROM page), the same drive: `[gdr]` hit
+     and wait, SPEED.
+  5. JIT TA SLOT ON (JIT SPEED page), restart Crazy Taxi, the same drive:
+     SPEED, `[taslot]` hit and copy, `[ta-split]`. Look for broken
+     polygons.
+  6. If there is time: the Looney Tunes race at 25K+ with JIT TA SLOT ON.
+- HW run 1, 2026-10-16 (`ps3log_p89_run1.txt` from line 122159): no
+  fault. Read Ahead: more disc waits (133 ms/s in the slow seconds against
+  73), because only 40 of 185 fills started where the last one ended (Matt
+  turned it OFF). JIT TA SLOT: every flush took the slot, speed per vertex
+  band as before; the boot probe's read-back wait 0.2-14.5 ns. Both stay
+  OFF. Then GD-ROM Timing HOST removed the disc stutter (above).
 
 **P95, Rez: the RTT and the next list wait for the render thread
 (`OPTIMIZATION_POTENTIAL.md` P95), built 2026-10-16 (Matt: "Let's go with
 option 1."). Package of 21:00 (`build/notdc_ps3.pkg`, 1764720 bytes) =
-commit 944c740 + this. Not committed. HW run 1 (below): Rez's heavy parts
+commit 944c740 + this; committed by Matt as 311d430. HW run 1 (below): Rez's heavy parts
 85% -> 100%. Both rows default ON since the package of 21:00 (Matt: "Sure,
 set them on by default.").**
 - Cause, from Rez's long HW run (`ps3log_p89_run1.txt` lines 59208-74010):

@@ -1,5 +1,5 @@
-// Plan 5.44 + P74 PC check (WSL): do_sqw_nommu and do_sqw_mmu (ps3_rend.cpp) against the old chains do_sqw<false>
-// and do_sqw<true> -> TAWriteSQ / WriteMemBlock_nommu_ptr, all cut from the tree by run.sh; 16 MB of RAM per side.
+// Plan 5.44 + P74 + P87 + P98 PC check (WSL): the flushes of ps3_rend.cpp against the old chains do_sqw<false> and
+// do_sqw<true> -> TAWriteSQ / WriteMemBlock_nommu_ptr, all cut from the tree by run.sh; 16 MB of RAM per side.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -125,7 +125,9 @@ static void WriteMem16_nommu(u32, u16) { verify(false); }
 struct Ta_Dma { u32 w[8]; };
 struct TaContext { u8* raw; u32 raw_used, spe_pub; };
 enum { TA_RAW_SIZE = 1 << 12, TAS_SLOW = 0x100, SPE_BATCH = 256 };
-static u8 g_raw[TA_RAW_SIZE];
+alignas(128) static u8 g_raw[TA_RAW_SIZE];
+// The drained records, to find any that a dcbz wiped later (P98).
+alignas(128) static u8 g_shadow[TA_RAW_SIZE];
 static TaContext g_tc = { g_raw, 0, 0 };
 static TaContext* s_ta = &g_tc;
 static bool g_spe_on, s_peak_frame;
@@ -137,8 +139,14 @@ static void spe_note(TaContext* c)
 	if (g_spe_on && c->raw_used - c->spe_pub >= SPE_BATCH)
 		c->spe_pub = c->raw_used;
 }
-static u32 ta_fsm_entry(u32 st, u32 pcw) { return (pcw & 1) ? TAS_SLOW : st; }
+// The PCW the flat bodies step with: the record's word 0 on every path.
+static u32 g_fsm_pcw;
+static u32 ta_fsm_entry(u32 st, u32 pcw) { g_fsm_pcw = pcw; return (pcw & 1) ? TAS_SLOW : st; }
 static u32 ta_fsm_step(u32 st, u32, Ta_Dma*) { return st; }
+// P98 TA Line Zero: dcbz zeroes the 128-byte block that holds the address, as on the PPE.
+int g_ta_line_zero_preset;
+static u32 s_stat_ta_zero;
+#define TA_DCBZ(p) memset((void*)((uintptr_t)(p) & ~(uintptr_t)127), 0, 128)
 template<bool probe, bool flat>
 static inline void store_sq(u32* data)
 {
@@ -163,19 +171,27 @@ static void wmb_counted(u32 dst, u32* src, u32 size)
 #define WriteMemBlock_nommu_ptr wmb_counted
 #include "mmu.inc"
 #include "sqw.inc"
+#include "slot.inc"
+#include "zero.inc"
 #include "rend.inc"
 
 // The flat TA body logs its record after the copy into the raw buffer; the stub FSM does not, so log it here.
-static u32 g_raw_seen;
+// Before a full buffer starts again, every record must still be as it was drained (g_wiped counts the misses).
+static u32 g_raw_seen, g_wiped;
 static void ta_flat_drain()
 {
 	while (g_raw_seen < g_tc.raw_used)
 	{
 		ev(EV_TA, 0, g_raw + g_raw_seen, 32);
+		memcpy(g_shadow + g_raw_seen, g_raw + g_raw_seen, 32);
 		g_raw_seen += 32;
 	}
 	if (g_tc.raw_used + 32 > TA_RAW_SIZE && (g_ccall[CC_SQW] & 7) == 0)
+	{
+		g_wiped += memcmp(g_raw, g_shadow, g_tc.raw_used) != 0;
 		g_tc.raw_used = g_tc.spe_pub = g_raw_seen = 0;
+		ta_slot_sync();
+	}
 }
 
 static u64 g_seed;
@@ -241,6 +257,8 @@ int main(int argc, char** argv)
 	g_ta_sq_direct_preset = g_ram_sq_direct_preset = g_mmu_sq_direct_preset = 1;
 	s_ta_fast = true;
 	gate_set();
+	ta_slot_sync();
+	u32 slot_hits = 0, slot_partial = 0, slot_poisoned = 0, zero_runs = 0, zero_slot = 0, zero_end = 0;
 	u32 fails = 0, direct = 0, ram = 0, chain_ram = 0, ta = 0, ta_flat = 0, other = 0, sampled_ram = 0;
 	u32 mmu = 0, mmu_ram = 0, mmu_ta = 0, mmu_chain = 0, mmu_off = 0, mmu_peak_off = 0, sampled_mmu = 0;
 	for (u32 i = 0; i < total && fails < 8; i++)
@@ -253,6 +271,7 @@ int main(int argc, char** argv)
 		if ((rnd() & 1023) == 0) { s_ta_closed = (rnd() & 7) == 0; gate_set(); }
 		if ((rnd() & 1023) == 0) s_peak_frame = (rnd() & 3) == 0;
 		if ((rnd() & 1023) == 0) g_spe_on = rnd() & 1;
+		if ((rnd() & 255) == 0) g_ta_line_zero_preset = rnd() & 1;
 		if ((rnd() & 4095) == 0) g_sh4_cached_live = (rnd() & 3) == 0;
 		if ((rnd() & 15) == 0) CCN_QACR0.Area = (rnd() & 3) ? ((rnd() & 1) ? 3 : 4) : (rnd() & 7);
 		if ((rnd() & 15) == 0) CCN_QACR1.Area = (rnd() & 3) ? ((rnd() & 1) ? 3 : 4) : (rnd() & 7);
@@ -263,8 +282,13 @@ int main(int argc, char** argv)
 			memcpy(sq_both + k, &v, 4);
 		}
 		// Any store-queue address: every low bit can be set, and the top two bits of the 26 pick a RAM mirror.
-		const u32 dest = 0xE0000000u | (rnd() & 0x03FFFFFF);
+		u32 dest = 0xE0000000u | (rnd() & 0x03FFFFFF);
 		const bool at = rnd() & 1;
+		// P87: half the flushes without the MMU come from a JIT record, most of them at the start of a half. The frame
+		// variant notes no peak.
+		const bool slot_path = !at && (rnd() & 1), slot_frame = slot_path && (rnd() & 3) == 0;
+		if (slot_path && (rnd() & 7))
+			dest &= ~0x1Fu;
 		// The target as each old chain computes it, written here apart from the code under test.
 		const u32 qarea = (dest & 0x20) ? CCN_QACR1.Area : CCN_QACR0.Area;
 		const u32 target = at ? sq_remap[(dest >> 20) & 0x3F] | (dest & 0x000FFFE0) : (dest & 0x03FFFFE0) | (qarea << 26);
@@ -287,12 +311,40 @@ int main(int argc, char** argv)
 		const u32 wmb_b = b.wmb, mem_b0 = g_vram_split.sq_mem, cc_b = g_ccall[CC_SQW], tc_b = TaCalls, tw_b = b.tawsq;
 		const u32 rs_b = b.ram_samples, ts_b = b.ta_samples, raw0 = g_tc.raw_used, peak0 = g_peak_notes;
 		const size_t log_b = b.log.size();
+		// The record's mask words are at r11 already: the slot, a poisoned area or a record late.
+		const bool sampled = g_ta_split.calls + 1 == g_ta_split.next;
+		u32 slot = 0, pcw = 0, mask = 0;
+		bool want_hit = false;
+		if (slot_path)
+		{
+			static u8 s_poison[32], s_late[32];
+			mask = (rnd() & 3) ? 0xFFu : rnd() & 0xFFu;
+			const u32 kind = rnd() & 7, cur = g_ta_slot;
+			const bool spare = cur == (u32)(uintptr_t)s_ta_slot_spare;
+			slot = kind == 0 ? (u32)(uintptr_t)s_poison :
+			       kind != 1 ? cur : !spare && raw0 + 64 <= TA_RAW_SIZE ? cur + 32 : (u32)(uintptr_t)s_late;
+			u32* w = (u32*)(uintptr_t)slot;
+			const u32* q = (const u32*)(sq_both + (dest & 0x20));
+			for (u32 k = 0; k < 8; k++)
+				w[k] = (mask >> k) & 1 ? q[k] : rnd();
+			pcw = mask & 1 ? q[0] : rnd();
+			want_hit = want_flat && kind > 1 && !spare && !(dest & 0x1F) && !sampled;
+			slot_poisoned += kind < 2;
+		}
+		const u32 hit0 = s_stat_slot_hit, zero0 = s_stat_ta_zero;
 		if (at)
 			do_sqw_mmu(dest);
+		else if (slot_frame)
+			do_sqw_slot_frame(dest, slot, pcw, mask);
+		else if (slot_path)
+			do_sqw_slot(dest, slot, pcw, mask);
 		else
 			do_sqw_nommu(dest);
 		const bool raw_copy = g_tc.raw_used != raw0;
-		const u32 peaks = g_peak_notes - peak0;
+		const u32 peaks = g_peak_notes - peak0, rec_w0 = raw_copy ? *(const u32*)(g_raw + raw0) : 0;
+		const u32 hits = s_stat_slot_hit - hit0;
+		slot_hits += hits;
+		slot_partial += hits && mask != 0xFF;
 		ta_flat_drain();
 		const u32 dm_b = g_vram_split.sq_mem - mem_b0, dc_b = g_ccall[CC_SQW] - cc_b, dt_b = TaCalls - tc_b;
 		leave(b);
@@ -313,7 +365,27 @@ int main(int argc, char** argv)
 		ok = ok && (want_direct ? (w_b == 0 && w_a == 1) : w_b == w_a);
 		ok = ok && (want_flat ? (t_b == 0 && t_a == 1) : t_b == t_a);
 		// A record copied by the flat body notes the TA peak: always without the MMU, as TA Peak Frame says with it.
-		ok = ok && peaks == (raw_copy ? (at ? !s_peak_frame : 1u) : 0u) && (!raw_copy || want_flat);
+		ok = ok && peaks == (raw_copy ? (at ? !s_peak_frame : slot_frame ? 0u : 1u) : 0u) && (!raw_copy || want_flat);
+		// The FSM steps with the record's word 0; the record path takes the slot exactly when it is the next record.
+		ok = ok && (!raw_copy || g_fsm_pcw == rec_w0) && hits == (want_hit ? 1u : 0u);
+		// Every flush leaves the slot at the next record, or at the spare when the buffer has no room.
+		const bool room = g_tc.raw_used + 32 <= TA_RAW_SIZE;
+		ok = ok && g_ta_slot == (u32)(uintptr_t)(room ? g_raw + g_tc.raw_used : s_ta_slot_spare);
+		// P98: a record copied at a line start zeroes the next line when it fits; the records before stay as drained.
+		const u32 zeros = s_stat_ta_zero - zero0;
+		const bool line_start = raw_copy && !(raw0 & 127);
+		const bool want_zero = g_ta_line_zero_preset && line_start && raw0 + 256 <= TA_RAW_SIZE;
+		ok = ok && zeros == (want_zero ? 1u : 0u);
+		if (zeros && raw0 + 256 <= TA_RAW_SIZE)
+		{
+			static const u8 k_zero[128] = {};
+			ok = ok && memcmp(g_raw + raw0 + 128, k_zero, 128) == 0;
+		}
+		const u32 before = raw0 >= 128 ? (raw0 & ~127u) - 128 : 0;
+		ok = ok && memcmp(g_raw + before, g_shadow + before, raw0 - before) == 0;
+		zero_runs += zeros;
+		zero_slot += zeros && hits;
+		zero_end += g_ta_line_zero_preset && line_start && raw0 + 256 > TA_RAW_SIZE;
 		direct += want_direct;
 		chain_ram += area == 3 && !want_direct;
 		ta += area == 4;
@@ -353,17 +425,22 @@ int main(int argc, char** argv)
 		       b.ta_samples, a.split.calls, b.split.calls);
 		fails++;
 	}
+	if (g_wiped && fails++ < 8)
+		printf("FAIL: %u full buffers lost a record after it was stored\n", g_wiped);
 	// Every kind of flush must have run, the sampled direct paths too.
 	if (!direct || !chain_ram || !ta || !ta_flat || !other || !sampled_ram || !mmu_ram || !mmu_ta || !mmu_chain
-	    || !mmu_off || !mmu_peak_off || !sampled_mmu)
+	    || !mmu_off || !mmu_peak_off || !sampled_mmu || !slot_hits || !slot_partial || !slot_poisoned || !zero_runs
+	    || !zero_slot || !zero_end)
 	{
 		printf("FAIL: a path did not run\n");
 		fails++;
 	}
 	printf("%s: %u flushes: RAM %u (direct %u, old chain %u, sampled %u), TA %u (flat %u), other areas %u; MMU %u "
-	       "(RAM direct %u, TA flat %u, chain %u, row OFF %u, sampled %u); %u failures\n",
+	       "(RAM direct %u, TA flat %u, chain %u, row OFF %u, sampled %u); JIT TA SLOT: %u from the slot (%u with words"
+	       " from the queue), %u poisoned or late; TA Line Zero: %u lines (%u on the slot path), %u at the buffer end;"
+	       " %u failures\n",
 	       fails ? "FAIL" : "PASS", total, ram, direct, chain_ram, sampled_ram, ta, ta_flat, other, mmu, mmu_ram, mmu_ta,
-	       mmu_chain, mmu_off, sampled_mmu, fails);
+	       mmu_chain, mmu_off, sampled_mmu, slot_hits, slot_partial, slot_poisoned, zero_runs, zero_slot, zero_end, fails);
 	free(a.ram);
 	free(b.ram);
 	return fails != 0;

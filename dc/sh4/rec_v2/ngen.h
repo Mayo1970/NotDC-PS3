@@ -24,6 +24,9 @@ void emit_Skip(u32 sz);
 u32 emit_FreeSpace();
 void* emit_GetCCPtr();
 void emit_SetBaseAddr();
+// Row JIT COLD SPLIT: room for bound bytes of cold code at the top of the cache (0: full), then its end.
+u32* emit_ColdBegin(u32 bound);
+void emit_ColdEnd(u32* end);
 // [jcache] line for the stats window (plan 5.28).
 void recSh4_CacheDump(double seconds);
 

@@ -217,7 +217,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P84 | G12 facts: the device name and the edits; a radial stick dead zone | reference, small fix | G12; the stick feel in every game | dead zone ~15 lines | bundle 10 (the dead zone, and GOALS.md G12 since the re-cut of 2026-10-12) |
 | P85 | Flash defaults, and the flash save at exit | bug, release | a new flash boots in Japanese; console ID; settings lost on a forced exit | ~40 + 2 lines | bundle 15; GOALS.md G13 and G10; new facts for P37 and P6; built 2026-10-13 as the rows "Flash Defaults", "Console ID" and "Exit Flash Save"; default FLYCAST, FLYCAST and OFF in source since 2026-10-13 (Matt); Console ID ran on HW 2026-10-13, the other two are open for the last checks before the release (Matt) |
 | P86 | The SH4 thread in heavy scenes: where the time goes, and the ways | speed | Looney Tunes race, Sonic Adventure 2 above 18K vertices, Crazy Taxi dense scenes, Quake3.cdi | 2 rows to test with no build; 3 items to build | bundle 22 (parked for the end, Matt 2026-10-12; bundle 21 until 2026-10-13); the survey behind plan section 0 ("OPEN ISSUE") and bundle 8 point 11; P72 and P73 (bundle 14) are its render-thread side |
-| P87 | Store-queue stores straight into the TA buffer | speed | Crazy Taxi, Looney Tunes race (their PREF follows the stores); not Sonic Adventure 2's main loop | probe ~40 lines; build ~100-200 lines | seventh review (2026-10-16); own work; after plan bundle 21 way 4 (dropped); build only if the probe shows a wait |
+| P87 | Store-queue stores straight into the TA buffer | speed | Crazy Taxi, Looney Tunes race (their PREF follows the stores); not Sonic Adventure 2's main loop | probe ~40 lines; build ~300 lines, ~900 with the checks | seventh review (2026-10-16); own work; built 2026-10-16 with its boot probe (Matt: "Do option 2 and 3."), row JIT TA SLOT default OFF; HW run 1: every flush took the slot, no speed change |
 | P88 | FSRRA as frsqrte plus Newton steps | speed | Sonic Adventure 2 (one FSRRA a vertex): 0.5-1.5% of the SH4 thread (estimate) | probe ~40 lines; build ~20-30 lines | seventh review (2026-10-16); own work; the hardware error bound is from Reicast |
 | P89 | One rule for the Kamui vsync wait loop | speed | Ikaruga, Rez, Spider-Man, Project Justice, Power Stone 2 | ~20-40 lines | seventh review (2026-10-16); plan bundle 21 way 5; built 2026-10-16 (package of 14:25, acts with JIT IDLE HASH ON), HW SUCCESS 2026-10-16 (Ikaruga heavy part 77% -> 87%); it replaces Capcom vs. SNK 2's address entry |
 | P90 | Heavy scenes: four checks with no build | measurement | Ecco the Dolphin, the system work, Looney Tunes race, Sonic Shuffle | no code | seventh review (2026-10-16) |
@@ -226,6 +226,9 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P93 | Texture churn: a new texture takes an evicted one | speed | Garou (fights 84-98%); no other game of the HW logs evicts | ~150 lines with the checks | new 2026-10-16 (Matt: "apply the Garou fixes"); built, row Tex Recycle default OFF; HW: render-thread time down, no speed change (Garou is SH4-bound) |
 | P94 | One rule for the Shinobi task loop | speed | Garou; Sonic Shuffle and Border Down as before | ~30 lines | new 2026-10-16 (Matt: "2."); acts with JIT TASK IDLE (default LONG); HW SUCCESS 2026-10-16 (Garou 100%, 60 frames); it replaces the two address entries |
 | P95 | Rez: the RTT and the next list wait for the render thread | speed | Rez (an RTT every frame; 25-33K vertices at 73-88%) | ~120 lines with its rows, ~600 with the check | new 2026-10-16 (Matt: "Let's go with option 1."); built, rows RTT Async and TA Context Split; HW run 1: Rez 25-28K vertices 85% -> 100%, Crazy Taxi unchanged; default ON (Matt) |
+| P96 | GD-ROM data read-ahead | speed | Crazy Taxi (73 ms/s of GD waits in its slow parts with GD-ROM Timing FIXED); games that stream data files | ~200 lines, ~150 more in the check | new 2026-10-16 (Matt: "Do option 2 and 3."); built, row GD-ROM Read Ahead default OFF, with the count of reads that follow the last one; HW run 1: more stutter (Crazy Taxi's reads seldom follow on), stays OFF |
+| P97 | Heavy scenes: a time profile of the SH4 thread, and the render thread at low SMT priority | measurement + speed | every 3D game; Crazy Taxi 17-25K (91%), the Looney Tunes race 25K+ (86-88%) | ~350 lines | new 2026-10-17 (Matt: "Go with option 3."); built, rows SH4 Time Profile and Render Low Priority, both default OFF; HW 2026-10-17: the profile works (split in plan section 0), Render Low Priority no effect |
+| P98 | TA Line Zero: the TA buffer's next cache line is zeroed before the SH4 writes it | speed (stall test) | every 3D game that feeds the TA by the store queue; Crazy Taxi and the Looney Tunes race at 1.0-1.1M flushes/s | ~25 lines, ~40 in the check | new 2026-10-17 (Matt: "Let's go with the cheap stall test on the TA buffer."); built, row TA Line Zero default OFF, live; HW run 1: clean, no gain (Crazy Taxi within 1 point, the Looney Tunes race 87.1% both), the flush's time is not the new lines' memory reads |
 
 Main negative finding: the SH4-side modules (scheduler, TMU, INTC, memory
 handlers) take only ~1-2% of the SH4 thread (estimate). The ~10.6% that dense
@@ -1117,7 +1120,7 @@ Adventure intro FMV, `[stall] dma`.
   per load (plan bundle 21 way 6). New items P87-P90; the order is in
   section 5.
 
-### P87 Store-queue stores straight into the TA buffer  `[ ]` seventh review (2026-10-16); a boot probe first
+### P87 Store-queue stores straight into the TA buffer  `[x]` no gain: built 2026-10-16 with its boot probe (Matt: "Do option 2 and 3."), row JIT SPEED > JIT TA SLOT default OFF; HW run 1: every flush took the slot, speed as before (plan section 0)
 
 - Our own work, not a take. Flycast and Reicast copy the store queue at
   the PREF, as we do (section 4, seventh review). Their hosts forward a
@@ -1166,6 +1169,59 @@ Adventure intro FMV, `[stall] dma`.
   flushes take the old chain.
 - HW measure: SPEED and the `[ta-split]` share in a dense Crazy Taxi drive
   and in the Looney Tunes race at 25K+, the same scene before and after.
+- Built 2026-10-16, with the probe in the same package (Matt chose the
+  build, not the probe first):
+  - The probe runs at every boot: `[taslot] ns: 8 stores + 4 loads of them
+    .., the loads after the wait .. (wait alone ..), loads of the other
+    half .., stores alone .. | the read-back's own wait .. ns`.
+  - Row JIT SPEED > JIT TA SLOT (`JitTaSlot`, set before boot, default
+    OFF; `[jitcfg] ... taslot=`). Only blocks without the MMU, with JIT
+    SQ STORES and the inline memory guard (JIT FASTMEM).
+  - The plan (`ps3/ps3_jit_taslot.h`, `ts_plan`): from each `pref @Rb`
+    back, the 32-bit and pair stores through Rb whose offset from the
+    PREF's address (Rb moves by add/sub #imm) lands in the PREF's half of
+    the 64-byte queue form the record. The window runs from the record's
+    first store to the PREF. It stops at a C call (ifb, sync_sr, mac,
+    fsqrt and fsrra without JIT FSQRT, frchg; fschg with JIT FSCHG
+    passes), a load from a fixed address, any other store, a write of Rb
+    that is not a step, a PREF through Rb, and a pair at 4 mod 8. The last
+    store of word 0 must come from an integer register (or no store
+    writes word 0). Other PREFs may sit in the window.
+  - The code: r11 = `g_ta_slot` before the first store; each store of the
+    record also stores at r11 + (addr & 0x1C) (2 instructions; a pair 4);
+    the last word-0 store copies its register to r12. The PREF calls
+    `do_sqw_slot(dest, r11, r12, mask)`. Every cold path in the window and
+    every other flush in it point r11 at `s_ts_poison`.
+  - `ps3_rend.cpp`: `g_ta_slot` is s_ta's next record, or 32 spare bytes
+    when there is no room; `ta_slot_sync()` follows every change of
+    `raw_used`, `s_ta` and the buffers. `do_sqw_slot` takes the record in
+    place when the slot is that record and the PREF address is the start
+    of a half: the words the block did not store come from `sq_both`, the
+    FSM steps with r12. Else the old flat copy. `[taslot] hit= copy=
+    records=` each second with the row ON.
+  - Crazy Taxi 0C081BC4: one record, all 8 words, word 0 from R2 (the pref
+    @R4 in the window is a RAM prefetch). Looney Tunes 8C0873A6: all 8
+    words, word 0 from R7.
+  - PC: `misc/taslot_check` (new): the plan on the two game loops and 25
+    other blocks; the emitted stores on a PPC64 model (20000 runs, garbage
+    upper halves); a fuzz of 200K blocks on the SHIL interpreter with a
+    model of r11, r12, the cold paths, the flushes and the buffer (4
+    seeds; ~327K flushes from the slot each). The fuzz found two plan bugs
+    before the build: the queue wraps at 64 bytes, and the store body
+    masks a pair's address to 8 bytes. `mutate.py`: 32 of 32 (22 on the
+    fuzz alone). `misc/ramsq_check`: `do_sqw_slot`
+    against the old chains (33K records from the slot, 8K with words from
+    the queue, 250K poisoned or late), the slot after every flush.
+- HW run 1, 2026-10-16 (`ps3log_p89_run1.txt` of session a86c2d7d, Crazy
+  Taxi lines 126450-131646 and 138004-, Looney Tunes 131648-138002): no
+  fault. Every flush took the slot (1.5-3.4M a second, 0 copies). The boot
+  probe gave a read-back wait of 0.2, 14.5 and 11.8 ns in three boots.
+  Crazy Taxi per vertex band as before (4-10K 99.8% against 100.2%, 10-14K
+  98.2% against 98.3%); `ta:` 11.7% at 945K flushes a second (about 124 ns
+  each, as before). Matt: "the JIT TA Slot brings too many stutters"; the
+  log puts those on the disc waits of GD-ROM Timing FIXED (15 of 17 slow
+  seconds). Lesson: after JIT TA INLINE (instructions) and this (the
+  read-back), the flush's ~120 ns are neither; P97 measures first.
 
 ### P88 FSRRA as frsqrte plus Newton steps  `[ ]` seventh review (2026-10-16); a boot probe first
 
@@ -1336,6 +1392,248 @@ Adventure intro FMV, `[stall] dma`.
 - HW measure: Rez's heavy part, both rows ON against both OFF: SPEED,
   frames a second, sleep, the `[rttq]` line (SH4 wait, moves), `[spe] rel
   waits`, the `[hb]` phases; the glow pictures must look as before.
+
+### P96 GD-ROM data read-ahead  `[x]` no gain: built 2026-10-16 (Matt: "Do option 2 and 3."), row GD-ROM > GD-ROM Read Ahead default OFF; HW run 1: more disc waits, stays OFF (plan section 0)
+
+- Our own work, from Crazy Taxi's HW runs of 2026-10-16: in its 16 slow
+  seconds (86-94%) the SH4 waited 73 ms/s for disc reads (4.6 waits a
+  second; fills of 22.8 sectors on average, 8.8 ms each). GD-ROM Timing
+  FIXED makes the SH4 wait for each late fill. The runs of 2026-10-14
+  (before FIXED, no SH4 wait) ran at the same speed, on an older build,
+  so the gain is not sure.
+- Built: after each fill the worker reads the data sectors that follow
+  (a window of 64, in batches of 32) into a ring of 128 sectors, tagged
+  with the sector number and the format (2048, 2336, 2340 or 2352 bytes).
+  A fill whose sectors are all in the ring is copied from RAM and sends
+  nothing to the worker. A jump starts a new run. The worker reads ahead
+  only when it has no fill and no CD-DA work; a disc swap empties the
+  ring. The row is live.
+- The count Matt asked for first: the `[gdr]` line ends with `fills N seq
+  N dra 0|1 hit N read N/N ms(max)`: fills, those that start where the
+  last one ended, the row, the fills the ring gave, and the worker's
+  read-ahead batches, sectors and time.
+- Risk: a fill or a CD-DA refill can wait behind a batch of 32 sectors
+  (one disc read, ~9-15 ms) that is in progress. The bytes a game gets
+  are the same.
+- PC: `misc/gdasync_check` (harness and `run.sh`): file streams in each
+  format, read twice from 1000 sectors back, then the ring's sectors read
+  in another format (they must come from the disc); a step back to just
+  before the run (2 of 5 steps read the disc); a disc swap with the ring
+  full. The whole check (TSan runs too) passes; `mutate.py`: 10 new
+  mutants and the 2 repaired swap mutants are caught (`run_dra.sh`).
+- HW measure: a dense Crazy Taxi drive, the row OFF and ON: SPEED by
+  vertex band, the `[gdr]` waits and the new counts.
+- HW run 1, 2026-10-16 (Crazy Taxi with both P87 and P96 ON, lines
+  122159-126448): 53 driving seconds at 93.9%, 23 of them under 95% with
+  133 ms/s of disc wait (73 ms/s in the slow seconds before). Only 40 of
+  185 fills started where the last one ended; 60 came from the ring; the
+  201 batch reads kept the disk busy 72 ms a second, so the game's own
+  fills waited behind them. Matt turned it OFF. Then GD-ROM Timing HOST:
+  no SH4 disc wait, 3 of 44 driving seconds under 95% (FIXED: 17 of 96);
+  HOST is the default again since 2026-10-16 (Matt).
+
+### P97 Heavy scenes: a time profile of the SH4 thread, and the render thread at low SMT priority  `[~]` built 2026-10-17 (Matt: "Go with option 3."), rows VIDEO / DEBUG > SH4 Time Profile and Render Low Priority, both default OFF; HW 2026-10-17: the profile works, Render Low Priority no effect (plan section 0)
+
+- Why (HW logs of 2026-10-16, heavy windows): Crazy Taxi 17-20K 91.3%
+  (TA path 11.7% of the SH4 thread, sound 3.5%, render thread busy 28%);
+  the Looney Tunes race 25K+ 86-88% (TA 8.4-8.7%, sound 3%, render busy
+  15-17%). The rest, about 80%, is game code, and no instruction cut moved
+  it: JIT TA INLINE, JIT GUARD REUSE (+0.1%) and P87 removed work with no
+  speed change. Sonic Adventure 2's census (session 77328546, census 11):
+  3.9M block entries a second at 33.6 hot instructions each, about 130M
+  instructions a second for most of a 3.2 GHz thread, so the time is in
+  waits (cache misses, divides, the other hardware thread), not in
+  instruction count.
+- Row SH4 Time Profile (`Sh4Profile`, set before boot): the JIT stores the
+  block's guest pc in `g_prof_where` at each block entry (4 words), and a
+  part code around its C calls: TA (the PREF's flush), MEM (a memory op's
+  cold path; RENDER when `g_sh4_phase` is not guest), SYS (UpdateSystem,
+  with the pacer's sleep), INT, LOOKUP (`bm_GetCode`), LINK, COMPILE,
+  IFB, SYNC, OTHER. A sampler thread (`ps3/ps3_prof.cpp`, priority 200)
+  reads it each 500 us. Each 5 s: `[prof] .. game N% | ta .. mem .. ...`
+  and `[prof] top 1-8: pc share ..` (24 blocks), then a dump of each new
+  top-8 block (SH4 code and PPC words; 48 at most a boot).
+- Row Render Low Priority (`RendLowPrio`, live): the render thread runs
+  each job at the PPE's low thread priority (`or 1,1,1`), medium after
+  (`or 2,2,2`); the SH4 thread sets medium at each UpdateSystem, in case
+  the low one stayed on its hardware thread. `[rprio]` at each change.
+  Evidence that the other hardware thread costs the SH4: the Sound Thread
+  made it about 10% slower (plan 5.14); SPE Draw cut render busy 56 ->
+  32% and gave +2.4 to +5% in 10K+ windows (plan 5.16). Risk: the render
+  thread draws more slowly; it is busy 15-35% in heavy windows.
+- HW measure: one boot each of Crazy Taxi and the Looney Tunes race with
+  the profile ON, the same scene with Render Low Priority OFF, then ON:
+  the `[prof]` split and top blocks; SPEED by vertex band and `[rend]
+  busy` ON against OFF.
+
+### P98 TA Line Zero: the TA buffer's next cache line is zeroed before the SH4 writes it  `[x]` no gain: built 2026-10-17 (Matt: "Let's go with the cheap stall test on the TA buffer."), row VIDEO / DEBUG > TA Line Zero, default OFF, live; HW run 1: clean, SPEED as before (plan section 0)
+
+- Why: a TA flush costs about 120 ns whatever code does it (JIT TA INLINE,
+  P87 JIT TA SLOT: no change). The SH4 thread writes the TA buffer as a
+  stream, 32 bytes a flush, about 480 KB a heavy frame, so most 128-byte
+  lines are likely not in the L2 (512 KB). The PPE's L1 is write-through:
+  each store goes on to the L2, which first reads a new line from memory.
+  A store that waits for it can fill the store queue and stop the thread.
+  Estimate: 275K new lines a second at 1.1M flushes; a few percent of the
+  SH4 thread if the theory holds. Not measured.
+- The row (`TaLineZero`, live): when a record starts a 128-byte line of the
+  buffer, `dcbz` zeroes the NEXT line (`ta_line_zero()` in
+  `ps3/ps3_rend.cpp`). dcbz takes the line into the L2 as zeros with no
+  read from memory, and the 4 records that fill it come later. The line
+  after raw_used holds no record yet, so nothing stored is lost; the SPU
+  and the PPU replay read only up to raw_used. Not when the next line
+  passes the buffer end. The buffer is memalign(128), so dcbz's 128-byte
+  block is that line. Calls: the flat body (TA SQ Direct, with or without
+  the MMU), the P87 slot path and `store_sq` (the old path and the 5.17
+  samples). Not the TA DMA path (4 MB/s in Crazy Taxi).
+- Line: `[tazero] TA Line Zero ON|OFF, lines zeroed N/s` each 5 s while the
+  row is ON (and the window after it goes OFF).
+- PC: `misc/ramsq_check` cuts `ta_line_zero()` too and runs it with dcbz
+  done as on the PPE: the zero count, the zeroed line, the records before
+  it and each full buffer against what was drained. `mutate.py`: 10 new
+  mutants, 70 of 70 caught.
+- HW measure: Crazy Taxi and the Looney Tunes race with SH4 Time Profile
+  ON, the same streets with the row OFF, then ON: SPEED by vertex band,
+  the profile's ta and game shares, `[ta-split]` copy ns.
+- HW run 1 (2026-10-17): the row ON for whole boots, against older boots
+  with the same rows: Crazy Taxi 12-20K within 1 point, the Looney Tunes
+  race 24K+ 87.1% in both, 80-220K lines zeroed a second. No gain.
+
+### P99 JIT code size: cold paths out of the hot code, shorter RAM forms  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), rows JIT SPEED > JIT COLD SPLIT (OFF / ON / + EXITS) and JIT SHORT FORMS, default OFF; HW: VF3tb fights about +4 points with P100 + LIST and P101 (plan section 0, run 7)
+
+- Our own work, from the answer to Matt's "What are our options" of
+  2026-10-17. The SH4 thread's game code runs at about 1 PPC instruction
+  every 4-6 cycles (Border Down 12-15K: 7.3-8.4M block entries a second at
+  61-69 instructions each); the vertex loops run at about 1 a cycle but
+  are only 3-5% of the time; the rest is a long tail (1400-1700 blocks in
+  a 5 s profile window). The theory, not measured: misses in the PPE's 32
+  KB L1 code cache and in the 512 KB L2 that both threads share. The JIT
+  code is 8-13 times the SH4 code (a Crazy Taxi block: 116 SH4 bytes, 1476
+  B hot + 3308 B cold), and each block's cold code sat right after its hot
+  code, so a small block filled only part of its cache lines.
+- Row JIT COLD SPLIT (`JitColdSplit`, set before boot; not MMU blocks):
+  - The cold paths (the memory slow paths and the cycle exit) go to a cold
+    stream at the top of the code cache: chunks of 128 KB taken downward,
+    each filled upward (`emit_ColdBegin`, `emit_ColdEnd` in
+    `dc/sh4/rec_v2/driver.cpp`). Each cold branch now reaches a 4-byte `b`
+    slot (the island) after the block's exits, so the hot code of the
+    blocks packs. A slot that is never patched is a `tw` trap; a verify
+    checks every slot at compile time.
+  - + EXITS: the miss path of a dynamic exit's inline cache (site+16: the
+    miss count and the lookup, about 18 words) goes there too.
+  - The hot code may not reach the chunks (`emit_Write32` verifies against
+    the lowest one). A compile wants 64 KB + 512 B a memory op of room, or
+    the cache is cleared as when it is full. `[jcache] ... cold N KB`.
+- Row JIT SHORT FORMS (`JitShortForms`, set before boot; fastmem only):
+  - The RAM guard in 2 words, `rlwinm r0,A,6,29,31; cmplwi r0,3; bne cold`
+    (area 3 in any region), not 3. P4's reserved window
+    0xEC000000-0xEFFFFFFF now takes the RAM path too; no game uses it.
+  - An `@(disp,Rn)` 32-bit or pair access through a pinned Rn (0 <= disp <=
+    4088) keeps Rn and folds disp into its load or store (no `addi`); a pair
+    through a pinned Rn keeps it too (no `mr`). The cold path adds disp
+    (`addi rarg0,areg,disp`). A 4 KB pad after RAM takes an access that runs
+    past the 16 MB mirror's end (`_vmem_reserve`). Not for store-queue
+    guesses, guard reuse or TA slot roles.
+- Line `[jopt] blocks= | split islands= cold KB= exits= | forms= sq= folds=
+  | sched regions= words= moved= cycles A -> B` in each stats window while a
+  row of P99 or P100 is on (counts since boot).
+- PC: `misc/cold_check` (the allocation, cut from `driver.cpp` between its
+  `cold_check:` marks: 1.2M blocks of random sizes, no byte written twice
+  between clears, oversized blocks fall back, huge ones stop at the
+  verify; `mutate.py` 6 of 6) and `misc/fmem_check` (both rows' forms
+  against the old forms on a PPC64 model, with the cold path run as the
+  slow access; `mutate.py` 19 of 19). The cold-split code of
+  `ps3_driver.cpp` itself has no PC check: the HW run is its test.
+- HW measure: plan section 0.
+
+### P100 JIT scheduling for the PPE's in-order pipeline  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), row JIT SPEED > JIT SCHEDULE (OFF / FORMS / + LIST), default OFF; HW: VF3tb fights about +4 points with P99 + EXITS and P101 (plan section 0, run 7)
+
+- The other half of P99's theory: the PPE issues in order, and the JIT
+  emits each SH4 op's words as one chain. A RAM read was 3 guard words, a
+  branch, 3 address words, the load and its extension, each waiting for
+  the one before.
+- FORMS (`ps3/ps3_jit_fmem.h`, set before boot): a RAM access computes its
+  guard and its host address side by side. A load goes before its branch
+  when it cannot overwrite the address register: the masked host address
+  is always in RAM (or its pad), so the load cannot fault, and the cold
+  path writes the destination again. The sign extension follows the join:
+  the cold path's value is extended already, so a second extension changes
+  nothing. A guessed store-queue store: its test and address side by side
+  (`fm_emit_sq_sched`). Not with guard reuse or TA slot roles.
+- + LIST (`ps3/ps3_jit_sched.h`, not MMU blocks): after a block's ops and
+  before its exits, the body's words are list-scheduled between anchors:
+  branches, calls, branch targets, the cold paths' joins, and any word the
+  decoder does not model stay in place. Dependencies on GPRs, FPRs, CR
+  fields, CA, SO, CTR, LR, and memory: an address known exactly (r30's
+  context, addis/ori constants) or by range (RAM through the fastmem form,
+  the store queue), else anything; a store conflicts with every access it
+  may touch. Latencies: integer 2, loads 5-6, FP 10, fdiv 74, fsqrt 84, a
+  store then a load of it 12; two words a cycle, one a unit. A region is
+  rewritten only when its estimate falls.
+- PC: `misc/sched_check`: the decoder's read, write and memory sets of
+  8000 real words (HW dumps) and 40000 generated ones against a PPC64 model
+  (`misc/sched_check/ppc_model.h`); every reordered segment of 20000
+  generated bodies (calls included) and of 285 real block bodies against
+  the original order; each access against its address kind; directed: a
+  known address dies at a call and at a join. `mutate.py` 45 of 45 (2 of
+  them for P101).
+- HW measure: plan section 0.
+
+### P101 JIT SHORT FORMS 8C PREFIX: the RAM check by address prefix, 5 words a word access  `[~]` built 2026-10-17 (Matt: "Let's go with the 4-5 op sequence, try checking for prefix 8c and if (addr>>24 !=8c) goto slowpath; data = *(biasedmembase + addr)."), row JIT SPEED > JIT SHORT FORMS = 8C PREFIX, default OFF; HW run 1: REGRESSION in Crazy Taxi, a 0x0C game (plan section 0)
+
+- HW run 1 (2026-10-17, COLD SPLIT and SCHEDULE OFF): Crazy Taxi 8-10K
+  85.6%, 10-12K 74.9%, 12-14K 73.5% SPEED; before, 99-100% in the same
+  bands. Crazy Taxi runs its code and data in the 0x0C mirror (heartbeat
+  PCs 0x0C...; boot file literals 0x0C 27437 against 0x8C 76), so every RAM
+  access took the cold path. The same group: Crazy Taxi 2, House of the
+  Dead 2, Power Stone 2, Shenmue, Virtua Fighter 3tb. Most other games
+  (SA2, Rez, Ikaruga, Looney Tunes, Spider-Man) are 0x8C games.
+- HW run 2 (Looney Tunes race, 0x8C): no fault; SPEED 2-7 points above the
+  old form's runs of the night before at 24-34K (plan section 0).
+- HW run 3 (Looney Tunes race, ON): 8C PREFIX is about 2.6 points above ON
+  at 22-34K (28-34K: +2.3 to +4.3); ON is about equal to the old form. The
+  likely reason: 8C PREFIX's address is one add after the check (ON: mask,
+  then add), so each load starts about 2 cycles sooner.
+- Prefix per block (2026-10-17, Matt: "sure, build it"): a block whose PC
+  is 0x0C... checks 0x0C with bias RAM - 0x0C000000; every other block
+  checks 0x8C. Still 5 words. `[jopt] ... 0c blocks=N` counts the 0x0C
+  blocks. `misc/fmem_check` runs both prefixes; `mutate.py` 29 of 29.
+  Package of 16:23. HW run 5 (Crazy Taxi): the regression is gone; 8-14K
+  99-100%, 12-16K 4-6 points above ON (few seconds a band).
+- Other code that treats 0x0C and 0x8C apart (search, 2026-10-17): only
+  the JIT Fastmem OFF path (0x8C inline), the IFB probe's `[DIV]` log and
+  the cheats' 0x8C base; the rest masks addresses to area 3.
+
+- Matt's lead. The form (`ps3/ps3_jit_fmem.h`, guard 2):
+  `rldicl r0,A,40,24` (A >> 24 over all 64 bits), `cmpldi r0,0x8C`,
+  `bne cold`, `addis rT,A,bias`, `lwz rD,disp(rT)`. bias = RAM base -
+  0x8C000000 (RAM at 0x51B10000 on HW: -0x3A4F0000; its low 16 bits are 0).
+  5 words for a 32-bit load or store, with or without a folded
+  displacement (old form 7, plus an `addi` for a displacement; ON 6). A
+  pair 6, a byte or half read 7 (swizzle and extension), a byte or half
+  write 6. The displacement fold and the 4 KB pad are as ON (P99).
+- Why a 64-bit compare: a pinned SH4 register can hold junk in its upper
+  half (a carry, a sign extension), and `addis` adds all 64 bits. Only a
+  clear upper half passes, so the host address needs no mask.
+- 4 words (`lwzx rD,A,rBias`) needs a register that holds the bias in every
+  block. None is free: r14-r28 hold SH4 registers, r29 the cycles, r30 the
+  context, r31 the jump target; r2 (TOC) and r13 (TLS) belong to the ABI.
+- Cost: every other RAM mirror (0x0C, 0xAC, 0x8D-0x8F, ...) and every junk
+  upper half take a mispredicted branch to the cold path (its inline _vmem
+  table tier, no C call); the result is the same. With FORMS the load
+  waits for the branch: the host address is in RAM only past the guard.
+- + LIST takes the bias `addis` as a RAM address (`SchedEnv.bias_hi`): the
+  JIT emits it only in this form, and its accesses follow the guard.
+- RAM below 0x0C000000 (bias out of 32 signed bits): the 2-op guard, with
+  a `[jitcfg]` line.
+- The JIT Fastmem OFF path has had a 0x8C-only form for a long time, with a
+  `clrldi` after its `addis` (6 words a 32-bit load).
+- PC: `misc/fmem_check` (guard 2 against the old form: 0x8C and nearby
+  prefixes; clear, sign-extended, carry and top-byte upper halves; both
+  paths; `mutate.py` 28 of 28, 9 of them for this form) and
+  `misc/sched_check` (a bias `addis` on a checked 0x8C address;
+  `mutate.py` 45 of 45).
+- HW measure: plan section 0.
 
 ---
 

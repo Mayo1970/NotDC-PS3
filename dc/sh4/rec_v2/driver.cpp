@@ -101,6 +101,55 @@ static u32 s_code_size = CODE_SIZE;
 static u64 s_compiled_bytes = 0;
 static u32 s_clears = 0, s_clears_full = 0;
 
+// cold_check: begin alloc
+
+// Row JIT COLD SPLIT: cold code in chunks taken from the top of the cache downward, each filled upward. lo is the
+// lowest chunk's start (s_code_size: none), at and end the current chunk's cursor and end.
+static struct { u32 lo, at, end; } s_cold = { CODE_SIZE, CODE_SIZE, CODE_SIZE };
+#define COLD_CHUNK (128 * 1024)
+
+static inline u32 cache_used()
+{
+	return LastAddr + (s_code_size - s_cold.lo);
+}
+
+static void cold_reset()
+{
+	s_cold.lo = s_cold.at = s_cold.end = s_code_size;
+}
+
+static inline u32 cold_lo_now()
+{
+	return s_cold.lo;
+}
+
+// Where the next cold code goes, with room for bound bytes; 0 when the hot code is too close.
+u32* emit_ColdBegin(u32 bound)
+{
+	if (s_cold.end - s_cold.at < bound)
+	{
+		u32 size = (bound + 127) & ~127u;
+		if (s_cold.lo >= LastAddr + COLD_CHUNK + 16384)
+			size = size > COLD_CHUNK ? size : COLD_CHUNK;
+		if (s_cold.lo < LastAddr + size + 16384)
+			return 0;
+		s_cold.lo -= size;
+		s_cold.at = s_cold.lo;
+		s_cold.end = s_cold.lo + size;
+	}
+	return (u32*)&CodeCache[s_cold.at];
+}
+
+// The cold code written since emit_ColdBegin ends at end.
+void emit_ColdEnd(u32* end)
+{
+	const u32 at = (u32)((u8*)end - CodeCache);
+	verify(at >= s_cold.at && at <= s_cold.end);
+	s_compiled_bytes += at - s_cold.at;
+	s_cold.at = at;
+}
+// cold_check: end alloc
+
 // Cache pressure: WARN logs once per fill, FLUSH clears before a compile can run out of room. The gap
 // between them avoids clear/refill thrashing; both are fractions of the size in use.
 #if JIT_MANAGED_CACHE
@@ -147,6 +196,7 @@ void emit_Write16(u16 data)
 	LastAddr += 2;
 }
 
+// cold_check: begin write
 void emit_Write32(u32 data)
 {
 	if (emit_ptr)
@@ -155,7 +205,7 @@ void emit_Write32(u32 data)
 	}
 	else
 	{
-		verify(LastAddr + 4 <= s_code_size);
+		verify(LastAddr + 4 <= s_cold.lo);	// JIT COLD SPLIT: hot code never runs into the cold chunks
 		*(u32*)&CodeCache[LastAddr] = data;
 		LastAddr += 4;
 	}
@@ -169,8 +219,9 @@ void emit_Skip(u32 sz)
 
 u32 emit_FreeSpace()
 {
-	return s_code_size - LastAddr;
+	return s_cold.lo - LastAddr;
 }
+// cold_check: end write
 
 void emit_WriteCodeCache()
 {
@@ -203,9 +254,10 @@ void recSh4_ClearCache()
 	       curr_pc, LastAddr, s_code_size);
 #endif
 
-	const u32 written = LastAddr;
+	const u32 written = LastAddr, cold_lo = s_cold.lo;
 	s_clears++;
 	LastAddr = LastAddr_min;
+	cold_reset();
 	bm_Reset();
 
 	// JIT_HOTBLOCKS: every tracked block described code in the cache we just
@@ -216,6 +268,7 @@ void recSh4_ClearCache()
 	// Blocks and patches are synced when written. This second pass covers what was written since the last
 	// clear, so its cost follows the code made, not the array size (plan 5.28).
 	ps3_jit_icache_sync(CodeCache + LastAddr_min, written - LastAddr_min);
+	ps3_jit_icache_sync(CodeCache + cold_lo, s_code_size - cold_lo);
 	cache_high_water_mark = LastAddr;
 #endif
 }
@@ -263,10 +316,10 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 	StallScope st_(ST_JIT);
 #if JIT_MANAGED_CACHE
 	// Update high-water mark
-	if (LastAddr > cache_high_water_mark)
+	if (cache_used() > cache_high_water_mark)
 	{
 		const u32 prev = cache_high_water_mark;
-		cache_high_water_mark = LastAddr;
+		cache_high_water_mark = cache_used();
 
 		// Once per fill: a line per block compiled in the zone sent 8155 lines in one Sonic run (plan 5.28).
 		if (prev < CACHE_WARN_THRESHOLD && cache_high_water_mark >= CACHE_WARN_THRESHOLD &&
@@ -286,10 +339,10 @@ DynarecCodeEntry* rdv_CompileBlock(u32 bpc)
 		recSh4_ClearCache();
 	}
 	// Proactive clear at high-water threshold
-	else if (LastAddr >= CACHE_FLUSH_THRESHOLD)
+	else if (cache_used() >= CACHE_FLUSH_THRESHOLD)
 	{
 		printf("recSh4: cache above flush threshold (%u%%), clearing\n",
-		       (LastAddr * 100u) / s_code_size);
+		       (cache_used() * 100u) / s_code_size);
 		s_clears_full++;
 		recSh4_ClearCache();
 	}
@@ -557,6 +610,7 @@ void recSh4_Init()
 	LastAddr     = 0;
 	LastAddr_min = 0;
 	emit_ptr     = 0;
+	cold_reset();
 
 	printf("recSh4: initialization complete (cache=%u KB)\n",
 	       s_code_size / 1024);
@@ -603,8 +657,8 @@ bool recSh4_IsCpuRunning()
 void recSh4_GetCacheStats(u32* total_size, u32* used_size, u32* free_size)
 {
 	if (total_size) *total_size = s_code_size;
-	if (used_size)  *used_size  = LastAddr;
-	if (free_size)  *free_size  = s_code_size - LastAddr;
+	if (used_size)  *used_size  = cache_used();
+	if (free_size)  *free_size  = s_code_size - cache_used();
 }
 
 // Plan 5.28: one [jcache] line per stats window that compiled code: fill, compile rate, clears since boot.
@@ -613,9 +667,9 @@ void recSh4_CacheDump(double seconds)
 	static u64 last;
 	if (seconds <= 0.0 || s_compiled_bytes == last)
 		return;
-	printf("[jcache] used %u of %u KB, compiled %.0f KB/s, clears full=%u all=%u\n",
-	       LastAddr / 1024, s_code_size / 1024, (double)(s_compiled_bytes - last) / 1024.0 / seconds,
-	       s_clears_full, s_clears);
+	printf("[jcache] used %u of %u KB, compiled %.0f KB/s, clears full=%u all=%u, cold %u KB\n",
+	       cache_used() / 1024, s_code_size / 1024, (double)(s_compiled_bytes - last) / 1024.0 / seconds,
+	       s_clears_full, s_clears, (s_code_size - s_cold.lo) / 1024);
 	last = s_compiled_bytes;
 }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # P3 (WSL): one planted bug at a time in gdromv3.cpp or ps3_gdasync.cpp; run.sh must FAIL on each. Arg: iterations
-# (default 600). After the marks B2 and B19 the mutants run only their bundle's runs (run_b2.sh, run_b19.sh).
+# (default 600). After the marks B2, B19 and DRA a mutant runs only its own run_b2.sh, run_b19.sh or run_dra.sh.
 import os, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -76,11 +76,11 @@ MUTANTS = [
      [('\t\t\t\tcdda_held++;\n\t\t\t\tmemset(sector,0,2352);', '\t\t\t\tcdda_held++;')]),
     # Bundle 2: P34 and the DMA fix with the worker
     ('swap: the ring keeps the old disc', 'a',
-     [('\t\t\tfor (u32 i = 0; i < RA_ALL; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);\n\t\t\ts_ra_run = s_ra_next = 0;',
-       '\t\t\ts_ra_run = s_ra_next = 0;')]),
+     [('\t\t\tfor (u32 i = 0; i < RA_ALL; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);\n\t\t\tfor (u32 i = 0; i < DRA_SLOTS; i++)',
+       '\t\t\tfor (u32 i = 0; i < DRA_SLOTS; i++)')]),
     ('swap: the ring is not emptied', 'a',
-     [('\tREL(s_ra_want, RA_NONE);\n\tREL(s_ra_flush, 1u);\n\tsysSemPost(s_sem, 1);\n\twhile (ACQ(s_ra_flush))\n\t\tsysUsleep(50);',
-       '\tREL(s_ra_want, RA_NONE);')]),
+     [('\tREL(s_dra_want, RA_NONE);\n\tREL(s_ra_flush, 1u);\n\tsysSemPost(s_sem, 1);\n\twhile (ACQ(s_ra_flush))\n\t\tsysUsleep(50);',
+       '\tREL(s_dra_want, RA_NONE);')]),
     ('swap: a soft reset ends the busy second', 'g', [('\tif (gd_swap_cycles>0)\n\t\tSecNumber.Status = GD_BUSY;\n', '')]),
     ('swap: a DMA in flight reaches the verify', 'g', [('if ((fix || gd_swapped) && read_buff.cache_size==', 'if (fix && read_buff.cache_size==')]),
     ('swap: CD-DA goes on', 'g', [('\tmemset(&cdda,0,sizeof(cdda));\n\tcdda_held=0;', '\tcdda_held=0;')]),
@@ -102,6 +102,24 @@ MUTANTS = [
     ('LOOP AHEAD: a swap keeps the head', 'a',
      [('\t\t\tfor (u32 i = 0; i < RA_ALL; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);',
        '\t\t\tfor (u32 i = 0; i < RA_SLOTS; i++)\n\t\t\t\tSTORE(s_ra_tag[i], RA_NONE);')]),
+    'DRA',
+    # Row GD-ROM Read Ahead
+    ('Read Ahead: a hit still sends a fill', 'a', [('\t\t\tst_dra_hit++;\n\t\t\treturn;\n', '\t\t\tst_dra_hit++;\n')]),
+    ('Read Ahead: the window is never asked for', 'a', [('\t\tdra_ask(fad + count, secsz);\n', '')]),
+    ('Read Ahead: the worker never reads the window', 'a',
+     [('if (__atomic_exchange_n(&s_dra_req, 0u, __ATOMIC_ACQ_REL))', 'if (false && __atomic_exchange_n(&s_dra_req, 0u, __ATOMIC_ACQ_REL))')]),
+    ('Read Ahead: the tag has no format', 'a', [('| (dra_code(secsz) << 24);', ';')]),
+    ('Read Ahead: a swap keeps the data ring', 'a',
+     [('\t\t\tfor (u32 i = 0; i < DRA_SLOTS; i++)\n\t\t\t\tSTORE(s_dra_tag[i], RA_NONE);\n', '')]),
+    ('Read Ahead: bytes in the next slot', 'a',
+     [('dra_put(fad & (DRA_SLOTS - 1), dra_tag(fad, fmt),', 'dra_put((fad + 1) & (DRA_SLOTS - 1), dra_tag(fad, fmt),')]),
+    ('Read Ahead: a 2340-byte sector loses its tail', 'a', [('\tif (secsz & 7)\n', '\tif (false)\n')]),
+    ('Read Ahead: no new run after a jump back', 'a',
+     [('if (fmt != s_dra_rfmt || want < s_dra_run || want > s_dra_next ||', 'if (fmt != s_dra_rfmt || want > s_dra_next ||')]),
+    ('Read Ahead: the ring with the row OFF', 'a',
+     [('if (get_gd_read_ahead_preset() && dra_code(secsz))', 'if (dra_code(secsz))')]),
+    ('Read Ahead: a hit is copied in 2048-byte steps', 'a',
+     [('dra_get(dst + k * secsz, (fad + k) & (DRA_SLOTS - 1)', 'dra_get(dst + k * 2048, (fad + k) & (DRA_SLOTS - 1)')]),
 ]
 
 def main():
@@ -116,6 +134,9 @@ def main():
             continue
         if m == 'B19':
             script, iters = 'misc/gdasync_check/run_b19.sh', '300'
+            continue
+        if m == 'DRA':
+            script, iters = 'misc/gdasync_check/run_dra.sh', '300'
             continue
         name, key, edits = m
         total += 1
