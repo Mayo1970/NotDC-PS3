@@ -3346,6 +3346,8 @@ struct ListDiag
 	// Bundle 17, strips a row acts on: an offset colour; ColorClamp; a trilinear pass and those with a weight under 1;
 	// PT strips that ALPHA 1 draws with no blend; sprites whose fourth corner is not the parallelogram's.
 	u32 offc, cclamp, tril, tril_w, pt_one, spr_quad;
+	// Strips with two volumes (only volume 0 is drawn) and with the Shadow bit.
+	u32 vol2, shadow;
 };
 static ListDiag s_diag[3];
 static const char* s_diag_name[3] = { "op", "pt", "tr" };
@@ -3419,6 +3421,8 @@ static void collect_diag()
 			}
 			if (L == 1 && (p.tsp.SrcInstr == 1 || p.tsp.SrcInstr == 4) && (p.tsp.DstInstr == 0 || p.tsp.DstInstr == 5))
 				d.pt_one++;
+			d.vol2 += p.pcw.Volume;
+			d.shadow += p.pcw.Shadow;
 			// A sprite is D, C, A, B: its corner D against A + C - B, as spr_plane tests it.
 			if ((p.pcw.full >> 29) == 5 && st.count == 4)
 			{
@@ -3490,8 +3494,8 @@ static void print_diag()
 		printf("[rendz] %s flat=%u sprcull=%u clip=%u/%u blend=%u fog=%u/%u/%u/%u fogv=%u\n",
 		       s_diag_name[L], d.flat, d.sprcull, d.clip_in, d.clip_out, d.blend,
 		       d.fog[0], d.fog[1], d.fog[2], d.fog[3], d.fogv);
-		printf("[rendz] %s offs=%u cclamp=%u tril=%u/%u pt_one=%u spr_quad=%u\n",
-		       s_diag_name[L], d.offc, d.cclamp, d.tril_w, d.tril, d.pt_one, d.spr_quad);
+		printf("[rendz] %s offs=%u cclamp=%u tril=%u/%u pt_one=%u spr_quad=%u vol2=%u shadow=%u\n",
+		       s_diag_name[L], d.offc, d.cclamp, d.tril_w, d.tril, d.pt_one, d.spr_quad, d.vol2, d.shadow);
 	}
 }
 
@@ -3780,6 +3784,111 @@ static void frame_extras()
 		reset_param_cache();
 }
 
+// Native Size: textures of passes A and B (ps3_screen.h), made at their first use; the frame's plan; last = the last
+// frame drew pass A; per stats window, frames drawn at the game's size, those through pass B, passes with no memory.
+#define NS_MAX_W 1280
+#define NS_MAX_H 960
+static struct { GLuint tex[2]; u8* mem[2]; u32 pitch[2]; NativePlan plan; bool last; u32 frames, sharp, fails; } s_nat;
+
+static u8* native_mem(u32 k)
+{
+	if (!s_nat.mem[k])
+	{
+		if (!s_nat.tex[k])
+			glGenTextures(1, &s_nat.tex[k]);
+		glBindTexture(GL_TEXTURE_2D, s_nat.tex[k]);
+		s_nat.mem[k] = ps3gl_tex_fixed(NS_MAX_W, NS_MAX_H, NS_MAX_W, NS_MAX_H, &s_nat.pitch[k]);
+	}
+	return s_nat.mem[k];
+}
+
+// The scene goes to pass A at the canvas size: the view becomes A. False = the direct path.
+static bool native_begin(ScreenView* sv, u32* sw, u32* sh, float ch, bool wide)
+{
+	const bool fresh = !s_nat.last;
+	s_nat.last = false;
+	if (!g_native_size_preset || wide || !native_plan(sv->w, *sh, sv->cw, ch, NS_MAX_W, NS_MAX_H, &s_nat.plan))
+		return false;
+	u8* const a = native_mem(0);
+	// The display buffer's sides first: pass A covers the picture only.
+	if (a)
+		glClear(GL_COLOR_BUFFER_BIT);
+	if (!a || !ps3_video_target(a, s_nat.pitch[0], s_nat.plan.aw, s_nat.plan.ah, 1))
+	{
+		s_nat.fails++;
+		return false;
+	}
+	glViewport(0, 0, s_nat.plan.aw, s_nat.plan.ah);
+	ps3gl_apply_states();
+	// A frame of the direct path came last: pass A holds no picture a carry may keep.
+	if (fresh)
+		glClear(GL_COLOR_BUFFER_BIT);
+	s_nat.last = true;
+	sv->x = 0;
+	sv->w = (int)s_nat.plan.aw;
+	*sw = s_nat.plan.aw;
+	*sh = s_nat.plan.ah;
+	s_nat.frames++;
+	return true;
+}
+
+// Pass k's texture over x, y, w, h of the surface in use; its new texels flush the texture cache first.
+static void native_quad(u32 k, int x, int y, u32 w, u32 h, bool linear)
+{
+	reset_gl_state();
+	glDisable(GL_SCISSOR_TEST);
+	glDisable(GL_DEPTH_TEST);
+	glDepthMask(GL_FALSE);
+	glViewport(x, y, w, h);
+	glEnable(GL_TEXTURE_2D);
+	glBindTexture(GL_TEXTURE_2D, s_nat.tex[k]);
+	u32 pitch;
+	ps3gl_tex_fixed(NS_MAX_W, NS_MAX_H, k ? s_nat.plan.bw : s_nat.plan.aw, k ? s_nat.plan.bh : s_nat.plan.ah, &pitch);
+	const GLint f = linear ? GL_LINEAR : GL_NEAREST;
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+	float m[16] = { 0 };
+	m[0] = m[5] = m[10] = m[15] = 1.0f;
+	glMatrixMode(GL_PROJECTION);
+	glLoadMatrixf(m);
+	glMatrixMode(GL_MODELVIEW);
+	glLoadIdentity();
+	glColor4ub(255, 255, 255, 255);
+	glBegin(GL_TRIANGLE_STRIP);
+	glTexCoord2f(0, 0); glVertex3f(-1.0f,  1.0f, 0.0f);
+	glTexCoord2f(1, 0); glVertex3f( 1.0f,  1.0f, 0.0f);
+	glTexCoord2f(0, 1); glVertex3f(-1.0f, -1.0f, 0.0f);
+	glTexCoord2f(1, 1); glVertex3f( 1.0f, -1.0f, 0.0f);
+	glEnd();
+	glDisable(GL_TEXTURE_2D);
+	glEnable(GL_DEPTH_TEST);
+	glDepthMask(GL_TRUE);
+}
+
+// Pass A onto the picture (pic, sh lines): through pass B at whole factors, or straight when they reach the picture.
+static void native_end(const ScreenView& pic, u32 sh)
+{
+	const NativePlan& p = s_nat.plan;
+	u8* const b = p.bw ? native_mem(1) : 0;
+	if (b && ps3_video_target(b, s_nat.pitch[1], p.bw, p.bh, 0))
+	{
+		native_quad(0, 0, 0, p.bw, p.bh, false);
+		ps3_video_target_frame();
+		native_quad(1, pic.x, 0, pic.w, sh, true);
+		s_nat.sharp++;
+	}
+	else
+	{
+		ps3_video_target_frame();
+		native_quad(0, pic.x, 0, pic.w, sh, !p.exact);
+	}
+	reset_param_cache();
+}
+
 static void draw_frame()
 {
 	u32 sw, sh;
@@ -3810,6 +3919,10 @@ static void draw_frame()
 	s_pic_w = sv.w;
 	s_stat_wide += wide;
 	s_stat_narrow += narrow;
+	// Native Size: from here to native_end() the view is pass A; pic and pic_h are the picture on the TV.
+	const ScreenView pic = sv;
+	const u32 pic_h = sh;
+	const bool native = native_begin(&sv, &sw, &sh, ch, wide);
 
 	// P60 (Flycast 93523df80, intersectTileAndFBScissor): the PVR draws only the region array's tiles, and the FB
 	// clip cuts what the scaler writes, so in TA pixels it is the clip times the scale.
@@ -3865,6 +3978,8 @@ static void draw_frame()
 	{
 		// What draw_scene leaves for the UI and the 2D presents.
 		ps3_video_depth_float(0);
+		if (native)
+			native_end(pic, pic_h);
 		return;
 	}
 
@@ -3874,6 +3989,8 @@ static void draw_frame()
 	ps3gl_apply_states();
 
 	draw_scene(sv.cx0, 0.0f, sv.cw, ch);
+	if (native)
+		native_end(pic, pic_h);
 }
 
 // -- Render to texture (FB_W_SOF1 bit 24): draw the clip window at its own size, read it
@@ -4460,11 +4577,11 @@ static void rth_print_stats()
 	       decodes, live, s_overflow,
 	       s_stat_raw_of, s_stat_raw_peak / 1024, (u32)(TA_RAW_SIZE / 1024), s_stat_bump_strips / r, s_stat_bump_ppu);
 	s_stat_bump_strips = s_stat_bump_ppu = 0;
-	// Bundle 4: TA_LIST_CONT writes, renders by passes, renders sent to the PPU replay for their passes, renders with
-	// the TR volume list, TA records the gate dropped, bad records skipped; 3k: sorted triangles per render.
-	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u\n",
+	// Bundle 4: TA_LIST_CONT writes, renders by passes or with the TR volume list, PPU replays, gate drops, bad records;
+	// 3k: sorted triangles per render; P105: FPU_SHAD_SCALE (bit 8: intensity volumes) and HALF_OFFSET.
+	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u shad=%03X half=%X\n",
 	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
-	       s_stat_tris / r);
+	       s_stat_tris / r, g_rr.fpu_shad_scale & 0x1FF, (u32)HALF_OFFSET & 7);
 	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
 	// Bundle 14: the rows; + OPAQUE DEPTH's first-pass runs per render and those that write no depth; the last
 	// render's state changes per list, by the merge key > by the bits the draw reads (P73's counter).
@@ -4526,11 +4643,15 @@ static void rth_print_stats()
 		       (u32)(s_stat_ta_zero / (now - s_stat_t0)));
 	s_stat_ta_zero = 0;
 	// Bundle 12: the rows; renders drawn wide and WIDE renders kept at 4:3 by their clip; the last render's canvas.
-	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots)
-		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u\n", g_screen_format_preset,
-		       g_screen_scaler_preset, g_fps_overlay_preset, s_stat_wide, s_stat_narrow,
-		       (double)(640.0f * g_rr.fb_scale_x), (double)(480.0f * g_rr.fb_scale_y), s_stat_shots);
+	// Native Size: frames drawn at the game's size, through pass B, and passes with no memory; the last plan.
+	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots || g_native_size_preset)
+		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u | native=%d frames=%u sharp=%u"
+		       " fails=%u a=%ux%u b=%ux%u\n", g_screen_format_preset, g_screen_scaler_preset, g_fps_overlay_preset,
+		       s_stat_wide, s_stat_narrow, (double)(640.0f * g_rr.fb_scale_x), (double)(480.0f * g_rr.fb_scale_y),
+		       s_stat_shots, g_native_size_preset, s_nat.frames, s_nat.sharp, s_nat.fails, s_nat.plan.aw, s_nat.plan.ah,
+		       s_nat.plan.bw, s_nat.plan.bh);
 	s_stat_wide = s_stat_narrow = s_stat_shots = 0;
+	s_nat.frames = s_nat.sharp = s_nat.fails = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);
@@ -5212,6 +5333,7 @@ void TermRenderer()
 	s_fb_spu_ok = false;
 	s_fog_tex = 0;
 	s_fog_tex_ok = false;
+	memset(&s_nat, 0, sizeof(s_nat));
 	ps3_video_term();
 }
 

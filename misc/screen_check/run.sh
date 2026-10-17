@@ -166,5 +166,24 @@ has $M 2 'ps3_scrcfg_print('
 H=ps3/ps3_screen.h
 # The Screen Format row's values are the enum's order.
 has $H 1 'enum { SCREEN_43, SCREEN_STRETCH, SCREEN_WIDE };'
+# Native Size (P104): the scene pass starts before the carry and the clear, and every way out of a render ends it.
+has $R 1 'const bool native = native_begin(&sv, &sw, &sh, ch, wide);'
+order $R 'const bool native = native_begin(' 'const bool carry = g_keep_frame_preset' 'glClear(((keep || carry) ? 0'
+has $R 2 'native_end(pic, pic_h);'
+pair $R 1 'draw_scene(sv.cx0, 0.0f, sv.cw, ch);' 'if (native)'
+pair $R 1 'ps3_video_depth_float(0);' 'if (native)'
+has $R 1 'if (!g_native_size_preset || wide || !native_plan(sv->w, *sh, sv->cw, ch, NS_MAX_W, NS_MAX_H, &s_nat.plan))'
+has $R 1 'if (!a || !ps3_video_target(a, s_nat.pitch[0], s_nat.plan.aw, s_nat.plan.ah, 1))'
+has $R 1 'if (b && ps3_video_target(b, s_nat.pitch[1], p.bw, p.bh, 0))'
+order $R 'native_quad(0, 0, 0, p.bw, p.bh, false);' 'native_quad(1, pic.x, 0, pic.w, sh, true);' 'native_quad(0, pic.x, 0, pic.w, sh, !p.exact);'
+has $R 1 'ps3gl_tex_fixed(NS_MAX_W, NS_MAX_H, k ? s_nat.plan.bw : s_nat.plan.aw, k ? s_nat.plan.bh : s_nat.plan.ah, &pitch);'
+has $V 1 'set_surface(off, pitch, s_ns.depth_off, PS3_NS_MAX_W * 4, w, h);'
+has $V 1 'set_surface(s_color_off[s_cur_fb], s_pitch, s_depth_off, s_width * 4, s_width, s_height);'
+pair $V 1 'if (s_ns.on)' 'return s_ns.same;'
+order $V 'int ps3_video_carry(void)' 'return s_ns.same;' 'if (!s_ready || s_last_fb < 0'
+has $P 1 'int g_native_size_preset   = 0;'
+has $P 2 '{ "NativeSize",    &g_native_size_preset },'
+has $M 1 '{ "Native Size",     &g_native_size_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,'
+has $M 2 '&g_native_size_preset'
 [ $r = 0 ] && echo "PASS: source line checks"
 exit $r

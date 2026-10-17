@@ -208,6 +208,7 @@ int g_ta_line_zero_preset  = 0;   // 1 = the TA buffer's next 128-byte line is z
 int g_jit_cold_split_preset = 2;  // 1 = cold paths to the code cache's top, a `b` slot each; 2 = + exits' lookups (Matt: ON)
 int g_jit_short_forms_preset = 3; // 1 = 2-op RAM check, 2 = 8C PREFIX (P101), 3 = 8C BASE REG (P102, Matt: ON); fold disp
 int g_jit_schedule_preset  = 2;   // 1 = FORMS: RAM check and address side by side; 2 = + LIST: blocks reordered (Matt: ON)
+int g_jit_pair_calls_preset = 1;  // 1 = a 64-bit access to device memory passes its u64 as ELFv1 wants; 0 writes 0 (P105, Matt: FIXED)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
@@ -236,6 +237,7 @@ int g_fps_overlay_preset   = 0;   // 1 = FPS and SPEED on the screen's left edge
 int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture on every column (P69), 2 = more canvas at the sides (P53)
 int g_screen_scaler_preset = 0;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
 int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
+int g_native_size_preset   = 0;   // 1 = the scene draws at the game's size, then whole-pixel scaling to the picture (P104)
 // OPTIMIZATION_PLAN section 7, bundle 13 (MMU and memory): 0 is the old path in every one; a row is off until it is
 // cleared on hardware. MMUCR Bits is FIXED since 2026-10-12 (Matt): Border Down, Sonic Shuffle, Ikaruga and Rez boot.
 int g_mmu_bits_preset      = 1;   // 1 = MMUCR's fields at the manual's bits, its write mask, a JIT cache clear on an AT edge (P58, P78, HW)
@@ -369,6 +371,7 @@ static const CfgItem s_items[] = {
 	{ "ColourClamp",   &g_colour_clamp_preset },
 	{ "Trilinear",     &g_trilinear_preset },
 	{ "NearCap",       &g_near_cap_preset },
+	{ "NativeSize",    &g_native_size_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -476,6 +479,7 @@ static const CfgItem s_items[] = {
 	{ "JitColdSplit",  &g_jit_cold_split_preset },
 	{ "JitShortForms", &g_jit_short_forms_preset },
 	{ "JitSchedule",   &g_jit_schedule_preset },
+	{ "JitPairCalls",  &g_jit_pair_calls_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
 	{ "MapleDelay",    &g_maple_delay_preset },
 	{ "MapleSpeed",    &g_maple_speed_preset },
@@ -722,6 +726,7 @@ static const CfgItem s_scr_items[] = {
 	{ "ScreenFormat",  &g_screen_format_preset },
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
+	{ "NativeSize",    &g_native_size_preset },
 };
 #define SCR_ITEMS (sizeof(s_scr_items) / sizeof(s_scr_items[0]))
 
@@ -1047,6 +1052,7 @@ int get_sh4_profile_preset()   { return g_sh4_profile_preset; }
 int get_jit_cold_split_preset() { return g_jit_cold_split_preset; }
 int get_jit_short_forms_preset() { return g_jit_short_forms_preset; }
 int get_jit_schedule_preset()  { return g_jit_schedule_preset; }
+int get_jit_pair_calls_preset() { return g_jit_pair_calls_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 15: read once at boot, by nullDC.cpp and by GetRTC_now().
 int get_flash_defaults_preset() { return g_flash_defaults_preset; }
 int get_rtc_local_preset()     { return g_rtc_local_preset; }

@@ -642,6 +642,8 @@ static Option s_jit[] = {
 	  "ON: 2-op check. 8C PREFIX: block prefix, 5 ops (P101). 8C BASE REG: 4 ops via r11 (P102). Set before boot." },
 	{ "JIT SCHEDULE",    &g_jit_schedule_preset,  OPT_CHOICE, k_jitsched,  0, 0,0,0, NULL,
 	  "FORMS: RAM check and address side by side. + LIST: block ops reordered for the PPE (P100). Set before boot." },
+	{ "JIT PAIR CALLS",  &g_jit_pair_calls_preset, OPT_CHOICE, k_div32,    0, 0,0,0, NULL,
+	  "FIXED: 64-bit fmov to and from device memory (palette, sound RAM) keeps its data (P105). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -799,6 +801,8 @@ static Option s_screen[] = {
 	  "The canvas follows the scaler's vertical factor and the pixel-double bit (P10). Live." },
 	{ "Cheats",          &g_cheats_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot." },
+	{ "Native Size",     &g_native_size_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The scene draws at the game's size, then whole-pixel scaling: even 2D pixels (P104). Live." },
 };
 
 // Plan section 7, bundle 13: one row per item; the first value is the old path. Bundle 1's LMMODE, VRAM Direct and
@@ -1433,6 +1437,7 @@ static int* const k_live_opts[] = {
 	&g_rend_low_prio_preset,
 	&g_ta_line_zero_preset,
 	&g_near_cap_preset,
+	&g_native_size_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

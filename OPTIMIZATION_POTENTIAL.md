@@ -3401,6 +3401,103 @@ Capcom network code.
   16-18 times a session. Its line is pinned in jdma_check (35 mutants).
 - HW measure: plan section 0.
 
+### P104 Native Size: the scene at the game's own size, then whole-pixel scaling  `[~]` built 2026-10-17 (Matt: "Some 2D games (ex. Street Fighter Alpha 3) will show graphical artifact in their 2D images. Even sprites. ... Can you address the issue?"), row SCREEN > Native Size, default OFF; HW SUCCESS 2026-10-17 in Street Fighter Alpha 3 (Matt: "Tested SFZ3 and it worked as intended!") and Crazy Taxi (Matt: "It renders correctly. It also fixed some artifacts."), plan section 0
+
+- The fault (a theory from the logs, no HW proof yet): the scene draws
+  straight into the 4:3 picture, 960 x 720. Street Fighter Alpha 3's fights
+  have a 640 x 240 canvas (`[scr] canvas=640x240`, 240p): 1.5 picture
+  pixels for each DC pixel across, 3 down. With nearest texels, every third
+  column samples on a texel edge (DC x = (2j+1)/3), and texel columns come
+  out 1 or 2 pixels wide.
+- The control: King of Fighters Evolution and Dream Match 1999 have a
+  320 x 240 canvas, 3 times both ways: Matt saw no fault there (P91 HW run
+  1). Most 2D games of the logs have 640 x 480 (Capcom vs. SNK 2, Garou,
+  3rd Strike): 1.5 times both ways.
+- The way: pass A draws the scene at the canvas size into an off-screen
+  texture, so the texels are sampled as on the DC. Pass B scales A by whole
+  factors with nearest texels (1280 x 720 for 640 x 240, 1280 x 960 for
+  640 x 480). The picture takes B with bilinear texels: each DC column has
+  the same share (1.5 pixels). When the whole factors reach the picture
+  (320 x 240), A goes there with nearest texels.
+- Code: `native_plan()` (`ps3/ps3_screen.h`); `native_begin()`,
+  `native_quad()`, `native_end()` and their calls in `draw_frame()`
+  (`ps3/ps3_rend.cpp`); `ps3_video_target()`, `ps3_video_target_frame()`,
+  and the carry keeps the last scene pass (`ps3/ps3_video.c`);
+  `ps3gl_set_screen()` (the Y flip of the viewport and scissor).
+- Not in it: WIDE (the direct path), the 2D framebuffer presents (bilinear
+  as before), RTT (drawn at its own size already).
+- Memory: two textures of 1280 x 960 and a depth buffer of that size
+  (4.9 MB each), made at the first use.
+- 3D games: the picture is the DC's resolution, so less sharp than the
+  direct path.
+- Log: `[scrcfg] NativeSize=`; `[scr] ... native= frames= sharp= fails=
+  a=WxH b=WxH` (frames drawn at the game's size, through pass B, passes
+  with no memory; the last plan).
+- PC: `misc/screen_check`: fixed plans, 200000 random plans against the
+  rules, a row model (each DC column's share of the picture, a picture
+  pixel mixes neighbour columns only), source lines; `mutate.py native`:
+  18 of 18.
+
+### P105 Alone in the Dark: the background is not drawn  `[~]` new 2026-10-17 (Matt: "Alone in the Dark doesn't render the 3D background."); 2026-10-18 cause found (Matt: "Maybe look up if there's some fixes related to this kind of behaviors?"): a JIT 64-bit store to device memory writes 0, so the palette is 0; row JIT SPEED > JIT PAIR CALLS built (= plan 6.7), default FIXED (Matt 2026-10-18: "Keep it fixed!"), no HW run
+
+- HW log 1 (2026-10-17, Native Size ON; `ps3log_p101_run1.txt` of session
+  0e77a736 from line 230332): the room draws 1503 OP strips (877 with 565
+  textures, 624 with PAL8 textures and the Shadow bit), 178 PT (176 PAL8),
+  435 TR. Each PAL8 decode is all black with alpha 0 (`[texfmt] p8=2 ...
+  blacktex=2 alpha0tex=2`, then `p8=1 blacktex=1 alpha0tex=1`): the PAL8
+  strips are the background. Cheap shadows (`shad=164`), about 3673
+  modifier volume triangles a frame.
+- The game's code (1ST_READ.BIN of the US disc 1, on the PC since
+  2026-10-17): the palette upload at 8C0BDB98 writes a full palette
+  as 1024 32-bit register writes (8C0B3F40), but a partial one (flag bit 2:
+  16-entry banks from the masks at 8C2CCD44 and 8C2CCD48) copies 64 bytes a
+  bank to A05F9000 + 64 n with the memcpy at 8C0B3BE0. With source,
+  destination and size 8-byte aligned, that memcpy runs `fschg` and moves
+  64 bits a step: `fmov @r5+,DR0`, `fmov DR0,@r4`.
+- The fault: a 64-bit access to device memory (an MMIO page) takes
+  FlushCold's C call. It holds the pair as the 32-bit EABI does (store data
+  in r5:r6, load result in r3:r4). The PS3 build is ELFv1: `_vmem_WriteMem64
+  (u32, u64)` takes the u64 in r4 alone (`ppu-objdump`: `mr r29,r4`,
+  `rldicl r4,r4,32,32`), and r4 there is the MMIO entry's pointer, 0. So
+  both words are written as 0. `_vmem_ReadMem64` returns the u64 in r3
+  alone: the cold path takes its low word as word[addr] and junk as
+  word[addr+4]. The MMU JIT's pair paths (P38) and the interpreter are
+  right; the RAM paths never call C.
+- So every partial palette update writes 0: black texels with alpha 0. The
+  same fault can hit any 64-bit FPU copy to device memory (sound RAM at
+  0x00800000, the 32-bit VRAM path at 0x05000000, the PVR registers).
+- The fault was in the plan since 2026-10-04: section 6.7, JIT FMOV.D ABI
+  fix (found in the sound investigation, never built, in no bundle; Matt
+  chose default ON then). It was not seen before this build: the row is
+  6.7's fix.
+- The same palette code (a loader of A05F9000 and then this fschg copy
+  routine) is in 15 of the 35 boot files on the PC: Alone in the Dark,
+  Border Down, Capcom vs. SNK 2, Dead or Alive 2, Donald Duck, Ecco, Garou,
+  Ikaruga, Looney Tunes (SPACERACE.BIN), Power Stone 2, Project Justice,
+  Re-Volt, Rez, Sonic Shuffle, Spider-Man (`palcopy.py`, scratchpad of
+  session 70b723b2). If each game reaches it at run time is not known.
+- Flycast and libretro, looked up 2026-10-18; none is this fault (Flycast is
+  little-endian x86/ARM): libretro/flycast #109 (2018: the backgrounds are
+  PAL8 with ARGB8888 palettes, Flycast cut them to 16 bits; fixed by
+  18b2d82 and 889f722); flyinghead/flycast #612 (2022: the title screen's
+  glow dark, afb0a80 "pvr: autosort needs empty passes to be accounted
+  for"); 632aa95c2 (2019, GL4 OIT depth test: the flashlight); 8fb3def2d
+  (2023, GL OIT: the palette in the PT depth pass: the shadows); 17ab0aba2
+  (DirectX: the cinematics); 7a27a43ba (Vulkan OIT multipass RTT: the
+  cutscenes, #1609); 4c7e57ebd (the disc swap).
+- The fix: row JIT SPEED > JIT PAIR CALLS (`JitPairCalls`, OLD / FIXED,
+  set before boot, default FIXED). FIXED joins r5:r6 into r4 before
+  `WriteMem64` and splits `ReadMem64`'s r3 into r3:r4 (`ps3/ps3_jit_pair.h`,
+  5 instructions, in the cold path only).
+- Log: `[jitcfg] ... paircalls=`.
+- PC: `misc/pair_check` (FlushCold's two pair branches and
+  `ps3_jit_pair.h` on a PPC64 model, into `_vmem`'s handler path as the PS3
+  builds it: 20000 writes and 20000 reads, pinned FRs and GPRs, the words
+  of the RAM path; OLD loses all of them; 20 source lines), `mutate.py` 19
+  of 19.
+- Not known yet: whether the menus' wrong textures (Matt, 2026-10-17) are
+  the same palettes.
+
 ---
 
 ## 3. Features and references

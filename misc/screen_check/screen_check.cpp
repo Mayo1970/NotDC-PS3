@@ -102,6 +102,115 @@ static void test_view()
 	}
 }
 
+// ---- Native Size (P104) -----------------------------------------------------------
+
+// One picture row of the native path: the weight each canvas column has in the picture. A is the canvas row, B takes
+// it by whole factors with nearest texels, the picture takes B (or A when exact) with bilinear texels.
+static void native_row(u32 pw, u32 aw, u32 bw, bool exact, std::vector<float>* wsum, u32* most)
+{
+	wsum->assign(aw, 0.0f);
+	*most = 0;
+	for (u32 j = 0; j < pw; j++)
+	{
+		float w[2] = { 1.0f, 0.0f };
+		u32 col[2];
+		if (exact)
+			col[0] = col[1] = (u32)(((float)j + 0.5f) * (float)aw / (float)pw);
+		else
+		{
+			const u32 src = bw ? bw : aw;
+			const float u = ((float)j + 0.5f) * (float)src / (float)pw - 0.5f;
+			const int i0 = (int)floorf(u);
+			const float f = u - (float)i0;
+			const int ia = std::max(0, std::min((int)src - 1, i0)), ib = std::max(0, std::min((int)src - 1, i0 + 1));
+			w[0] = 1.0f - f;
+			w[1] = f;
+			// B texel i holds canvas column (i + 0.5) * aw / bw, nearest.
+			col[0] = bw ? (u32)(((float)ia + 0.5f) * (float)aw / (float)bw) : (u32)ia;
+			col[1] = bw ? (u32)(((float)ib + 0.5f) * (float)aw / (float)bw) : (u32)ib;
+		}
+		(*wsum)[col[0]] += w[0];
+		(*wsum)[col[1]] += w[1];
+		const u32 span = col[1] > col[0] ? col[1] - col[0] : col[0] - col[1];
+		*most = std::max(*most, span);
+	}
+}
+
+static void test_native()
+{
+	NativePlan p;
+	// Street Fighter Alpha 3 (640 x 240), the 640 x 480 games, King of Fighters (320 x 240): the 4:3 picture at 720p.
+	CHECK(native_plan(960, 720, 640.0f, 240.0f, 1280, 960, &p) && p.aw == 640 && p.ah == 240 && p.bw == 1280 &&
+	      p.bh == 720 && !p.exact, "640 x 240: %u %u %u %u %d", p.aw, p.ah, p.bw, p.bh, (int)p.exact);
+	CHECK(native_plan(960, 720, 640.0f, 480.0f, 1280, 960, &p) && p.bw == 1280 && p.bh == 960 && !p.exact,
+	      "640 x 480: %u %u %d", p.bw, p.bh, (int)p.exact);
+	CHECK(native_plan(960, 720, 320.0f, 240.0f, 1280, 960, &p) && p.exact && p.bw == 0 && p.bh == 0,
+	      "320 x 240: %u %u %d", p.bw, p.bh, (int)p.exact);
+	// STRETCH: only the lines need pass B.
+	CHECK(native_plan(1280, 720, 640.0f, 480.0f, 1280, 960, &p) && p.bw == 1280 && p.bh == 960 && !p.exact,
+	      "640 x 480 STRETCH: %u %u", p.bw, p.bh);
+	// The X Scaler's 1280-wide canvas: B takes the lines twice, the picture takes B down.
+	CHECK(native_plan(960, 720, 1280.0f, 480.0f, 1280, 960, &p) && p.aw == 1280 && p.bw == 1280 && p.bh == 960,
+	      "1280 x 480: %u %u %u", p.aw, p.bw, p.bh);
+	// The canvas at the picture's size is the direct path; so is a canvas over the maximum, and no canvas.
+	CHECK(!native_plan(640, 480, 640.0f, 480.0f, 1280, 960, &p), "640 x 480 on a 640 x 480 picture");
+	CHECK(!native_plan(960, 720, 1281.0f, 480.0f, 1280, 960, &p), "a canvas over 1280");
+	CHECK(!native_plan(960, 720, 640.0f, 961.0f, 1280, 960, &p), "a canvas over 960 lines");
+	CHECK(!native_plan(960, 720, 0.0f, 480.0f, 1280, 960, &p) && !native_plan(960, 720, NAN, 480.0f, 1280, 960, &p) &&
+	      !native_plan(0, 720, 640.0f, 480.0f, 1280, 960, &p), "no canvas or no picture");
+	// A B over the maximum (1000 lines): the picture takes A with bilinear texels.
+	CHECK(native_plan(960, 720, 640.0f, 500.0f, 1280, 960, &p) && p.bw == 0 && p.bh == 0 && !p.exact,
+	      "640 x 500: %u %u %d", p.bw, p.bh, (int)p.exact);
+
+	// Random canvases and pictures: the rules of the plan.
+	for (u32 n = 0; n < 200000; n++)
+	{
+		const u32 pw = 1 + rnd(1400), ph = 1 + rnd(1100);
+		const float cw = (float)rnd(1400) + (rnd(4) ? 0.0f : 0.5f * (float)rnd(2)), ch = (float)rnd(1100);
+		const u32 mw = 1280, mh = 960;
+		if (!native_plan((int)pw, ph, cw, ch, mw, mh, &p))
+		{
+			const u32 aw = (u32)lroundf(cw), ah = (u32)lroundf(ch);
+			CHECK(cw < 1.0f || ch < 1.0f || cw > (float)mw || ch > (float)mh || aw > mw || ah > mh || (aw == pw && ah == ph),
+			      "%ux%u canvas %gx%g: no plan", pw, ph, cw, ch);
+			continue;
+		}
+		CHECK(p.aw == (u32)lroundf(cw) && p.ah == (u32)lroundf(ch) && p.aw >= 1 && p.ah >= 1 && p.aw <= mw && p.ah <= mh,
+		      "%ux%u canvas %gx%g: A is %ux%u", pw, ph, cw, ch, p.aw, p.ah);
+		CHECK(!(p.aw == pw && p.ah == ph), "%ux%u: A is the picture", pw, ph);
+		const u32 kx = (pw + p.aw - 1) / p.aw, ky = (ph + p.ah - 1) / p.ah;
+		CHECK(p.exact == (p.aw * kx == pw && p.ah * ky == ph), "%ux%u A %ux%u: exact is %d", pw, ph, p.aw, p.ah, (int)p.exact);
+		if (p.exact || p.aw * kx > mw || p.ah * ky > mh)
+			CHECK(p.bw == 0 && p.bh == 0, "%ux%u A %ux%u: B is %ux%u", pw, ph, p.aw, p.ah, p.bw, p.bh);
+		else
+			CHECK(p.bw == p.aw * kx && p.bh == p.ah * ky && p.bw >= pw && p.bh >= ph && p.bw - p.aw < pw &&
+			      p.bh - p.ah < ph, "%ux%u A %ux%u: B is %ux%u", pw, ph, p.aw, p.ah, p.bw, p.bh);
+	}
+
+	// Even pixels: in every row each canvas column takes the same share of the picture (a quarter pixel at most off,
+	// the edges aside), and a picture pixel never mixes columns that are not neighbours.
+	static const u32 rows[][2] = { { 960, 640 }, { 720, 240 }, { 720, 480 }, { 960, 320 }, { 1280, 640 }, { 960, 1280 } };
+	for (u32 k = 0; k < sizeof(rows) / sizeof(rows[0]); k++)
+	{
+		const u32 pw = rows[k][0], aw = rows[k][1];
+		// 240 lines on 720 are whole factors, so the plan's B and exact are those of this row.
+		if (!native_plan((int)pw, 720, (float)aw, 240.0f, 1280, 960, &p))
+		{
+			CHECK(false, "row %u of %u: no plan", pw, aw);
+			continue;
+		}
+		std::vector<float> wsum;
+		u32 most;
+		native_row(pw, aw, p.bw, p.exact, &wsum, &most);
+		const float share = (float)pw / (float)aw;
+		float off = 0.0f;
+		for (u32 c = 1; c + 1 < aw; c++)
+			off = std::max(off, fabsf(wsum[c] - share));
+		CHECK(off <= 0.25f + 1e-4f, "row %u of %u columns: a column's share is off by %g of %g", pw, aw, off, share);
+		CHECK(most <= 1, "row %u of %u columns: a pixel mixes columns %u apart", pw, aw, most);
+	}
+}
+
 // Flycast TransformMatrix::isClipped with intersectTileAndFBScissor and getScissorScaling, the x parts.
 static bool fly_is_clipped(int fb_min, int fb_max, int tile_origin, int tile_size, int glob_x, bool hscale)
 {
@@ -739,6 +848,7 @@ static void test_cheat_apply()
 int main()
 {
 	test_view();
+	test_native();
 	test_clipped();
 	test_scaler();
 	test_osd();
@@ -750,6 +860,7 @@ int main()
 		printf("FAIL: %d check(s)\n", g_fail);
 		return 1;
 	}
-	printf("PASS: screen_check (the view, the clip rule, the scaler, the FPS lines, the PNG rows, the cheat file, the cheats)\n");
+	printf("PASS: screen_check (the view, Native Size, the clip rule, the scaler, the FPS lines, the PNG rows, the cheat file,"
+	       " the cheats)\n");
 	return 0;
 }

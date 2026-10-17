@@ -377,6 +377,8 @@ void ps3gl_end_frame(void);
 
 /* NotDC bundle 14: the PS3GL_FAST_* bits of the state path. They can change at any time. */
 void ps3gl_fast_path(int bits);
+/* NotDC Native Size: the size of the surface the next draws go to. Set glViewport and glScissor again after it. */
+void ps3gl_set_screen(uint32_t w, uint32_t h);
 
 /* Once per frame from ref/gl/gl_rsurf.c (a local extern there: it cannot include this header across the module
  * boundary). Feeds the dlight-cost telemetry of ps3gl_end_frame's window report. */

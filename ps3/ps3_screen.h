@@ -28,6 +28,32 @@ static inline void screen_view(uint32_t sw, uint32_t sh, int format, float cw, S
 	v->cx0 = (cw - v->cw) * 0.5f;
 }
 
+// Native Size: pass A draws the scene at the canvas size; pass B scales it by whole factors (nearest) to at least the
+// picture, which then takes B with bilinear filtering. exact: the factors reach the picture, so A goes there (nearest).
+struct NativePlan
+{
+	uint32_t aw, ah;  // pass A
+	uint32_t bw, bh;  // pass B; 0 = none (exact, or over the maximum size)
+	bool exact;
+};
+
+// False: the direct path (the canvas is the picture's size, or pass A is over max_w x max_h).
+static inline bool native_plan(int pw, uint32_t ph, float cw, float ch, uint32_t max_w, uint32_t max_h, NativePlan* p)
+{
+	if (pw < 1 || ph < 1 || !(cw >= 1.0f) || !(ch >= 1.0f) || cw > (float)max_w || ch > (float)max_h)
+		return false;
+	p->aw = (uint32_t)lroundf(cw);
+	p->ah = (uint32_t)lroundf(ch);
+	if (p->aw > max_w || p->ah > max_h || (p->aw == (uint32_t)pw && p->ah == ph))
+		return false;
+	p->bw = p->aw * (((uint32_t)pw + p->aw - 1) / p->aw);
+	p->bh = p->ah * ((ph + p->ah - 1) / p->ah);
+	p->exact = p->bw == (uint32_t)pw && p->bh == ph;
+	if (p->exact || p->bw > max_w || p->bh > max_h)
+		p->bw = p->bh = 0;
+	return true;
+}
+
 // Flycast isClipped: the region tiles (tx0..tx1, end not included) and the FB clip leave a part of the TA's width
 // (glob_x) out. The FB clip counts pixels after the scaler, so it is taken times the scaler's X factor.
 static inline bool screen_x_clipped(uint32_t fx0, uint32_t fx1, uint32_t tx0, uint32_t tx1, uint32_t glob_x,

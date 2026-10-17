@@ -435,6 +435,17 @@ void ps3gl_fast_path(int bits)
         ps3gl.tmu[i].sent = 0;
 }
 
+/* NotDC Native Size: the size of the surface the next draws go to, for the Y flip of glViewport and glScissor. */
+void ps3gl_set_screen(uint32_t w, uint32_t h)
+{
+    if (!ps3gl_ptr) return;
+
+    ps3gl_flush_polygon_batch();
+    ps3gl.screen_w = w;
+    ps3gl.screen_h = h;
+    ps3gl.dirty |= PS3GL_DIRTY_VIEWPORT | PS3GL_DIRTY_SCISSOR;
+}
+
 void ps3gl_end_frame(void)
 {
     /* First, before the fence-label write below: a pending GL_POLYGON batch (ps3gl_vertices.c) submits vertex

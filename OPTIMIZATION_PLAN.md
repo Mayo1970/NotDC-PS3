@@ -11,7 +11,115 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ---
 
-## 0. Resume here (updated 2026-10-17)
+## 0. Resume here (updated 2026-10-18)
+
+**P105 JIT PAIR CALLS, the cause of Alone in the Dark's black background
+(`OPTIMIZATION_POTENTIAL.md` P105), built 2026-10-18 (Matt: "In the menus
+some textures also look incorrect. Maybe look up if there's some fixes
+related to this kind of behaviors?"). Package of 01:06
+(`build/notdc_ps3.pkg`, 1790960 bytes) = commit a19c0d1 + P104 + this, the
+row FIXED by default (Matt 2026-10-18: "Keep it fixed!"; the package of
+00:51 had OLD). Not committed. No HW run.**
+- HW log 1 (2026-10-17, the listener log below from line 230332): the
+  background is the PAL8 strips, and each PAL8 decode is black with alpha 0.
+- The cause, from the disc's code: the game copies its palette banks to
+  A05F9000 with a 64-bit FPU memcpy (`fschg`, `fmov DR0,@r4`). A 64-bit
+  store to device memory takes the JIT's C call, which passes the data in
+  r5:r6; the PS3's ELFv1 ABI takes it in r4, which holds 0 there. So the
+  palette is 0. A 64-bit load from device memory is wrong the same way.
+- Flycast has no fix for it (the fault is in our PPC calls); its Alone in
+  the Dark fixes are for its own renderers (P105).
+- It is the fix of section 6.7 (JIT FMOV.D ABI fix, found 2026-10-04,
+  never built, in no bundle; not in bundle 23). Default FIXED, as 6.7's ON
+  of 2026-10-04 (Matt 2026-10-18: "Keep it fixed!").
+- The row acts in every game. The same palette code is in 15 of the 35
+  boot files on the PC (P105 lists them); if each game reaches it is not
+  known.
+- Row JIT SPEED > JIT PAIR CALLS (`JitPairCalls`, OLD / FIXED, set before
+  boot, default FIXED). FIXED joins r5:r6 into r4 before the call and
+  splits the returned u64 into r3:r4.
+- Log: `[jitcfg] ... paircalls=`; `[texfmt] ... p8= ... blacktex=
+  alpha0tex=`.
+- `.got` 0xFF50 of 0x10000 (0xFF48 before: 1 entry), 0 `r2off`. The build's
+  warnings are the old ones of `ps3_driver.cpp` (the FASTMEM helpers,
+  `g_jit_blocks_entered`).
+- PC (WSL): `misc/pair_check` PASS (20000 pair writes and 20000 pair reads
+  on the PPC64 model into `_vmem`'s handler path; OLD loses all; 20 source
+  lines); `mutate.py` 19 of 19. Also PASS, the checks that read the changed
+  files: chd, clock, flash, fullmmu, glpath, idleauto, interp, jit8, maple,
+  mmu, pad, ramsq, rtt, rttq, screen, sys20, ta4, timebase.
+- HW steps (UDP listener only when Matt says so; the listener of session
+  0e77a736, PID 22680, is still up on 18194):
+  1. Install the package of 01:06. The install keeps the settings; the
+     first boot writes the new key as FIXED.
+  2. In the NotDC menu, before the boot: check JIT SPEED > JIT PAIR CALLS
+     is FIXED (OLD if the package of 00:51 was booted: set FIXED).
+  3. Alone in the Dark: the title screen and the menus. Expected: the
+     textures as on the DC.
+  4. In the game, the room of the screenshot: the background shows. 20
+     seconds; a screenshot if possible (SELECT, then SQUARE).
+  5. Log: `[jitcfg] ... paircalls=1`; `[texfmt]` with `p8=` and
+     `blacktex=0`.
+
+**P104 Native Size, with P105's log fields (`OPTIMIZATION_POTENTIAL.md`
+P104, P105), built 2026-10-17 (Matt: "Some 2D games (ex. Street Fighter
+Alpha 3) will show graphical artifact in their 2D images. Even sprites.
+Alone in the Dark doesn't render the 3D background. Can you address the
+issue?"). Package of 23:43 (`build/notdc_ps3.pkg`, 1791152 bytes) =
+commit a19c0d1 ("Re-Volt fixes") + this. Not committed. HW SUCCESS for
+Street Fighter Alpha 3 (Matt: "Tested SFZ3 and it worked as intended!")
+and Crazy Taxi (Matt: "Perfect! It renders correctly. It also fixed some
+artifacts."), HW run 1 below. Default stays OFF (Matt named none). Alone
+in the Dark not run yet.**
+- HW run 1, 2026-10-17 (the listener of session 0e77a736, PID 22680, still
+  up: `ps3log_p101_run1.txt` from line 216951; Street Fighter Alpha 3 from
+  line 217286, Crazy Taxi from line 222200): Native Size ON from the boot
+  (`[scrcfg] ... NativeSize=1`). Street Fighter Alpha 3: every frame
+  through pass B (`[scr] native=1 frames=300 sharp=300 fails=0
+  a=640x240 b=1280x720` in the fights, `a=640x480 b=1280x960` in the
+  menus), SPEED median 100.00% over 137 windows, no fault line.
+  - Crazy Taxi (from line 222200): 23 windows at Native Size ON (`a=640x480
+    b=1280x960`, `fails=0`), one at OFF; the pause's RTT drew and read back
+    (512 x 481, 2.6 ms); SPEED median 99.99% over 127 windows; no fault
+    line.
+- Row SCREEN > Native Size (`NativeSize`, OFF / ON, live, default OFF).
+  ON: the scene draws at the game's canvas size (pass A), whole factors
+  with nearest texels make pass B (1280 x 720 for 640 x 240, 1280 x 960
+  for 640 x 480), and the 4:3 picture takes B with bilinear texels. A
+  320 x 240 canvas goes straight to the picture, 3 times. WIDE stays on the
+  direct path.
+- Street Fighter Alpha 3 (P104): its fights draw a 640 x 240 canvas, so the
+  direct path puts 1.5 PS3 pixels on each DC pixel across: uneven texel
+  columns, and every third column samples on a texel edge. King of
+  Fighters (320 x 240, 3 times) had no fault. A theory: the HW run decides.
+- Alone in the Dark (P105): no log of it exists. New fields for its first
+  log: `[rendz] ... vol2= shadow=`, `[rend4] ... shad= half=`.
+- Log: `[scrcfg] NativeSize=`; `[scr] ... native= frames= sharp= fails=
+  a=WxH b=WxH`.
+- `.got` 0xFF48 of 0x10000 (0xFF20 before: 5 entries), 0 `r2off`. No new
+  build warning.
+- PC (WSL): `misc/screen_check` PASS (fixed plans, 200000 random plans, the
+  even-column row model, source lines); `mutate.py native` 18 of 18. Also
+  PASS, the checks that read the changed files: rtt, rend4, rttq,
+  framehold, glpath, tex3, bump, fog, depth, spepix, spevb, tr4, ta4, ramsq,
+  maple, flash, fullmmu, idleauto, interp, jit8, mmu, pad, sys20, timebase,
+  chd, clock, sysgate.
+- HW steps (UDP listener only when Matt says so):
+  1. Install the package. The install keeps the settings; Native Size
+     starts OFF.
+  2. Street Fighter Alpha 3, a fight at OFF: the artifacts as before. Then
+     SELECT > SCREEN > Native Size ON (live). Expected: even pixels, no
+     artifacts in the stage and the sprites.
+  3. A cross-check with Native Size OFF: SCREEN > Screen Format 16:9
+     STRETCH (640 columns on 1280, 2 times). If the artifacts go there
+     too, the cause is the 640 to 960 scale. Back to 4:3 after it.
+  4. Native Size ON: a 640 x 480 2D game (Capcom vs. SNK 2, Garou or 3rd
+     Strike), and Crazy Taxi with its pause (an RTT). No fault; 3D is less
+     sharp than at OFF.
+  5. Alone in the Dark at Native Size OFF: a room with no background, 20
+     seconds; a screenshot if possible (SELECT, then SQUARE).
+  6. Log: the fight's `[scr] native=1 ... a=640x240 b=1280x720`; Alone in
+     the Dark's `[rendz]`, `[rend4]`, `[texfmt]`, `[out]` lines.
 
 **P91 Near Plane Cap, bundle 23 item 1 by way B (`OPTIMIZATION_POTENTIAL.md`
 P91), built 2026-10-17 (Matt: "In bundle 23, go with Way B."). Package of
@@ -15025,7 +15133,7 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
 | 6.4 TMU Clock EFF | every game at SH4 150 | `[~]` built 2026-10-11 as "TMU Clock" SH4 / EFF, bundle 7 (section 0), default SH4, no HW run (Matt keeps SH4 Clock 200, where EFF changes nothing); merged 2026-10-06: P11 (built as "TMU Fine TCNT", HW run 2026-10-11, default ON in source), P57 (TMU test, in `misc/timebase_check`) |
 | 6.5 AICA Race Fix | F3 Looney Tunes | `[x]` HW SUCCESS 2026-10-07 with P44, P31 and A3 (section 0), default ON since the package of 03:41; F3 fixed; merged 2026-10-06: P24 (built 2026-10-11 as "G2 DMA Small", bundle 6, default OFF; HW run 1: no fix for F1 in ChuChu Rocket), P31 (CA clamp, done) |
 | 6.6 SPE AICA Sync | F2 Crazy Taxi crackle | `[x]` HW SUCCESS 2026-10-11 (Crazy Taxi crackle fixed, Matt: menu at ON, drive at + SAMPLE SYNC: "Fully gone."), default + SAMPLE SYNC since the package of 18:46 (section 0); the test moved to the twin's page map, and + SAMPLE SYNC syncs with no test |
-| 6.7 JIT FMOV.D ABI fix | every game | `[ ]` the fix is not built, in no bundle; the first lead for Sonic Adventure 2's sound since 2026-10-13 (bundle 18, section 0); its `[mem64]` count is built 2026-10-14 (it rides on the row JIT C-Calls); HW run 1 2026-10-14, Sonic Adventure 2: 0 calls in 209 s, so not a cause of that game's sound |
+| 6.7 JIT FMOV.D ABI fix | every game | `[~]` built 2026-10-18 as P105's row JIT SPEED > JIT PAIR CALLS (Alone in the Dark's palette, section 0), default FIXED (Matt), no HW run; the first lead for Sonic Adventure 2's sound since 2026-10-13 (bundle 18, section 0); its `[mem64]` count is built 2026-10-14 (it rides on the row JIT C-Calls); HW run 1 2026-10-14, Sonic Adventure 2: 0 calls in 209 s, so not a cause of that game's sound |
 | 6.8 Verified, not scheduled | various; merged 2026-10-06: P44 (F1, F3 unverified), P40, P49; P40 and P49 in bundle 9 (section 7) | **F1 FIXED on HW 2026-10-12 by 6.8's unaligned ARM7 word store: row "ARM7 STR Align" ON (bundle 9, section 0; Matt: "THE SOUND IS FIXED")**; default ON in source since 2026-10-12, not packaged |
 | 6.9 Flycast sound review | bundle 18: Sonic Adventure 2, Spider-Man, Looney Tunes | `[ ]` review done 2026-10-13 (section 0), read-only, nothing built, no HW run; no cause found for the loud effects; leads: the ADPCM loop state at a loop start above 0 (crackle), the AUDIO64 key pair inside one ARM7 run (missing effects), the empty DSP program of Looney Tunes; the 2 s key-off and the music loop at 129.8 s are the game's own; the SH4 wait is a sync with no test at a G2 DMA write near a play point (bundle 22); built 2026-10-14 (section 0): the row "ADPCM Loop" RESET / RESTORE of part B (default RESET; HW SUCCESS 2026-10-14, Matt: RESTORE fixes the sounds that stop too early in Sonic Adventure 2) and the log row "Key Census"; HW run 1 2026-10-14: the levels the driver writes and the music level are right, the loud mix is the game's own sum |
 
@@ -15475,8 +15583,12 @@ ARM census logs s3_run1.log / s3_sc.log (16a921ca).
   10 s. If ON still crackles with hazards = 0 and clip > 0: next step is an
   SPU output gain.
 
-### 6.7 JIT FMOV.D ABI fix  `[ ]`
+### 6.7 JIT FMOV.D ABI fix  `[~]` built 2026-10-18 as P105's row JIT SPEED > JIT PAIR CALLS (`JitPairCalls`), default FIXED (Matt: "Keep it fixed!"), no HW run (section 0)
 
+- 2026-10-18: Alone in the Dark's palette goes through this path, so its
+  background is black (`OPTIMIZATION_POTENTIAL.md` P105). The row is this
+  fix under P105's name, default FIXED (Matt 2026-10-18: "Keep it
+  fixed!"), as the ON of 2026-10-04 below.
 - Defect: the PS3 JIT cold path for a 64-bit access to a handler page uses
   the 32-bit EABI layout.
   - Write (kind 3) leaves the data in r5:r6 and calls `WriteMem64(u32,u64)`

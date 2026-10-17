@@ -76,6 +76,11 @@ static int s_frame_waits;
 static int s_last_fb = -1;
 // P75: rsxFinish waits only while the RSX's reference differs from its value, so each wait takes a new one.
 static u32 s_ref = 1;
+// Native Size: the depth buffer of the off-screen passes (made at the first), the last scene pass's size, and
+// on = a scene pass draws off screen now.
+#define PS3_NS_MAX_W 1280
+#define PS3_NS_MAX_H 960
+static struct { void* depth; u32 depth_off, scene_w, scene_h; int on, same; } s_ns;
 
 // ps3gl_main.c and ps3gl_vertices.c link against these engine hooks.
 void Con_Printf(const char* fmt, ...)
@@ -173,7 +178,7 @@ static int vsync_ref(u64* tb, u64* n)
 	return 1;
 }
 
-static void set_render_target(u32 color_off)
+static void set_surface(u32 color_off, u32 pitch, u32 depth_off, u32 depth_pitch, u32 w, u32 h)
 {
 	gcmSurface sf;
 	memset(&sf, 0, sizeof(sf));
@@ -182,7 +187,7 @@ static void set_render_target(u32 color_off)
 	sf.colorTarget = GCM_SURFACE_TARGET_0;
 	sf.colorLocation[0] = GCM_LOCATION_RSX;
 	sf.colorOffset[0] = color_off;
-	sf.colorPitch[0] = s_pitch;
+	sf.colorPitch[0] = pitch;
 	// MRT slots 1-3 must be filled even when unused, else black screen on HW.
 	for (int i = 1; i < 4; i++)
 	{
@@ -192,13 +197,18 @@ static void set_render_target(u32 color_off)
 	}
 	sf.depthFormat = GCM_SURFACE_ZETA_Z24S8;
 	sf.depthLocation = GCM_LOCATION_RSX;
-	sf.depthOffset = s_depth_off;
-	sf.depthPitch = s_width * 4;
+	sf.depthOffset = depth_off;
+	sf.depthPitch = depth_pitch;
 	sf.type = GCM_SURFACE_TYPE_LINEAR;
 	sf.antiAlias = GCM_SURFACE_CENTER_1;
-	sf.width = s_width;
-	sf.height = s_height;
+	sf.width = w;
+	sf.height = h;
 	rsxSetSurface(s_ctx, &sf);
+}
+
+static void set_render_target(u32 color_off)
+{
+	set_surface(color_off, s_pitch, s_depth_off, s_width * 4, s_width, s_height);
 }
 
 int ps3_video_init(void)
@@ -345,6 +355,9 @@ void ps3_video_term(void)
 		if (s_rtt_color)
 			rsxFree(s_rtt_color);
 		s_rtt_color = NULL;
+		if (s_ns.depth)
+			rsxFree(s_ns.depth);
+		memset(&s_ns, 0, sizeof(s_ns));
 		if (s_rb_addr)
 			free(s_rb_addr);
 		s_rb_addr = NULL;
@@ -397,6 +410,44 @@ int ps3_video_begin_rtt(void)
 	set_render_target(s_rtt_off);
 	ps3gl_begin_frame();
 	return 1;
+}
+
+// Native Size: the next draws go to w x h of the colour memory mem (pitch bytes a row) with the off-screen depth
+// buffer; scene = 1 for the pass that draws the scene. 0 = no memory, or a size over 1280 x 960.
+int ps3_video_target(void* mem, u32 pitch, u32 w, u32 h, int scene)
+{
+	if (!s_ready || !mem || w > PS3_NS_MAX_W || h > PS3_NS_MAX_H)
+		return 0;
+	if (!s_ns.depth)
+	{
+		s_ns.depth = rsxMemalign(64, PS3_NS_MAX_W * 4 * PS3_NS_MAX_H);
+		if (!s_ns.depth)
+			return 0;
+		rsxAddressToOffset(s_ns.depth, &s_ns.depth_off);
+	}
+	u32 off;
+	if (rsxAddressToOffset(mem, &off) != 0)
+		return 0;
+	ps3gl_flush_polygon_batch();
+	set_surface(off, pitch, s_ns.depth_off, PS3_NS_MAX_W * 4, w, h);
+	ps3gl_set_screen(w, h);
+	if (scene)
+	{
+		s_ns.same = w == s_ns.scene_w && h == s_ns.scene_h;
+		s_ns.scene_w = w;
+		s_ns.scene_h = h;
+	}
+	s_ns.on = scene;
+	return 1;
+}
+
+// Native Size: the next draws go to the display buffer of the frame in progress again.
+void ps3_video_target_frame(void)
+{
+	ps3gl_flush_polygon_batch();
+	set_surface(s_color_off[s_cur_fb], s_pitch, s_depth_off, s_width * 4, s_width, s_height);
+	ps3gl_set_screen(s_width, s_height);
+	s_ns.on = 0;
 }
 
 // P18: CONTROL0's depth format. FLOAT reads the Z24 surface as f32 bits >> 7 (RPCS3's d24f); a FIFO
@@ -493,6 +544,9 @@ const u32* ps3_video_grab(u32 x, u32 y, u32 w, u32 h)
 // render that draws only some tiles has the old picture around them. 0 = there is no frame to copy.
 int ps3_video_carry(void)
 {
+	// Native Size: the off-screen scene still holds the last one when its size is the same.
+	if (s_ns.on)
+		return s_ns.same;
 	if (!s_ready || s_last_fb < 0 || s_last_fb == s_cur_fb || s_target_off != s_color_off[s_cur_fb])
 		return 0;
 	// FIFO writes, so a deferred ps3gl GL_POLYGON batch goes out first. The copy starts at the last call.

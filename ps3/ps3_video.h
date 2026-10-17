@@ -35,6 +35,10 @@ int  ps3_video_held(void);
 // are forgotten, so no carry takes one.
 int  ps3_video_carry(void);
 void ps3_video_forget_frame(void);
+// Native Size: the next draws go to w x h of the RSX colour memory mem (pitch bytes a row); scene = 1 for the scene's
+// pass, whose old pixels a carry then keeps. 0 = no memory. ps3_video_target_frame() goes back to the display buffer.
+int  ps3_video_target(void* mem, u32 pitch, u32 w, u32 h, int scene);
+void ps3_video_target_frame(void);
 
 #ifdef __cplusplus
 }

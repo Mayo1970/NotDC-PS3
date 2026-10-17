@@ -39,6 +39,7 @@
 #include "ps3/ps3_jit_fmem.h"
 #include "ps3/ps3_jit_sched.h"
 #include "ps3/ps3_jit_mmu.h"
+#include "ps3/ps3_jit_pair.h"
 #include "ps3/ps3_idle_auto.h"
 #include "dc/sh4/sys_gate.h"
 #include "dc/sh4/sh4_fullmmu.h"
@@ -398,9 +399,11 @@ static u8 s_ts_poison[32] __attribute__((aligned(32)));
 extern "C" int get_jit_cold_split_preset();
 extern "C" int get_jit_short_forms_preset();
 extern "C" int get_jit_schedule_preset();
+extern "C" int get_jit_pair_calls_preset();
 static struct
 {
 	int split, sched, shortf;
+	bool pair;        // P105 JIT PAIR CALLS FIXED: a 64-bit C call passes its u64 in one GPR
 	FmForm form;
 	SchedEnv env;
 	SchedStats st;
@@ -2978,6 +2981,9 @@ static u32 FlushCold(u32* cold_ctr,u32* island=0)
 			ppc_clrldi32(ppc_rarg0,ppc_rarg0);                    // ELFv1: caller extends u32
 			void* f=c.fuct? c.fuct : (void*)ReadMem64;
 			ppc_call_c(f);
+			// P105 JIT PAIR CALLS FIXED: the u64 comes back in r3 alone; OLD takes its low word as word[addr].
+			if (s_jo.pair)
+				emit_pair_ret();
 			if (c.fdreg!=0xFF)
 			{
 				// FPU_PIN: float pair. rrv0=word[addr]->fdreg, rrv1=word[addr+4]
@@ -3014,14 +3020,17 @@ static u32 FlushCold(u32* cold_ctr,u32* island=0)
 		{
 			if (c.fdreg!=0xFF)
 			{
-				// FPU_PIN: float pair. fdreg=high->rarg2, fdreg+1=low->rarg3
-				// (the WriteMem64(u32,u64) EABI regs), each via its context slot.
+				// FPU_PIN: float pair. fdreg=high->rarg2, fdreg+1=low->rarg3 (the inline path's pair
+				// registers, not WriteMem64's: ELFv1 takes the u64 in r4), each via its context slot.
 				ppc_stfs(c.fdreg,ppc_contex,c.fofs);
 				ppc_lwz(ppc_rarg2,ppc_contex,c.fofs);
 				ppc_stfs(c.fdreg+1,ppc_contex,c.fofs+4);
 				ppc_lwz(ppc_rarg3,ppc_contex,c.fofs+4);
 			}
 			ppc_clrldi32(ppc_rarg0,ppc_rarg0);                    // ELFv1: caller extends u32
+			// P105 JIT PAIR CALLS FIXED: the u64 goes in r4; OLD leaves the MMIO ptr (0) there, so 0 is written.
+			if (s_jo.pair)
+				emit_pair_arg();
 			ppc_call_c(&WriteMem64);
 		}
 
@@ -5783,8 +5792,8 @@ static void ps3_jit_dump_toggles()
 	       get_jit_idle_rule_preset(), get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(),
 	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset(), get_jit_auto_checks_preset(),
 	       get_jit_ta_slot_preset());
-	printf("[jitcfg] coldsplit=%d shortforms=%d schedule=%d\n", get_jit_cold_split_preset(), get_jit_short_forms_preset(),
-	       get_jit_schedule_preset());
+	printf("[jitcfg] coldsplit=%d shortforms=%d schedule=%d paircalls=%d\n", get_jit_cold_split_preset(),
+	       get_jit_short_forms_preset(), get_jit_schedule_preset(), get_jit_pair_calls_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each
@@ -5884,6 +5893,7 @@ void ngen_mainloop()
 		verify((uintptr_t)s_ts_poison<0x7FFF0000u && (uintptr_t)&g_ta_slot<0x7FFF0000u);
 		// P99, P100: the forms need fastmem's RAM base; the scheduler knows r30 and RAM with its pad.
 		s_jo.split=get_jit_cold_split_preset();
+		s_jo.pair=get_jit_pair_calls_preset()!=0;
 		// P101 8C PREFIX: its addis adds RAM - 0x8C000000, which must fit 32 signed bits; else the 2-op guard.
 		const s64 fm_bias=(s64)(uintptr_t)mem_b.data-0x8C000000LL;
 		s_jo.shortf=s_fm_ok ? get_jit_short_forms_preset() : 0;
