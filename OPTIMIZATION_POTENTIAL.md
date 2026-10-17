@@ -1499,7 +1499,7 @@ Adventure intro FMV, `[stall] dma`.
   with the same rows: Crazy Taxi 12-20K within 1 point, the Looney Tunes
   race 24K+ 87.1% in both, 80-220K lines zeroed a second. No gain.
 
-### P99 JIT code size: cold paths out of the hot code, shorter RAM forms  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), rows JIT SPEED > JIT COLD SPLIT (OFF / ON / + EXITS) and JIT SHORT FORMS, default OFF; HW: VF3tb fights about +4 points with P100 + LIST and P101 (plan section 0, run 7)
+### P99 JIT code size: cold paths out of the hot code, shorter RAM forms  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), rows JIT SPEED > JIT COLD SPLIT (OFF / ON / + EXITS) and JIT SHORT FORMS; HW: VF3tb fights about +4 points with P100 + LIST and P101 (plan section 0, run 7); default + EXITS (Matt, 2026-10-17)
 
 - Our own work, from the answer to Matt's "What are our options" of
   2026-10-17. The SH4 thread's game code runs at about 1 PPC instruction
@@ -1546,7 +1546,7 @@ Adventure intro FMV, `[stall] dma`.
   `ps3_driver.cpp` itself has no PC check: the HW run is its test.
 - HW measure: plan section 0.
 
-### P100 JIT scheduling for the PPE's in-order pipeline  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), row JIT SPEED > JIT SCHEDULE (OFF / FORMS / + LIST), default OFF; HW: VF3tb fights about +4 points with P99 + EXITS and P101 (plan section 0, run 7)
+### P100 JIT scheduling for the PPE's in-order pipeline  `[~]` built 2026-10-17 (Matt: "Let's go with option 2 and 3."), row JIT SPEED > JIT SCHEDULE (OFF / FORMS / + LIST); HW: VF3tb fights about +4 points with P99 + EXITS and P101 (plan section 0, run 7); default + LIST (Matt, 2026-10-17)
 
 - The other half of P99's theory: the PPE issues in order, and the JIT
   emits each SH4 op's words as one chain. A RAM read was 3 guard words, a
@@ -1579,7 +1579,7 @@ Adventure intro FMV, `[stall] dma`.
   them for P101).
 - HW measure: plan section 0.
 
-### P101 JIT SHORT FORMS 8C PREFIX: the RAM check by address prefix, 5 words a word access  `[~]` built 2026-10-17 (Matt: "Let's go with the 4-5 op sequence, try checking for prefix 8c and if (addr>>24 !=8c) goto slowpath; data = *(biasedmembase + addr)."), row JIT SPEED > JIT SHORT FORMS = 8C PREFIX, default OFF; HW run 1: REGRESSION in Crazy Taxi, a 0x0C game (plan section 0)
+### P101 JIT SHORT FORMS 8C PREFIX: the RAM check by address prefix, 5 words a word access  `[~]` built 2026-10-17 (Matt: "Let's go with the 4-5 op sequence, try checking for prefix 8c and if (addr>>24 !=8c) goto slowpath; data = *(biasedmembase + addr)."), row JIT SPEED > JIT SHORT FORMS = 8C PREFIX, default OFF; HW: Crazy Taxi regression fixed by the prefix per block, Looney Tunes +2.6 over ON; boot videos slow, fallback per block built (plan section 0)
 
 - HW run 1 (2026-10-17, COLD SPLIT and SCHEDULE OFF): Crazy Taxi 8-10K
   85.6%, 10-12K 74.9%, 12-14K 73.5% SPEED; before, 99-100% in the same
@@ -1603,6 +1603,28 @@ Adventure intro FMV, `[stall] dma`.
 - Other code that treats 0x0C and 0x8C apart (search, 2026-10-17): only
   the JIT Fastmem OFF path (0x8C inline), the IFB probe's `[DIV]` log and
   the cheats' 0x8C base; the rest masks addresses to area 3.
+- HW run 9 (Looney Tunes, with COLD SPLIT + EXITS and SCHEDULE + LIST):
+  the race 98-101% at 24-32K, but the boot videos (no 3D) run about 20 s
+  at 36-75% (ON: about 5 s at 57-80%): code in a 0x8C game that reaches its
+  buffers through another mirror.
+- Fallback per block (2026-10-17, Matt: "Go for it"): each cold path of an
+  8C PREFIX access first calls a shared stub (`fm_emit_fb_stub`, 4 words a
+  fragment: `mr r0,A`, the block's counter in r12, `bl`). A RAM address
+  (area 3 in the low word: another mirror, a junk upper half) counts; MMIO
+  and the store queue do not. At FB_LIMIT (4096) the stub writes the
+  counter's address to `s_fb.req`; the main loop's update (between
+  blocks) calls `fb_apply`: the block's pc joins the fallback set (kept
+  across clears). First build: a full cache clear each time; HW run 11
+  (Crazy Taxi, 20 game blocks fell back in 15 s): SPEED 14-90% from the
+  clears. Now (package of 18:10) its entry branches to a small stub that
+  holds its pc: its next run compiles it again with the 2-op guard (that
+  run's FPU mode) and points the old entry at the new code; no clear.
+  HW run 12 (Crazy Taxi, with P102): 99 fallbacks, SPEED 100% to 18K.
+  HW run 15 (Looney Tunes, with P102): boot videos back to about 6 s
+  slow (20 s without the fallback); the race 98.5-99.5% at 28-34K. Lines: `[jopt] 8C PREFIX fallback #N: block X`;
+  `[jopt] ... fallback blocks= demotes=`. Counters: 32768 blocks per clear;
+  a fragment whose 16 bytes would push the next fragment out of its bne's
+  reach (no COLD SPLIT, huge block) does not count.
 
 - Matt's lead. The form (`ps3/ps3_jit_fmem.h`, guard 2):
   `rldicl r0,A,40,24` (A >> 24 over all 64 bits), `cmpldi r0,0x8C`,
@@ -1616,8 +1638,8 @@ Adventure intro FMV, `[stall] dma`.
   half (a carry, a sign extension), and `addis` adds all 64 bits. Only a
   clear upper half passes, so the host address needs no mask.
 - 4 words (`lwzx rD,A,rBias`) needs a register that holds the bias in every
-  block. None is free: r14-r28 hold SH4 registers, r29 the cycles, r30 the
-  context, r31 the jump target; r2 (TOC) and r13 (TLS) belong to the ABI.
+  block: no callee-saved one is free (r14-r28 SH4 registers, r29 cycles, r30
+  context, r31 jump target; r2 TOC, r13 TLS). P102 uses r11 instead.
 - Cost: every other RAM mirror (0x0C, 0xAC, 0x8D-0x8F, ...) and every junk
   upper half take a mispredicted branch to the cold path (its inline _vmem
   table tier, no C call); the result is the same. With FORMS the load
@@ -1633,6 +1655,40 @@ Adventure intro FMV, `[stall] dma`.
   paths; `mutate.py` 28 of 28, 9 of them for this form) and
   `misc/sched_check` (a bias `addis` on a checked 0x8C address;
   `mutate.py` 45 of 45).
+- HW measure: plan section 0.
+
+### P102 JIT SHORT FORMS 8C BASE REG: 4 words a word access, the bias in r11  `[~]` built 2026-10-17 (Matt: "Check for a faster memory. And the 4-5 op sequence memops are like half the instructions, so even 1 is like a huge gain."), row JIT SPEED > JIT SHORT FORMS = 8C BASE REG; HW runs 12-15 (Crazy Taxi, VF3tb, Crazy Taxi 2, Looney Tunes): no fault, faster everywhere (plan section 0); default ON (Matt, 2026-10-17)
+
+- The form: `rldicl r0,A,40,24; cmpldi r0,P; bne cold; lwzx rD,A,r11`
+  (stores `stwx`, floats `lfsx`/`stfsx`; a byte or half: `xori rT,A,3|2`,
+  then `lbzx`/`lhzx` at rT + r11). 4 words for a 32-bit load or store
+  with no displacement; the load starts one add (2 cycles) earlier. A pair
+  and a folded @(disp,Rn) keep P101's `addis` (5 words): `lwzx` takes no
+  displacement.
+- r11 = the block's bias (P101's prefix per block), `lis r11` before the
+  block's first such access. r11 is volatile: `ppc_call_c` sets it again
+  after each C call that follows that `lis` (cold paths included); stubs
+  and other blocks never read it, as each block sets its own. No C code
+  sees a changed register (r2 and r13 untouched). Not with JIT TA SLOT
+  (P87 holds its slot in r11): falls back to 8C PREFIX with a `[jitcfg]`
+  line.
+- HW run 10 (2026-10-17, package of 17:37, Crazy Taxi): the SH4 thread
+  hung after START at the title (no fault line). Cause found in the code:
+  the wrapper marked r11 as set after any C call, but a call can sit on a
+  path that runs only at times (`pref`: the store-queue flush), so a later
+  access skipped its `lis` and used a stale r11. Fixed in the package of
+  17:59: a call restores r11 only after the block's own first `lis`.
+- + LIST: an access indexed by r11 is in RAM (`SchedEnv.base_reg`), like
+  P101's bias `addis` (both only past their guard).
+- Faster memory, checked 2026-10-17: the DC memory (RAM, VRAM, ARAM) comes
+  from the PSL1GHT heap, whose `sbrk` (librt) maps 1 MB pages
+  (`sysMMapperAllocateMemory` flags 0x400, disassembled): already the
+  largest page the PPE offers a process. The code cache must stay in
+  `.text`: the PS3 executes no heap memory.
+- PC: `misc/fmem_check` (8C BASE REG against the old form, both prefixes;
+  the fallback stub: counts, request, kept registers; the call),
+  `mutate.py` 45 of 45; `misc/sched_check` (r11-indexed accesses in RAM,
+  the base register as a base is not), `mutate.py` 47 of 47.
 - HW measure: plan section 0.
 
 ---

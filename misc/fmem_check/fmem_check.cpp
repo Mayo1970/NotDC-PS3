@@ -29,7 +29,8 @@ static const u64 RAM = (u64)RAM_HI << 16;
 static u32 bias_hi(u32 prefix) { return (u32)(((s64)RAM - ((s64)prefix << 24)) >> 16) & 0xFFFF; }
 
 static int g_fail, g_checks;
-static u32 g_expected_diff, g_fast, g_cold, g_8c_fast, g_0c_fast, g_8c_mirror, g_8c_junk;
+static u32 g_expected_diff, g_fast, g_cold, g_8c_fast, g_0c_fast, g_8c_mirror, g_8c_junk, g_base_x, g_fb_counts,
+	g_fb_reqs;
 static void fail(const char* what, const char* detail)
 {
 	if (g_fail < 20)
@@ -300,7 +301,8 @@ static void check_forms(u32 cases)
 		if (!guard && !sched)
 			continue;
 		const u8 prefix = rn(2) ? 0x8C : 0x0C;
-		const FmForm f = { guard, prefix, sched, RAM_HI, bias_hi(prefix) };
+		const bool basereg = guard == 2 && rn(2);
+		const FmForm f = { guard, prefix, sched, basereg, RAM_HI, bias_hi(prefix) };
 		Mach m0;
 		rnd_state(m0.c);
 		const u32 base = rnd_addr(guard == 2 ? prefix : 0);
@@ -336,6 +338,9 @@ static void check_forms(u32 cases)
 		cold = fm_emit(f, a, &done);
 		const u32 nc = (u32)((u32*)cold - g_code), nd = (u32)((u32*)done - g_code);
 		Mach mn = m0;
+		if (basereg)   // the driver's lis before the block's first 8C BASE REG access
+			mn.c.r[FM_BASE_REG] = (u64)(s64)(s32)(bias_hi(prefix) << 16);
+		g_base_x += fm_base_use(f, a);
 		const int rnw = run(mn, a, nc, nd);
 		g_checks++;
 		char why[160];
@@ -422,6 +427,79 @@ static void check_sq(u32 cases)
 	}
 }
 
+// P101 fallback: the counter stub (to its blr) and the call that sets r0 and r12. Only a RAM address counts, the
+// count that reaches the limit writes r12 to the request word, and no register but r0, r12, CR0, CTR, LR and CA moves.
+static void check_fb(u32 cases)
+{
+	const u32 REQ = 0x10A1F000, CNT = 0x10A20000, LIMIT = 4096;
+	for (u32 k = 0; k < cases; k++)
+	{
+		g_n = 0;
+		fm_emit_fb_stub(REQ, LIMIT);
+		const u32 stub_n = g_n;
+		pm::Cpu c;
+		rnd_state(c);
+		const u32 slot = rn(64);
+		const u64 ctr_at = CNT + slot * 4;
+		const u32 before = rn(3) ? LIMIT - 1 - rn(3) : (u32)rnd();
+		pm::wrn(c, ctr_at, before, 4);
+		const u32 req0 = (u32)rnd() | 1;
+		pm::wrn(c, REQ, req0, 4);
+		const u32 addr = rn(2) ? 0x8C000000u | (rnd() & 0xFFFFFF) : rnd_addr(0);
+		c.r[0] = (rnd() & 0xFFFFFFFF00000000ull) | addr;
+		c.r[12] = ctr_at;
+		pm::Cpu x = c;
+		bool returned = false;
+		for (u32 pc = 0; pc < stub_n && !returned; pc++)
+		{
+			const u32 w = g_code[pc];
+			if ((w >> 26) == 19 && ((w >> 1) & 0x3FF) == 16)
+			{
+				const u32 bo = (w >> 21) & 31, bi = (w >> 16) & 31;
+				returned = (bo & 0x10) || pm::cr_bit(x, bi) == ((bo >> 3) & 1);
+				continue;
+			}
+			if (!pm::step(x, w))
+			{
+				fail("the stub runs a word the model does not", "");
+				return;
+			}
+		}
+		g_checks++;
+		const bool ram = ((addr >> 26) & 7) == 3;
+		const u32 after = (u32)pm::rdn(x, ctr_at, 4), want = ram ? before + 1 : before;
+		const u32 req = (u32)pm::rdn(x, REQ, 4), want_req = ram && want == LIMIT ? (u32)ctr_at : req0;
+		g_fb_counts += ram;
+		g_fb_reqs += req != req0;
+		if (!returned)
+			fail("the stub did not return", "");
+		if (after != want)
+			fail("the stub's count", ram ? "RAM" : "not RAM");
+		if (req != want_req)
+			fail("the stub's request word", want == LIMIT ? "at the limit" : "below it");
+		for (u32 q = 1; q < 32; q++)
+			if (q != 12 && x.r[q] != c.r[q])
+				fail("the stub changed a register it must keep", "");
+		for (u32 q = 0; q < 32; q++)
+			if (x.f[q] != c.f[q])
+				fail("the stub changed an FPR", "");
+		if ((x.cr ^ c.cr) & 0x0FFFFFFFu)
+			fail("the stub changed a CR field other than CR0", "");
+
+		// The call: r0 = the address register, r12 = the counter, then a bl.
+		g_n = 0;
+		const u32 areg = rn(2) ? 3 : 14 + rn(15);
+		fm_emit_fb_count(areg, (u32)ctr_at, &g_code[200]);
+		pm::Cpu y = c;
+		for (u32 pc = 0; pc + 1 < g_n; pc++)
+			pm::step(y, g_code[pc]);
+		const u32 bl = g_code[g_n - 1];
+		if (y.r[0] != c.r[areg] || y.r[12] != ctr_at || (bl & 0xFC000003u) != 0x48000001u ||
+		    (s32)((bl & 0x03FFFFFC) << 6) >> 6 != (s32)((200 - (g_n - 1)) * 4))
+			fail("the call to the stub", "");
+	}
+}
+
 int main(int argc, char** argv)
 {
 	const u32 cases = argc > 1 ? (u32)atoi(argv[1]) : 400000;
@@ -429,14 +507,19 @@ int main(int argc, char** argv)
 		g_seed ^= (u64)atoi(argv[2]) * 0x2545F4914F6CDD1Dull;
 	check_forms(cases);
 	check_sq(cases / 4);
+	check_fb(cases / 8);
 	printf("forms: %d checks, %u fast, %u cold, %u expected differences (P4 window, split folds, crossing pairs)\n",
 	       g_checks, g_fast, g_cold, g_expected_diff);
 	printf("8C PREFIX: %u fast at 0x8C, %u fast at 0x0C, %u other RAM mirrors cold, %u junk upper halves cold\n",
 	       g_8c_fast, g_0c_fast, g_8c_mirror, g_8c_junk);
+	printf("8C BASE REG: %u indexed accesses; fallback stub: %u RAM counts, %u requests\n", g_base_x, g_fb_counts,
+	       g_fb_reqs);
 	if (g_fast < cases / 20 || g_cold < cases / 20)
 		fail("too few fast or cold runs", "");
 	if (g_8c_fast < cases / 80 || g_0c_fast < cases / 80 || g_8c_mirror < cases / 200 || g_8c_junk < cases / 200)
 		fail("too few 8C PREFIX runs of a kind", "");
+	if (g_base_x < cases / 40 || g_fb_counts < cases / 40 || g_fb_reqs < cases / 200)
+		fail("too few 8C BASE REG or fallback runs", "");
 	if (g_fail)
 	{
 		printf("FAIL: %d\n", g_fail);

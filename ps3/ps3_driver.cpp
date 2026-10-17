@@ -195,7 +195,17 @@ static void* c_entry(void* fn)
 	return (void*)(uintptr_t)ps3_opd_entry(fn);
 }
 
-void ppc_call_c(void* fn) { ppc_call(c_entry(fn)); }
+// P102 8C BASE REG, per block: hi = the bias r11 holds in this block (0: none), set = r11 holds it at this point.
+static struct { u32 hi; bool set; } s_r11;
+
+// A C call clobbers r11, so a block that holds its bias there sets it again. Only then: a call can sit on a path
+// that runs only at times (pref's store-queue flush), so r11 counts as set only after a block's own first lis.
+void ppc_call_c(void* fn)
+{
+	ppc_call(c_entry(fn));
+	if (s_r11.hi && s_r11.set)
+		ppc_addis(ppc_r11,0,s_r11.hi);
+}
 template<typename T> void ppc_call_c(T* fn) { return ppc_call_c((void*)fn); }
 
 void ppc_call_and_jump_c(void* fn) { ppc_call_and_jump(c_entry(fn)); }
@@ -395,9 +405,111 @@ static struct
 	SchedEnv env;
 	SchedStats st;
 	u32 bias_hi[2];   // 8C PREFIX's addis immediates: [0] for 0x8C, [1] for 0x0C
-	u32 blocks, islands, cold_bytes, exits, folds, forms, sq_forms, p0_blocks;
+	bool base;        // P102 8C BASE REG latched (per block: form.base)
+	u16 slot;         // this block's P101 fallback counter, FB_NONE for none
+	u32 blocks, islands, cold_bytes, exits, folds, forms, sq_forms, p0_blocks, fb_blocks;
 	u32* exit_cold;
 } s_jo;
+
+// P101 fallback: an 8C PREFIX block whose cold paths see RAM FB_LIMIT times (another mirror, a junk upper half) asks
+// for a recompile with the 2-op guard (fb_apply, between blocks); its next run compiles it again, no cache clear.
+#define FB_SLOTS 32768
+#define FB_SET   4096
+#define FB_LIMIT 4096
+#define FB_NONE  0xFFFF
+static struct
+{
+	u32 req;             // the counter that reached FB_LIMIT (its address), 0 = none
+	u32 nslot, demotes, epoch;   // epoch: cache clears so far
+	void* stub;          // fm_emit_fb_stub
+	void* re_stub;       // fb_recompile's entry from a fallen-back block's own stub
+	u32 miss[FB_SLOTS];  // RAM misses per block since its compile
+	u32 pc[FB_SLOTS];    // the block of each counter
+	u32 set[FB_SET];     // blocks that fell back, key pc | 1, kept across clears
+} s_fb;
+
+static bool fb_has(u32 pc)
+{
+	const u32 key=pc|1;
+	for (u32 n=0,h=(pc>>1)*0x9E3779B1u;n<FB_SET;n++)
+	{
+		const u32 e=s_fb.set[(h+n)&(FB_SET-1)];
+		if (e==key)
+			return true;
+		if (!e)
+			return false;
+	}
+	return false;
+}
+
+// True when pc is new; a full set takes no more.
+static bool fb_add(u32 pc)
+{
+	const u32 key=pc|1;
+	for (u32 n=0,h=(pc>>1)*0x9E3779B1u;n<FB_SET/2;n++)
+	{
+		u32& e=s_fb.set[(h+n)&(FB_SET-1)];
+		if (e==key)
+			return false;
+		if (!e)
+		{
+			e=key;
+			return true;
+		}
+	}
+	return false;
+}
+
+// From the main loop's update, between blocks: the block of the counter in req falls back. Its entry goes to a stub
+// that holds its pc, so its next run compiles it again (2-op guard), with that run's FPU mode; nothing else changes.
+extern "C" void fb_apply()
+{
+	const u32 a=s_fb.req;
+	s_fb.req=0;
+	const u32 i=(a-(u32)(uintptr_t)&s_fb.miss[0])/4;
+	if (i>=s_fb.nslot || !fb_add(s_fb.pc[i]))
+		return;
+	const u32 pc=s_fb.pc[i];
+	s_fb.demotes++;
+	u32* const old=(u32*)bm_GetCode(pc);
+	printf("[jopt] 8C PREFIX fallback #%u: block %08X missed RAM %u times; 2-op guard from its next run\n",
+	       s_fb.demotes,pc,FB_LIMIT);
+	if ((void*)old==(void*)ngen_FailedToFindBlock || emit_FreeSpace()<4096)
+		return;   // its next compile takes the 2-op guard anyway
+	u32* const m=(u32*)emit_GetCCPtr();
+	ppc_li(ppc_rarg0,pc);
+	ppc_li(ppc_rarg1,(u32)(uintptr_t)old);
+	ppc_jump(s_fb.re_stub);
+	make_address_range_executable(m,(u32)((u8*)emit_GetCCPtr()-(u8*)m));
+	emit_ptr=old;
+	ppc_jump(m);
+	emit_ptr=0;
+	make_address_range_executable(old,4);
+}
+
+// re_stub's call: compile pc again, and point the old entry at the new code unless a clear took it meanwhile.
+extern "C" void* fb_recompile(u32 pc,u32 at)
+{
+	next_pc=pc;
+	const u32 e=s_fb.epoch;
+	DynarecCodeEntry* rv=rdv_CompilePC();
+	if (rv && s_fb.epoch==e)
+	{
+		emit_ptr=(u32*)(uintptr_t)at;
+		ppc_jump((void*)rv);
+		emit_ptr=0;
+		make_address_range_executable((void*)(uintptr_t)at,4);
+	}
+	return (void*)rv;
+}
+
+// recSh4_ClearCache: the counters described blocks that are gone.
+extern "C" void fb_reset()
+{
+	s_fb.nslot=0;
+	s_fb.req=0;
+	s_fb.epoch++;
+}
 static SchedWork s_sw;
 static void exit_cold_begin();
 static void exit_cold_end();
@@ -2330,10 +2442,11 @@ extern "C" void hotblocks_dump(double seconds,double vt_k)
 	if ((s_jo.split || s_jo.shortf || s_jo.sched) && s_jo.blocks!=jo_last)
 	{
 		jo_last=s_jo.blocks;
-		printf("[jopt] blocks=%u | split islands=%u cold KB=%u exits=%u | forms=%u sq=%u folds=%u 0c blocks=%u | sched"
-		       " regions=%u words=%u moved=%u cycles %u -> %u\n", s_jo.blocks, s_jo.islands, s_jo.cold_bytes/1024,
-		       s_jo.exits, s_jo.forms, s_jo.sq_forms, s_jo.folds, s_jo.p0_blocks, s_jo.st.regions, s_jo.st.words,
-		       s_jo.st.moved, s_jo.st.cyc_before, s_jo.st.cyc_after);
+		printf("[jopt] blocks=%u | split islands=%u cold KB=%u exits=%u | forms=%u sq=%u folds=%u 0c blocks=%u"
+		       " fallback blocks=%u demotes=%u | sched regions=%u words=%u moved=%u cycles %u -> %u\n", s_jo.blocks,
+		       s_jo.islands, s_jo.cold_bytes/1024, s_jo.exits, s_jo.forms, s_jo.sq_forms, s_jo.folds, s_jo.p0_blocks,
+		       s_jo.fb_blocks, s_fb.demotes, s_jo.st.regions, s_jo.st.words, s_jo.st.moved, s_jo.st.cyc_before,
+		       s_jo.st.cyc_after);
 	}
 
 	// Plan 5.3's [dynic] line: sites compiled by kind and filled since boot, misses of filled sites per second.
@@ -2551,6 +2664,7 @@ struct ColdFrag
 	u8         gr_bit;  // plan 5.31: the CR flag its entry clears (the check it validates failed), 0xFF = none
 	u8         taslot;  // P87: inside a record's window, so the fragment points r11 at s_ts_poison
 	u16        disp;    // JIT SHORT FORMS: the displacement the access folded; the address is areg + disp
+	u16        fb_slot; // P101 fallback: its block's miss counter, FB_NONE for none
 	// MMU JIT (P38): kinds 4-7 = the JTC miss of 0-3, 8 = SR.FD at the block start, 9 = an ifb that took an exception.
 	u32        epc;     // the SPC of the op's exception
 };
@@ -2566,6 +2680,7 @@ static ColdFrag& cold_new()
 	c.gr_bit = 0xFF;
 	c.taslot = 0;
 	c.disp = 0;
+	c.fb_slot = FB_NONE;
 	c.done = 0;
 	return c;
 }
@@ -2802,6 +2917,11 @@ static u32 FlushCold(u32* cold_ctr,u32* island=0)
 			flush_mmu_cold(c);           // MMU JIT: the counter's scratch could be a write's data
 			continue;
 		}
+		// P101 fallback: count the block's RAM misses before the address moves to rarg0. Its 16 bytes must not push
+		// the next fragment (a fragment is at most COLD_FRAG_MAX) out of its bne's 32 KB reach.
+		const bool fbc = island || i+1>=frags || (u8*)emit_GetCCPtr()+16+COLD_FRAG_MAX-(u8*)s_cold[i+1].beq < 32000;
+		if (fbc && c.fb_slot!=FB_NONE)
+			fm_emit_fb_count(c.areg,(u32)(uintptr_t)&s_fb.miss[c.fb_slot],s_fb.stub);
 		if (count)
 			emit_hot_cold_count(cold_ctr,c.kind);
 		if (c.gr_bit!=0xFF)
@@ -3378,6 +3498,20 @@ static inline bool fm_forms(u8 gr,bool taslot)
 	return (s_jo.shortf || s_jo.sched) && gr==GR_NORMAL && !taslot;
 }
 
+// Before an 8C PREFIX access: its cold path counts the block's misses (P101), and 8C BASE REG's first indexed access
+// sets r11 (P102; a C call sets it again).
+static inline void fm_base_set(const FmAcc& a,ColdFrag& c)
+{
+	if (s_jo.form.guard!=2)
+		return;
+	c.fb_slot=s_jo.slot;
+	if (fm_base_use(s_jo.form,a) && !s_r11.set)
+	{
+		ppc_addis(FM_BASE_REG,0,s_jo.form.bias_hi);
+		s_r11.set=true;
+	}
+}
+
 // JIT SHORT FORMS: an @(disp,Rn) word or pair access through a pinned Rn (0 <= disp <= FM_FOLD_MAX), or a pair
 // through a pinned Rn, keeps Rn as its address and the access takes disp. Returns disp, or -1. sq: an SQ guess.
 static s32 fm_fold(const shil_opcode* op,u32 i,bool sq)
@@ -3672,6 +3806,8 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	s_jm_md=sr.MD!=0;
 
 	ColdReset();          // mem-op cold (slow) fragments deferred to block end
+	s_r11.hi=0;           // P102: no C call of this block sets r11 until the block's bias is known
+	s_r11.set=false;
 	ngen_Begin(block,force_checks);
 	// MMU JIT (P38): SR.FD set, with an FPU op in the block: the FPU-disabled exception at its start (Flycast). The
 	// decoder compiles no such block with FD set; this one ran before with FD clear.
@@ -3685,14 +3821,29 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	tcopy_begin(compile_state.tc,get_jit_tcopy_preset() ? block : 0);
 	gr_prepare(block);
 	ts_prepare(block);
-	// P101 8C PREFIX: a block at 0x0C... checks 0x0C (Crazy Taxi, Power Stone 2 keep code and data there), others 0x8C.
-	if (s_jo.shortf==2)
+	// P101 8C PREFIX: a block at 0x0C... checks 0x0C (Crazy Taxi, Power Stone 2 keep code and data there), others 0x8C;
+	// one that fell back takes the 2-op guard. P102 8C BASE REG: r11 = the bias, set before the first access.
+	if (s_jo.shortf>=2)
 	{
 		const u32 p0=(block->start>>24)==0x0C;
+		const bool fb=fb_has(block->start);
+		s_jo.form.guard=fb ? 1 : 2;
 		s_jo.form.prefix=p0 ? 0x0C : 0x8C;
 		s_jo.form.bias_hi=s_jo.bias_hi[p0];
-		s_jo.env.bias_hi=s_jo.form.bias_hi;
+		s_jo.form.base=s_jo.base && !fb && !s_jm;
+		s_jo.env.bias_hi=fb ? 0 : s_jo.form.bias_hi;
+		s_jo.env.base_reg=s_jo.form.base ? FM_BASE_REG : 0;
 		s_jo.p0_blocks+=p0;
+		s_jo.fb_blocks+=fb;
+		s_jo.slot=FB_NONE;
+		if (!fb && !s_jm && s_fb.nslot<FB_SLOTS)
+		{
+			s_jo.slot=(u16)s_fb.nslot++;
+			s_fb.pc[s_jo.slot]=block->start;
+			s_fb.miss[s_jo.slot]=0;
+		}
+		if (s_jo.form.base)
+			s_r11.hi=s_jo.form.bias_hi;
 	}
 
 	// JIT_HOTBLOCKS: count real body entries (after the SMC check and the cycle exit); rarg0/rarg1 are free.
@@ -3931,6 +4082,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 						a.d1=(u8)(fdirect ? fd1 : (u32)ppc_rrv1);
 						a.disp=(u16)(fold>0 ? fold : 0);
 						c.disp=a.disp;
+						fm_base_set(a,c);
 						c.beq=fm_emit(s_jo.form,a,&c.done);
 						s_jo.forms++;
 						s_jo.folds+=fold>=0;
@@ -4318,6 +4470,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 							a.d1=(u8)(fdirect ? fs1 : (u32)ppc_rarg3);
 							a.disp=(u16)(fold>0 ? fold : 0);
 							c.disp=a.disp;
+							fm_base_set(a,c);
 							void* done;
 							c.beq=fm_emit(s_jo.form,a,&done);
 							s_jo.forms++;
@@ -5739,9 +5892,18 @@ void ngen_mainloop()
 			printf("[jitcfg] 8C PREFIX needs RAM at 0x0C000000 or above (%p): 2-op guard\n",mem_b.data);
 			s_jo.shortf=1;
 		}
-		s_jo.shortf=s_jo.shortf>2 ? 2 : s_jo.shortf;
+		s_jo.shortf=s_jo.shortf>3 ? 3 : s_jo.shortf;
+		// P102 8C BASE REG keeps the bias in r11, which P87 JIT TA SLOT takes for its slot.
+		if (s_jo.shortf==3 && s_ta_slot)
+		{
+			printf("[jitcfg] 8C BASE REG needs JIT TA SLOT OFF: 8C PREFIX\n");
+			s_jo.shortf=2;
+		}
+		s_jo.base=s_jo.shortf==3;
+		verify((uintptr_t)&s_fb<0x7FFF0000u);
 		s_jo.sched=s_fm_ok ? get_jit_schedule_preset() : 0;
-		s_jo.form.guard=(u8)s_jo.shortf;
+		s_jo.form.guard=(u8)(s_jo.shortf>=2 ? 2 : s_jo.shortf);
+		s_jo.form.base=false;
 		s_jo.form.sched=s_jo.sched>=1;
 		s_jo.form.ram_hi=s_fm_ram_hi;
 		s_jo.form.bias_hi=(u32)(fm_bias>>16)&0xFFFF;
@@ -5752,7 +5914,8 @@ void ngen_mainloop()
 		s_jo.env.ram_hi=s_fm_ram_hi;
 		s_jo.env.ram_lo=(s64)(uintptr_t)mem_b.data;
 		s_jo.env.ram_end=s_jo.env.ram_lo+RAM_SIZE+4096;
-		s_jo.env.bias_hi=s_jo.shortf==2 ? s_jo.form.bias_hi : 0;
+		s_jo.env.bias_hi=s_jo.shortf>=2 ? s_jo.form.bias_hi : 0;
+		s_jo.env.base_reg=0;
 		s_prof=get_sh4_profile_preset()!=0 && (uintptr_t)&g_prof_where<0x7FFF0000u;
 		if (s_prof)
 			prof_start((uintptr_t)CodeCache,(uintptr_t)CodeCache+CODE_SIZE);
@@ -5835,6 +5998,19 @@ void ngen_mainloop()
 			// the low one of the render thread stayed on this hardware thread.
 			ppc_emit(0x7C421378);
 			emit_prof(PROF_PART(PROF_SYS));
+			// P101 fallback: a block asked for the 2-op guard (fm_emit_fb_stub); fb_apply clears the cache between blocks.
+			if (s_jo.shortf>=2)
+			{
+				const u32 a=(u32)(uintptr_t)&s_fb.req;
+				const s32 lo=(s16)(a&0xFFFF);
+				ppc_addis(ppc_r12,0,(a-(u32)lo)>>16);
+				ppc_lwz(ppc_r0,ppc_r12,(u32)lo);
+				ppc_cmpi(ppc_cr0,ppc_r0,0,0);
+				ppc_label* none=ppc_CreateLabel();
+				ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);
+				ppc_call_c(&fb_apply);
+				none->MarkLabel();
+			}
 			// UpdateSystem_no_event runs every timeslice without flushing pinned GPRs; only a pending interrupt
 			// flushes, runs the GPR-touching handler and reloads.
 			if (s_sys_gate)
@@ -5900,6 +6076,13 @@ void ngen_mainloop()
 
 
 		//ngen_FailedToFindBlock
+		// P101 fallback's miss counter, called by the cold paths of 8C PREFIX accesses.
+		s_fb.stub=emit_GetCCPtr();
+		fm_emit_fb_stub((u32)(uintptr_t)&s_fb.req,FB_LIMIT);
+		// A fallen-back block's stub comes here (r3 = its pc, r4 = its old entry).
+		s_fb.re_stub=emit_GetCCPtr();
+		ppc_call_and_jump_c(&fb_recompile);
+
 		ngen_FailedToFindBlock=(void(*)())emit_GetCCPtr();
 		{
 			emit_prof(PROF_PART(PROF_COMPILE));

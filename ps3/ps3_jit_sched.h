@@ -33,6 +33,7 @@ struct SchedEnv
 	u32 ram_hi;           // the addis immediate of the fastmem RAM base
 	s64 ram_lo, ram_end;  // the host RAM block, its pad included
 	u32 bias_hi;          // 8C PREFIX's addis immediate in this block (RAM base - prefix << 24), 0 = none
+	u32 base_reg;         // 8C BASE REG's register in this block: an access indexed by it is in RAM; 0 = none
 };
 
 struct SchedStats { u32 regions, words, moved, cyc_before, cyc_after; };
@@ -374,9 +375,15 @@ static void sched_track(const SchedIns& d, SchedPtr* p, const SchedEnv& e)
 }
 
 // The bytes an access may touch, [lo, hi), from its base's kind before it (b); false: anything. An indexed access
-// is anything.
+// is anything, but one indexed by 8C BASE REG's register (RAM with its pad).
 static bool sched_span(const SchedIns& d, const SchedPtr& b, const SchedEnv& e, s64& lo, s64& hi)
 {
+	if (d.indexed && e.base_reg && d.index == e.base_reg)   // 8C BASE REG: only past its guard
+	{
+		lo = e.ram_lo;
+		hi = e.ram_end;
+		return true;
+	}
 	if (d.indexed)
 		return false;
 	if (!d.base)

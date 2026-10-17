@@ -56,6 +56,7 @@ extern "C" int get_jit_sbp_preset();
 // JIT_HOTBLOCKS probe (ps3_driver.cpp) — drop the tracked-block table when the
 // code cache it describes is thrown away. No-op unless the preset is on.
 extern "C" void hotblocks_reset();
+extern "C" void fb_reset();
 #if HOST_OS == OS_PS3
 extern "C" int get_jit_code_cache_preset();	// ps3_presets.cpp: 0 = 6 MB, 1 = 12 MB, 2 = CODE_SIZE (plan 5.28)
 extern "C" char __executable_start[], __etext[];	// lv2.ld: the bounds of .text
@@ -263,6 +264,7 @@ void recSh4_ClearCache()
 	// JIT_HOTBLOCKS: every tracked block described code in the cache we just
 	// dropped, so its counters and code pointers are meaningless now.
 	hotblocks_reset();
+	fb_reset();   // P101: the miss counters described the dropped blocks
 
 #if JIT_MANAGED_CACHE
 	// Blocks and patches are synced when written. This second pass covers what was written since the last

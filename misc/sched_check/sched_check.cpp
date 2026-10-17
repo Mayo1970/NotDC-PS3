@@ -20,7 +20,7 @@ typedef int8_t s8; typedef int16_t s16; typedef int32_t s32; typedef int64_t s64
 static const u32 CTX = 0x10A1C000, RAM_HI = 0x3051;
 static const s64 RAM_LO = (s64)RAM_HI << 16, RAM_END = RAM_LO + (16 << 20) + 4096 + 8;
 static const u32 BIAS_HI = (u32)((RAM_LO - 0x8C000000LL) >> 16) & 0xFFFF;
-static const SchedEnv ENV = { CTX, RAM_HI, RAM_LO, RAM_END, BIAS_HI };
+static const SchedEnv ENV = { CTX, RAM_HI, RAM_LO, RAM_END, BIAS_HI, 21 };
 
 static int g_fail, g_checks;
 static void fail(const char* what, u32 w, const char* detail)
@@ -67,6 +67,8 @@ static void rnd_state(pm::Cpu& c)
 	}
 	c.r[30] = CTX;
 	c.r[20] = 0x8C000000u | (rnd() & 0x00FFFFFC);   // 8C PREFIX's checked address: no generated word writes r20
+	c.r[21] = (u64)(s64)(s32)(BIAS_HI << 16);         // 8C BASE REG's bias (ENV.base_reg)
+	c.r[22] = c.r[20] ^ 3;                             // a swizzled byte address
 	c.cr = (u32)rnd();
 	c.ca = rn(2); c.so = rn(2); c.ov = rn(2);
 	c.ctr = rnd(); c.lr = rnd();
@@ -354,7 +356,7 @@ static void gen_body(std::vector<u32>& w)
 	while (w.size() < n)
 	{
 		const u32 d = gen_reg(), a = gen_reg(), b = gen_reg(), f = gen_freg(), g = gen_freg(), h = gen_freg();
-		switch (rn(32))
+		switch (rn(33))
 		{
 		case 0: w.push_back(0x38000000 | d << 21 | a << 16 | (rnd() & 0xFFFF)); break;                  // addi
 		case 1: w.push_back(0x7C000214 | d << 21 | a << 16 | b << 11); break;                           // add
@@ -411,6 +413,17 @@ static void gen_body(std::vector<u32>& w)
 			if (rn(2)) w.push_back(0x68000000 | d << 21 | d << 16 | rn(4));
 			w.push_back((rn(2) ? 0x90000000 : 0x80000000) | b << 21 | d << 16 | rn(4) * 4);
 			break;
+		case 31:                                                                                        // 8C BASE REG past its guard
+		{
+			// Words at r20, bytes at r22 (r20 ^ 3); lwzx, stwx, lbzx, stbx. The base register as the base is no RAM.
+			static const u32 xo[] = { 0x7C00002E, 0x7C00012E, 0x7C0000AE, 0x7C0001AE };
+			const u32 k = rn(5);
+			if (k == 4)
+				w.push_back(0x7C00002E | b << 21 | 21 << 16 | a << 11);
+			else
+				w.push_back(xo[k] | b << 21 | (k < 2 ? 20 : 22) << 16 | 21 << 11);
+			break;
+		}
 		default: w.push_back(0x7C0007AE | f << 21 | a << 16 | b << 11); break;                          // stfiwx
 		}
 	}

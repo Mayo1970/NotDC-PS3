@@ -13,6 +13,71 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-17)
 
+**P101 fallback per block and P102 8C BASE REG (`OPTIMIZATION_POTENTIAL.md`
+P101, P102), built 2026-10-17 (Matt: "Go for it. Also, while you're at it:
+Check for a faster memory. And the 4-5 op sequence ..."). Package of 17:37
+(`build/notdc_ps3.pkg`, 1787888 bytes) = the package of 16:23 + this. Not
+committed. JIT SHORT FORMS: OFF / ON / 8C PREFIX / 8C BASE REG (new), set
+before boot. No HW run yet.**
+- 8C PREFIX and 8C BASE REG: a block whose cold paths see RAM 4096 times
+  (another mirror, a junk upper half; MMIO and the store queue do not
+  count) is compiled again with the 2-op guard, after a full cache clear
+  between blocks. Line `[jopt] 8C PREFIX fallback #N: block X ...` each
+  time; `[jopt] ... fallback blocks= demotes=`.
+- 8C BASE REG: r11 holds the block's bias; a 32-bit load or store with no
+  displacement is 4 words (`rldicl; cmpldi; bne; lwzx rD,A,r11`). Pairs
+  and folded displacements stay at 5. Needs JIT TA SLOT OFF (else 8C
+  PREFIX, with a `[jitcfg]` line).
+- Faster memory: the DC memory already sits in 1 MB pages (the PSL1GHT
+  heap); nothing faster to take.
+- PC (WSL): fmem_check PASS (`mutate.py` 45 of 45), sched_check PASS (47
+  of 47), the checks that read the changed files PASS. No new build
+  warning. `.got` 0xFEF8: 0x108 bytes left.
+- Risk: r11 must hold the bias wherever a base access runs; a miss shows
+  as wrong data, a crash or a freeze. A fallback clear stutters once.
+- HW run 10 (same log, Crazy Taxi, 8C BASE REG, package of 17:37): the SH4
+  thread hung after START at the title (t=93 s, pc 0C08195E, no fault
+  line); 16 fallbacks before it, most in the boot code (0xAC blocks).
+  Cause: a C call on a path that runs only at times (`pref`'s store-queue
+  flush) marked r11 as set, so a later 4-word access skipped its `lis`.
+  Fixed: package of 17:59 (1787888 bytes); the HW steps below stand.
+- HW run 11 (same log, Crazy Taxi, 8C BASE REG, package of 17:59): past
+  START, about 100% at t=43-58 s; then 20 game blocks (0C081Bxx-0C0826xx)
+  fell back in 15 s, each with a full cache clear: SPEED 14-90%. The stop
+  at t=76 s was the in-game menu. Fix: package of 18:10 (1788016 bytes),
+  a fallback recompiles only its block, at its next run (no clear).
+- HW run 12 (same log, Crazy Taxi, package of 18:10: 8C BASE REG + COLD
+  SPLIT + EXITS + SCHEDULE + LIST): no fault (Matt: "VERY good."). 8-12K
+  100% (70 s), 12-14K 100.1%, 14-16K 101.6%, 16-18K 99.7% (4 s), 18-20K
+  97.2% (1 s); run 8 (8C PREFIX): 16-18K 93.9%, 18-20K 90.8%. 99 fallbacks
+  (98 blocks at the 2-op guard), no clear from them.
+- HW run 13 (same log, VF3tb fights, the same rows): no fault. 14-16K
+  98.3% (20 s, 58.9 fps; run 7 94.8%, run 6 90.8%), 16-18K 95.0% (1 s;
+  run 7 92.0%). 95 fallbacks, no clear from them.
+- HW run 14 (same log, Crazy Taxi 2, the same rows): no fault. 12-14K
+  99.0% (53 s), 14-16K 97.0% (26 s), 16-18K 95.5% (8 s); the TA Line Zero
+  runs of 2026-10-17 night: 98.9 / 94.6 / 90.7 and 97.8 / 93.5 / 90.1.
+  1425 fallbacks, 1400 of them Crazy Taxi 2's own 0x0C blocks; 574 in
+  t=60-90 s, then 7-48 each 30 s.
+- HW run 15 (same log, Looney Tunes, the same rows; Matt: "Looney Tunes
+  runs in full speed now!"): no fault. Race 28-30K 98.5%, 30-32K 99.5%,
+  32-34K 99.5% (7-12 s each; run 9 98.0 / 99.0 / 94.9, ON 91.2 / 89.4 /
+  86.6). Boot videos: about 6 s at 47-61% (run 9 about 20 s at 36-75%,
+  ON about 5 s): the fallback fixed them. 222 fallbacks.
+- Defaults (Matt: "Yes, keep them on by default!"): JIT COLD SPLIT + EXITS,
+  JIT SCHEDULE + LIST and JIT SHORT FORMS 8C BASE REG are default ON in
+  source; package of 18:35 (1788144 bytes). Not committed. An install keeps
+  its settings, so these reach only a new cfg.
+- HW steps (listener on 18194 runs):
+  1. Rows as in runs 7-9 (COLD SPLIT + EXITS, SCHEDULE + LIST), JIT SHORT
+     FORMS 8C PREFIX. Looney Tunes: the boot videos, then the race.
+  2. The same with JIT SHORT FORMS 8C BASE REG.
+  3. 8C BASE REG: Crazy Taxi and a VF3tb fight as in runs 7 and 8.
+  4. Look for: a freeze, a `Verify Failed` message, wrong polygons or
+     game logic, sound faults; the number of fallback lines.
+  5. Log: SPEED by band against runs 7-9; the boot videos' seconds below
+     90% against run 9 (about 20 s).
+
 **P101 JIT SHORT FORMS 8C PREFIX (`OPTIMIZATION_POTENTIAL.md` P101), built
 2026-10-17 (Matt: "Let's go with the 4-5 op sequence, try checking for
 prefix 8c and if (addr>>24 !=8c) goto slowpath; data = *(biasedmembase +

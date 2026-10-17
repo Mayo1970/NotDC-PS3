@@ -203,9 +203,9 @@ int g_jit_ta_slot_preset   = 0;   // 1 = store-queue stores also write the TA bu
 int g_sh4_profile_preset   = 0;   // 1 = a sampler prints the SH4 thread's time by game block and C part (ps3_prof.cpp)
 int g_rend_low_prio_preset = 0;   // 1 = the render thread draws at the PPE's low thread priority, live
 int g_ta_line_zero_preset  = 0;   // 1 = the TA buffer's next 128-byte line is zeroed (dcbz) before the SH4 writes it, live (P98)
-int g_jit_cold_split_preset = 0;  // 1 = cold paths go to the top of the code cache, a `b` slot each; 2 = + dynamic exits' lookups
-int g_jit_short_forms_preset = 0; // 1 = a 2-op RAM check, 2 = 8C PREFIX (P101); both fold @(disp,Rn) disp (P99)
-int g_jit_schedule_preset  = 0;   // 1 = FORMS: RAM check and host address side by side; 2 = + LIST: blocks reordered (P100)
+int g_jit_cold_split_preset = 2;  // 1 = cold paths to the code cache's top, a `b` slot each; 2 = + exits' lookups (Matt: ON)
+int g_jit_short_forms_preset = 3; // 1 = 2-op RAM check, 2 = 8C PREFIX (P101), 3 = 8C BASE REG (P102, Matt: ON); fold disp
+int g_jit_schedule_preset  = 2;   // 1 = FORMS: RAM check and address side by side; 2 = + LIST: blocks reordered (Matt: ON)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)

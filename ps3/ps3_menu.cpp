@@ -342,7 +342,7 @@ static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };
 static const char* k_autochk[]   = { "OLD", "FRAMES", "+ X3 TRY", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
 static const char* k_coldsplit[] = { "OFF", "ON", "+ EXITS", NULL };
-static const char* k_shortforms[] = { "OFF", "ON", "8C PREFIX", NULL };
+static const char* k_shortforms[] = { "OFF", "ON", "8C PREFIX", "8C BASE REG", NULL };
 static const char* k_jitsched[]  = { "OFF", "FORMS", "+ LIST", NULL };
 static const char* k_hotblocks[] = { "OFF", "ON", "ALL WINDOWS", NULL };
 static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
@@ -638,7 +638,7 @@ static Option s_jit[] = {
 	{ "JIT COLD SPLIT",  &g_jit_cold_split_preset, OPT_CHOICE, k_coldsplit, 0, 0,0,0, NULL,
 	  "Slow paths move to the cache top, so hot code packs; + EXITS moves lookups too (P99). Set before boot." },
 	{ "JIT SHORT FORMS", &g_jit_short_forms_preset, OPT_CHOICE, k_shortforms, 0, 0,0,0, NULL,
-	  "ON: area check in 2 ops. 8C PREFIX: 0x8C, or 0x0C in 0x0C blocks, 5 ops (P101). Set before boot." },
+	  "ON: 2-op check. 8C PREFIX: block prefix, 5 ops (P101). 8C BASE REG: 4 ops via r11 (P102). Set before boot." },
 	{ "JIT SCHEDULE",    &g_jit_schedule_preset,  OPT_CHOICE, k_jitsched,  0, 0,0,0, NULL,
 	  "FORMS: RAM check and address side by side. + LIST: block ops reordered for the PPE (P100). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
