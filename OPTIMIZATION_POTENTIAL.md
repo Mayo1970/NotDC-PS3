@@ -221,7 +221,7 @@ Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 | P88 | FSRRA as frsqrte plus Newton steps | speed | Sonic Adventure 2 (one FSRRA a vertex): 0.5-1.5% of the SH4 thread (estimate) | probe ~40 lines; build ~20-30 lines | seventh review (2026-10-16); own work; the hardware error bound is from Reicast |
 | P89 | One rule for the Kamui vsync wait loop | speed | Ikaruga, Rez, Spider-Man, Project Justice, Power Stone 2 | ~20-40 lines | seventh review (2026-10-16); plan bundle 21 way 5; built 2026-10-16 (package of 14:25, acts with JIT IDLE HASH ON), HW SUCCESS 2026-10-16 (Ikaruga heavy part 77% -> 87%); it replaces Capcom vs. SNK 2's address entry |
 | P90 | Heavy scenes: four checks with no build | measurement | Ecco the Dolphin, the system work, Looney Tunes race, Sonic Shuffle | no code | seventh review (2026-10-16) |
-| P91 | Re-Volt: the menu and the HUD are cut by the near-plane cap | bug | Re-Volt (US, EU, JP); maybe NHL 2K2, Sturmwind, South Park Rally, Capcom vs. SNK Pro (P92 a) | way B ~20 lines with its row; way A ~30 lines and a product-ID check (estimates) | plan bundle 23 item 1 (new 2026-10-16, Matt); the cause is from an old HW log; nothing built |
+| P91 | Re-Volt: the menu and the HUD are cut by the near-plane cap | bug | Re-Volt (US, EU, JP); maybe NHL 2K2, Sturmwind, South Park Rally, Capcom vs. SNK Pro (P92 a) | way B ~20 lines with its row; way A ~30 lines and a product-ID check (estimates) | plan bundle 23 item 1 (new 2026-10-16, Matt); the cause is from an old HW log; way B built 2026-10-17 (Matt), row Near Plane Cap; HW SUCCESS 2026-10-17 (Matt); default WIDE in source (Matt) |
 | P92 | Flycast's per-game lists that we lack | bug | 24 games that Flycast fixes per game (a-g); the Dricas login patches for GOALS.md G11 (h) | a, b, d, f, g small; c large; e is against plan section 4 | plan bundle 23 items 2-8 (new 2026-10-16, Matt); h goes to G11; nothing built |
 | P93 | Texture churn: a new texture takes an evicted one | speed | Garou (fights 84-98%); no other game of the HW logs evicts | ~150 lines with the checks | new 2026-10-16 (Matt: "apply the Garou fixes"); built, row Tex Recycle default OFF; HW: render-thread time down, no speed change (Garou is SH4-bound) |
 | P94 | One rule for the Shinobi task loop | speed | Garou; Sonic Shuffle and Border Down as before | ~30 lines | new 2026-10-16 (Matt: "2."); acts with JIT TASK IDLE (default LONG); HW SUCCESS 2026-10-16 (Garou 100%, 60 frames); it replaces the two address entries |
@@ -3232,7 +3232,11 @@ None of the named games is in Matt's set.
   bundle 2 block lists "the stop at the lead-out" as not taken. Low.
 - ARMRST reads back raw; Flycast masks bit 0. No user known.
 
-### P91 Re-Volt: the menu and the HUD are cut by the near-plane cap  `[ ]` new 2026-10-16 (Matt: "Re-Volt has an invisible menu."); plan bundle 23 item 1; the cause is from an old HW log; nothing built
+### P91 Re-Volt: the menu and the HUD are cut by the near-plane cap  `[x]` way B built 2026-10-17 (Matt: "In bundle 23, go with Way B."): row RENDERER > Near Plane Cap (OLD / WIDE), default WIDE in source since 2026-10-17 (Matt); HW SUCCESS 2026-10-17 (Matt: "Even Crazy Taxi seems fine. Mark this session a success!"; plan section 0); new 2026-10-16 (Matt: "Re-Volt has an invisible menu."); plan bundle 23 item 1; the cause is from an old HW log
+
+- Built 2026-10-17, way B: with the row at WIDE and Depth Float ON, the cap is 2^44 (not 2^20) in both decoders
+  and in `draw_scene()`; Depth Float OFF keeps 2^20. Plan section 0 has the code, the PC checks and the HW steps.
+  The text below is the plan of 2026-10-16.
 
 - Log: `b21p_hw.txt` of session 77328546 (HW 2026-10-15), lines
   74856-79300: Re-Volt (US) `T-8109N`, CDI, Depth Float ON, PT Depth ON.
@@ -3294,7 +3298,10 @@ Capcom network code.
   car on the select screen, `f88abf998`), Capcom vs. SNK Pro `T1247M`
   10000 (the winner portrait, `4cd627810`), Test Drive V-Rally `T15110N` /
   `T15105D 50` 0.1 (the menu background in dx9 and dx11, `18d810799`).
-  The scales above 1 can hit P91 here. No logs of these games.
+  The scales above 1 can hit P91 here. No logs of these games. Update
+  2026-10-17: South Park Rally works with P91's row at WIDE (HW, Matt: "KoF,
+  Re-Volt and South Park Rally all worked perfectly."); its near plane fell
+  to 2.1e-12 (a 1/W of 4.8e11).
 - b. Cosmic Smash `HDR-0176` / `RDC-0057`: the translucent depth pass
   between passes (`TranslucentPolygonDepthMask`, `emulator.cpp:162-167`).
   Ours: row List Passes level 2 (P10, built, default 1). HW test only.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Bundles 4 and 17 (WSL, from the tree's root): each planted bug in the decoders must make run.sh fail. Run it detached.
+# Bundles 4, 17 and 23 (WSL, from the tree's root): each planted bug in the decoders must make run.sh fail. Run it detached.
 # python3 misc/ta4_check/mutate.py [frames per phase (400)] [name parts with commas: "P80,3b" keeps bundle 17's bugs]
 import os, subprocess, sys
 
@@ -105,6 +105,17 @@ MUTANTS = [
     (SPR, 'P80: u from the z row', 'const uint32_t* const w[3] = { z, u, v };', 'const uint32_t* const w[3] = { z, z, v };'),
     (SPR, 'P80: D from the y of C', 'const double apx = spr_d(x[3]) - ax, apy = spr_d(y[3]) - ay;',
      'const double apx = spr_d(x[3]) - ax, apy = spr_d(y[2]) - ay;'),
+    # bundle 23, P91 Near Plane Cap: the 1/W cap of the near plane in both decoders
+    (REND, 'P91: the WIDE cap always', 'z.i < ((s_dopt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD)', 'z.i < INVW_CAP_WIDE'),
+    (REND, 'P91: the old cap always', 'z.i < ((s_dopt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD)', 'z.i < INVW_CAP_OLD'),
+    (REND, 'P91: the cap itself passes', 'm.i < z.i && z.i < ((s_dopt', 'm.i < z.i && z.i <= ((s_dopt'),
+    (REND, 'P91: the option bit of the offset colours', '((s_dopt & TAOPT_INVW_WIDE) ?', '((s_dopt & TAOPT_OFFS) ?'),
+    (DEC, 'P91: the WIDE cap always', 'const int32_t cap = (d->opt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD;',
+     'const int32_t cap = INVW_CAP_WIDE;'),
+    (DEC, 'P91: the old cap always', 'const int32_t cap = (d->opt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD;',
+     'const int32_t cap = INVW_CAP_OLD;'),
+    (DEC, 'P91: the cap itself passes', '(int32_t)z < cap)', '(int32_t)z <= cap)'),
+    (DEC, 'P91: the option bit of the sprite plane', '(d->opt & TAOPT_INVW_WIDE) ?', '(d->opt & TAOPT_SPR_PLANE) ?'),
 ]
 
 src = {f: open(f, 'rb').read().decode('utf-8').replace('\r\n', '\n') for f in (REND, DEC, TA, SPR)}

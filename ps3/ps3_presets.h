@@ -87,6 +87,8 @@ extern int g_sprite_corner_preset;
 extern int g_offset_colour_preset;
 extern int g_colour_clamp_preset;
 extern int g_trilinear_preset;
+// Bundle 23: P91's row, the RENDERER page's last.
+extern int g_near_cap_preset;
 extern int g_jit_fschg_preset;
 extern int g_jit_fsqrt_preset;
 extern int g_fpu_pin_preset;

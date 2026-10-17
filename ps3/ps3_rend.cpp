@@ -360,7 +360,8 @@ static u32 ta_opts_now()
 	return (g_int_clamp_preset ? TAOPT_INT_CLAMP : 0) | (g_face_reset_preset ? TAOPT_FACE_RESET : 0) |
 	       (g_tr_volumes_preset ? TAOPT_TR_VOL : 0) | (g_volume_cap_preset ? TAOPT_VOL_8K : 0) |
 	       (g_tile_clip_preset ? TAOPT_TILE_CLIP : 0) | (g_sprite_corner_preset ? TAOPT_SPR_PLANE : 0) |
-	       (g_offset_colour_preset ? TAOPT_OFFS : 0);
+	       (g_offset_colour_preset ? TAOPT_OFFS : 0) |
+	       (g_near_cap_preset && get_depth_float_preset() ? TAOPT_INVW_WIDE : 0);
 }
 
 // The stored stream is per list-init, so it is cleared with the decoded lists.
@@ -556,14 +557,14 @@ static inline u32 mv_cap()
 // DepthMode 4 against the background); reicast has none, 1e-9 keeps x*W in float range.
 #define INV_W_FLOOR 1e-9f
 
-// reicast update_fz: one integer compare drops negatives, NaN and anything at or
-// above 1024*1024, so a single rogue vertex cannot pull the near plane down.
+// reicast update_fz: one integer compare drops negatives, NaN and anything at or above the cap (1024 x 1024; P91
+// WIDE: 2^44, float depth only), so a single rogue vertex cannot pull the near plane down.
 static inline void track_inv_w(float inv_w)
 {
 	union { float f; s32 i; } z, m;
 	z.f = inv_w;
 	m.f = s_dec->max_inv_w;
-	if (m.i < z.i && z.i < 0x49800000)
+	if (m.i < z.i && z.i < ((s_dopt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD))
 		s_dec->max_inv_w = inv_w;
 }
 
@@ -3512,9 +3513,12 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	union { float f; s32 i; } bz, mz;
 	bz.f = bg_inv_w;
 	mz.f = s_rl.max_inv_w;
-	float max_inv_w = (mz.i < bz.i && bz.i < 0x49800000) ? bg_inv_w : mz.f;
-	// reicast's sanity fallback: past 1024*1024 the range is garbage, not a scene.
-	if (!(max_inv_w > 0.0f) || max_inv_w > 1048576.0f)
+	// P91: the cap the lists were decoded with; FIXED depth keeps the old one (a Z24 step is 2^-24 / n in 1/W).
+	const s32 cap = (s_rl.opt & TAOPT_INVW_WIDE) && s_zfloat ? INVW_CAP_WIDE : INVW_CAP_OLD;
+	float max_inv_w = (mz.i < bz.i && bz.i < cap) ? bg_inv_w : mz.f;
+	// reicast's sanity fallback: past the cap the range is garbage, not a scene. On the bits: NaN and 0 fail too.
+	mz.f = max_inv_w;
+	if (mz.i <= 0 || mz.i > cap)
 		max_inv_w = 10.0f * 1024.0f;
 	// reicast's fZ_max *= 1.001: the nearest layer defines the plane it sits on,
 	// and float rounding would otherwise clip it away.

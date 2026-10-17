@@ -13,6 +13,90 @@ Flycast is little-endian only. Check every ported line for byte order.
 
 ## 0. Resume here (updated 2026-10-17)
 
+**P91 Near Plane Cap, bundle 23 item 1 by way B (`OPTIMIZATION_POTENTIAL.md`
+P91), built 2026-10-17 (Matt: "In bundle 23, go with Way B."). Package of
+21:39 (`build/notdc_ps3.pkg`, 1789168 bytes) = commit a26c602 + this. Not
+committed. HW SUCCESS 2026-10-17 (Matt: "Even Crazy Taxi seems fine. Mark
+this session a success!"), HW run 1 below. Default WIDE in source since
+2026-10-17 (Matt: "Set WIDE as default."); not packaged (the package of
+21:39 has OLD; an install keeps its own value). ta4_check pins the default
+line; it and the 14 checks that read the presets PASS.**
+- HW run 1, 2026-10-17 (the listener of session 0e77a736,
+  `ps3log_p101_run1.txt` from line 185887): Near Plane Cap WIDE from the
+  boot (`NearCap=1`, `[rend4] opt=FF` in each boot). No fault line; every
+  SPU fence `bad=0`.
+  - Re-Volt (from line 197259): near 4.0e-7 to 5.9e-7 in 16 of 19 windows
+    (at OLD: 0.0021 or 0.999), as expected.
+  - South Park Rally (from line 187082; bundle 23 item 2): near down to
+    2.1e-12 (a 1/W of 4.8e11, under 2^44) in 45 of 59 windows.
+  - Matt, after the verdict: "KoF, Re-Volt and South Park Rally all worked
+    perfectly." So way B also covers South Park Rally (item 2).
+  - King of Fighters Evolution, King of Fighters Dream Match 1999, Street
+    Fighter Alpha 3: near 0.999 (2D), unchanged. Crazy Taxi: near down to
+    0.001, as before.
+- Row RENDERER > Near Plane Cap (`NearCap`, OLD / WIDE, live, default OLD).
+  WIDE with Depth Float ON: a 1/W up to 2^44, not 2^20 (reicast's 1024 x
+  1024), can set the near plane. Depth Float OFF keeps 2^20: a Z24 step is
+  2^-24 / n in 1/W. The reject of inf and NaN stays.
+- Code: `ps3/spu/spe_bell.h` has the decode option `TAOPT_INVW_WIDE` (128)
+  and the caps `INVW_CAP_OLD` (0x49800000) and `INVW_CAP_WIDE` (0x55800000).
+  `ta_opts_now()` sets the bit at each list init when the row is WIDE and
+  Depth Float is ON. `track_inv_w()` (PPU replay), `track_w()` (`spe_dec.c`)
+  and `draw_scene()` (the background's 1/W, the fallback test) pick the cap
+  by the bit; `draw_scene()` takes WIDE only with FLOAT depth.
+- Why 2^44: Flycast's largest per-game depth scale (1e8, NHL 2K2) orders a
+  1/W up to 1.7e13. FLOAT keeps 16 mantissa bits at any n; the far end (1/W
+  1e-9) stays a normal float up to a cap of about 2^96.
+- Re-Volt (log of 2026-10-15, `b21p_hw.txt` of session 77328546): the menu
+  is at 1/W 1.7M-2.5M, the background at 9e-6, 1.0 and 0.2. With WIDE the
+  near plane falls from 0.0021 (menu over the 3D) or 0.999 (title) to about
+  4e-7. The 3D scene's z = n/W is then 8.5e-7 to 1.9e-4; Soul Calibur
+  already draws z down to about 5e-8 on HW.
+- Log: `[rendcfg]` has `NearCap=`; `[rend4] opt=` and `[rend17] opt=` show
+  bit 80 with WIDE; `[rend] ... near=` is the near plane of the window.
+- No new log line. `.got` 0xFF20 of 0x10000 (unchanged), 0 `r2off`. No new
+  build warning.
+- PC (WSL), all PASS:
+  - `misc/ta4_check`: 1/W now also from 2^20 to 2^46 and at both caps; the
+    option byte has 8 bits; a model of the near plane's 1/W with its own
+    caps (sprite corner D: the decoders' value). 6000 frames per phase: 5337
+    frames set by a 1/W of 2^20 or more, 10379 with a 1/W cut by the old cap,
+    3853 by WIDE. Source lines: the row's bit needs Depth Float, default OLD,
+    two keys, live. `mutate.py`: 82 of 82 (8 new).
+  - `misc/rend4_check`: `draw_scene()`'s near plane against a model; one
+    scene in three has a lists' 1/W to 2^46 and a background of any bits.
+    8000 scenes: 138 changed by WIDE, 245 near planes from the background,
+    1499 fallbacks; rows off still equal the old code. `mutate.py`: 115 of
+    115 (7 new).
+  - `misc/depth_check`: FLOAT with the largest 1/W up to `INVW_CAP_WIDE` and
+    the Re-Volt menu frame: no wrong compare at gaps of 2^-14, z = n/W, no
+    cull, every polygon over the clear. `mutate.py`: 20 of 20; the new one, a
+    cap of 2^110 in `spe_bell.h`, fails it.
+  - The checks that read the changed files: bump, fog, glpath, maple, ramsq,
+    rtt, rttq, screen, spepix, spevb, tr4, flash, fullmmu, idleauto, interp,
+    jit8, mmu, pad, sys20, timebase, chd, clock.
+- Risk: with WIDE, a frame whose largest 1/W is 2^20 to 2^44 gets a near
+  plane that low. FLOAT keeps the order, but z under about 5e-8 has no HW
+  run yet. A fault shows as missing polygons or wrong overlaps in such a
+  frame.
+- HW steps (UDP listener only when Matt says so; the listener of session
+  0e77a736, PID 22680, still holds port 18194 and writes
+  `ps3log_p101_run1.txt`, 185886 lines at 21:21):
+  1. Install the package. The install keeps the settings; the new row
+     starts at OLD. Depth Float stays ON (VIDEO / DEBUG).
+  2. Re-Volt: the title and the main menu at OLD (invisible, as before).
+     Then SELECT > RENDERER > Near Plane Cap WIDE (live). Expected: the
+     title, the menus and their text show.
+  3. A race at WIDE: the HUD. Then OLD for a few seconds, then WIDE again.
+  4. Crazy Taxi at WIDE: a drive and the pause (an RTT); the picture as
+     before.
+  5. Look for: missing or wrong polygons, wrong overlaps, flicker.
+  6. Log: `[rendcfg]` NearCap; `[rend] ... near=` in the menu (about 4e-7 at
+     WIDE, 0.0021 or 0.999 at OLD); `[rend4] opt=` with bit 80.
+  7. If Matt has them (bundle 23 item 2): NHL 2K2's pause menu, Sturmwind's
+     text, South Park Rally's car select, Capcom vs. SNK Pro's winner
+     portrait, at WIDE.
+
 **P103 DMA code drop and the I-cache rule (`OPTIMIZATION_POTENTIAL.md`
 P103), built 2026-10-17 for the Shenmue II freeze (HW run 16 below; Matt:
 "Apply this, the step 3: Fix it in general, without page faults ...", then
@@ -1021,7 +1105,8 @@ found in an old HW log: the menu's 1/W is above our near-plane cap
 (1024 x 1024), so the RSX clips it (`OPTIMIZATION_POTENTIAL.md` P91).
 Matt picks way A (Flycast's depth scale for the three Re-Volt IDs) or way
 B (raise the cap with Depth Float ON, no list). The other items are the
-per-game lists of Flycast that we lack (P92). Nothing is built.**
+per-game lists of Flycast that we lack (P92). Nothing is built. Update
+2026-10-17: way B is built (the P91 block at the top of this section).**
 
 **Bundles re-cut 2026-10-12 (section 7; Matt: "Yes, do it."): the open
 work is in bundles 10 to 22 now. Bundles 1-9 are closed, and the table of
@@ -16248,7 +16333,7 @@ the next bundle to work on. Nothing is built by the change.
 | 20 | SH4 correctness tail (new at the re-cut of 2026-10-12) | P46, P32, P64, P67, P78's RFCR, P68's system parts, P33, the verdicts for JIT PR MOVES, JIT MAC and JIT RM 2/3; P38 (the full SH4 MMU for Windows CE) added 2026-10-13 (Matt), last item | correctness (Resident Evil Code Veronica X); homebrew .elf; a first boot of the Windows CE games | `[x]` CLOSED 2026-10-15 (Matt: "Also, we can close session 20 I suppose."); defaults by Matt: MMU ASID JTC OFF, GD-ROM Timing FIXED, MMU Pref JIT; P38's JIT form and its speed packages 1 and 2 HW SUCCESS; JIT IDLE RULE AUTO (default, HW SUCCESS) built on the way; history: built 2026-10-14 (Matt: "Let's work on bundle 20"; section 0): the SH4 / SYSTEM page, 10 rows at their old path by default (SH4 Op Tests, Interp Fixes, FPSCR Cause, Memory Map, Block Writes, On-chip Regs, Holly Regs, Reg Access Size, ELF Loader, SH4 MMU OFF / AUTO / ON = P38's interpreter form); new PC checks `misc/interp_check`, `misc/fullmmu_check`, `misc/sys20_check`, all PASS; package of 13:13; no HW run; the JIT rows' verdict waits for HW (JIT PR MOVES: Space Channel 5; JIT MAC and JIT RM 2/3: no test game); P38's JIT form not built; P38 added 2026-10-13 (Matt: "Place it in one of the last bundles. It's worth a shot.") |
 | 21 | Capcom vs. SNK 2 fights (new 2026-10-13, Matt; it was item 4 of the heavy scenes bundle) | a profile boot of a fight at X3 BACKWARD, then an idle-list entry if a wait loop is on top | the fights at 60 frames per second (SPEED 88% and 53 frames today); a first fact on 2D games | `[~]` started 2026-10-15 (Matt), not closed (Matt: "Bundle 21 is still not done"): Render Delay FLYCAST (default in source, not packaged) ends the 167 ms render-done time-outs, and the idle-list entry for Kamui's vsync loop (JIT IDLE HASH ON by default) gives the fights at X3 SPEED 100%, 59.8 frames a second; both HW SUCCESS (section 0); not committed; open issue, parked: menus and HUD green unless Texture Filter LINEAR; HW 2026-10-13, no code: JIT IDLE RULE X3 BACKWARD fixes the menus (60 renders per second, 10 at X30; Matt: "I was right."); the fights were SH4-bound at X3 before the entry, with JIT C-Calls ON and OFF; JIT IDLE RULE AUTO (the default since bundle 20's close; Matt: it was meant for this bundle) keeps the game at X3 with the two fixes |
 | 22 | Frame rate in heavy scenes (new at the re-cut of 2026-10-12; bundle 21 until 2026-10-13) | bundle 8's list "more friendly for other users", the SH4-bound heavy scenes (section 0), 5.46's verdict, bundle 7's TMU rows, Ecco the Dolphin, settings per game | frames at SPEED 100% without a choice by the user (Looney Tunes, Sonic Adventure 2) | `[ ]` parked for the end (Matt 2026-10-12) |
-| 23 | Game-specific fixes (new 2026-10-16, Matt) | P91 (the Re-Volt menu), P92 (Flycast's per-game lists: the extra depth games, Cosmic Smash, full framebuffer emulation, the broadcast lists, the HLE BIOS games, Caesar's Palace and the RGB list, Dave Mirra BMX and Fur Fighters) | the Re-Volt menu and HUD; 24 more games that Flycast fixes per game | `[ ]` new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?"): the next bundle to work on; the Re-Volt cause is found in an old HW log (P91); nothing built |
+| 23 | Game-specific fixes (new 2026-10-16, Matt) | P91 (the Re-Volt menu), P92 (Flycast's per-game lists: the extra depth games, Cosmic Smash, full framebuffer emulation, the broadcast lists, the HLE BIOS games, Caesar's Palace and the RGB list, Dave Mirra BMX and Fur Fighters) | the Re-Volt menu and HUD; 24 more games that Flycast fixes per game | `[~]` item 1 (P91) built 2026-10-17 by way B (Matt: "In bundle 23, go with Way B."): row RENDERER > Near Plane Cap, default WIDE in source since 2026-10-17 (Matt), not packaged; HW SUCCESS 2026-10-17 (Matt: "Even Crazy Taxi seems fine. Mark this session a success!"; Re-Volt, South Park Rally, Crazy Taxi at WIDE) (section 0); items 2-8 not built; new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?"); the Re-Volt cause is found in an old HW log (P91) |
 
 Main gains:
 - Speed: little is left. Only bundle 1 gives SH4-thread time, and it is
@@ -17766,8 +17851,15 @@ Main gains:
   18K is not measured.
 - Rule: do not start it unasked. Matt: "We'll get back to it at the end."
 
-### Bundle 23: Game-specific fixes  `[ ]` new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?"); the next bundle to work on; nothing built
+### Bundle 23: Game-specific fixes  `[~]` item 1 (P91) built 2026-10-17 by way B as the row Near Plane Cap, HW SUCCESS 2026-10-17 (Matt), default WIDE in source (Matt), not packaged (section 0); new 2026-10-16 (Matt: "Can you save the issues as the next bundle to work on?")
 
+- Built 2026-10-17 (Matt: "In bundle 23, go with Way B."): item 1, way B, as the row RENDERER > Near
+  Plane Cap (OLD / WIDE, default OLD). The code, the PC checks and the HW steps are in the P91 block of
+  section 0. HW SUCCESS 2026-10-17 (Matt: "Even Crazy Taxi seems fine. Mark this session a success!"):
+  Re-Volt's near plane at about 4e-7 with WIDE; South Park Rally (item 2) ran at WIDE with its near
+  plane down to 2.1e-12 (Matt: "KoF, Re-Volt and South Park Rally all worked perfectly."). Default WIDE
+  in source since 2026-10-17 (Matt: "Set WIDE as default."), not packaged. Items 2-8 are not built; item 2
+  has South Park Rally done by way B.
 - Goal: the faults that Flycast fixes per game, first the Re-Volt menu
   (Matt 2026-10-16: "Re-Volt has an invisible menu.", then "Or if there
   are game-specific fixes we may have not implemented.").
@@ -17780,6 +17872,7 @@ Main gains:
   2. The extra depth games (P92 a): NHL 2K2, Sturmwind, South Park Rally,
      Capcom vs. SNK Pro, Test Drive V-Rally. Way B of item 1 can cover the
      first four with no list. First a boot log of each (`w=`, `near=`).
+     South Park Rally works at Near Plane Cap WIDE (HW 2026-10-17, Matt).
   3. Cosmic Smash (P92 b): a HW test of List Passes 2, no build.
   4. Full framebuffer emulation (P92 c): Densha de Go! 2 and five more.
      Large.

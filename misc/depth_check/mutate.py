@@ -5,6 +5,12 @@ import os, subprocess, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 SRC = 'ps3/ps3_depth.h'
 TMP = '/tmp/depthmut/ps3_depth.h'
+# P91: a WIDE near-plane cap in spe_bell.h past which FLOAT's far end (n x 1e-9) is no normal float.
+BELL = 'ps3/spu/spe_bell.h'
+BELL_TMP = '/tmp/depthmut/spe_bell.h'
+BELL_MUTANTS = [
+    ('P91: WIDE cap 2^110', '#define INVW_CAP_WIDE    0x55800000', '#define INVW_CAP_WIDE    0x76800000'),
+]
 
 MUTANTS = [
     ('FLOAT less and greater swapped', '{ 0, 1, 2, 3, 4, 5, 6, 7 }', '{ 0, 4, 2, 3, 1, 5, 6, 7 }'),
@@ -30,21 +36,22 @@ MUTANTS = [
 
 def main():
     samples = sys.argv[1] if len(sys.argv) > 1 else '40000'
-    src = open(os.path.join(ROOT, SRC), encoding='utf-8').read().replace('\r\n', '\n')
     caught = 0
     os.makedirs(os.path.dirname(TMP), exist_ok=True)
-    for name, find, repl in MUTANTS:
+    runs = [(SRC, TMP, 'DEPTH_SOURCE', m) for m in MUTANTS] + [(BELL, BELL_TMP, 'BELL_SOURCE', m) for m in BELL_MUTANTS]
+    for path, tmp, var, (name, find, repl) in runs:
+        src = open(os.path.join(ROOT, path), encoding='utf-8').read().replace('\r\n', '\n')
         if src.count(find) != 1:
             print(f'BAD MUTANT (pattern found {src.count(find)} times): {name}')
             sys.exit(2)
-        open(TMP, 'w', encoding='utf-8').write(src.replace(find, repl))
+        open(tmp, 'w', encoding='utf-8').write(src.replace(find, repl))
         r = subprocess.run(['sh', os.path.join(ROOT, 'misc/depth_check/run.sh'), samples], capture_output=True,
-                           text=True, env=dict(os.environ, DEPTH_SOURCE=TMP))
+                           text=True, env=dict(os.environ, **{var: tmp}))
         out = [l for l in (r.stdout + r.stderr).splitlines() if l.startswith('FAIL:') or 'error' in l]
         ok = r.returncode != 0
         caught += ok
         print(f"{'caught' if ok else 'MISSED'}: {name}: {(out[0] if out else '')[:110]}")
-    print(f'{caught} of {len(MUTANTS)} mutants fail run.sh')
-    sys.exit(0 if caught == len(MUTANTS) else 1)
+    print(f'{caught} of {len(runs)} mutants fail run.sh')
+    sys.exit(0 if caught == len(runs) else 1)
 
 main()

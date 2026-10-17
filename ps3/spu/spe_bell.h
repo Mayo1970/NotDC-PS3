@@ -28,6 +28,11 @@
 // Plan section 7, bundle 17.
 #define TAOPT_SPR_PLANE  32u  // P80: a sprite's fourth corner takes its 1/W, u and v from the plane of the other three
 #define TAOPT_OFFS       64u  // 3b: every vertex's offset colour is kept (SpeOut.offs, TaContext.offs)
+// Bundle 23, P91: a 1/W below INVW_CAP_WIDE, not INVW_CAP_OLD, can set the near plane (set only with Depth Float).
+#define TAOPT_INVW_WIDE  128u
+// The near plane's 1/W cap, as float bits for a signed compare: reicast's 1024 x 1024, and 2^44.
+#define INVW_CAP_OLD     0x49800000
+#define INVW_CAP_WIDE    0x55800000
 // Flycast's tileclip rect, xmin | xmax << 6 | ymin << 12 | ymax << 17, at a list init: tiles 0..39 by 0..14.
 #define TA_CLIP_RESET    ((39u << 6) | (14u << 17))
 

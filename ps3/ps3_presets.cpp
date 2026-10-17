@@ -98,6 +98,8 @@ int g_sprite_corner_preset = 1;   // 1 = a sprite's fourth corner takes 1/W, u a
 int g_offset_colour_preset = 1;   // 1 = a textured polygon with the Offset bit adds its offset colour (3b, HW at 1)
 int g_colour_clamp_preset  = 1;   // 1 = a polygon with ColorClamp clamps to FOG_CLAMP_MIN..MAX before the fog (3b)
 int g_trilinear_preset     = 1;   // 1 = the two passes of a trilinear polygon draw with their weights (P25)
+// Bundle 23 (plan section 7), the RENDERER page: 0 is the old path. Default WIDE since 2026-10-17 (Matt).
+int g_near_cap_preset      = 1;   // 1 = with Depth Float, a 1/W up to 2^44, not 2^20, sets the near plane (P91, HW)
 int g_jit_fschg_preset     = 2;   // 1 = fschg skips the UpdateFPSCR() call, 2 also no sync and no block end (5.37, HW)
 int g_jit_fsqrt_preset     = 1;   // 1 = fsqrt/fsrra inline as fsqrts
 int g_fpu_pin_preset       = 1;   // 1 = SH4 fr[0..15] pinned to PPC f14..f29
@@ -366,6 +368,7 @@ static const CfgItem s_items[] = {
 	{ "OffsetColour",  &g_offset_colour_preset },
 	{ "ColourClamp",   &g_colour_clamp_preset },
 	{ "Trilinear",     &g_trilinear_preset },
+	{ "NearCap",       &g_near_cap_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -648,6 +651,7 @@ static const CfgItem s_rend_items[] = {
 	{ "OffsetColour",  &g_offset_colour_preset },
 	{ "ColourClamp",   &g_colour_clamp_preset },
 	{ "Trilinear",     &g_trilinear_preset },
+	{ "NearCap",       &g_near_cap_preset },
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 

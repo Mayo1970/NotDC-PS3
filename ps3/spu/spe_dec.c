@@ -182,7 +182,8 @@ static uint32_t track_w(uint32_t z)
 	const uint32_t w = recip(safe);
 	if (w < d->min_w) d->min_w = w;
 	if (w > d->max_w) d->max_w = w;
-	if ((int32_t)d->max_inv_w < (int32_t)z && (int32_t)z < 0x49800000)
+	const int32_t cap = (d->opt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD;  // P91 Near Plane Cap
+	if ((int32_t)d->max_inv_w < (int32_t)z && (int32_t)z < cap)
 		d->max_inv_w = z;
 	return w;
 }

@@ -1,4 +1,4 @@
-// Bundle 4 (plan section 7) PC check, WSL: the draw rules. Rows off: draw_scene makes the frozen file's GL calls.
+// Bundle 4 (plan section 7) PC check, WSL: the draw rules and P91's near plane. Rows off: the frozen file's GL calls.
 // Rows on: a model of the rules; bundle 14: with TR First Pass at OLD, also the calls of the file of before it.
 #include <stdint.h>
 #include <stdarg.h>
@@ -64,7 +64,8 @@ static u32 rnd_rect()
 static void gen_scene(bool rows)
 {
 	memset(&S, 0, sizeof(S));
-	S.opt = rows ? rnd() & 31 : 0;
+	// Bit 128: P91's TAOPT_INVW_WIDE, in one scene of three with the rows on.
+	S.opt = rows ? (rnd() & 31) | (rndn(3) ? 0 : 128) : 0;
 	const bool rects = (S.opt & 16) != 0;
 	// Params from a small pool, so strips merge.
 	u32 base[6][4];
@@ -177,8 +178,13 @@ static void gen_scene(bool rows)
 	S.param = g_param.data();
 	S.mtri = g_mtri.empty() ? none : g_mtri.data();
 	S.mvol = g_mvol.empty() ? none : g_mvol.data();
-	S.max_inv_w = fb(1.0f);
-	S.isp_backgnd_d = fb(0.001f);
+	// P91, one scene of three: the lists' 1/W (1.0 or a tracked one, to 2^46) and the background's (also any bits), and
+	// both caps with their neighbours (the background's low 4 bits are masked).
+	static const u32 edge[6] = { 0x497FFFF0u, 0x49800000u, 0x49800010u, 0x557FFFF0u, 0x55800000u, 0x55800010u };
+	const bool far = rndn(3) == 0;
+	S.max_inv_w = !far ? fb(1.0f) : rndn(6) ? 0x3F800000u + rndn(0x56800000u - 0x3F800000u) : edge[rndn(6)] | rndn(2);
+	S.isp_backgnd_d = !far ? fb(0.001f) : rndn(6) ? 0x3F800000u + rndn(0x56800000u - 0x3F800000u) :
+	                  rndn(2) ? edge[rndn(6)] : rnd();
 	S.pt_alpha_ref = rnd() & 0xFF;
 	S.fpu_shad_scale = rnd() & 0x1FF;
 	const u32 as = rndn(2);
@@ -247,6 +253,43 @@ static uint64_t n_game, n_skipped, n_blocks, n_applied, n_old;
 static uint64_t n_pt_one, n_pt_fac, n_dc_offs, n_dc_clamp, n_dc_tril, n_offs_vtx;
 
 static bool m_offc(const u32* p) { return ((p[0] >> 3) & 1) && ((p[0] >> 2) & 1) && ((p[3] >> 27) & 7) != 4; }
+
+// P91: draw_scene's near plane by the rule: the background's 1/W if it is above the lists' and under the cap (2^44 with
+// bit 128 and FLOAT depth, else 2^20), else the lists'; 10240 out of (0, cap]. n = 1 / (that x 1.001).
+static uint64_t n_near, n_near_wide, n_near_bg, n_near_fb;
+static float m_near(bool wide, bool count)
+{
+	const float cap = wide ? 17592186044416.0f : 1048576.0f;
+	const float lists = bf(S.max_inv_w);
+	float bg = bf(S.isp_backgnd_d & ~0xFu) - 1e-6f;
+	if (bg < 1e-11f)
+		bg = 1e-11f;
+	const bool use_bg = bg > lists && bg < cap;
+	float m = use_bg ? bg : lists;
+	const bool fallback = !(m > 0.0f) || m > cap;
+	if (fallback)
+		m = 10240.0f;
+	n_near_bg += count && use_bg;
+	n_near_fb += count && fallback;
+	return 1.0f / (m * 1.001f);
+}
+
+// The projection's m[14]: n with FLOAT depth, -2n with FIXED (ps3_depth.h).
+static void model_near(const R4Call* c, u32 n)
+{
+	const float want = m_near((S.opt & 128) && S.depth_float, true);
+	u32 k = 0;
+	while (k < n && !(c[k].kind == R4_CALL && c[k].op == 15 /* OP_LOADMATRIX */))
+		k++;
+	if (k == n)
+		die("no projection matrix");
+	const u32 m14 = fb(S.depth_float ? want : -2.0f * want);
+	if (c[k].a[5] != m14)
+		die("near plane: m[14] %08X, want %08X (lists %08X, background %08X, opt %02X, float %u)", c[k].a[5], m14,
+		    S.max_inv_w, S.isp_backgnd_d, S.opt, S.depth_float);
+	n_near++;
+	n_near_wide += fb(want) != fb(m_near(false, false));
+}
 
 // Bundle 17: the offset colour program and the clamp and weight program at a draw of a strip of list L with param p.
 // off: a depth pass of List Passes, which draws with neither. bg: the background, which has no offset colours.
@@ -754,6 +797,7 @@ int main(int argc, char** argv)
 				    cn[k].count, cr[k].count, cn[k].hash, cr[k].hash);
 		if (un != ur || (un && memcmp(vn, vr, (size_t)un * 36)))
 			die("rows off: the vertex block differs");
+		model_near(cn, nn);
 		calls += nn;
 	}
 	printf("phase 1: %u scenes with the rows off make the old code's GL calls (%llu calls)\n", scenes, (unsigned long long)calls);
@@ -765,8 +809,10 @@ int main(int argc, char** argv)
 		u32 un;
 		const u32 nn = r4_new_run(&S, &cn, &vn, &un);
 		model(cn, nn, vn);
-		// The code of before bundle 14 has none of bundle 17's rows either.
-		if (S.first_pass || S.pt_blend == 2 || S.offs_row || S.clamp_row || S.tril_row)
+		model_near(cn, nn);
+		// The code of before bundle 14 has none of bundle 17's rows either, nor P91's cap.
+		if (S.first_pass || S.pt_blend == 2 || S.offs_row || S.clamp_row || S.tril_row ||
+		    fb(m_near((S.opt & 128) && S.depth_float, false)) != fb(m_near(false, false)))
 			continue;
 		const R4Call* co;
 		const u32* vo;
@@ -803,5 +849,10 @@ int main(int argc, char** argv)
 	       (unsigned long long)n_offs_vtx, (unsigned long long)n_dc_clamp, (unsigned long long)n_dc_tril);
 	if (!n_pt_one || !n_pt_fac || !n_dc_offs || !n_offs_vtx || !n_dc_clamp || !n_dc_tril)
 		die("a bundle 17 case never ran");
+	printf("bundle 23 (P91): %llu near planes; %llu changed by the WIDE cap, %llu from the background, %llu fallbacks\n",
+	       (unsigned long long)n_near, (unsigned long long)n_near_wide, (unsigned long long)n_near_bg,
+	       (unsigned long long)n_near_fb);
+	if (!n_near_wide || !n_near_bg || !n_near_fb)
+		die("a P91 case never ran");
 	return 0;
 }

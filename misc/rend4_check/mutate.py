@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Bundle 4 (WSL, from the tree's root): each planted bug in the draw rules must make run.sh fail.
+# Bundle 4 (WSL, from the tree's root): each planted bug in the draw rules (and P91's near plane) must make run.sh fail.
 # python3 misc/rend4_check/mutate.py [scenes (1500)]. Run it detached, with a log.
 import os, subprocess, sys
 
@@ -134,6 +134,17 @@ MUTANTS = [
     ('trilinear: all of MipMapD', 'const float w = 0.25f * (float)(p.tsp.MipMapD & 3);', 'const float w = 0.25f * (float)p.tsp.MipMapD;'),
     ('trilinear: for bilinear polygons', 'if (!textured || p.tsp.FilterMode < 2 ||', 'if (!textured || p.tsp.FilterMode < 1 ||'),
     ('3k: the last run is not drawn', '\tfor (u32 t = 0; t <= n; t++)\n\t{\n\t\tconst DcParam* p = t < n', '\tfor (u32 t = 0; t < n; t++)\n\t{\n\t\tconst DcParam* p = t < n'),
+    # bundle 23, P91 Near Plane Cap: draw_scene's cap
+    ('P91: the WIDE cap with FIXED depth', 'const s32 cap = (s_rl.opt & TAOPT_INVW_WIDE) && s_zfloat ? INVW_CAP_WIDE : INVW_CAP_OLD;',
+     'const s32 cap = (s_rl.opt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD;'),
+    ('P91: the old cap always', 'const s32 cap = (s_rl.opt & TAOPT_INVW_WIDE) && s_zfloat ? INVW_CAP_WIDE : INVW_CAP_OLD;',
+     'const s32 cap = INVW_CAP_OLD;'),
+    ('P91: the WIDE cap always', 'const s32 cap = (s_rl.opt & TAOPT_INVW_WIDE) && s_zfloat ? INVW_CAP_WIDE : INVW_CAP_OLD;',
+     'const s32 cap = INVW_CAP_WIDE;'),
+    ('P91: a background at the cap counts', '(mz.i < bz.i && bz.i < cap) ? bg_inv_w : mz.f;', '(mz.i < bz.i && bz.i <= cap) ? bg_inv_w : mz.f;'),
+    ('P91: no fallback past the cap', 'if (mz.i <= 0 || mz.i > cap)', 'if (mz.i <= 0)'),
+    ('P91: a fallback at the cap', 'if (mz.i <= 0 || mz.i > cap)', 'if (mz.i <= 0 || mz.i >= cap)'),
+    ('P91: the fallback at the old cap', 'if (mz.i <= 0 || mz.i > cap)', 'if (mz.i <= 0 || mz.i > INVW_CAP_OLD)'),
 ]
 
 src = open('ps3/ps3_rend.cpp', 'rb').read().decode('utf-8').replace('\r\n', '\n')

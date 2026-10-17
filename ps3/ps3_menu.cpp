@@ -328,6 +328,7 @@ static const char* k_trisort[]   = { "OFF", "ON", "+ DEPTH WRITE", "+ OPAQUE DEP
 static const char* k_fog[]       = { "OFF", "TABLE", "+ VERTEX", NULL };
 static const char* k_ptblend[]   = { "OFF", "ON", "+ ALPHA 1", NULL };
 static const char* k_corner[]    = { "OLD", "PLANE", NULL };
+static const char* k_nearcap[]   = { "OLD", "WIDE", NULL };
 static const char* k_sysgate[]   = { "OFF", "GATE", "+ RESUME", NULL };
 static const char* k_aicasync[]  = { "OFF", "ON", "+ BLOCK SYNC", "+ SAMPLE SYNC", NULL };
 static const char* k_tmuclock[]  = { "SH4", "EFF", NULL };
@@ -739,6 +740,8 @@ static Option s_renderer[] = {
 	  "Polygons that ask for it clamp their colour to the FOG_CLAMP registers (3b)." },
 	{ "Trilinear",       &g_trilinear_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The two passes of a trilinear polygon draw with their weights (P25, NFL 2K2)." },
+	{ "Near Plane Cap",  &g_near_cap_preset,      OPT_CHOICE, k_nearcap,   0, 0,0,0, NULL,
+	  "WIDE: with Depth Float, a 1/W up to 2^44 (not 2^20) sets the near plane (P91, Re-Volt menus)." },
 };
 
 // Plan section 7, bundle 7: one row per item; the first value is the old path.
@@ -1429,6 +1432,7 @@ static int* const k_live_opts[] = {
 	&g_rtt_async_preset, &g_ta_ctx_split_preset,
 	&g_rend_low_prio_preset,
 	&g_ta_line_zero_preset,
+	&g_near_cap_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

@@ -10,6 +10,12 @@
 #else
 #include "ps3/ps3_depth.h"
 #endif
+// P91: the decoders' WIDE near-plane cap (INVW_CAP_WIDE). BELL_SOURCE: a mutant of spe_bell.h.
+#ifdef BELL_SOURCE
+#include BELL_SOURCE
+#else
+#include "ps3/spu/spe_bell.h"
+#endif
 
 // ps3_rend.cpp: set_pos's 1/W floor and update_fz's cap on the frame's largest 1/W.
 static const float INV_W_FLOOR = 1e-9f;
@@ -306,6 +312,53 @@ int main(int argc, char** argv)
 		}
 	snprintf(buf, sizeof(buf), "FLOAT: 1/W = largest and 1/W = 1e-9 inside the depth range: %ld culled", ends_bad);
 	check(ends_bad == 0, buf);
+
+	// P91 Near Plane Cap WIDE: FLOAT with the largest 1/W up to the decoders' cap; Re-Volt's menu frame (HW 2026-10-15:
+	// menu 1/W 1.7M-2.5M over a 3D scene at 2.1-467). FIXED keeps the old cap.
+	const uint32_t cap_bits = INVW_CAP_WIDE;
+	float wide_max;
+	memcpy(&wide_max, &cap_bits, 4);
+	const Range wide = { "largest 1/W 2^20 to the WIDE cap, gap >= 2^-14", MAX_INV_W, wide_max, 1e-14, 1e9, 1.0 / 16384,
+	                     1.0, false };
+	const Range rv = { "Re-Volt menu (largest 1/W 2.5M, W 4e-7 to 0.47, gap 0.1-10%)", 2.5e6, 2.5e6, 4e-7, 0.47, 1e-3, 0.1,
+	                   false };
+	long wide_bad = 0, rv_bad = 0, wide_cull = 0, wide_map = 0, wide_clear = 0;
+	double wide_gap = 0;
+	for (int v = 0; v < 8; v++)
+	{
+		const Model& md = s_models[v];
+		Tally a = run_range(wide, md, false, true, samples / 2), b = run_range(rv, md, false, true, samples / 4);
+		wide_bad += a.bad;
+		rv_bad += b.bad;
+		wide_cull += a.cull + b.cull;
+		if (a.bad_gap_max > wide_gap) wide_gap = a.bad_gap_max;
+		for (long i = 0; i < samples / 8; i++)
+		{
+			float max_inv = (float)lrand(MAX_INV_W, wide_max);
+			float n = near_of(max_inv);
+			float inv = (float)lrand(INV_W_FLOOR, max_inv);
+			Pipe p = make_pipe(true, n);
+			float z = window_z(p, md, inv);
+			double want = n / (double)(1.0f / inv);
+			if (!inside(p, z) || fabs(z / want - 1.0) > ldexp(1.0, -20))
+				wide_map++;
+			if (!gl_cmp(depth_cmp(true, 4), store(true, md, z), 0))
+				wide_clear++;
+		}
+		const float wide_ends[2] = { wide_max * 0.999f, 2.5e6f };
+		for (float mi : wide_ends)
+		{
+			Pipe p = make_pipe(true, near_of(mi));
+			wide_cull += !inside(p, window_z(p, md, mi)) + !inside(p, window_z(p, md, INV_W_FLOOR));
+		}
+	}
+	snprintf(buf, sizeof(buf), "P91 FLOAT, %s: %ld wrong compares (largest gap wrong %.3g)", wide.name, wide_bad, wide_gap);
+	check(wide_bad == 0, buf);
+	snprintf(buf, sizeof(buf), "P91 FLOAT, %s: %ld wrong compares", rv.name, rv_bad);
+	check(rv_bad == 0, buf);
+	snprintf(buf, sizeof(buf), "P91 FLOAT to the WIDE cap: z = n/W (rel 2^-20) off %ld, not over the clear %ld, culled %ld",
+	         wide_map, wide_clear, wide_cull);
+	check(wide_map == 0 && wide_clear == 0 && wide_cull == 0, buf);
 
 	// The clear is depth at 1/W = 0: ps3gl writes (u32)(d * 0xFFFFFF) << 8, which must be FLOAT's 0.0 as well.
 	const Model& m0 = s_models[0];

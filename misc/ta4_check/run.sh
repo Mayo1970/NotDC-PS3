@@ -55,3 +55,14 @@ g++ -O1 -g $SAN -I. -I$D -w -c $D/ta4_check.cpp -o $OUT/drv.o
 g++ $SAN $OUT/drv.o $OUT/ppu_new.o $OUT/ppu_ref.o $OUT/ppu_common.o $OUT/spu_new.o $OUT/spu_ref.o $OUT/mfc_shim.o \
 	-o $OUT/ta4check -lm
 $OUT/ta4check "${1:-6000}" "${2:-0}"
+
+# P91: Near Plane Cap sets its bit only with Depth Float, defaults to WIDE (Matt), has two keys, is live (row + list).
+has() {
+	[ "$(python3 -c 'import sys; print(open(sys.argv[1], newline="").read().replace("\r\n", "\n").count(sys.argv[2]))' \
+	    "$1" "$2")" = "${3:-1}" ] || { echo "FAIL: $1 has not ${3:-1} times: $2"; exit 1; }
+}
+has ps3/ps3_rend.cpp '	       (g_near_cap_preset && get_depth_float_preset() ? TAOPT_INVW_WIDE : 0);'
+has ps3/ps3_presets.cpp 'int g_near_cap_preset      = 1;'
+has ps3/ps3_presets.cpp '	{ "NearCap",       &g_near_cap_preset },' 2
+has ps3/ps3_menu.cpp '&g_near_cap_preset,' 2
+echo "PASS: P91 source lines"

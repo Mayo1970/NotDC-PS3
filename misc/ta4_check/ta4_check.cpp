@@ -1,4 +1,4 @@
-// Bundles 4 and 17 (plan section 7) PC check, WSL: the PPU replay and the SPU decoder with the decode options, against
+// Bundles 4, 17, 23 (plan section 7) PC check, WSL: the PPU replay and the SPU decoder with the decode options, against
 // each other, the frozen decoders of before bundle 4 (options off), and a model of the ported rules. See run.sh.
 #include <math.h>
 #include <stdint.h>
@@ -134,6 +134,7 @@ struct Frame
 	std::vector<u32> mvols_after;
 	std::vector<u32> col;           // the colour of each vertex
 	std::vector<u32> offs;          // its offset colour, as TAOPT_OFFS keeps it
+	std::vector<u32> z;             // P91: each 1/W the decoders track for the near plane, but sprite corner D's
 	std::vector<Spr> spr;
 	std::vector<u32> param;         // pcw, isp of each param
 	std::vector<MVol> mvol;
@@ -169,6 +170,7 @@ static u32 rnd_colf()
 }
 static u32 rnd_xy() { return rndn(10) ? fb((float)rndn(64000) / 100.0f - 40.0f) : rnd(); }
 // 1/W: mostly a usable range; also 0, negative, NaN, +Inf, under the floor. Never in [2^126, Inf): W is a denormal.
+// P91: 1/W from 2^20 to 2^46 (Re-Volt's menu has 1.7M to 2.5M), and both near-plane caps with their neighbours.
 static u32 rnd_z()
 {
 	const u32 r = rndn(100);
@@ -177,8 +179,11 @@ static u32 rnd_z()
 	if (r < 88) return fb(-(float)(1 + rndn(1000)) / 10.0f);
 	if (r < 92) return 0x7FC00000u | rndn(0x400000);
 	if (r < 94) return 0x7F800000u;
-	if (r < 97) return fb(1e-12f);
-	return fb((float)(1 + rndn(1000)) * 1000.0f);
+	if (r < 96) return fb(1e-12f);
+	if (r < 98) return fb((float)(1 + rndn(1000)) * 1000.0f);
+	if (r < 99) return 0x49800000u + rndn(0x56800000u - 0x49800000u);
+	static const u32 edge[6] = { 0x497FFFFFu, 0x49800000u, 0x49800001u, 0x557FFFFFu, 0x55800000u, 0x55800001u };
+	return edge[rndn(6)];
 }
 static u32 rnd_zs() { return fb((float)(1 + rndn(100000)) / 1000.0f); }
 // A 16-bit UV: the top half of a float in [1/256, 4), or 0.
@@ -210,6 +215,7 @@ static void gen_vertex(u32 pdid, bool eos)
 	a[1] = rnd_xy();
 	a[2] = rnd_xy();
 	a[3] = rnd_z();
+	F.z.push_back(a[3]);
 	u32 col = 0;
 	switch (pdid)
 	{
@@ -369,6 +375,7 @@ static void gen_sprite(u32 list)
 		sp.x[1] = a[4]; sp.y[1] = a[5]; sp.z[1] = a[6];
 		sp.x[2] = a[7]; sp.y[2] = b[0]; sp.z[2] = b[1];
 		sp.x[3] = b[2]; sp.y[3] = b[3];
+		F.z.insert(F.z.end(), sp.z, sp.z + 3);
 		for (int k = 0; k < 3; k++)
 		{
 			sp.u[k] = b[5 + k] & 0xFFFF0000u;
@@ -479,7 +486,13 @@ static void gen_modvol_list(u32 list, u32 vols, u32 max_tris)
 			b[1] = rnd_z();
 			F.mv_tris[mvl % 5]++;
 			if (m_kept(mvl) && F.nmtri < m_cap())
+			{
+				// Only a kept triangle's corners join the near plane.
 				F.nmtri++;
+				F.z.push_back(a[3]);
+				F.z.push_back(a[6]);
+				F.z.push_back(b[1]);
+			}
 			rec(a);
 			rec(b);
 		}
@@ -497,6 +510,7 @@ static void gen_frame(u32 opt, bool bad, u32 kind)
 	F.mvols_after.clear();
 	F.col.clear();
 	F.offs.clear();
+	F.z.clear();
 	F.spr.clear();
 	F.param.clear();
 	F.mvol.clear();
@@ -759,6 +773,41 @@ static void model_sprite(const T4Lists& l, const Spr& s)
 	n_spr_plane++;
 }
 
+// P91: the near plane's 1/W as the decoders track it, with the model's own caps (2^20; 2^44 with bit 128): the largest
+// 1/W under the cap, from 1.0. Sprite corner D's 1/W is the decoders' own: a larger result must be one of them.
+static uint64_t n_z_wide, n_z_cut_old, n_z_cut_wide, n_z_by_d;
+static void model_inv_w(const T4Lists& l)
+{
+	const bool wide = (F.opt & 128) != 0;
+	const s32 cap = wide ? 0x55800000 : 0x49800000;
+	s32 want = 0x3F800000;
+	bool cut_old = false, cut_wide = false;
+	for (u32 z : F.z)
+	{
+		const s32 v = (s32)z;
+		if (v > want && v < cap)
+			want = v;
+		cut_old = cut_old || (!wide && v >= 0x49800000 && v < 0x55800000);
+		cut_wide = cut_wide || (wide && v >= 0x55800000 && v < 0x7F800000);
+	}
+	const s32 got = (s32)l.max_inv_w;
+	if (got < want || got >= cap)
+		die("model: near-plane 1/W %08X, want %08X (cap %08X, opt %02X)", l.max_inv_w, (u32)want, (u32)cap, F.opt);
+	if (got > want)
+	{
+		bool from_d = false;
+		for (const Spr& s : F.spr)
+			from_d = from_d || l.vtx[s.first][2] == m_w(bf(l.max_inv_w));
+		if (!from_d)
+			die("model: near-plane 1/W %08X above the frame's %08X, and no sprite corner D has it (opt %02X)",
+			    l.max_inv_w, (u32)want, F.opt);
+		n_z_by_d++;
+	}
+	n_z_wide += want >= 0x49800000;
+	n_z_cut_old += cut_old;
+	n_z_cut_wide += cut_wide;
+}
+
 // The lists against the model of the frame.
 static void model(const T4Lists& l)
 {
@@ -815,6 +864,7 @@ static void model(const T4Lists& l)
 	}
 	for (const Spr& s : F.spr)
 		model_sprite(l, s);
+	model_inv_w(l);
 	n_vtx += l.nvtx;
 	n_param += l.nparam;
 	n_mvol += l.nmvol;
@@ -894,7 +944,7 @@ int main(int argc, char** argv)
 	{
 		for (g_frame = 0; g_frame < frames; g_frame++)
 		{
-			const u32 opt = rndn(8) ? rnd() & 127 : rndn(2) ? 127 : 1u << rndn(7);
+			const u32 opt = rndn(8) ? rnd() & 255 : rndn(2) ? 255 : 1u << rndn(8);
 			gen_frame(opt, phase == 3, g_frame % 23 == 5 ? 1 : g_frame % 29 == 7 ? 2 : g_frame % 31 == 9 ? 3 : 0);
 			const u32 ctx = rndn(SPE_CTX);
 			const u32 bp = ppu_new_bad(), bs = spu_new_bad();
@@ -930,5 +980,10 @@ int main(int argc, char** argv)
 	       (unsigned long long)n_spr_plane, (unsigned long long)n_spr_old, (unsigned long long)n_spr_either, n_div);
 	if (!n_offs || !n_spr_plane || !n_spr_old)
 		die("a bundle 17 case never ran");
+	printf("bundle 23 (P91): near plane set by a 1/W of 2^20 or more in %llu frames; a 1/W cut by the old cap in %llu "
+	       "frames, by the WIDE cap in %llu; a sprite corner D above the rest in %llu\n", (unsigned long long)n_z_wide,
+	       (unsigned long long)n_z_cut_old, (unsigned long long)n_z_cut_wide, (unsigned long long)n_z_by_d);
+	if (!n_z_wide || !n_z_cut_old || !n_z_cut_wide)
+		die("a P91 case never ran");
 	return 0;
 }
