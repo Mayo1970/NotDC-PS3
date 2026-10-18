@@ -253,6 +253,8 @@ extern int g_mmu_jit_preset;
 extern int g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset, g_mmu_pref_preset, g_mmu_asidjtc_preset;
 // GOALS.md G11, the NETWORK page.
 extern int g_modem_preset;
+// The menu's Advanced Mode row: 0 shows only the main option rows.
+extern int g_advanced_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

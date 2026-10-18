@@ -31,6 +31,7 @@ void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
 void ps3_rumble_stop(void);   // ps3_input.cpp
 void ps3rend_screenshot();    // ps3_rend.cpp
+extern int g_udp_log;         // ps3_main.cpp
 
 // -- Pad ---------------------------------------------------------------------
 
@@ -391,17 +392,22 @@ struct Option
 	const char*  fmt;   // OPT_RANGE
 	const char*  help;
 	int          port1; // G15 CONTROLS: a slot row of port port1 - 1, shown while Players reaches it; 0 = always
+	int          basic; // option pages: 1 = shown while Advanced Mode is OFF (first release, Matt 2026-10-18)
 };
 
 static Option s_emu[] = {
+	{ "Advanced Mode",   &g_advanced_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON shows every row of every page. OFF shows only the main options. Live.", 0, 1 },
+	{ "Start UDP Listener", &g_udp_log,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON sends the log to the PC over UDP (port 18194) until NotDC quits. Each boot starts OFF. Live." },
 	{ "Accuracy",        &g_accuracy_preset,      OPT_CHOICE, k_accuracy,  0, 0,0,0, NULL,
-	  "SH4 FPU and timing exactness. FAST is the PS3 default." },
+	  "SH4 FPU and timing exactness. FAST is the PS3 default.", 0, 1 },
 	{ "SH4 Clock",       &g_sh4_clock_preset,     OPT_RANGE,  NULL,        0, 150,250,5, "%d MHz",
-	  "Below 200 underclocks the SH4, above 200 overclocks it. 200 is the real clock." },
+	  "Below 200 underclocks the SH4, above 200 overclocks it. 200 is the real clock.", 0, 1 },
 	{ "SH4 Cached",      &g_sh4_cached_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Pre-decoded SH4 interpreter. Faster; takes effect on the next boot." },
 	{ "Dynarec",         &g_dynarec_preset,       OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "SH4 recompiler. Fastest, still under test; overrides SH4 Cached." },
+	  "SH4 recompiler. Fastest, still under test; overrides SH4 Cached.", 0, 1 },
 	{ "JIT Safe Mode",   &g_jit_safe_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Dynarec bring-up: interpreter fallback per opcode. Slow, for debugging." },
 	{ "JIT Trace",       &g_debug_loop,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -693,11 +699,11 @@ static Option s_gdrom[] = {
 // Plan section 7, bundle 3: one row per item; the first value is the old path.
 static Option s_textures[] = {
 	{ "Mipmaps",         &g_mipmap_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Mipmapped textures get every mip level: far floors stop shimmering (P45). Live." },
+	  "Mipmapped textures get every mip level: far floors stop shimmering (P45). Live.", 0, 1 },
 	{ "Anisotropic",     &g_aniso_preset,         OPT_CHOICE, k_aniso,     0, 0,0,0, NULL,
-	  "Anisotropic filter taps on textures that are not nearest (P52). Live." },
+	  "Anisotropic filter taps on textures that are not nearest (P52). Live.", 0, 1 },
 	{ "Texture Filter",  &g_tex_filter_preset,    OPT_CHOICE, k_texfilter, 0, 0,0,0, NULL,
-	  "GAME keeps each polygon's filter; the others force one on all (P52). Live." },
+	  "GAME keeps each polygon's filter; the others force one on all (P52). Live.", 0, 1 },
 	{ "VQ Formats",      &g_vq_formats_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Palette VQ and scan-order VQ textures decode as in Flycast (P25). Live." },
 };
@@ -800,15 +806,15 @@ static Option s_output[] = {
 // SQUARE in the in-game menu.
 static Option s_screen[] = {
 	{ "FPS Overlay",     &g_fps_overlay_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "FPS and SPEED at the screen's left edge, new once a second (P50). Live." },
+	  "FPS and SPEED at the screen's left edge, new once a second (P50). Live.", 0, 1 },
 	{ "Screen Format",   &g_screen_format_preset, OPT_CHOICE, k_scrformat, 0, 0,0,0, NULL,
-	  "STRETCH: the 4:3 picture on the whole TV. WIDE: more scene at the sides (P69, P53). Live." },
+	  "STRETCH: the 4:3 picture on the whole TV. WIDE: more scene at the sides (P69, P53). Live.", 0, 1 },
 	{ "Screen Scaler",   &g_screen_scaler_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "The canvas follows the scaler's vertical factor and the pixel-double bit (P10). Live." },
+	  "The canvas follows the scaler's vertical factor and the pixel-double bit (P10). Live.", 0, 1 },
 	{ "Cheats",          &g_cheats_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot." },
+	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot.", 0, 1 },
 	{ "Native Size",     &g_native_size_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "The scene draws at the game's size, then whole-pixel scaling: even 2D pixels (P104). Live." },
+	  "The scene draws at the game's size, then whole-pixel scaling: even 2D pixels (P104). Live.", 0, 1 },
 };
 
 // Plan section 7, bundle 13: one row per item; the first value is the old path. Bundle 1's LMMODE, VRAM Direct and
@@ -840,9 +846,9 @@ static Option s_cost[] = {
 // own bytes: a row acts again at each boot.
 static Option s_flash[] = {
 	{ "Broadcast",       &g_broadcast_preset,     OPT_CHOICE, k_broadcast, 0, 0,0,0, NULL,
-	  "TV system in the flash. NTSC: 60 Hz. DISC: PAL for Europe-only discs (P59). Set before boot." },
+	  "TV system in the flash. NTSC: 60 Hz. DISC: PAL for Europe-only discs (P59). Set before boot.", 0, 1 },
 	{ "BIOS Language",   &g_bios_lang_preset,     OPT_CHOICE, k_bioslang,  0, 0,0,0, NULL,
-	  "The language the BIOS and the games read from the flash (P37). Set before boot." },
+	  "The language the BIOS and the games read from the flash (P37). Set before boot.", 0, 1 },
 	{ "Flash Defaults",  &g_flash_defaults_preset, OPT_CHOICE, k_oldfly,   0, 0,0,0, NULL,
 	  "FLYCAST: with no dc_flash.bin a flash is built: USA, English, NTSC (P85). Set before boot." },
 	{ "Console ID",      &g_console_id_preset,    OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
@@ -850,7 +856,7 @@ static Option s_flash[] = {
 	{ "Exit Flash Save", &g_exit_save_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The forced exit (3 s after an XMB quit with no answer) saves the flash first (P85). Live." },
 	{ "RTC Local Time",  &g_rtc_local_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "The DC clock is the PS3's local time (XMB zone, summer time), not UTC (P12). Set before boot." },
+	  "The DC clock is the PS3's local time (XMB zone, summer time), not UTC (P12). Set before boot.", 0, 1 },
 };
 
 // Plan section 7, bundle 16: one row per item; the first value is the old path.
@@ -868,9 +874,9 @@ static Option s_maple[] = {
 	{ "Maple Frame Rules", &g_maple_frame_preset, OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
 	  "FLYCAST: SB_MMSEL 0 swaps frame bytes; an address with no unit is the main unit (P68). Live." },
 	{ "VMU Per Game",    &g_vmu_per_game_preset,  OPT_CHOICE, k_pergame,   0, 0,0,0, NULL,
-	  "One VMU file per disc ID; SLOT A1 as Flycast. A new file is blank (P37). Set before boot." },
+	  "One VMU file per disc ID; SLOT A1 as Flycast. A new file is blank (P37). Set before boot.", 0, 1 },
 	{ "VMU Screen",      &g_vmu_screen_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "The pictures that games send to the VMU screens, at the TV's right edge (P37). Live." },
+	  "The pictures that games send to the VMU screens, at the TV's right edge (P37). Live.", 0, 1 },
 };
 
 // Plan section 7, bundle 20: one row per item; the first value is the old path. All are set before boot.
@@ -912,7 +918,7 @@ static Option s_sys[] = {
 // GOALS.md G11 (online play): the first value is the old path.
 static Option s_net[] = {
 	{ "Modem",           &g_modem_preset,         OPT_CHOICE, k_modem,     0, 0,0,0, NULL,
-	  "DCNET: the modem dials DCNet over the PS3's network; no V.42 yet (G11). Set before boot." },
+	  "DCNET: the modem dials DCNet over the PS3's network; no V.42 yet (G11). Set before boot.", 0, 1 },
 };
 
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
@@ -980,6 +986,27 @@ static Page s_opt_pages[] = {
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))
+#define MAX_PAGE_ROWS    64
+
+static bool row_shown(const Option* o)
+{
+	return g_advanced_preset || o->basic;
+}
+
+// The shown rows of page p; pos gets the place of row sel among them (0 when sel is hidden).
+static int page_rows(int p, int sel, int* rows, int* pos)
+{
+	int n = 0;
+	*pos = 0;
+	for (int i = 0; i < s_opt_pages[p].count && n < MAX_PAGE_ROWS; i++)
+		if (row_shown(&s_opt_pages[p].rows[i]))
+		{
+			if (i == sel)
+				*pos = n;
+			rows[n++] = i;
+		}
+	return n;
+}
 
 static int choice_count(const Option* o)
 {
@@ -1316,28 +1343,61 @@ static void browser_draw(bool swap)
 	                      : "X Select   O Up a folder   /\\ Next device   [] Boot BIOS   SELECT Quit");
 }
 
+// Puts the cursor on a shown page and row, then gives that page's shown rows. Page 0 always shows Advanced Mode.
+static int opt_rows(int* rows, int* pos)
+{
+	int n = page_rows(s_opt_page, s_opt_row, rows, pos);
+	if (n == 0)
+	{
+		s_opt_page = 0;
+		n = page_rows(0, s_opt_row, rows, pos);
+	}
+	s_opt_row = rows[*pos];
+	return n;
+}
+
+// L1/R1: the next page in dir that has a shown row, on its first shown row.
+static void page_step(int dir)
+{
+	int rows[MAX_PAGE_ROWS], pos;
+	do
+		s_opt_page = (s_opt_page + dir + OPT_PAGE_COUNT) % OPT_PAGE_COUNT;
+	while (page_rows(s_opt_page, -1, rows, &pos) == 0);
+	s_opt_row = rows[0];
+}
+
+// The header's page number and page count, over the pages that have a shown row.
+static void page_place(int* num, int* count)
+{
+	int rows[MAX_PAGE_ROWS], pos;
+	*num = *count = 0;
+	for (int p = 0; p < OPT_PAGE_COUNT; p++)
+		if (page_rows(p, -1, rows, &pos) > 0)
+		{
+			++*count;
+			if (p == s_opt_page)
+				*num = *count;
+		}
+}
+
 static Screen options_input(u32 pressed)
 {
-	Page* p = &s_opt_pages[s_opt_page];
+	int rows[MAX_PAGE_ROWS], pos;
+	const int n = opt_rows(rows, &pos);
+	Option* o = &s_opt_pages[s_opt_page].rows[s_opt_row];
 
 	if (pressed & MB_UP)
-		s_opt_row = (s_opt_row > 0) ? s_opt_row - 1 : p->count - 1;
+		s_opt_row = rows[pos > 0 ? pos - 1 : n - 1];
 	else if (pressed & MB_DOWN)
-		s_opt_row = (s_opt_row < p->count - 1) ? s_opt_row + 1 : 0;
+		s_opt_row = rows[pos < n - 1 ? pos + 1 : 0];
 	else if (pressed & MB_LEFT)
-		option_step(&p->rows[s_opt_row], -1);
+		option_step(o, -1);
 	else if (pressed & MB_RIGHT)
-		option_step(&p->rows[s_opt_row], +1);
+		option_step(o, +1);
 	else if (pressed & MB_L1)
-	{
-		s_opt_page = (s_opt_page > 0) ? s_opt_page - 1 : OPT_PAGE_COUNT - 1;
-		s_opt_row = 0;
-	}
+		page_step(-1);
 	else if (pressed & MB_R1)
-	{
-		s_opt_page = (s_opt_page + 1) % OPT_PAGE_COUNT;
-		s_opt_row = 0;
-	}
+		page_step(+1);
 	else if (pressed & MB_CROSS)
 		return SCR_CONTROLS;
 	else if (pressed & MB_CIRCLE)
@@ -1346,23 +1406,35 @@ static Screen options_input(u32 pressed)
 	return SCR_OPTIONS;
 }
 
-static void options_draw()
+static bool option_live(const Option* o);
+
+// The rows of the current page; mark adds " *" to the boot-only rows (in-game menu).
+static void options_rows_draw(const char* head_fmt, bool mark)
 {
-	char head[64], val[64];
+	char head[64], val[80];
+	int rows[MAX_PAGE_ROWS], pos, num, count;
+	const int n = opt_rows(rows, &pos);
 	Page* p = &s_opt_pages[s_opt_page];
 
-	snprintf(head, sizeof(head), "OPTIONS - %s  (%d/%d)", p->title,
-	         s_opt_page + 1, OPT_PAGE_COUNT);
+	page_place(&num, &count);
+	snprintf(head, sizeof(head), head_fmt, p->title, num, count);
 	draw_header(head, NULL);
 
-	int top = scroll_top(s_opt_row, p->count);
-	for (int i = top; i < p->count && i - top < visible_rows(); i++)
+	int top = scroll_top(pos, n);
+	for (int k = top; k < n && k - top < visible_rows(); k++)
 	{
-		option_text(&p->rows[i], val, sizeof(val));
-		draw_row(i - top, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
+		const Option* o = &p->rows[rows[k]];
+		option_text(o, val, sizeof(val));
+		if (mark && !option_live(o))
+			strncat(val, " *", sizeof(val) - strlen(val) - 1);
+		draw_row(k - top, rows[k] == s_opt_row, COL_TEXT, o->label, val);
 	}
+}
 
-	draw_footer(p->rows[s_opt_row].help,
+static void options_draw()
+{
+	options_rows_draw("OPTIONS - %s  (%d/%d)", false);
+	draw_footer(s_opt_pages[s_opt_page].rows[s_opt_row].help,
 	            "LEFT/RIGHT Change   L1/R1 Page   X Continue   O Back");
 }
 
@@ -1449,6 +1521,7 @@ static volatile bool s_ingame_req;
 
 // Read on every use, so a change acts at once. Any other option is saved for the next boot only.
 static int* const k_live_opts[] = {
+	&g_advanced_preset, &g_udp_log,
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
 	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
@@ -1516,47 +1589,16 @@ template<typename F> static void for_each_option(F fn)
 		}
 }
 
+// X and O do nothing in game.
 static void ingame_input(u32 pressed)
 {
-	Page* p = &s_opt_pages[s_opt_page];
-	if (pressed & MB_UP)
-		s_opt_row = (s_opt_row > 0) ? s_opt_row - 1 : p->count - 1;
-	else if (pressed & MB_DOWN)
-		s_opt_row = (s_opt_row < p->count - 1) ? s_opt_row + 1 : 0;
-	else if (pressed & MB_LEFT)
-		option_step(&p->rows[s_opt_row], -1);
-	else if (pressed & MB_RIGHT)
-		option_step(&p->rows[s_opt_row], +1);
-	else if (pressed & MB_L1)
-	{
-		s_opt_page = (s_opt_page > 0) ? s_opt_page - 1 : OPT_PAGE_COUNT - 1;
-		s_opt_row = 0;
-	}
-	else if (pressed & MB_R1)
-	{
-		s_opt_page = (s_opt_page + 1) % OPT_PAGE_COUNT;
-		s_opt_row = 0;
-	}
+	options_input(pressed & ~(MB_CROSS | MB_CIRCLE));
 }
 
 static void ingame_draw()
 {
-	char head[64], val[80];
-	Page* p = &s_opt_pages[s_opt_page];
-
-	snprintf(head, sizeof(head), "PAUSED - %s  (%d/%d)", p->title, s_opt_page + 1, OPT_PAGE_COUNT);
-	draw_header(head, NULL);
-
-	int top = scroll_top(s_opt_row, p->count);
-	for (int i = top; i < p->count && i - top < visible_rows(); i++)
-	{
-		option_text(&p->rows[i], val, sizeof(val));
-		if (!option_live(&p->rows[i]))
-			strncat(val, " *", sizeof(val) - strlen(val) - 1);
-		draw_row(i - top, i == s_opt_row, COL_TEXT, p->rows[i].label, val);
-	}
-
-	draw_footer(p->rows[s_opt_row].help, g_disc_swap_preset
+	options_rows_draw("PAUSED - %s  (%d/%d)", true);
+	draw_footer(s_opt_pages[s_opt_page].rows[s_opt_row].help, g_disc_swap_preset
 	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   [] Screenshot   START Close game   SELECT Back   * Next boot"
 	            : "LEFT/RIGHT Change   L1/R1 Page   [] Screenshot   START Close game   SELECT Back to game   * Next boot");
 }

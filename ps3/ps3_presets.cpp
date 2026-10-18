@@ -291,6 +291,8 @@ int g_mmu_pref_preset      = 1;   // 1 = an MMU block's pref calls the store que
 int g_mmu_asidjtc_preset   = 0;   // 1 = with MMU Model FAST, the JTC of each recent ASID is kept for its next switch
 // GOALS.md G11 (online play): 0 is the old path. Default DCNET since 2026-10-18 (Matt), after the HW success.
 int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; a flash with no dial-up account gets Flycast's
+// First release (Matt 2026-10-18): 0 shows only the main option rows, 1 every row.
+int g_advanced_preset      = 0;
 
 struct CfgItem { const char* key; int* val; };
 
@@ -470,6 +472,7 @@ static const CfgItem s_items[] = {
 	{ "MmuPref",       &g_mmu_pref_preset },
 	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
 	{ "Modem",         &g_modem_preset },
+	{ "AdvancedMode",  &g_advanced_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },

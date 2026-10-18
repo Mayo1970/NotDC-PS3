@@ -60,6 +60,8 @@ static sys_ppu_thread_t ps3_monitor_tid;
 
 // The disc image picked in the menu; os_GetFile() and nullDC.cpp read it.
 char selectedFilePath[512];
+// The menu's Start UDP Listener row (Advanced mode). Not saved: each boot starts with the log off.
+int g_udp_log;
 
 extern int EmuMain(int argc, char* argv[]);
 extern void ps3_input_init();
@@ -76,7 +78,7 @@ extern "C" void bm_Reset() {}
 
 static void ps3_log_send(const char* buf, int len)
 {
-	if (ps3_log_socket >= 0 && len > 0)
+	if (g_udp_log && ps3_log_socket >= 0 && len > 0)
 		sendto(ps3_log_socket, buf, len, 0, (struct sockaddr*)&ps3_log_addr, sizeof(ps3_log_addr));
 }
 
