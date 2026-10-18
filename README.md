@@ -70,7 +70,9 @@ someone without write access edits a report, the label is removed until it gets 
 
 Some games (ex. Quake 3 Arena, Dead or Alive 2) are too demanding for the PS3 thus they will most likely not reach full speed in future.
 
-Both cases are still worth reporting nonetheless.
+Some FMVs will suffer from slowdowns. Gameplay is unaffected.
+
+All cases are still worth reporting nonetheless.
 
 ## Compiling
 
