@@ -11,6 +11,7 @@
 #include "plugins/plugin_manager.h"
 #include "dc/asic/asic.h"
 #include "dc/maple/maple_helper.h"
+#include "dc/maple/maple_cfg.h"
 #include "dc/sh4/rec_v2/jit_dma.h"
 #include "ps3/ps3_stall.h"
 
@@ -141,6 +142,7 @@ void maple_DoDma()
 #if debug_maple
 	printf("Maple: DoMapleDma\n");
 #endif
+	mcfg_HotPlug();
 	const bool delay=g_maple_delay_preset!=0, guard=g_maple_guard_preset!=0, frame_rules=g_maple_frame_preset!=0;
 	// P68: SB_MMSEL 0 sends each word of a frame MSB first.
 	const bool swap_msb=frame_rules && SB_MMSEL==0;

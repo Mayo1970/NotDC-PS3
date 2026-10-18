@@ -6,6 +6,7 @@
 #include <math.h>
 #include <algorithm>
 #include "ps3/ps3_padmap.h"
+#include "ps3/ps3_padports.h"
 #include "dc/maple/maple_puru.h"
 
 typedef unsigned char u8;
@@ -303,16 +304,103 @@ static void check_puru()
 	printf("puru: %u words\n", n);
 }
 
+// ---- G15: the DC ports and the PS3 pads (ps3_padports.h) ------------------------
+#define NPADS 7
+
+// ps3_pad_ports() in ps3_input.cpp: a lost port first, then the new pads.
+static unsigned ports_step(int* map, const u8* st, unsigned cap)
+{
+	for (unsigned port = 0; port < PADPORTS_DC; port++)
+		if (padports_lost(map, st, NPADS, cap, port))
+			map[port] = -1;
+	return padports_fill(map, st, NPADS, cap);
+}
+
+// The rule in another form: the ports that keep their pad, then the new pads in PS3 order on the free ports in order.
+static void model_step(int* map, const u8* st, unsigned cap)
+{
+	bool kept[PADPORTS_DC], owns[NPADS] = {};
+	for (unsigned p = 0; p < PADPORTS_DC; p++)
+	{
+		kept[p] = map[p] >= 0 && map[p] < NPADS && st[map[p]] && p < cap;
+		if (kept[p])
+			owns[map[p]] = true;
+		else
+			map[p] = -1;
+	}
+	int fresh[NPADS], nf = 0;
+	for (int i = 0; i < NPADS; i++)
+		if (st[i] && !owns[i])
+			fresh[nf++] = i;
+	int k = 0;
+	for (unsigned p = 0; p < PADPORTS_DC && p < cap && k < nf; p++)
+		if (!kept[p])
+			map[p] = fresh[k++];
+}
+
+static void check_ports()
+{
+	int map[PADPORTS_DC] = { -1, -1, -1, -1 };
+	u8 st[NPADS] = {};
+	st[0] = 1;
+	CHECK(ports_step(map, st, 4) == 0x1 && map[0] == 0, "ports: one pad");
+	st[1] = 1;
+	CHECK(ports_step(map, st, 4) == 0x3 && map[1] == 1, "ports: two pads");
+	st[0] = 0;
+	CHECK(ports_step(map, st, 4) == 0x2 && map[0] == -1 && map[1] == 1, "ports: pad 2 moved when pad 1 left");
+	st[0] = 1;
+	CHECK(ports_step(map, st, 4) == 0x3 && map[0] == 0 && map[1] == 1, "ports: pad 1 is not back on port A");
+	st[0] = 0;
+	st[3] = 1;
+	CHECK(ports_step(map, st, 4) == 0x3 && map[0] == 3 && map[1] == 1, "ports: a pad on another PS3 port is not port A");
+	int one[PADPORTS_DC] = { -1, -1, -1, -1 };
+	u8 two[NPADS] = { 1, 1 };
+	CHECK(ports_step(one, two, 1) == 0x1 && one[0] == 0 && one[1] == -1, "ports: Players 1 with two pads");
+	two[0] = 0;
+	CHECK(ports_step(one, two, 1) == 0x1 && one[0] == 1, "ports: the second pad does not take the free port");
+	int four[PADPORTS_DC] = { -1, -1, -1, -1 };
+	u8 all[NPADS] = { 1, 1, 1, 1, 1, 1, 1 };
+	CHECK(ports_step(four, all, 4) == 0xF && four[3] == 3, "ports: seven pads");
+	CHECK(ports_step(four, all, 2) == 0x3 && four[2] == -1 && four[3] == -1, "ports: Players 2 keeps ports C and D");
+	int bad[PADPORTS_DC] = { 9, -1, -1, -1 };
+	u8 none[NPADS] = {};
+	CHECK(padports_lost(bad, none, NPADS, 4, 0) && ports_step(bad, none, 4) == 0, "ports: a pad past the table, or no pad");
+	CHECK(padports_mask(four) == 0x3 && padports_mask(bad) == 0, "ports: the mask");
+
+	// Random plugs, leaves and Players values against the model.
+	unsigned seed = 7, steps = 0;
+	int a[PADPORTS_DC] = { -1, -1, -1, -1 }, b[PADPORTS_DC] = { -1, -1, -1, -1 };
+	u8 rs[NPADS] = {};
+	for (int n = 0; n < 400000; n++)
+	{
+		seed = seed * 1664525u + 1013904223u;
+		const unsigned r = seed >> 8;
+		rs[r % NPADS] ^= (r >> 4) % 3 == 0;
+		const unsigned cap = 1 + (r >> 8) % 4;
+		const unsigned got = ports_step(a, rs, cap);
+		model_step(b, rs, cap);
+		steps++;
+		if (memcmp(a, b, sizeof(a)) || got != padports_mask(b))
+		{
+			CHECK(false, "ports: step %u, Players %u: %d %d %d %d, model %d %d %d %d", steps, cap, a[0], a[1], a[2], a[3],
+			      b[0], b[1], b[2], b[3]);
+			break;
+		}
+	}
+	printf("ports: %u random steps\n", steps);
+}
+
 int main()
 {
 	check_map();
 	check_stick();
 	check_puru();
+	check_ports();
 	if (g_fail)
 	{
 		printf("FAIL: %d checks\n", g_fail);
 		return 1;
 	}
-	printf("PASS: map, stick, puru\n");
+	printf("PASS: map, stick, puru, ports\n");
 	return 0;
 }

@@ -12,6 +12,7 @@
 #include "ps3_log.h"
 #include "ps3_timebase.h"
 #include "ps3_framehold.h"
+#include "ps3_rsxwatch.h"
 #include "ps3_video.h"
 
 // 1 MB CB is HW-validated in both ports; the 64 KB rsx.h default failed on HW.
@@ -385,6 +386,7 @@ int ps3_video_begin_frame(void)
 	if ((int)(s_flip_queued - s_flip_done) > PS3_FB_COUNT - 2)
 	{
 		s_skipped++;
+		ps3_rsxwatch_skip(s_ctx, s_flip_queued, s_flip_done);
 		return 0;
 	}
 	set_render_target(s_color_off[s_cur_fb]);
@@ -471,6 +473,7 @@ void ps3_video_end_frame_noflip(void)
 // P60: ends a frame that waits for the game to show its buffer: flushed, not flipped, and the buffer stays.
 void ps3_video_end_frame_hold(void)
 {
+	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
 	ps3gl_end_frame();
 	rsxFlushBuffer(s_ctx);
 	s_frame_waits = 1;
@@ -572,6 +575,7 @@ static void queue_flip(u64 k)
 	gcmSetWaitFlip(s_ctx);
 	gcmSetFlip(s_ctx, s_cur_fb);
 	rsxFlushBuffer(s_ctx);
+	ps3_rsxwatch_flip(s_flip_queued);
 
 	s_flip_queued++;
 	s_last_fb = s_cur_fb;
@@ -609,6 +613,7 @@ static void vid_stats(void)
 
 void ps3_video_end_frame(void)
 {
+	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
 	ps3gl_end_frame();
 	queue_flip(0);
 	vid_stats();
@@ -626,6 +631,7 @@ int ps3_video_flip_held(void)
 
 double ps3_video_end_frame_at(u64 target_tb)
 {
+	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
 	ps3gl_end_frame();
 	// The RSX draws while this thread waits for the flip's turn.
 	rsxFlushBuffer(s_ctx);

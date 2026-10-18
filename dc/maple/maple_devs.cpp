@@ -23,6 +23,8 @@ const char* maple_sega_brand = "Produced By or Under License From SEGA ENTERPRIS
 
 // Plan section 7, bundle 16 (ps3_presets.cpp): 0 is the old path in each one.
 extern int g_maple_cmds_preset, g_vmu_per_game_preset;
+// G15: the VMU page, 1 = the old files. A getter: a new global would cost a TOC entry.
+extern "C" int get_vmu_page_preset();
 // P29, Flycast's AllStatusReq texts of the pad and of the VMU: 80 bytes each, so a reply stays whole words.
 static const char maple_pad_extra[] = "Version 1.010,1998/09/28,315-6211-AB   ,Analog Module : The 4th Edition.5/8  +DF";
 static const char maple_vmu_extra[] = "Version 1.005,1999/04/15,315-6208-03,SEGA Visual Memory System BIOS Produced by ";
@@ -400,7 +402,7 @@ struct maple_sega_vmu: maple_base
 	void open_card()
 	{
 		char name[48];
-		vmu_file_name(name,sizeof(name),logical_port,s_vmu_game,g_vmu_per_game_preset);
+		vmu_file_name(name,sizeof(name),logical_port,s_vmu_game,g_vmu_per_game_preset,get_vmu_page_preset());
 		if (file && !strcmp(name,file_name))
 			return;
 		if (file)
@@ -1128,7 +1130,7 @@ maple_device* maple_Create(MapleDeviceType type)
 void maple_vmu_game(const char* id10)
 {
 	vmu_game_id(s_vmu_game, id10);
-	printf("[vmu] disc ID '%s', VMU Per Game %d\n", s_vmu_game, g_vmu_per_game_preset);
+	printf("[vmu] disc ID '%s', VMU Per Game %d, VMU Page %d\n", s_vmu_game, g_vmu_per_game_preset, get_vmu_page_preset());
 	for (int bus = 0; bus < 4; bus++)
 		for (int port = 0; port < 6; port++)
 			if (MapleDevices[bus][port])

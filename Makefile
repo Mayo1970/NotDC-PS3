@@ -9,6 +9,8 @@ TARGET     := notdc_ps3
 TITLE      := NotDC
 TITLE_ID   := NOTDC0000
 CONTENT_ID := UP0001-$(TITLE_ID)_00-0000000000000000
+# PARAM.SFO APP_VER (XMB version) for release 0.8.0; sfo has no flag for it, so the pkg rule edits a copy of sfo.xml.
+APP_VER    := 00.80
 BUILD      ?= build
 # XMB icon, 320x176 PNG. Falls back to the PSL1GHT default if icon/ is missing.
 ICON0      ?= $(wildcard icon/ICON0.png)
@@ -22,6 +24,7 @@ CC       := $(PREFIX)gcc
 CXX      := $(PREFIX)g++
 SPRXLINK := $(PS3DEV)/bin/sprxlinker
 FSELF    := $(PS3DEV)/bin/fself
+MAKE_SELF := $(PS3DEV)/bin/make_self
 MAKE_SELF_NPDRM := $(PS3DEV)/bin/make_self_npdrm
 SFO      := $(PS3DEV)/bin/sfo
 PKG      := $(PS3DEV)/bin/pkg
@@ -76,6 +79,8 @@ $(BUILD)/dc/sh4/sh4_selftest.o: CXXFLAGS += -mminimal-toc
 # G11: the modem and the DCNet link are not hot paths, so one TOC entry each.
 $(BUILD)/plugs/nullExtDev/nullExtDev.o: CXXFLAGS += -mminimal-toc
 $(BUILD)/ps3/ps3_dcnet.o: CXXFLAGS += -mminimal-toc
+# The RSX stall log runs only on a stall, so its texts take one TOC entry.
+$(BUILD)/ps3/ps3_rsxwatch.o: CFLAGS += -mminimal-toc
 
 # --no-multi-toc: a split TOC emits r2off stubs that hang the PS3 at boot.
 # --wrap: stdout has no console; ps3/ps3_main.cpp sends it to the UDP log.
@@ -170,11 +175,14 @@ self: $(BUILD)/$(TARGET).elf
 	$(FSELF) $< $(BUILD)/EBOOT.BIN
 	@echo "Done: $(BUILD)/EBOOT.BIN"
 
+# G15 Close Game: sysProcessExitSpawn2 does not start the NPDRM EBOOT.BIN, so it starts the plain RELOAD.SELF.
 pkg: $(BUILD)/$(TARGET).elf
 	$(SPRXLINK) $<
 	@mkdir -p $(BUILD)/pkg/USRDIR
 	$(MAKE_SELF_NPDRM) $< $(BUILD)/pkg/USRDIR/EBOOT.BIN $(CONTENT_ID)
-	$(SFO) --title "$(TITLE)" --appid "$(TITLE_ID)" -f $(PS3DEV)/bin/sfo.xml $(BUILD)/pkg/PARAM.SFO
+	$(MAKE_SELF) $< $(BUILD)/pkg/USRDIR/RELOAD.SELF
+	sed '/"APP_VER"/{n;s/[0-9][0-9]\.[0-9][0-9]/$(APP_VER)/;}' $(PS3DEV)/bin/sfo.xml > $(BUILD)/sfo.xml
+	$(SFO) --title "$(TITLE)" --appid "$(TITLE_ID)" -f $(BUILD)/sfo.xml $(BUILD)/pkg/PARAM.SFO
 	@cp $(ICON0) $(BUILD)/pkg/ICON0.PNG
 	$(PKG) --contentid $(CONTENT_ID) $(BUILD)/pkg/ $(BUILD)/$(TARGET).pkg
 	@echo "Done: $(BUILD)/$(TARGET).pkg"

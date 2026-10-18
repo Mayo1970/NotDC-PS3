@@ -12,7 +12,7 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
-Active goal: none. G11 (online play) stage 1 is a HW success (2026-10-18, network end DCNet); its stage 2 (V.42) is
+Active goal: G15 (started 2026-10-18, Matt: "Let's go with Goal 15."). G11 (online play) stage 1 is a HW success (2026-10-18, network end DCNet); its stage 2 (V.42) is
 not started (Matt: "Do not start it."). G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well.").
 The open goals are G10, G11 (stage 2), G15, G16 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13. G16 (added
 2026-10-17, menu ideas, an open list) is the latest goal; its run order is not set yet.
@@ -422,10 +422,16 @@ Built 2026-10-13, steps 1-4, 7 and 8; package of 09:35 (`build/notdc_ps3.pkg`, 1
 - Found: chdr frees no codec buffer at a close, about 135 KB and the packed map for each image that opens. It counts
   only for many disc swaps. `chd.c` is the unchanged file.
 
-## G15 - End-user front end  `[ ]` (added 2026-10-16 at Matt's request; nothing built)
+## G15 - End-user front end  `[~]` (added 2026-10-16 at Matt's request; started 2026-10-18)
 Matt 2026-10-16: "A few more things that I'd like to add/implement in future, as last things". They run at the end,
 together with G13. Matt's first item (most rows hidden, an "Advanced mode") is G13, see its note of 2026-10-16.
 Each item keeps its own row and HW run on Matt's PS3, SH4 Clock 200.
+Matt 2026-10-18: "Let's go with Goal 15." His picks, the same day:
+- Item 1: way A (respawn). SELECT menu > START > confirm.
+- Item 2: one pair of rows per player (8 rows on CONTROLS), values NONE / VMU / RUMBLE, default VMU (G16 item 4 form).
+- Item 3: way A (pages).
+- Item 4: Players stays as the most ports (default 4); a port is plugged only when a PS3 pad is there. A port keeps its
+  pad while it stays connected, a new pad takes the lowest free port, and ports plug and unplug during a game.
 1. Close a game. Matt: "A way to close a game and go back to the disc selection without having to open and close the
    emulator". Today `main()` (`ps3/ps3_main.cpp`) runs the browser (`ps3_menu_run()`) one time, then `EmuMain()`
    until the XMB exit. The SELECT menu goes back to the game or swaps the disc. It cannot stop the game. The core
@@ -460,6 +466,53 @@ Each item keeps its own row and HW run on Matt's PS3, SH4 Clock 200.
 5. HW test: close a game and boot another one, with no hang and the saves kept; RUMBLE and a second VMU in a slot work
    in a game; a save editor opens a VMU file from the PS3; with one pad the game sees one controller, and a second
    pad adds port B.
+
+Matt 2026-10-18, item 2: "So if Players is set to 1, only show Port A. If players are 2, show both A and B and so on",
+slot 1 VMU and slot 2 NONE by default (asked: slot 2 of each port). Built, pkg 16:52 (3550800 bytes, `.got` 0xFFD8):
+`controls_shown()` (`ps3/ps3_menu.cpp`) lists a port's two rows only while Players reaches it (`Option.port1`), the
+cursor and the scroll go over the rows shown; `[ps3] SlotA2`..`SlotD2` default 0. An install that ran keeps its keys.
+HW 2026-10-18, pkg 16:52 (Matt: "Perfect. They work!"): the rows show and hide with Players. Then Matt: "keep Players:
+1 by default. So people won't feel overwhelmed": `g_player_count` default 1 (was 4).
+Item 1 HW SUCCESS 2026-10-18, pkg 16:32 (Matt: "Perfect. Both went fine!"): Sonic Adventure 2, Close Game, the log's
+next boot runs `USRDIR/RELOAD.SELF` and the browser opens; no `[rsxw]` line in that run. Items 2-4: no HW run yet.
+HW run 1, 2026-10-18 (pkg 14:44): Close Game ended NotDC cleanly, then the PS3 went to the XMB (Matt). Likely cause:
+the PKG's EBOOT.BIN is NPDRM (`make_self_npdrm`) and `sysProcessExitSpawn2` does not start it (RetroArch's PS3 port
+calls `sceNpDrmProcessExitSpawn` first, IRISMAN restarts a plain `USRDIR/RELOAD.SELF`; PSL1GHT has no NPDRM spawn).
+Items 2-4 did not run (default rows, one pad). Fix, Matt 2026-10-18 ("Both in one package"): the pkg also holds a
+plain `USRDIR/RELOAD.SELF` (`make_self`), and Close Game starts RELOAD.SELF in the folder of argv[0]. Package of 16:32
+(3549776 bytes); `.got` 0xFFD8 (5 entries left). Also in it, not G15: the RSX stall log (`ps3/ps3_rsxwatch.c`, the
+Sonic Adventure 2 freeze of that run: the RSX stopped flipping while the SH4 ran on), and another session's new defaults
+of 15:37 (Screen Scaler ON, Native Size ON).
+Built 2026-10-18, package `build/notdc_ps3.pkg` of 14:44 (1797616 bytes); not committed.
+- Item 1: SELECT menu > START opens "CLOSE GAME" (not in the disc browser); X closes, O goes back. After the presets
+  are saved, `ps3_close_game()` (`ps3/ps3_main.cpp`) sets `ps3_exit_requested = 2` (an XMB quit sets 1 and wins). The
+  monitor thread stops the SH4 as at an XMB exit; main() ends as at an XMB exit, then calls
+  `sysProcessExitSpawn2(argv[0], or PS3_SELF_PATH /dev_hdd0/game/NOTDC0000/USRDIR/EBOOT.BIN)`. If the SH4 does not stop
+  in 3 s, the forced exit goes to the XMB, as before. Log: `[ps3] XMB exit requested, stopping SH4 (close game 1)`;
+  the next boot line ends with the EBOOT path.
+- Item 2: CONTROLS rows "Port A Slot 1" .. "Port D Slot 2", NONE / VMU / RUMBLE, default VMU, set before boot; keys
+  `SlotA1` .. `SlotD2` (1 = VMU), in `[padcfg]`. `mcfg_PlugBus()` (`dc/maple/maple_cfg.cpp`) makes each port's
+  devices. The Rumble Pack row and key are gone; its old value is not carried over.
+- Item 3: CONTROLS row "VMU Page" 1-4 (key `VmuPage`, default 1), set before boot. Page 1 = the old files; page N adds
+  `_pN` (`vmu_save_A1_p2.bin`, with VMU Per Game `<ID>_vmu_save_A1_p2.bin`). Each page file is a standard 128 KB card.
+  `[vmu] disc ID ...` now prints the page.
+- Item 4: `ps3/ps3_padports.h` (a port keeps its pad while it is connected and below Players; a new pad takes the
+  lowest free port), `ps3_pad_ports()` (`ps3/ps3_input.cpp`), `mcfg_HotPlug()` at the start of each maple DMA:
+  `[maple] port B plugged=1/0`, `[pad] dcN -> ps3 pad M`. At boot only the ports with a pad are plugged. No OLD row.
+- TOC: `.got` 0xFF88 -> 0xFFC8 (8 entries; 7 left), no r2off stubs.
+- PC checks (WSL): `misc/maple_check` (117 checks, 126 of 126 mutants; its stale `dc.cpp` pair since the bundle 23
+  PAL line is now an `order`), `misc/pad_check` (the port rule against a second model, 400000 random steps, 51 of 51
+  mutants), new `misc/close_check` (24 source lines, 17 of 17 mutants), and the 18 other run.sh that name a changed
+  file: PASS (modem_check in the ps3dev image, as its header says).
+- HW steps (SH4 Clock 200; the new keys take their defaults on the install, the old Rumble Pack value is gone):
+  1. Close Game: in a game SELECT, START: "CLOSE GAME". O goes back; START, X: the browser after a few seconds. Boot
+     a second game. Fault: a black screen, a hang, or the XMB.
+  2. Slots: Port A Slot 2 RUMBLE, a game with Jump Pack support: the DS3 motor and `[pad] dc0 rumble` lines (the pack
+     never ran on HW). Then Port A Slot 1 NONE: the game sees the VMU in slot 2 only.
+  3. VMU Page 2: a blank card in the game (files `vmu_save_A1_p2.bin`, `A2_p2`); save; Close Game, page 1: the old
+     saves; page 2: the new one. A save editor on the PC opens `vmu_save_A1_p2.bin`.
+  4. Players 4 with one pad: the game sees one controller. A second DS3 on in the game: `[maple] port B plugged=1`;
+     off: `plugged=0` and the game's "controller removed".
 
 ## G16 - Menu ideas  `[ ]` (added 2026-10-17 at Matt's request; nothing built; an open list, Matt may add items)
 Matt 2026-10-17: menu ideas, checked for "doable or not". All are doable. Items 3, 4 and 5 are the newer form of G15
@@ -525,7 +578,7 @@ OFF their verdicts first (step 5).
    one game.
 5. Settle the defaults first. Open on 2026-10-08: YUV Block Decode is OFF in the source; SPE Tex Decode and SPE FB
    Convert have one HW run. Also open on 2026-10-11 (P85, plan bundle 15): a new flash boots in Japanese (Flycast:
-   English), and Players is 4 where Flycast plugs 1 controller. Since 2026-10-13 the six rows of the FLASH / CLOCK page
+   English), and Players is 4 where Flycast plugs 1 controller (Players is 1 by default since 2026-10-18, G15, Matt). Since 2026-10-13 the six rows of the FLASH / CLOCK page
    (bundle 15, HW SUCCESS 2026-10-13) have their defaults since 2026-10-13 (Matt: the values of his Rayman 2 run): DISC,
    ENGLISH, FLYCAST, FLYCAST, Exit Flash Save OFF, RTC Local Time ON. So a new flash boots in English now. Open from bundle 15 for these last checks (Matt 2026-10-13: "We'll check out these items as "open"
    for the latest stuff left before release."): Border Down at 60 Hz, Exit Flash Save, Flash Defaults with no flash file.

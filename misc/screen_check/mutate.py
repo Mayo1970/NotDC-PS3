@@ -241,7 +241,7 @@ MUTANTS = [
     ('no cheat file is loaded', N, '\tps3_cheats_load(selectedFilePath);\n', ''),
     ('FPS Overlay ON by default', P, 'int g_fps_overlay_preset   = 0;', 'int g_fps_overlay_preset   = 1;'),
     ('Screen Format STRETCH by default', P, 'int g_screen_format_preset = 0;', 'int g_screen_format_preset = 1;'),
-    ('Screen Scaler ON by default', P, 'int g_screen_scaler_preset = 0;', 'int g_screen_scaler_preset = 1;'),
+    ('Screen Scaler OFF by default', P, 'int g_screen_scaler_preset = 1;', 'int g_screen_scaler_preset = 0;'),
     ('Cheats ON by default', P, 'int g_cheats_preset        = 0;', 'int g_cheats_preset        = 1;'),
     ('Screen Format is not saved', P, '\t{ "ScreenFormat",  &g_screen_format_preset },\n\t{ "ScreenScaler",  &g_screen_scaler_preset },\n'
      '\t{ "Cheats",        &g_cheats_preset },\n\t{ "TexBindTable"',
@@ -270,7 +270,7 @@ MUTANTS = [
     ('native: a B over the maximum is kept', H, 'if (p->exact || p->bw > max_w || p->bh > max_h)', 'if (p->exact)'),
     ('native: the picture-sized canvas draws off screen', H,
      ' || (p->aw == (uint32_t)pw && p->ah == ph))\n\t\treturn false;', ')\n\t\treturn false;'),
-    ('native: ON by default', P, 'int g_native_size_preset   = 0;', 'int g_native_size_preset   = 1;'),
+    ('native: OFF by default', P, 'int g_native_size_preset   = 1;', 'int g_native_size_preset   = 0;'),
     ('native: not saved', P, '\t{ "NearCap",       &g_near_cap_preset },\n\t{ "NativeSize",    &g_native_size_preset },\n',
      '\t{ "NearCap",       &g_near_cap_preset },\n'),
     ('native: not live', M, '\t&g_native_size_preset,\n', ''),

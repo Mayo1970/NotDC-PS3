@@ -31,13 +31,6 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: serial
-    attributes:
-      label: Product number (serial)
-      description: Optional. Printed on the disc or box, for example `MK-51035` or `T-36803N`. It tells different releases of the same game apart.
-      placeholder: "MK-51035"
-
   - type: dropdown
     id: status
     attributes:
@@ -93,15 +86,6 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: build
-    attributes:
-      label: NotDC-PS3 build
-      description: The release version, or the commit SHA of the build package (the 8 characters in `notdc-ps3-build_xxxxxxxx`).
-      placeholder: "notdc-ps3-build_0215084a"
-    validations:
-      required: true
-
   - type: dropdown
     id: format
     attributes:
@@ -113,25 +97,16 @@ body:
     validations:
       required: true
 
-  - type: input
-    id: ps3
-    attributes:
-      label: PS3 model and firmware
-      description: Model (Fat, Slim, Super Slim, or the CECH number) and the firmware / CFW / HEN you run.
-      placeholder: "CECH-2504A Slim, Evilnat 4.92 CFW"
-    validations:
-      required: true
-
   - type: dropdown
-    id: bios
+    id: broadcast
     attributes:
-      label: BIOS region
-      description: The Dreamcast BIOS in `/dev_hdd0/data/NotDC/data/`.
+      label: Broadcast
+      description: The Broadcast setting on the FLASH / CLOCK page of the menu.
       options:
-        - NTSC-U (USA)
-        - PAL (Europe)
-        - NTSC-J (Japan)
-        - Don't know
+        - CONSOLE
+        - NTSC
+        - PAL
+        - DISC
     validations:
       required: true
 
@@ -149,13 +124,6 @@ body:
     attributes:
       label: Screenshots or video
       description: Optional. Drag images here, or paste a video link. Very helpful for graphics problems.
-
-  - type: textarea
-    id: log
-    attributes:
-      label: Log
-      description: Optional. If you captured the UDP debug log, paste it here.
-      render: text
 
   - type: textarea
     id: extra

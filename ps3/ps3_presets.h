@@ -187,8 +187,10 @@ extern int g_jit_pair_calls_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
 extern int g_stick_deadzone_preset;
-extern int g_rumble_pack_preset;
 extern int g_pad_map[];
+// G15, the CONTROLS page: the 8 slot rows (A1 A2 ... D2) and the VMU page.
+extern int g_slot_dev_preset[8];
+extern int g_vmu_page_preset;
 // Bundle 11 (plan section 7), the OUTPUT page.
 extern int g_rtt_readback_preset;
 extern int g_rtt_scaler_preset;

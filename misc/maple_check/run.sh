@@ -50,8 +50,11 @@ has $PH 1 'holly_MAPLE_DMA = holly_nrm | 12,'
 has $PH 1 'holly_MAPLE_OVERRUN = holly_err | 0x09,'
 D=dc/dc.cpp
 # The disc's product number reaches the VMUs after the region.
-pair $D 1 'dc_flash_set_region((const char*)&ip[0x30]);' '// P37: the product number, for row "VMU Per Game".'
+order $D 'dc_flash_set_region((const char*)&ip[0x30]);' '// P37: the product number, for row "VMU Per Game".' 'maple_vmu_game((const char*)&ip[0x40]);'
 has $D 1 'maple_vmu_game((const char*)&ip[0x40]);'
+# G15: each DMA first follows the pads.
+pair $F 1 'mcfg_HotPlug();' 'const bool delay=g_maple_delay_preset!=0, guard=g_maple_guard_preset!=0, frame_rules=g_maple_frame_preset!=0;'
+has $F 1 'mcfg_HotPlug();'
 R=ps3/ps3_rend.cpp
 pair $R 1 'osd_draw(sw, sh);' '// P37: the VMU screens go over the frame as the FPS text does.'
 pair $R 1 'if (ps3_vmulcd_draw(sw, sh))' 'reset_param_cache();'
@@ -89,6 +92,10 @@ has $P 2 '{ "MapleFrame",    &g_maple_frame_preset },'
 has $P 2 '{ "VmuPerGame",    &g_vmu_per_game_preset },'
 has $P 2 '{ "VmuScreen",     &g_vmu_screen_preset },'
 has $P 1 'cfg_print("maplecfg", s_maple_items, MAPLE_ITEMS, last, &printed, when, always);'
+# G15: VMU Page, 1 = the old files, on the CONTROLS page ([padcfg]).
+has $P 1 'int g_vmu_page_preset      = 1;'
+has $P 2 '{ "VmuPage",       &g_vmu_page_preset },'
+has $P 1 'int get_vmu_page_preset()      { return g_vmu_page_preset; }'
 M=ps3/ps3_menu.cpp
 has $M 1 '{ "Maple Reply Delay", &g_maple_delay_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,'
 has $M 1 '{ "Maple Bus Speed", &g_maple_speed_preset,   OPT_CHOICE, k_busspeed,  0, 0,0,0, NULL,'
@@ -117,5 +124,8 @@ has $M 2 '&g_maple_guard_preset'
 has $M 2 '&g_maple_frame_preset'
 has $M 2 '&g_vmu_screen_preset'
 has $M 1 '&g_vmu_per_game_preset'
-[ $r = 0 ] && echo "PASS: 67 source line checks"
+# G15: pages 1-4, set before boot.
+has $M 1 '{ "VMU Page",        &g_vmu_page_preset,      OPT_RANGE,  NULL,        0, 1,4,1, "%d",'
+has $M 1 '&g_vmu_page_preset'
+[ $r = 0 ] && echo "PASS: 74 source line checks"
 exit $r

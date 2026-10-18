@@ -4,6 +4,7 @@
 #include "dc_pad_bits.h"
 #include "ps3_menu.h"
 #include "ps3_padmap.h"
+#include "ps3_padports.h"
 #include "ps3_presets.h"
 
 #include <stdio.h>
@@ -127,18 +128,30 @@ static s8 ClampAnalogValue(s32 value)
 	return (s8)value;
 }
 
-// DC port N takes the Nth connected pad in PS3 port order; pads can move after a BT reconnect.
-static int ps3_find_pad(const padInfo* info, u32 dc_port)
+// G15: maple_cfg.cpp asks at each maple DMA which DC ports have a pad (bit N = port N), cap = the Players row.
+// A port keeps its pad while it stays connected (ps3_padports.h); on an ioPad error the ports stay as they are.
+u32 ps3_pad_ports(u32 cap)
 {
-	u32 n = 0;
-	for (int i = 0; i < MAX_PORT_NUM; i++)
+	padInfo info;
+	if (ps3_pad_ok && ioPadGetInfo(&info) == 0)
 	{
-		if (!info->status[i])
-			continue;
-		if (n++ == dc_port)
-			return i;
+		int old[MAX_CONTROLLERS];
+		for (u32 port = 0; port < MAX_CONTROLLERS; port++)
+		{
+			old[port] = ps3_pad_of_dc[port];
+			if (padports_lost(ps3_pad_of_dc, info.status, MAX_PORT_NUM, cap, port))
+			{
+				// P13: the pad that leaves this port must not keep its motor on.
+				rumble_send(port, 0.0f);
+				ps3_pad_of_dc[port] = -1;
+			}
+		}
+		padports_fill(ps3_pad_of_dc, info.status, MAX_PORT_NUM, cap);
+		for (u32 port = 0; port < MAX_CONTROLLERS; port++)
+			if (ps3_pad_of_dc[port] != old[port])
+				printf("[pad] dc%u -> ps3 pad %d\n", port, ps3_pad_of_dc[port]);
 	}
-	return -1;
+	return padports_mask(ps3_pad_of_dc);
 }
 
 static void ps3_log_state(u32 port)
@@ -200,18 +213,8 @@ void UpdateInputState(u32 port)
 	joyrx[port] = joyry[port] = 0;
 	lt[port] = rt[port] = 0;
 
-	padInfo info;
-	int pad = -1;
-	if (ps3_pad_ok && ioPadGetInfo(&info) == 0)
-		pad = ps3_find_pad(&info, port);
-
-	if (pad != ps3_pad_of_dc[port])
-	{
-		printf("[pad] dc%u -> ps3 pad %d\n", port, pad);
-		// P13: the pad that leaves this port must not keep its motor on.
-		rumble_send(port, 0.0f);
-		ps3_pad_of_dc[port] = pad;
-	}
+	// G15: ps3_pad_ports() gave the port its pad at the start of this maple DMA.
+	const int pad = ps3_pad_ok ? ps3_pad_of_dc[port] : -1;
 	rumble_update(port);
 	if (pad < 0)
 	{

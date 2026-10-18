@@ -63,10 +63,20 @@ void asic_RaiseInterrupt(HollyInterruptID inter)
 
 // -- What ps3_presets.cpp and ps3_input.cpp give the maple code ------------------
 int g_maple_delay_preset, g_maple_speed_preset, g_maple_cmds_preset, g_maple_ddt_preset, g_maple_guard_preset;
-int g_maple_frame_preset, g_vmu_per_game_preset, g_rumble_pack_preset;
+int g_maple_frame_preset, g_vmu_per_game_preset;
 static int g_players = 1, g_ctrl_type;
 extern "C" int get_controller_type() { return g_ctrl_type; }
 extern "C" int get_player_count() { return g_players; }
+// G15: the slot rows, the VMU page, and the ports that have a PS3 pad (ps3_padports.h is pad_check's).
+static int g_slots[8] = { 1, 1, 1, 1, 1, 1, 1, 1 }, g_page = 1;
+static u32 g_pad_mask = 0xF, g_pad_calls;
+extern "C" int get_slot_dev_preset(u32 slot) { return slot < 8 ? g_slots[slot] : 0; }
+extern "C" int get_vmu_page_preset() { return g_page; }
+u32 ps3_pad_ports(u32 cap)
+{
+	g_pad_calls++;
+	return g_pad_mask & ((1u << (cap < 4 ? cap : 4)) - 1);
+}
 u16 kcode[4];
 u32 vks[4];
 s8 joyx[4], joyy[4], joyrx[4], joyry[4];
@@ -90,7 +100,8 @@ void InitLightGun() {}
 void InitMaracas() {}
 void InitKeyboard() {}
 void InitFishingRod() {}
-void UpdateVibration(u32, float, float, u32) {}
+static int g_vib_port = -1;
+void UpdateVibration(u32 port, float, float, u32) { g_vib_port = (int)port; }
 extern "C" u16 GetLightGunX(int) { return 0; }
 extern "C" u16 GetLightGunY(int) { return 0; }
 static u32 g_lcd_pushes, g_lcd_bus, g_lcd_port;
@@ -103,6 +114,8 @@ void ps3_vmulcd_push(u32 bus, u32 port, const u8* img)
 	memcpy(g_lcd_img, img, sizeof(g_lcd_img));
 }
 void ps3_vmulcd_reset() {}
+static u32 g_lcd_unplugs;
+void ps3_vmulcd_unplug(u32 bus) { g_lcd_unplugs |= 1u << bus; }
 
 // The JIT's DMA hook (dc/sh4/rec_v2/driver.cpp): test_dma_hook wants each reply's RAM in one of these ranges.
 #include "dc/sh4/rec_v2/jit_dma.h"
@@ -143,14 +156,16 @@ static void rows_off()
 static void vmu_files_clear()
 {
 	static const char* ids[] = { "", "MK-51035_", "T-8116D_05_" };
+	static const char* pages[] = { "", "_p2", "_p3", "_p4" };
 	for (const char* id : ids)
-		for (int bus = 0; bus < 4; bus++)
-			for (int slot = 1; slot <= 2; slot++)
-			{
-				char path[160];
-				snprintf(path, sizeof(path), VMU_DIR "/%svmu_save_%c%d.bin", id, 'A' + bus, slot);
-				unlink(path);
-			}
+		for (const char* pg : pages)
+			for (int bus = 0; bus < 4; bus++)
+				for (int slot = 1; slot <= 2; slot++)
+				{
+					char path[160];
+					snprintf(path, sizeof(path), VMU_DIR "/%svmu_save_%c%d%s.bin", id, 'A' + bus, slot, pg);
+					unlink(path);
+				}
 }
 // New devices with blank cards, the registers at reset, an empty first MB.
 static void world_reset(bool cards = true)
@@ -676,10 +691,10 @@ static void test_frames()
 }
 
 // -- 8. VMU Per Game, VMU Screen, the devices ----------------------------------
-static std::string vmu_name(const char* port, const char* id, int level)
+static std::string vmu_name(const char* port, const char* id, int level, int page = 1)
 {
 	char out[64];
-	vmu_file_name(out, sizeof(out), port, id, level);
+	vmu_file_name(out, sizeof(out), port, id, level, page);
 	return out;
 }
 static bool file_there(const char* name)
@@ -773,6 +788,150 @@ static void test_devices()
 	g_players = 1;
 }
 
+// -- G15 (GOALS.md): the slot rows, the VMU page, the ports that follow the pads ----
+static u32 bus_reply(u32 bus, u32 unit, u32 cmd, std::vector<u32> data = {})
+{
+	table_write({ frame(bus, unit, cmd, data) });
+	dma_start();
+	return reply(0);
+}
+// The device request's header and capability word: a VMU, the pack, or no device.
+static bool slot_is(u32 bus, u32 slot, int dev)
+{
+	const u32 r = bus_reply(bus, 1u << slot, 1);
+	if (dev != 1 && dev != 2)
+		return r == 0xFFFFFFFFu;
+	return r == (0x1C000005u | ((bus << 6) << 8) | (((bus << 6) | (1u << slot)) << 16)) &&
+	       reply(1) == (dev == 1 ? 0x0E000000u : 0x00010000u);
+}
+static void g15_defaults()
+{
+	for (int& s : g_slots)
+		s = 1;
+	g_page = 1;
+	g_pad_mask = 0xF;
+	g_players = 1;
+	g_vmu_per_game_preset = 0;
+}
+static std::vector<u32> block_write(u32 block, u32 first)
+{
+	std::vector<u32> wr = { 0x02000000, block << 24 };
+	for (u32 k = 0; k < 32; k++)
+		wr.push_back(first + k);
+	return wr;
+}
+// The first word of a block of the card in A1.
+static u32 block_word(u32 block)
+{
+	bus_reply(0, 0x01, 0x0B, { 0x02000000, block << 24 });
+	return reply(3);
+}
+static void devices_again()
+{
+	mcfg_DestroyDevices();
+	mcfg_CreateDevices();
+}
+
+static void test_g15()
+{
+	rows_off();
+	g15_defaults();
+	// Each slot value, both slots; the pad reports what is attached.
+	for (int s1 = -1; s1 < 4; s1++)
+		for (int s2 = 0; s2 < 3; s2++)
+		{
+			g_slots[0] = s1;
+			g_slots[1] = s2;
+			world_reset();
+			const u32 att = ((s1 == 1 || s1 == 2) ? 1u : 0u) | (s2 ? 2u : 0u);
+			const bool pad = bus_reply(0, 0x20, 1) == (0x1C200005u | (att << 16));
+			EXPECT(pad && slot_is(0, 0, s1) && slot_is(0, 1, s2), "slots %d / %d: the devices", s1, s2);
+		}
+	// Each port has its own pair: port B's rows act on bus 1 only.
+	g15_defaults();
+	g_players = 2;
+	g_slots[2] = 2;
+	g_slots[3] = 0;
+	world_reset();
+	EXPECT(slot_is(1, 0, 2) && slot_is(1, 1, 0) && slot_is(0, 0, 1) && slot_is(0, 1, 1), "slots: port B's rows");
+	// The pack's motor is the pad of its own port.
+	g_vib_port = -1;
+	bus_reply(1, 0x01, 0x0E, { 0x00010000, 0x00001001 });
+	EXPECT(g_vib_port == 1, "slots: the pack of port B drives port %d", g_vib_port);
+	g15_defaults();
+	g_vib_port = -1;
+	g_slots[1] = 2;
+	world_reset();
+	bus_reply(0, 0x02, 0x0E, { 0x00010000, 0x00001001 });
+	EXPECT(g_vib_port == 0, "slots: the pack of A2 drives port %d", g_vib_port);
+
+	// VMU Page: the names, then one more card for each page.
+	EXPECT(vmu_name("A1", "", 0, 1) == "vmu_save_A1.bin" && vmu_name("A1", "", 0, 2) == "vmu_save_A1_p2.bin", "page names: %s",
+	       vmu_name("A1", "", 0, 2).c_str());
+	EXPECT(vmu_name("B2", "MK-51035  ", 2, 4) == "MK-51035_vmu_save_B2_p4.bin" && vmu_name("A2", "MK-51035  ", 1, 3) == "vmu_save_A2_p3.bin",
+	       "page names with VMU Per Game: %s", vmu_name("B2", "MK-51035  ", 2, 4).c_str());
+	EXPECT(vmu_name("A1", "MK-51035  ", 1, 0) == "MK-51035_vmu_save_A1.bin" && vmu_name("D1", "", 0, -3) == "vmu_save_D1.bin",
+	       "page names: a page under 2 is page 1");
+	g15_defaults();
+	world_reset();
+	bus_reply(0, 0x01, 0x0C, block_write(5, 0xA5A50000));
+	g_page = 2;
+	devices_again();
+	EXPECT(file_there("vmu_save_A1_p2.bin") && file_there("vmu_save_A2_p2.bin"), "page 2: no files of its own");
+	EXPECT(block_word(5) == 0, "page 2: the card is not blank (%08X)", block_word(5));
+	bus_reply(0, 0x01, 0x0C, block_write(5, 0x12345678));
+	g_page = 1;
+	devices_again();
+	EXPECT(block_word(5) == 0xA5A50000, "page 1: the block is %08X", block_word(5));
+	g_page = 2;
+	devices_again();
+	EXPECT(block_word(5) == 0x12345678, "page 2: the block is %08X", block_word(5));
+	g_vmu_per_game_preset = 2;
+	g_page = 3;
+	maple_vmu_game("T-8116D 05");
+	EXPECT(file_there("T-8116D_05_vmu_save_A1_p3.bin") && file_there("T-8116D_05_vmu_save_A2_p3.bin"), "page 3 with VMU Per Game: the files");
+	s_vmu_game[0] = 0;
+
+	// The ports follow the pads at each DMA, Players at most.
+	g15_defaults();
+	g_players = 4;
+	world_reset();
+	bool all = true;
+	for (u32 bus = 0; bus < 4; bus++)
+		all = all && MapleDevices[bus][5] && MapleDevices[bus][0] && MapleDevices[bus][1];
+	EXPECT(all, "pads: four pads, not four ports");
+	bus_reply(1, 0x01, 0x0C, block_write(7, 0x0BADF00D));
+	maple_device* a1 = MapleDevices[0][0];
+	g_pad_calls = 0;
+	g_lcd_unplugs = 0;
+	g_log.clear();
+	g_pad_mask = 0x5;
+	EXPECT(bus_reply(1, 0x20, 1) == 0xFFFFFFFFu && g_pad_calls == 1, "pads: port B still answers after its pad left");
+	bool gone = true;
+	for (u32 port = 0; port < 6; port++)
+		gone = gone && !MapleDevices[1][port] && !MapleDevices[3][port];
+	EXPECT(gone && MapleDevices[0][5] && MapleDevices[2][5] && MapleDevices[0][0] == a1, "pads: the wrong ports went");
+	EXPECT(g_lcd_unplugs == 0xA, "pads: VMU screens of ports %X left", g_lcd_unplugs);
+	EXPECT(g_log.find("[maple] port B plugged=0") != std::string::npos && g_log.find("[maple] port D plugged=0") != std::string::npos &&
+	       g_log.find("port A plugged") == std::string::npos, "pads: the log lines");
+	g_pad_mask = 0x7;
+	EXPECT(bus_reply(1, 0x20, 1) == (0x1C000005u | (0x40u << 8) | (0x63u << 16)), "pads: port B is not back");
+	bus_reply(1, 0x01, 0x0B, { 0x02000000, 7u << 24 });
+	EXPECT(reply(3) == 0x0BADF00D, "pads: port B's card lost its block (%08X)", reply(3));
+	EXPECT(MapleDevices[0][0] == a1 && !MapleDevices[3][5], "pads: a port that did not change was made again");
+	g_players = 2;
+	g_pad_mask = 0xF;
+	world_reset();
+	EXPECT(MapleDevices[0][5] && MapleDevices[1][5] && !MapleDevices[2][5] && !MapleDevices[3][5], "pads: Players is not the most ports");
+	g_pad_mask = 0;
+	world_reset();
+	bool none = true;
+	for (u32 bus = 0; bus < 4; bus++)
+		none = none && !MapleDevices[bus][5];
+	EXPECT(none, "pads: a port with no pad is plugged at boot");
+	g15_defaults();
+}
+
 // -- 9. The JIT's DMA hook -------------------------------------------------------
 // The words of the first MB that changed since before and that no report covers.
 static u32 dma_unreported(const std::vector<u8>& before)
@@ -846,6 +1005,7 @@ int main(int argc, char** argv)
 	test_frames();
 	test_vmu();
 	test_devices();
+	test_g15();
 	test_dma_hook(cases);
 	mcfg_DestroyDevices();
 	fprintf(stdout, "%s: maple_check, %d checks, %d random tables\n", g_fail ? "FAIL" : "PASS", g_checks, cases * 2);

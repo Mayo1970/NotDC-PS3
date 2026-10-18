@@ -73,3 +73,5 @@ struct IMapleConfigMap
 
 void mcfg_CreateDevices();
 void mcfg_DestroyDevices();
+// G15: plugs and unplugs each port as its PS3 pad comes and goes; maple_DoDma() calls it first.
+void mcfg_HotPlug();

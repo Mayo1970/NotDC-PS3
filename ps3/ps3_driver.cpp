@@ -6170,20 +6170,7 @@ void ngen_mainloop()
 
 		//Make _SURE_ this code is not overwriten !
 		emit_SetBaseAddr();
-		
-		char file[512];
-		snprintf(file, sizeof(file), "dynarec_%08X.bin", (u32)(uintptr_t)loop_code);
-		char* path=GetEmuPath(file);
 
-		FILE* f = fopen(path, "wb");
-		free(path);
-
-		if (f)
-		{
-			fwrite((void*)loop_code, 1, (u8*)emit_GetCCPtr()-(u8*)loop_code, f);
-			fclose(f);  // fclose flushes; explicit fflush is redundant
-		}
-		
     // CACHE COHERENCY
     make_address_range_executable((u8*)loop_code, (u8*)emit_GetCCPtr()-(u8*)loop_code);
 		ngen_mmu_dispatch(g_jit_mmu);

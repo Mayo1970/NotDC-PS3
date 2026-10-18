@@ -33,6 +33,12 @@ void ps3_vmulcd_reset(void)
 		s_lcd_on[id] = 0;
 }
 
+void ps3_vmulcd_unplug(u32 bus)
+{
+	if (bus < 4)
+		s_lcd_on[bus * 2] = s_lcd_on[bus * 2 + 1] = 0;
+}
+
 void ps3_vmulcd_init(void)
 {
 	if (g_vmu_screen_preset)

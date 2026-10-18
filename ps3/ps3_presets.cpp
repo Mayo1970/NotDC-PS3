@@ -31,7 +31,7 @@ int g_audio_buffers_preset = -1;  // -1 leaves the nullDC.cfg value alone
 int g_exit_fix_preset      = 1;
 int g_aica_fast_preset     = 1;
 int g_controller_type      = 0;   // the menu's value: 0 = standard pad, 1 = full controller with 2 sticks (G12)
-int g_player_count         = 4;
+int g_player_count         = 1;   // the most DC ports (G15); 1 by default so the CONTROLS page stays short (Matt)
 int g_debug_loop           = 0;
 int g_debug_gdrom          = 0;
 int g_dynarec_preset       = 1;   // 0 SH4 interpreter, 1 SH4 dynarec
@@ -211,7 +211,10 @@ int g_jit_schedule_preset  = 2;   // 1 = FORMS: RAM check and address side by si
 int g_jit_pair_calls_preset = 1;  // 1 = a 64-bit access to device memory passes its u64 as ELFv1 wants; 0 writes 0 (P105, Matt: FIXED)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
-int g_rumble_pack_preset   = 0;   // 1 = VMU slot 2 holds a Puru Puru pack that drives the DS3's large motor (P13)
+// G15: what each controller's slot holds, A1 A2 B1 ... D2: 0 = nothing, 1 = a VMU, 2 = the Puru Puru pack (P13).
+// Matt 2026-10-18: slot 1 a VMU, slot 2 nothing by default.
+int g_slot_dev_preset[8]   = { 1, 0, 1, 0, 1, 0, 1, 0 };
+int g_vmu_page_preset      = 1;   // G15: the VMU page, 1-4; page 2 and up is one more card per slot (vmu_save_A1_p2.bin)
 // The DC control each DS3 button drives (PADMAP_* by PADBTN_*); the defaults are the fixed map of before (G10).
 int g_pad_map[PADBTN_COUNT] = PADMAP_DEFAULTS;
 // OPTIMIZATION_PLAN section 7, bundle 11 (render to texture and present): 0 is the old path in every one.
@@ -235,9 +238,9 @@ int g_ta_ctx_split_preset  = 1;   // 1 = a list init on a context a job still ho
 // until it is cleared on hardware.
 int g_fps_overlay_preset   = 0;   // 1 = FPS and SPEED on the screen's left edge, new once a second (P50)
 int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture on every column (P69), 2 = more canvas at the sides (P53)
-int g_screen_scaler_preset = 0;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
+int g_screen_scaler_preset = 1;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
 int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
-int g_native_size_preset   = 0;   // 1 = the scene draws at the game's size, then whole-pixel scaling to the picture (P104)
+int g_native_size_preset   = 1;   // 1 = the scene draws at the game's size, then whole-pixel scaling to the picture (P104)
 // OPTIMIZATION_PLAN section 7, bundle 13 (MMU and memory): 0 is the old path in every one; a row is off until it is
 // cleared on hardware. MMUCR Bits is FIXED since 2026-10-12 (Matt): Border Down, Sonic Shuffle, Ikaruga and Rez boot.
 int g_mmu_bits_preset      = 1;   // 1 = MMUCR's fields at the manual's bits, its write mask, a JIT cache clear on an AT edge (P58, P78, HW)
@@ -494,7 +497,15 @@ static const CfgItem s_items[] = {
 	{ "VmuScreen",     &g_vmu_screen_preset },
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
-	{ "RumblePack",    &g_rumble_pack_preset },
+	{ "SlotA1",        &g_slot_dev_preset[0] },
+	{ "SlotA2",        &g_slot_dev_preset[1] },
+	{ "SlotB1",        &g_slot_dev_preset[2] },
+	{ "SlotB2",        &g_slot_dev_preset[3] },
+	{ "SlotC1",        &g_slot_dev_preset[4] },
+	{ "SlotC2",        &g_slot_dev_preset[5] },
+	{ "SlotD1",        &g_slot_dev_preset[6] },
+	{ "SlotD2",        &g_slot_dev_preset[7] },
+	{ "VmuPage",       &g_vmu_page_preset },
 	{ "MapCross",      &g_pad_map[PADBTN_CROSS] },
 	{ "MapCircle",     &g_pad_map[PADBTN_CIRCLE] },
 	{ "MapSquare",     &g_pad_map[PADBTN_SQUARE] },
@@ -681,7 +692,15 @@ static const CfgItem s_pad_items[] = {
 	{ "Players",       &g_player_count },
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
-	{ "RumblePack",    &g_rumble_pack_preset },
+	{ "SlotA1",        &g_slot_dev_preset[0] },
+	{ "SlotA2",        &g_slot_dev_preset[1] },
+	{ "SlotB1",        &g_slot_dev_preset[2] },
+	{ "SlotB2",        &g_slot_dev_preset[3] },
+	{ "SlotC1",        &g_slot_dev_preset[4] },
+	{ "SlotC2",        &g_slot_dev_preset[5] },
+	{ "SlotD1",        &g_slot_dev_preset[6] },
+	{ "SlotD2",        &g_slot_dev_preset[7] },
+	{ "VmuPage",       &g_vmu_page_preset },
 	{ "MapCross",      &g_pad_map[PADBTN_CROSS] },
 	{ "MapCircle",     &g_pad_map[PADBTN_CIRCLE] },
 	{ "MapSquare",     &g_pad_map[PADBTN_SQUARE] },
@@ -942,6 +961,9 @@ int get_exit_fix_preset()      { return g_exit_fix_preset; }
 // maple_cfg's device number: 1-4 are devices the PS3 port does not drive, so the full controller is 5 (G12).
 int get_controller_type()      { return g_controller_type == 1 ? 5 : 0; }
 int get_player_count()         { return g_player_count; }
+// G15: maple_cfg.cpp and maple_devs.cpp read these at each device they make.
+int get_slot_dev_preset(u32 slot) { return slot < 8 ? g_slot_dev_preset[slot] : 0; }
+int get_vmu_page_preset()      { return g_vmu_page_preset; }
 int get_debug_loop()           { return g_debug_loop; }
 int get_debug_gdrom()          { return g_debug_gdrom; }
 

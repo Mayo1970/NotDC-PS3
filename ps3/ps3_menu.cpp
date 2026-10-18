@@ -25,6 +25,8 @@
 // nullDC.cpp and os_GetFile() read this; empty means boot the BIOS with no disc.
 extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
+extern "C" void ps3_close_game(void);   // ps3_main.cpp (G15)
+extern "C" int get_player_count(void);  // ps3_presets.cpp: a call, so no TOC entry for g_player_count
 void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
 void ps3_rumble_stop(void);   // ps3_input.cpp
@@ -350,6 +352,8 @@ static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", "FULL (2 STICKS)", NULL };
 static const char* k_deadzone[]  = { "AXIS", "RADIAL", NULL };
+// G15: the values maple_cfg.cpp reads (0 nothing, 1 VMU, 2 Puru Puru pack).
+static const char* k_slotdev[]   = { "NONE", "VMU", "RUMBLE", NULL };
 // PADMAP_* order (ps3_padmap.h).
 static const char* k_padmap[]    = { "NONE", "A", "B", "X", "Y", "START", "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT",
                                      "D-PAD RIGHT", "L TRIGGER", "R TRIGGER", NULL };
@@ -386,6 +390,7 @@ struct Option
 	int          lo, hi, step;
 	const char*  fmt;   // OPT_RANGE
 	const char*  help;
+	int          port1; // G15 CONTROLS: a slot row of port port1 - 1, shown while Players reaches it; 0 = always
 };
 
 static Option s_emu[] = {
@@ -912,16 +917,25 @@ static Option s_net[] = {
 
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
+static const char k_slot_help[] = "What this slot holds. RUMBLE is the vibration pack on the DS3 motor (P13). Set before boot.";
 
 static Option s_controls[] = {
 	{ "Players",         &g_player_count,         OPT_RANGE,  NULL,        0, 1,4,1, "%d",
-	  "Maple ports the emulator creates. Pad N drives Dreamcast port N." },
+	  "The most ports. A port is plugged while a PS3 pad is on it; a new pad takes the first free one." },
 	{ "Controller",      &g_controller_type,      OPT_CHOICE, k_pad_type,  0, 0,0,0, NULL,
 	  "FULL adds the right stick, for the games that read it (Quake III Arena, G12)." },
 	{ "Stick Dead Zone", &g_stick_deadzone_preset, OPT_CHOICE, k_deadzone, 0, 0,0,0, NULL,
 	  "RADIAL: a round 10% dead zone, smooth from 0, corners capped at full travel (P84)." },
-	{ "Rumble Pack",     &g_rumble_pack_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "A vibration pack on the DS3 motor. It takes slot 2: the second VMU is not plugged (P13)." },
+	{ "Port A Slot 1",   &g_slot_dev_preset[0],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
+	{ "Port A Slot 2",   &g_slot_dev_preset[1],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
+	{ "Port B Slot 1",   &g_slot_dev_preset[2],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 2 },
+	{ "Port B Slot 2",   &g_slot_dev_preset[3],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 2 },
+	{ "Port C Slot 1",   &g_slot_dev_preset[4],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 3 },
+	{ "Port C Slot 2",   &g_slot_dev_preset[5],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 3 },
+	{ "Port D Slot 1",   &g_slot_dev_preset[6],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 4 },
+	{ "Port D Slot 2",   &g_slot_dev_preset[7],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 4 },
+	{ "VMU Page",        &g_vmu_page_preset,      OPT_RANGE,  NULL,        0, 1,4,1, "%d",
+	  "Pages 2-4 are other cards in the same slots (vmu_save_A1_p2.bin ...). Set before boot." },
 	{ "Cross",           &g_pad_map[PADBTN_CROSS],    OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
 	{ "Circle",          &g_pad_map[PADBTN_CIRCLE],   OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
 	{ "Square",          &g_pad_map[PADBTN_SQUARE],   OPT_CHOICE, k_padmap, 0, 0,0,0, NULL, k_map_help },
@@ -1352,12 +1366,29 @@ static void options_draw()
 	            "LEFT/RIGHT Change   L1/R1 Page   X Continue   O Back");
 }
 
+// G15 (Matt): a port's slot rows show only while Players reaches the port. rows = the rows shown, pos = the cursor's.
+static int controls_shown(int* rows, int* pos)
+{
+	int n = 0;
+	*pos = 0;
+	for (int i = 0; i < CONTROLS_ROWS; i++)
+		if (!s_controls[i].port1 || s_controls[i].port1 <= get_player_count())
+		{
+			if (i == s_ctl_row)
+				*pos = n;
+			rows[n++] = i;
+		}
+	return n;
+}
+
 static Screen controls_input(u32 pressed)
 {
+	int rows[CONTROLS_ROWS], pos;
+	const int n = controls_shown(rows, &pos);
 	if (pressed & MB_UP)
-		s_ctl_row = (s_ctl_row > 0) ? s_ctl_row - 1 : CONTROLS_ROWS - 1;
+		s_ctl_row = rows[pos > 0 ? pos - 1 : n - 1];
 	else if (pressed & MB_DOWN)
-		s_ctl_row = (s_ctl_row < CONTROLS_ROWS - 1) ? s_ctl_row + 1 : 0;
+		s_ctl_row = rows[pos < n - 1 ? pos + 1 : 0];
 	else if (pressed & MB_LEFT)
 		option_step(&s_controls[s_ctl_row], -1);
 	else if (pressed & MB_RIGHT)
@@ -1376,16 +1407,21 @@ static void controls_draw()
 
 	draw_header("CONTROLS", NULL);
 
-	// The rows scroll above the two status lines.
+	// The rows scroll above the two status lines; s_ctl_top counts the rows shown. Rows that go leave no gap.
+	int rows[CONTROLS_ROWS], pos;
+	const int n = controls_shown(rows, &pos);
 	const int vis = visible_rows() - 3;
-	if (s_ctl_row < s_ctl_top)
-		s_ctl_top = s_ctl_row;
-	else if (s_ctl_row >= s_ctl_top + vis)
-		s_ctl_top = s_ctl_row - vis + 1;
-	for (int i = s_ctl_top; i < CONTROLS_ROWS && i - s_ctl_top < vis; i++)
+	if (pos < s_ctl_top)
+		s_ctl_top = pos;
+	else if (pos >= s_ctl_top + vis)
+		s_ctl_top = pos - vis + 1;
+	if (s_ctl_top > n - vis)
+		s_ctl_top = n > vis ? n - vis : 0;
+	for (int k = s_ctl_top; k < n && k - s_ctl_top < vis; k++)
 	{
-		option_text(&s_controls[i], val, sizeof(val));
-		draw_row(i - s_ctl_top, i == s_ctl_row, COL_TEXT, s_controls[i].label, val);
+		const Option* o = &s_controls[rows[k]];
+		option_text(o, val, sizeof(val));
+		draw_row(k - s_ctl_top, rows[k] == s_ctl_row, COL_TEXT, o->label, val);
 	}
 
 	snprintf(buf, sizeof(buf), "Pads connected: %d", pad_count());
@@ -1521,8 +1557,16 @@ static void ingame_draw()
 	}
 
 	draw_footer(p->rows[s_opt_row].help, g_disc_swap_preset
-	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   [] Screenshot   SELECT Back   * Next boot"
-	            : "LEFT/RIGHT Change   L1/R1 Page   [] Screenshot   SELECT Back to game   * Next boot");
+	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   [] Screenshot   START Close game   SELECT Back   * Next boot"
+	            : "LEFT/RIGHT Change   L1/R1 Page   [] Screenshot   START Close game   SELECT Back to game   * Next boot");
+}
+
+// G15 Close Game: the question before the game stops. Each text is a TOC entry, so there are three.
+static void close_draw()
+{
+	draw_header("CLOSE GAME", NULL);
+	draw_row(0, false, COL_TEXT, "Stop the game and go back to the disc list? What it did not save is lost.", NULL);
+	draw_footer(NULL, "X Yes   O No");
 }
 
 void ps3_menu_request(void)
@@ -1570,12 +1614,23 @@ void ps3_menu_ingame(void)
 		bool swap = false;
 		// P51: SQUARE closes the menu, and the next frame of the game goes to a PNG.
 		bool shot = false;
+		// G15: START asks; X there closes the game, O goes back to the options.
+		bool ask_close = false, close_game = false;
 		s_swap_path[0] = '\0';
 		while (!ps3_exit_pending())
 		{
 			u32 pressed = pad_poll(16);
 			if (pressed & MB_SELECT)
 				break;
+			if (ask_close)
+			{
+				close_game = (pressed & MB_CROSS) != 0;
+				if (close_game)
+					break;
+				if (pressed & MB_CIRCLE)
+					ask_close = false;
+				pressed = 0;
+			}
 			shot = !swap && (pressed & MB_SQUARE);
 			if (shot)
 				break;
@@ -1594,11 +1649,15 @@ void ps3_menu_ingame(void)
 				s_sel = 0;
 				swap = s_files != NULL;
 			}
+			else if (pressed & MB_START)
+				ask_close = true;
 			else
 				ingame_input(pressed);
 			if (ps3ui_begin(COL_BG))
 			{
-				if (swap)
+				if (ask_close)
+					close_draw();
+				else if (swap)
 					browser_draw(true);
 				else
 					ingame_draw();
@@ -1644,6 +1703,9 @@ void ps3_menu_ingame(void)
 			gdrom_disc_swap(s_swap_path);
 		if (shot)
 			ps3rend_screenshot();
+		// G15: the presets are saved above; the monitor thread stops the SH4 as at an XMB exit, then NotDC starts again.
+		if (close_game)
+			ps3_close_game();
 	}
 	else
 		printf("[menu] in-game menu: no UI\n");

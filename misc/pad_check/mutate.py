@@ -4,10 +4,10 @@ import os, shutil, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 TMP = '/tmp/padmut'
-H, U = 'ps3/ps3_padmap.h', 'dc/maple/maple_puru.h'
+H, U, Q = 'ps3/ps3_padmap.h', 'dc/maple/maple_puru.h', 'ps3/ps3_padports.h'
 I, D, C = 'ps3/ps3_input.cpp', 'dc/maple/maple_devs.cpp', 'dc/maple/maple_cfg.cpp'
 M, P = 'ps3/ps3_menu.cpp', 'ps3/ps3_presets.cpp'
-FILES = [H, U, I, D, C, M, P, 'ps3/dc_pad_bits.h', 'misc/pad_check/pad_check.cpp', 'misc/pad_check/run.sh']
+FILES = [H, U, Q, I, D, C, M, P, 'ps3/dc_pad_bits.h', 'misc/pad_check/pad_check.cpp', 'misc/pad_check/run.sh']
 
 MUTANTS = [
     # The button map
@@ -48,15 +48,47 @@ MUTANTS = [
     ('X2 is never sent', D, 'w8(second_stick() ? pjs.joy[PJAI_X2] : 0x80);', 'w8(0x80);'),
     ('the auto-stop time from the wrong byte', D, 'AST=(r32()>>16)&0xFF;', 'AST=(r32()>>8)&0xFF;'),
     ('the kcode mask is gone', C, 'pjs->kcode = kcode[dev->bus_id] | 0xF901;', 'pjs->kcode = kcode[dev->bus_id];'),
-    ('the pack is plugged with the row off', C, 'g_rumble_pack_preset ? MDT_PuruPuru : MDT_SegaVMU;',
-     'g_rumble_pack_preset ? MDT_SegaVMU : MDT_PuruPuru;'),
+    ('a VMU slot holds the pack', C, 'mcfg_Create(dev == 1 ? MDT_SegaVMU : MDT_PuruPuru, bus, slot);',
+     'mcfg_Create(dev == 1 ? MDT_PuruPuru : MDT_SegaVMU, bus, slot);'),
     ('the full controller has no VMU', C, '(ctrlType == MDT_SegaController || ctrlType == MDT_FullController);',
      '(ctrlType == MDT_SegaController);'),
     ('RADIAL by default', P, 'int g_stick_deadzone_preset = 0;', 'int g_stick_deadzone_preset = 1;'),
-    ('Rumble Pack on by default', P, 'int g_rumble_pack_preset   = 0;', 'int g_rumble_pack_preset   = 1;'),
+    ('a slot holds the pack by default', P, 'int g_slot_dev_preset[8]   = { 1, 0, 1, 0, 1, 0, 1, 0 };',
+     'int g_slot_dev_preset[8]   = { 1, 2, 1, 0, 1, 0, 1, 0 };'),
+    ('Players 4 by default', P, 'int g_player_count         = 1;', 'int g_player_count         = 4;'),
+    ('slot 2 holds a VMU by default', P, 'int g_slot_dev_preset[8]   = { 1, 0, 1, 0, 1, 0, 1, 0 };',
+     'int g_slot_dev_preset[8]   = { 1, 1, 1, 1, 1, 1, 1, 1 };'),
+    ('the slot getter reads the other slot', P, 'return slot < 8 ? g_slot_dev_preset[slot] : 0;',
+     'return slot < 8 ? g_slot_dev_preset[slot ^ 1] : 0;'),
     ('FULL by default', P, 'int g_controller_type      = 0;', 'int g_controller_type      = 1;'),
     ('the full controller is the light gun', P, 'return g_controller_type == 1 ? 5 : 0; }', 'return g_controller_type; }'),
     ('the menu does not stop the motors', M, '\tps3_rumble_stop();\n', ''),
+    # G15: the slot rows
+    ('RUMBLE comes before VMU', M, '{ "NONE", "VMU", "RUMBLE", NULL };', '{ "NONE", "RUMBLE", "VMU", NULL };'),
+    ('Port B Slot 1 sets slot A1', M, '{ "Port B Slot 1",   &g_slot_dev_preset[2],', '{ "Port B Slot 1",   &g_slot_dev_preset[0],'),
+    ('the slot rows are live', M, '\t&g_maple_frame_preset, &g_vmu_screen_preset,\n',
+     '\t&g_maple_frame_preset, &g_vmu_screen_preset, &g_slot_dev_preset[0],\n'),
+    ('every slot row shows', M, 'if (!s_controls[i].port1 || s_controls[i].port1 <= get_player_count())', 'if (true)'),
+    ('the rows of one port too many show', M, 's_controls[i].port1 <= get_player_count())', 's_controls[i].port1 <= get_player_count() + 1)'),
+    ('port B shows with port A', M, 'NULL, k_slot_help, 2 },\n\t{ "Port B Slot 2"', 'NULL, k_slot_help, 1 },\n\t{ "Port B Slot 2"'),
+    ('UP goes over the hidden rows', M, 's_ctl_row = rows[pos > 0 ? pos - 1 : n - 1];', 's_ctl_row = s_ctl_row > 0 ? s_ctl_row - 1 : CONTROLS_ROWS - 1;'),
+    ('the scroll leaves a gap when rows go', M, '\tif (s_ctl_top > n - vis)\n\t\ts_ctl_top = n > vis ? n - vis : 0;\n', ''),
+    # G15: the ports follow the pads
+    ('a port keeps a pad that left', Q, '(port >= cap || map[port] >= npads || !status[map[port]])',
+     '(port >= cap || map[port] >= npads)'),
+    ('a kept port is not held to Players', Q, '(port >= cap || map[port] >= npads ||', '(map[port] >= npads ||'),
+    ('a new pad is not held to Players', Q, 'for (port = 0; port < cap && port < PADPORTS_DC; port++)',
+     'for (port = 0; port < PADPORTS_DC; port++)'),
+    ('a pad with a port takes one more', Q, '\t\tif (port < PADPORTS_DC)\n\t\t\tcontinue;\n', ''),
+    ('a new pad takes every free port', Q, '\t\t\t\tmap[port] = pad;\n\t\t\t\tbreak;\n', '\t\t\t\tmap[port] = pad;\n'),
+    ('the mask counts the empty ports', Q, 'if (map[port] >= 0)\n\t\t\tports |= 1u << port;', 'ports |= 1u << port;'),
+    ('the pads take the ports from the last one', Q, 'for (int pad = 0; pad < npads; pad++)',
+     'for (int pad = npads - 1; pad >= 0; pad--)'),
+    ('a port that lost its pad keeps it', I, '\t\t\t\tps3_pad_of_dc[port] = -1;\n', ''),
+    ('the motor stays on when its pad leaves', I,
+     '\t\t\t\t// P13: the pad that leaves this port must not keep its motor on.\n\t\t\t\trumble_send(port, 0.0f);\n',
+     '\t\t\t\t// P13: the pad that leaves this port must not keep its motor on.\n'),
+    ('no new pads', I, '\t\tpadports_fill(ps3_pad_of_dc, info.status, MAX_PORT_NUM, cap);\n', ''),
 ]
 
 def main():

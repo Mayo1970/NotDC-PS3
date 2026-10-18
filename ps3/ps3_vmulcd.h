@@ -6,6 +6,8 @@
 void ps3_vmulcd_push(u32 bus, u32 port, const u8* img);
 // No VMU has a picture any more (the devices are made again).
 void ps3_vmulcd_reset(void);
+// G15: the controller on this bus was unplugged; its two VMU screens go.
+void ps3_vmulcd_unplug(u32 bus);
 // The UI's quads must be ready before the render thread starts.
 void ps3_vmulcd_init(void);
 // Draws over the frame the renderer began. Returns 1 when it drew: the caller's GL state cache is stale then.

@@ -20,12 +20,15 @@ void InitFishingRod(void);
 
 // From ps3_presets.cpp; 0 (standard pad) or 5 (full controller) on PS3.
 extern "C" int get_controller_type();  // 0=standard 1=lightgun 2=maracas 3=keyboard 4=fishing 5=full (2 sticks)
-// P13: 1 = VMU slot 2 holds the Puru Puru pack; its motor is in ps3/ps3_input.cpp.
-extern int g_rumble_pack_preset;
+// G15: the CONTROLS slot rows, bus * 2 + slot: 0 = nothing, 1 = a VMU, 2 = the Puru Puru pack (its motor: P13).
+extern "C" int get_slot_dev_preset(u32 slot);
 void UpdateVibration(u32 port, float power, float inclination, u32 duration_ms);
+// G15, ps3/ps3_input.cpp: the ports that have a PS3 pad, bit N = port N, below cap.
+u32 ps3_pad_ports(u32 cap);
 // ps3/ps3_vmulcd.cpp: row "VMU Screen" (plan section 7, bundle 16).
 void ps3_vmulcd_push(u32 bus, u32 port, const u8* img);
 void ps3_vmulcd_reset(void);
+void ps3_vmulcd_unplug(u32 bus);
 
 extern u16 kcode[4];
 extern u32 vks[4];
@@ -141,44 +144,67 @@ static void mcfg_InitSpecialDevice()
 	}
 }
 
-// g_player_count comes from nullDC.cfg [ps3] Players (ps3_presets.cpp), loaded before EmuMain().
+// The Players row (ps3_presets.cpp), loaded before EmuMain(): the most ports since G15.
 extern "C" int get_player_count();
 
-// Per player: port 5 = controller, ports 0 and 1 = VMU slots 1 and 2 (standard pad and full controller only).
+// One player: port 5 = controller, ports 0 and 1 = slots 1 and 2 (standard pad and full controller only).
+static void mcfg_PlugBus(u32 bus)
+{
+	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
+	bool isStandard = (ctrlType == MDT_SegaController || ctrlType == MDT_FullController);
+	mcfg_Create(ctrlType, bus, 5);
+
+	// No VMUs on special devices: Confidential Mission rejected a lightgun port with one.
+	// Probably wrong, though: the official lightgun has a VMU slot.
+	if (!isStandard)
+		return;
+	for (u32 slot = 0; slot < 2; slot++)
+	{
+		const int dev = get_slot_dev_preset(bus * 2 + slot);
+		if (dev == 1 || dev == 2)
+			mcfg_Create(dev == 1 ? MDT_SegaVMU : MDT_PuruPuru, bus, slot);
+	}
+}
+
+static void mcfg_UnplugBus(u32 bus)
+{
+	for (int port = 0; port < 6; port++)
+	{
+		delete MapleDevices[bus][port];
+		MapleDevices[bus][port] = nullptr;
+	}
+	ps3_vmulcd_unplug(bus);
+}
+
 void mcfg_CreateDevices()
 {
 	// plugins_Load() runs twice per boot; free the first set so each VMU file has one open handle.
 	mcfg_DestroyDevices();
 
-	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
-	bool isStandard = (ctrlType == MDT_SegaController || ctrlType == MDT_FullController);
-	// P13: the Puru Puru pack takes slot 2, so the second VMU is not plugged while it is on.
-	MapleDeviceType slot2 = g_rumble_pack_preset ? MDT_PuruPuru : MDT_SegaVMU;
-
 	// One-time hardware / data-format initialisation
 	mcfg_InitSpecialDevice();
 
-	// --- Bus 0 : Player 1 ---
-	mcfg_Create(ctrlType,       0, 5);  // Main controller
+	// G15: only the ports that have a PS3 pad, at most Players of them; mcfg_HotPlug() follows the pads after this.
+	const u32 ports = ps3_pad_ports((u32)get_player_count());
+	for (u32 bus = 0; bus < 4; bus++)
+		if ((ports >> bus) & 1)
+			mcfg_PlugBus(bus);
+}
 
-	// No VMUs on special devices: Confidential Mission rejected a lightgun port with one.
-	// Probably wrong, though: the official lightgun has a VMU slot.
-	if (isStandard)
+// G15: at each maple DMA a port is plugged while its PS3 pad is there; the game sees it come and go.
+void mcfg_HotPlug()
+{
+	const u32 ports = ps3_pad_ports((u32)get_player_count());
+	for (u32 bus = 0; bus < 4; bus++)
 	{
-		mcfg_Create(MDT_SegaVMU, 0, 0);  // VMU slot A1
-		mcfg_Create(slot2,       0, 1);  // VMU slot A2, or the vibration pack
-	}
-
-	// --- Buses 1-3 : Players 2-4 (when 2/3/4-player mode is active) ---
-	int players = get_player_count();
-	for (u32 bus = 1; bus < (u32)players && bus < 4; bus++)
-	{
-		mcfg_Create(ctrlType,     bus, 5);
-		if (isStandard)
-		{
-			mcfg_Create(MDT_SegaVMU, bus, 0);
-			mcfg_Create(slot2,       bus, 1);
-		}
+		const bool want = (ports >> bus) & 1;
+		if (want == (MapleDevices[bus][5] != nullptr))
+			continue;
+		if (want)
+			mcfg_PlugBus(bus);
+		else
+			mcfg_UnplugBus(bus);
+		printf("[maple] port %c plugged=%d\n", 'A' + bus, (int)want);
 	}
 }
 

@@ -43,6 +43,9 @@ extern "C" volatile u32 g_jit_blocks_entered;
 
 // Data root; BIOS lives in data/, nullDC.cfg at the top.
 #define PS3_DATA_ROOT "/dev_hdd0/data/NotDC/"
+// The running file when argv[0] is no path. G15 Close Game starts the plain RELOAD.SELF in its folder: the spawn
+// does not start the NPDRM EBOOT.BIN of a PKG.
+#define PS3_SELF_PATH "/dev_hdd0/game/NOTDC0000/USRDIR/EBOOT.BIN"
 
 uint64_t ps3_timebase_hz = 79800000u;
 
@@ -50,6 +53,7 @@ static int ps3_log_socket = -1;
 static struct sockaddr_in ps3_log_addr;
 static sys_mutex_t ps3_log_mutex;
 static bool ps3_log_mutex_ok;
+// 1 = XMB exit, 2 = G15 Close Game. One variable: each static costs a TOC entry.
 static volatile int ps3_exit_requested;
 static volatile int ps3_monitor_quit;
 static sys_ppu_thread_t ps3_monitor_tid;
@@ -149,6 +153,12 @@ extern "C" int ps3_exit_pending()
 	return ps3_exit_requested;
 }
 
+// G15 Close Game (way A): the XMB exit's stop, then main() starts this EBOOT.BIN again; the browser opens.
+extern "C" void ps3_close_game()
+{
+	ps3_exit_requested = 2;
+}
+
 // flash_check: begin zone
 // P12: the XMB's time zone plus its summer time, in seconds east of UTC. A value the system refuses counts as 0.
 extern "C" int ps3_local_offset_seconds()
@@ -193,11 +203,12 @@ static void ps3_monitor_thread(void* arg)
 			if (stop_ticks == 0)
 			{
 				// sh4_cpu is still all-zero while the front end runs.
-				printf("[ps3] XMB exit requested, stopping SH4\n");
+				printf("[ps3] XMB exit requested, stopping SH4 (close game %d)\n", ps3_exit_requested == 2);
 				if (sh4_cpu.Stop)
 					sh4_cpu.Stop();
 			}
 			// A stuck core (die() loops forever) never returns; an unanswered exit crashes the console.
+			// G15: Close Game also ends at the XMB here; a stuck core is no state to start NotDC again from.
 			else if (stop_ticks >= 30)
 			{
 				// P85: the settings the BIOS saved survive this exit.
@@ -285,6 +296,9 @@ int os_msgbox(const wchar* text, unsigned int type)
 
 int main(int argc, char* argv[])
 {
+	const char* run = (argc > 0 && argv[0] && argv[0][0] == '/') ? argv[0] : PS3_SELF_PATH;
+	char self[256];
+	snprintf(self, sizeof(self), "%.*sRELOAD.SELF", (int)(strrchr(run, '/') + 1 - run), run);
 	sysUtilRegisterCallback(SYSUTIL_EVENT_SLOT0, ps3_sysutil_cb, NULL);
 
 	// The net module must be loaded before netInitialize() (ioQuake3-PS3, xashPS3).
@@ -294,7 +308,7 @@ int main(int argc, char* argv[])
 
 	ps3_timebase_hz = sysGetTimebaseFrequency();
 
-	printf("[ps3] NotDC " __DATE__ " " __TIME__ "\n");
+	printf("[ps3] NotDC " __DATE__ " " __TIME__ " %s, Close Game starts %s\n", run, self);
 	printf("[ps3] netInitialize=%d timebase=%llu Hz sizeof(void*)=%u\n",
 	       net_ret, (unsigned long long)ps3_timebase_hz, (unsigned)sizeof(void*));
 	printf("[ps3] largest free block at boot: %u KB\n", (unsigned)(ps3_largest_block() / 1024));
@@ -353,6 +367,9 @@ shutdown:
 		close(ps3_log_socket);
 	// No netDeinitialize(): it froze shutdown on HW in xashPS3.
 	sysUtilUnregisterCallback(SYSUTIL_EVENT_SLOT0);
+	// G15: the PS3 ends this process and starts the file again; the call returns only on an error.
+	if (ps3_exit_requested == 2)
+		sysProcessExitSpawn2(self, NULL, NULL, NULL, 0, 1001, SYS_PROCESS_SPAWN_STACK_SIZE_1M);
 	return 0;
 }
 

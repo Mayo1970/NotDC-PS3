@@ -20,14 +20,16 @@ static inline int vmu_game_id(char out[11], const char* id10)
 	return n;
 }
 
-// level: 0 = one file per slot (the old names), 1 = slot A1 has one file per disc (Flycast), 2 = each slot has.
-// port: "A1" .. "D2". With no disc ID the name is the old one at each level.
-static inline void vmu_file_name(char* out, size_t len, const char* port, const char* id10, int level)
+// level: 0 = one file per slot (the old names), 1 = slot A1 has one file per disc (Flycast), 2 = each slot has; no
+// disc ID = the old name. port: "A1" .. "D2". page (G15, the 4X cards): 2 and up add "_p<page>", one more card each.
+static inline void vmu_file_name(char* out, size_t len, const char* port, const char* id10, int level, int page)
 {
-	char id[11];
+	char id[11], pg[16] = "";
 	const int n = vmu_game_id(id, id10);
+	if (page > 1)
+		snprintf(pg, sizeof(pg), "_p%d", page);
 	if (n > 0 && (level == 2 || (level == 1 && !strcmp(port, "A1"))))
-		snprintf(out, len, "%s_vmu_save_%s.bin", id, port);
+		snprintf(out, len, "%s_vmu_save_%s%s.bin", id, port, pg);
 	else
-		snprintf(out, len, "vmu_save_%s.bin", port);
+		snprintf(out, len, "vmu_save_%s%s.bin", port, pg);
 }
