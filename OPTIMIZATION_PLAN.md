@@ -17990,12 +17990,32 @@ Main gains:
      Large.
   5. The broadcast lists (P92 d): read the area strings of the discs
      first; only Hydro Thunder PAL and the PAL discs that list more than
-     Europe can need a change.
+     Europe can need a change. Found 2026-10-18: the GDI and CHD readers
+     write "JUE" over the area (nullDC's region patch), so DISC gives NTSC
+     to every GDI and CHD disc. Built 2026-10-18 (Matt: "the product ID
+     entry seems good to get"): `dc_flash_disc_broadcast()` in
+     `dc/flash_fix.cpp`, PAL at DISC for Evil Twin `T46605D 80` only (its
+     audio fault is not the broadcast: SH4-bound at 86% in PAL and NTSC);
+     `misc/flash_check` PASS, 98 of 98 mutants. Not packaged, no HW run
+     of the entry.
   6. The HLE BIOS games (P92 e): Stupid Invaders, Suika, Cool Boarders
      Burrrn. Against section 4 (reios); Matt decides.
   7. Caesar's Palace and the RGB list (P92 f).
   8. Dave Mirra BMX and Fur Fighters (P92 g): `.cht` files for the Cheats
      row; for Fur Fighters, a boot with TMU Fine TCNT ON first.
+  9. PARKED 2026-10-18 (Matt: "It's too risky. Let's park it."): list
+     passes on the SPU. Evil Twin's choppy sound (GDI, HW runs 1-3) is
+     SH4-bound heavy scenes: 9K+ vertices at 86.6% (List Passes ON) and
+     94.1% (OFF, picture right, Matt), silent blocks 19.6 -> 8.6/s. With
+     ON, a frame with TA_LIST_CONT drops the SPU decode (`rth_job_decode`,
+     `pass_ppu`): render thread 20-33% (decode 11-18, vertex build 8-12)
+     against 5-6% at OFF. No PVR fog in those scenes (FogCtrl none). Part 1
+     (low risk): the SPU decode keeps the pass marks (`SPE_OP_CONT`, 16-bit
+     marks in `SpeFence.pad`), the SPU vertex build off for such frames.
+     Part 2 (high risk): `spe_vb_build.h` per pass; `spe_vb.elf` is 249 of
+     256 KB of local store. Also open: a List Passes OFF entry for
+     `T46605D 80` only. Other games with TA_LIST_CONT in the HW logs: Alone
+     in the Dark, Resident Evil 2, Spider-Man, Tomb Raider TLR.
 - For GOALS.md G11, not this bundle: Flycast's Dricas login patches for
   11 online games (P92 h).
 - Shared code: `ps3/ps3_rend.cpp` (`track_inv_w()`, `draw_scene()`),

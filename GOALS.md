@@ -12,8 +12,9 @@ Rule: every goal ends with a hardware test. Next goal starts only after SUCCESS.
 
 Status: `[ ]` open, `[~]` active, `[x]` done (HW validated), `[!]` blocked.
 
-Active goal: none. G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well."). The open goals
-are G10, G11, G15, G16 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13. G16 (added
+Active goal: none. G11 (online play) stage 1 is a HW success (2026-10-18, network end DCNet); its stage 2 (V.42) is
+not started (Matt: "Do not start it."). G14 (CHD disc images) is done: HW 2026-10-14 (Matt: "The CHD images run well.").
+The open goals are G10, G11 (stage 2), G15, G16 and G13 (last). G15 (added 2026-10-16) runs at the end, together with G13. G16 (added
 2026-10-17, menu ideas, an open list) is the latest goal; its run order is not set yet.
 
 Speed work and open items after G8: `OPTIMIZATION_PLAN.md` (section 0 has the state; section 7 has the open items
@@ -262,7 +263,7 @@ a success."); these two rows had no HW run:
   C, Z and D are not offered: the pad still masks them (`0xF901`, G12 step 3).
 - Step 5: row CONTROLS > "Stick Dead Zone" (AXIS = the old cut, RADIAL = P84's), default AXIS.
 
-## G11 - Online play (modem)  `[ ]` (added 2026-10-07 at Matt's request)
+## G11 - Online play (modem)  `[ ]` (added 2026-10-07 at Matt's request; started 2026-10-18, network end DCNet (Matt); stage 1 HW SUCCESS 2026-10-18; stage 2 not started, Matt)
 No DreamPi box needed: the emulator replaces the phone line, the modem and the DreamPi in software, as Flycast does.
 Reference: Flycast `core/hw/modem/` and `core/network/`.
 Order (re-cut 2026-10-12): after plan bundle 15 (Flash and clock), which builds the flash block code for the dial-up
@@ -298,6 +299,38 @@ dial-up blocks need it: Matt's flash has its settings block in physical block 22
    P83). Flycast also writes a random console ID for network games (P85, plan bundle 15).
 4. Optional, later: broadband adapter (`core/hw/bba/bba.cpp`, `rtl8139c.cpp`); fewer games support it.
 5. HW test: a modem game dials, connects and reaches its revived server.
+
+Started 2026-10-18 (Matt: "Let's go with G11"). Step 3: Matt picked 3a, DCNet. Stage 1 (steps 1a, 2, 3a and the flash
+account) is built, package of 04:24 (`build/notdc_ps3.pkg`, 1,796,592 bytes). HW SUCCESS 2026-10-18 on that package
+(Matt: "I tested it and it works flawlessly."). Stage 2 (step 1b, V.42): Matt 2026-10-18, "Do not start it." The
+row's default is DCNET since 2026-10-18 (Matt: "Keep it DCNET default."); in the source, not in a package.
+The three G11 files got their Flycast/Reicast GPL headers on 2026-10-18 at 04:34, after the package.
+- Row NETWORK > Modem (`[ps3] Modem`): OFF (the old stub) or DCNET (default). Set before boot: `libExtDevice_Init` reads
+  it. OFF keeps every read of 0x600000-0x6007FF at 0 and writes nothing, as before.
+- Step 1a: `plugs/nullExtDev/nullExtDev.cpp` is Flycast's `modem.cpp` of df2bdfc9b. Its sh4_sched callback runs on the
+  cycles of each MediumUpdate (7,168 in FAST, `dc/sh4/sh4_interpreter.cpp`); Flycast's jitter rule keeps the 143 us
+  byte rate. Log: `[modem] reset`, `dialing`, `ringing`, `handshake`, `connected: CONF .. ASYN .. SPEED ..`.
+- Step 2: `plugs/nullExtDev/modem_regs.h` lists each byte's bits from bit 0 as Flycast does; `BITS()` reverses them
+  on the PPU. reg02 v0/v1 got their 2 missing bits. MEDAL/MEDAM are two bytes; the DSP RAM words are always byte-wise
+  (Flycast reads even addresses as `*(u16*)`).
+- Step 3a: `ps3/ps3_dcnet.cpp`, Flycast's PPPSocket. At the modem's connection a PPU thread (prio 999) dials
+  dcnet.flyca.st:7654; two rings (16 KB in, 4 KB out) join it to the SH4 thread. Bytes from before the link are
+  dropped, as in Flycast. A modem reset hangs up. Log: `[dcnet] call N: dialing`, `connected to`, bytes every 5 s,
+  `ended`. Not built: the access-point finder (UDP 7655), port 7656 (Power Smash, Pro Yakyuu Team: V.14, stage 2),
+  telling the game when DCNet closes the link (Flycast's DCNet does not either).
+- Flash: with the row ON, a flash with no block 0x80 gets Flycast's dial-up account (`add_isp_to_nvmem`, user
+  `flycast1`, password `password`, number `1234567`), then the BBA block 0xE0. These writes may reuse blocks with a newer
+  copy (Flycast's `alloc_block` rule, only on this path). An account that exists stays as it is: Flycast also renames
+  its user, and NotDC has no user name row. The account stays in `dc_flash_wb.bin` (`dc_flash.bin` is not written).
+  Log: `[flash] dial-up account written|kept|NO ROOM, BBA block ...`.
+- TOC: `.got` 0xFF88 (0xFF50 before; the bundle 23 work in the tree adds 2 entries). The two new objects build with
+  `-mminimal-toc` (one entry each).
+- PC checks: `misc/modem_check/run.sh` (ps3dev image): the layout of all 152 fields on both byte orders is Flycast's;
+  300 driver runs in lockstep with Flycast's `modem.cpp` (29 M operations, 251 dials, 153 connections: every read,
+  interrupt and byte the same); the
+  DCNet rings and thread on Linux sockets with ASan and TSan; 20 source lines. `mutate.py`: 42 of 42 planted bugs fail it.
+  `misc/flash_check` test 10: the account is Flycast's on 400 flashes, also Matt's case (242 of 254 blocks used);
+  `mutate.py`: 108 of 108 (10 of them for G11).
 
 ## G12 - Second analog stick (Full Controller)  `[x]` (added 2026-10-07 at Matt's request; built 2026-10-12; HW 2026-10-12: the right stick works in Quake III Arena, Matt: "Quake 3 double sticks works")
 Some games read a 2nd analog stick ("Panther mode", made for the Mad Catz Panther DC flight stick + trackball):

@@ -28,6 +28,8 @@
 // fire through sh4_sched (deadline-ordered) instead of at their own cascade tier.
 extern "C" int get_sched_preset();
 extern "C" int get_sys_gate_batch_preset();
+// G11: the modem's timer (plugs/nullExtDev).
+void FASTCALL libExtDevice_Update(u32 cycles);
 #include <time.h>
 #include <float.h>
 
@@ -356,6 +358,7 @@ void FASTCALL MediumUpdate()
 	sp_mark(SP_ARM);
 	UpdateDMA();
 	sp_mark(SP_DMA);
+	libExtDevice_Update(s_timeslice * s_medium_period);
 
 	if (!(update_cnt & (s_slow_period - 1)))
 		SlowUpdate();

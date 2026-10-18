@@ -25,6 +25,11 @@ MUTANTS = [
     ('the disc rule acts at NTSC and PAL too', F, '\tif (g_broadcast_preset == 3)\n', '\tif (g_broadcast_preset)\n'),
     ('the disc rule acts at CONSOLE', F, '\tif (g_broadcast_preset == 3)\n', '\tif (g_broadcast_preset != 1 && g_broadcast_preset != 2)\n'),
     ('the broadcast byte is the language byte', F, 'FACT_BROADCAST = 4,', 'FACT_BROADCAST = 3,'),
+    ('the PAL list acts at NTSC and PAL too', F, 'if (flash_b.data == 0 || g_broadcast_preset != 3)',
+     'if (flash_b.data == 0 || g_broadcast_preset == 0)'),
+    ('the PAL list reads 9 bytes of the ID', F, 'if (!memcmp(product, k_pal[i], 10))', 'if (!memcmp(product, k_pal[i], 9))'),
+    ('the PAL list writes NTSC', F, '\t\t\tset_factory(FACT_BROADCAST, 1);\n', '\t\t\tset_factory(FACT_BROADCAST, 0);\n'),
+    ('no PAL list call', D, '\tdc_flash_disc_broadcast((const char*)&ip[0x40]);\n', ''),
     ('the second factory copy is not written', F, "\tflash_b[FLASH_FACTORY_B + at] = (u8)('0' + digit);\n", ''),
     ('the second factory copy at 0x1a080', F, '#define FLASH_FACTORY_B 0x1a0a0', '#define FLASH_FACTORY_B 0x1a080'),
     ('a factory byte is the value, not its digit', F, "\tflash_b[FLASH_FACTORY_A + at] = (u8)('0' + digit);\n",
@@ -139,6 +144,21 @@ MUTANTS = [
     ('no [flashcfg] line at boot', M, '\tps3_flashcfg_print("boot", true);\n', ''),
     ('Console ID row has ON / OFF', M, '{ "Console ID",      &g_console_id_preset,    OPT_CHOICE, k_oldfly,',
      '{ "Console ID",      &g_console_id_preset,    OPT_CHOICE, k_onoff, '),
+    # GOALS.md G11: the dial-up account
+    ('dial-up: no block reuse', F, 'if (!is_allocated(bitmap, id) || lookup_block(rd16(phys(id))) != id)',
+     'if (!is_allocated(bitmap, id))'),
+    ('dial-up: the syscfg block reuses old blocks too', F, '\t\tid = alloc_block();\n', '\t\tid = alloc_block_reuse();\n'),
+    ('dial-up: written with the row OFF', F, '\tif (g_modem_preset)\n\t\tflash_isp();\n', '\tflash_isp();\n'),
+    ('dial-up: an account that exists is written again', F, 'if (!lookup_block(FLASH_USER_INET))', 'if (true)'),
+    ('dial-up: the ISP1 user at byte 11', F, 'put_text(b + 10, k_isp.user, sizeof(k_isp.user));',
+     'put_text(b + 11, k_isp.user, sizeof(k_isp.user));'),
+    ('dial-up: the ISP2 phone at byte 54', F, 'put_text(b + 50, k_isp.phone, sizeof(k_isp.phone));',
+     'put_text(b + 54, k_isp.phone, sizeof(k_isp.phone));'),
+    ('dial-up: INET+4 is 0xFF from byte 28', F, 'memset(b + 27, 0xFF, sizeof(b) - 27);', 'memset(b + 28, 0xFF, sizeof(b) - 28);'),
+    ('dial-up: block 0xCB has no flag', F, 'b[56] = i == 0xCB;', 'b[56] = 0;'),
+    ('dial-up: the BBA netmask big-endian', F, '\t\tb[14] = 0x00;\n\t\tb[15] = b[16] = b[17] = 0xFF;\n',
+     '\t\tb[17] = 0x00;\n\t\tb[14] = b[15] = b[16] = 0xFF;\n'),
+    ('dial-up: a BBA block with netmask 0 is kept', F, ' || !(b[14] | b[15] | b[16] | b[17]))', ')'),
 ]
 
 def main():

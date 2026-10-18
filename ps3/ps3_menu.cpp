@@ -372,6 +372,7 @@ static const char* k_mmujit[]    = { "INTERP", "JIT", NULL };
 static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
 static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
+static const char* k_modem[]     = { "OFF", "DCNET", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -903,6 +904,12 @@ static Option s_sys[] = {
 	  "With MMU Model FAST, the JIT keeps the data page cache of 8 recent processes. Set before boot." },
 };
 
+// GOALS.md G11 (online play): the first value is the old path.
+static Option s_net[] = {
+	{ "Modem",           &g_modem_preset,         OPT_CHOICE, k_modem,     0, 0,0,0, NULL,
+	  "DCNET: the modem dials DCNet over the PS3's network; no V.42 yet (G11). Set before boot." },
+};
+
 // Plan section 7, bundle 10: one row per item; the first value is the old path. The map's defaults are the old map.
 static const char k_map_help[] = "The Dreamcast control this DS3 button drives. SELECT opens the in-game menu.";
 
@@ -955,6 +962,7 @@ static Page s_opt_pages[] = {
 	{ "FLASH / CLOCK", s_flash, (int)(sizeof(s_flash) / sizeof(s_flash[0])) },
 	{ "MAPLE / VMU",   s_maple, (int)(sizeof(s_maple) / sizeof(s_maple[0])) },
 	{ "SH4 / SYSTEM",  s_sys,   (int)(sizeof(s_sys) / sizeof(s_sys[0])) },
+	{ "NETWORK",       s_net,   (int)(sizeof(s_net) / sizeof(s_net[0])) },
 };
 #define OPT_PAGE_COUNT   ((int)(sizeof(s_opt_pages) / sizeof(s_opt_pages[0])))
 #define CONTROLS_ROWS    ((int)(sizeof(s_controls) / sizeof(s_controls[0])))

@@ -9,7 +9,7 @@
 
 Array<u8> flash_b;
 int g_broadcast_preset, g_bios_lang_preset, g_flash_defaults_preset, g_console_id_preset, g_exit_save_preset;
-int g_rtc_local_preset;
+int g_rtc_local_preset, g_modem_preset;
 
 static char s_log[16384];
 static u32 s_log_len;
@@ -302,6 +302,90 @@ static void fixUpDCFlash(u8* data, const Cfg& c, u32 now)
 		console_id[-2] = console_id[0xA0 - 2] = ~sum;
 	}
 	console_id[7] = console_id[0xA0 + 7] = 0xfe;
+}
+
+// G11: nvmem.cpp add_isp_to_nvmem with Flycast's default user name, less its branch that renames the user of an
+// account that exists (flash_fix.cpp keeps such an account as it is).
+enum { USER_INET = 0x80, USER_ISP1 = 0xC0, USER_ISP2 = 0xC6, USER_BBA = 0xE0 };
+struct isp1_block { u16 block_id; u8 _unknown[4]; char sega[4]; char username[28]; char password[16]; char phone[8]; u16 crc; };
+struct isp2_block { u16 block_id; char sega[4]; char username[28]; char password[16]; char phone[12]; u16 crc; };
+#pragma pack(push, 1)
+struct bba_block { u16 block_id; char sega[4]; u32 unk1; u32 ipAddress; u32 netmask; u32 broadcast; u32 dns1; u32 dns2;
+	u32 gateway; char unk2[28]; u16 crc; };
+#pragma pack(pop)
+static_assert(sizeof(isp1_block) == 64 && sizeof(isp2_block) == 64 && sizeof(bba_block) == 64, "block size");
+
+static void add_isp_to_nvmem(u8* data)
+{
+	Chip chip = { data };
+	Chip* flash = &chip;
+	const char* username = "flycast1";
+	u8 block[64];
+	if (!flash->ReadBlock(PT_USER, USER_INET, block))
+	{
+		memset(block, 0, sizeof(block));
+		strcpy((char *)block + 2, "PWBrowser");
+		block[12] = 0x1c;
+		flash->WriteBlock(PT_USER, USER_INET, block);
+
+		memset(block, 0, sizeof(block));
+		flash->WriteBlock(PT_USER, USER_INET + 1, block);
+		strcpy((char *)block + 32, "AT&F");
+		flash->WriteBlock(PT_USER, USER_INET + 2, block);
+		memset(block, 0, sizeof(block));
+		flash->WriteBlock(PT_USER, USER_INET + 3, block);
+		memset(block + 27, 0xFF, sizeof(block) - 27);
+		block[10] = 1;
+		block[14] = 1;
+		block[16] = 1;
+		block[19] = 6;
+		block[26] = 5;
+		flash->WriteBlock(PT_USER, USER_INET + 4, block);
+		memset(block, 0xFF, sizeof(block));
+		for (u32 i = USER_INET + 5; i <= 0xbf; i++)
+			flash->WriteBlock(PT_USER, i, block);
+
+		isp1_block isp1{};
+		isp1._unknown[3] = 1;
+		memcpy(isp1.sega, "SEGA", 4);
+		strncpy(isp1.username, username, sizeof(isp1.username) - 1);
+		strcpy(isp1.password, "password");
+		strcpy(isp1.phone, "1234567");
+		flash->WriteBlock(PT_USER, USER_ISP1, &isp1);
+
+		memset(block, 0, sizeof(block));
+		flash->WriteBlock(PT_USER, USER_ISP1 + 1, block);
+		flash->WriteBlock(PT_USER, USER_ISP1 + 2, block);
+		strcpy((char *)block + 2, "flycast@gmail.com");
+		flash->WriteBlock(PT_USER, USER_ISP1 + 3, block);
+		memset(block, 0, sizeof(block));
+		flash->WriteBlock(PT_USER, USER_ISP1 + 4, block);
+		block[60] = 1;
+		flash->WriteBlock(PT_USER, USER_ISP1 + 5, block);
+
+		isp2_block isp2{};
+		memcpy(isp2.sega, "SEGA", 4);
+		strncpy(isp2.username, username, sizeof(isp2.username) - 1);
+		strcpy(isp2.password, "password");
+		strcpy(isp2.phone, "1234567");
+		flash->WriteBlock(PT_USER, USER_ISP2, &isp2);
+		memset(block, 0, sizeof(block));
+		for (u32 i = USER_ISP2 + 1; i <= 0xEA; i++)
+		{
+			if (i == 0xcb)
+				block[56] = 1;
+			else
+				block[56] = 0;
+			flash->WriteBlock(PT_USER, i, block);
+		}
+	}
+	bba_block bba{};
+	if (!flash->ReadBlock(PT_USER, USER_BBA, &bba) || memcmp(bba.sega, "SEGA", 4) || bba.netmask == 0)
+	{
+		memcpy(bba.sega, "SEGA", 4);
+		bba.netmask = 0xffffff00;
+		flash->WriteBlock(PT_USER, USER_BBA, &bba);
+	}
 }
 }
 
@@ -603,6 +687,42 @@ static void test_broadcast()
 				CHECK(flash_b.data[0x1a004] == own && flash_b.data[0x1a0a4] == own, "Broadcast row %d: the flash's own byte"
 				      " is not back before the save", row);
 			}
+}
+
+// ---- 4b. Broadcast DISC: Flycast's PAL list by product ID, after the area rule as dc/dc.cpp calls it ----
+static void test_disc_list()
+{
+	static const char* const k_ids[] = { "T46605D 80", "T46605D 81", "T46605D 8 ", "T-8107N   " };
+	for (int own = '0'; own <= '1'; own++)
+		for (u32 i = 0; i < sizeof(k_ids) / sizeof(k_ids[0]); i++)
+			for (int row = 0; row < 4; row++)
+			{
+				gen_flash(s_img0, K_FLY_SYS);
+				s_img0[0x1a004] = s_img0[0x1a0a4] = (u8)own;
+				memcpy(flash_b.data, s_img0, IMG);
+				set_rows(row, 0, 0, 0);
+				log_clear();
+				dc_flash_set_time(7);
+				dc_flash_fixup(7);
+				dc_flash_set_region("JUE     ");
+				dc_flash_disc_broadcast(k_ids[i]);
+				const bool listed = i == 0;
+				const int want = row == 1 ? '0' : row == 2 ? '1' : row == 3 ? (listed ? '1' : '0') : own;
+				CHECK(flash_b.data[0x1a004] == want && flash_b.data[0x1a0a4] == want,
+				      "PAL list: Broadcast row %d, flash '%c', disc '%s': %c, not %c", row, own, k_ids[i],
+				      flash_b.data[0x1a004], want);
+				CHECK(log_has("[flash] broadcast PAL for disc T46605D 80 (Flycast list)\n") == (listed && row == 3),
+				      "PAL list: Broadcast row %d, disc '%s': the log line", row, k_ids[i]);
+				dc_flash_restore_region();
+				CHECK(flash_b.data[0x1a004] == own && flash_b.data[0x1a0a4] == own, "PAL list: Broadcast row %d, disc '%s':"
+				      " the flash's own byte is not back before the save", row, k_ids[i]);
+			}
+	// No flash array: nothing may be read.
+	u8* keep = flash_b.data;
+	flash_b.data = 0;
+	set_rows(3, 0, 0, 0);
+	dc_flash_disc_broadcast("T46605D 80");
+	flash_b.data = keep;
 }
 
 // ---- 5. BIOS Language: the syscfg byte, and what the save keeps ----
@@ -953,6 +1073,95 @@ static void test_clock()
 	      (int)(GetRTC_now() - dc1970 - (u32)summer));
 }
 
+// ---- 10. G11, row NETWORK > Modem DCNET: the dial-up account against Flycast's add_isp_to_nvmem ----
+// As Matt's flash: the BIOS takes a new block per settings save, so most used blocks are old copies of block 5.
+static void gen_copies(u8* img, int copies, bool account)
+{
+	gen_flash(img, K_FLY_SYS);
+	memset(img + USER + 64, 0xFF, 0x4000 - 64);
+	for (int p = 1; p <= copies; p++)
+		make_block(img, p, (account && p == copies / 2) ? 0x80 : 0x05, true);
+	// Half the accounts have a BBA block with "SEGA" and netmask 0, which Flycast writes again.
+	if (account && rnd(2))
+	{
+		u8* b = img + USER + (copies / 3) * 64;
+		make_block(img, copies / 3, 0xE0, true);
+		memcpy(b + 2, "SEGA", 4);
+		memset(b + 14, 0, 4);
+		put16(b + 62, own_crc(b));
+	}
+}
+
+// Full, and no block has a newer copy: nothing can be reused.
+static void gen_full_single(u8* img)
+{
+	gen_flash(img, K_FLY_SYS);
+	memset(img + USER + 64, 0xFF, 0x4000 - 64);
+	make_block(img, 1, 0x05, true);
+	for (int p = 2; p <= 254; p++)
+		make_block(img, p, 0x100 + p, true);
+}
+
+static void test_isp(int cases)
+{
+	set_rows(0, 0, 0, 0);
+	const fly::Cfg c = { false, 3, 4, 6, 6, 6, false, 0 };
+	int written = 0, kept = 0, full = 0;
+	for (int n = 0; n < cases; n++)
+	{
+		const int kind = n % 5;
+		const bool account = kind == 0 && rnd(4) == 0;
+		if (kind == 0)
+			gen_copies(s_img0, 150 + (int)rnd(104), account);
+		else if (kind == 1)
+			gen_flash(s_img0, K_FLY_SYS);
+		else if (kind == 2)
+			gen_flash(s_img0, K_FLY_NEW);
+		else if (kind == 3)
+			gen_copies(s_img0, 254, false);
+		else
+			gen_full_single(s_img0);
+		const u32 rtc = rnd();
+		g_modem_preset = 1;
+		memcpy(flash_b.data, s_img0, IMG);
+		log_clear();
+		new_load(rtc, 0);
+		memcpy(s_m, s_img0, IMG);
+		fly::fixUpDCFlash(s_m, c, rtc);
+		fly::add_isp_to_nvmem(s_m);
+		CHECK(memcmp(flash_b.data, s_m, IMG) == 0, "dial-up, case %d (kind %d): not Flycast's flash", n, kind);
+		written += log_has("[flash] dial-up account written, BBA block written: ISP1 user 'flycast1', user blocks ");
+		kept += log_has("[flash] dial-up account kept, ");
+		full += log_has("[flash] dial-up account NO ROOM, BBA block NO ROOM: ISP1 user '', user blocks 254/254\n");
+		if (kind == 0 || kind == 3)
+			CHECK(log_has(account ? "[flash] dial-up account kept, BBA block written: ISP1 user '', user blocks " :
+			              "[flash] dial-up account written, BBA block written: ISP1 user 'flycast1', user blocks "),
+			      "dial-up, case %d (kind %d): the log line:\n%s", n, kind, s_log);
+		if (kind == 4)
+			CHECK(log_has("dial-up account NO ROOM, BBA block NO ROOM"), "dial-up, full flash: the log line:\n%s", s_log);
+		// The next boot finds the account: as Flycast's second boot, and the log says so.
+		log_clear();
+		new_load(rtc + 1, 0);
+		fly::fixUpDCFlash(s_m, c, rtc + 1);
+		fly::add_isp_to_nvmem(s_m);
+		CHECK(memcmp(flash_b.data, s_m, IMG) == 0, "dial-up, case %d (kind %d): the second boot is not Flycast's", n, kind);
+		// A flash too full for the BBA block stays so; no block is written twice.
+		if (kind != 4)
+			CHECK(log_has("[flash] dial-up account kept, BBA block ") && !log_has("BBA block written"),
+			      "dial-up, case %d: second boot:\n%s", n, s_log);
+		// Row OFF: no account, as Flycast's flash without add_isp_to_nvmem.
+		g_modem_preset = 0;
+		memcpy(flash_b.data, s_img0, IMG);
+		log_clear();
+		new_load(rtc, 0);
+		memcpy(s_m, s_img0, IMG);
+		fly::fixUpDCFlash(s_m, c, rtc);
+		CHECK(memcmp(flash_b.data, s_m, IMG) == 0 && !log_has("dial-up"), "dial-up, case %d: row OFF writes", n);
+	}
+	CHECK(written > cases / 10 && kept > cases / 20 && full >= cases / 5, "dial-up: %d written, %d kept, %d full",
+	      written, kept, full);
+}
+
 int main(int argc, char** argv)
 {
 	const int cases = argc > 1 ? atoi(argv[1]) : 400;
@@ -962,9 +1171,11 @@ int main(int argc, char** argv)
 	test_rows(cases);
 	test_build();
 	test_broadcast();
+	test_disc_list();
 	test_language();
 	test_region_report();
 	test_console_id();
+	test_isp(cases);
 	test_save();
 	test_clock();
 	if (g_fail)
@@ -972,6 +1183,7 @@ int main(int argc, char** argv)
 		fprintf(stdout, "FAIL: %d check(s)\n", g_fail);
 		return 1;
 	}
-	fprintf(stdout, "PASS: %d + %d flashes, rows OFF = the old code, rows ON = Flycast; build, save, zone, RTC\n", cases, cases);
+	fprintf(stdout, "PASS: %d + %d + %d flashes, rows OFF = the old code, rows ON = Flycast, dial-up account = Flycast; "
+	        "build, save, zone, RTC\n", cases, cases, cases);
 	return 0;
 }

@@ -62,6 +62,8 @@ pair $D 1 'dc_flash_set_time(settings.dreamcast.RTC);' 'dc_flash_fixup(settings.
 pair $D 1 'dc_flash_fixup(settings.dreamcast.RTC);' 'apply_disc_meta();'
 pair $D 1 'apply_disc_meta();' 'dc_flash_report();'
 has $D 1 'dc_flash_set_region((const char*)&ip[0x30]);'
+# Flycast's PAL list acts after the area rule, on the product ID.
+pair $D 1 'dc_flash_set_region((const char*)&ip[0x30]);' 'dc_flash_disc_broadcast((const char*)&ip[0x40]);'
 has $D 1 'g_flash_loaded = false;'
 has $D 1 'g_flash_loaded = flash_ok;'
 order $D 'g_flash_loaded = false;' 'dc_flash_build();' 'g_flash_loaded = flash_ok;'
@@ -116,5 +118,5 @@ has $M 1 '&g_bios_lang_preset,'
 has $M 1 '&g_flash_defaults_preset,'
 has $M 1 '&g_console_id_preset,'
 has $M 1 '&g_rtc_local_preset,'
-[ $r = 0 ] && echo "PASS: 58 source line checks"
+[ $r = 0 ] && echo "PASS: 59 source line checks"
 exit $r

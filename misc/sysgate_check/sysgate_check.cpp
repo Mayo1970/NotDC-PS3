@@ -76,6 +76,7 @@ void UpdateDMA()           { tr("dma"); }
 void UpdateGDRom()         { tr("gdrom"); }
 void gdrom_spinup_tick(u32 c) { (void)c; }
 void maple_Update(u32 c)   { tr("maple %u", c); }
+void libExtDevice_Update(u32 c) { tr("modem %u", c); }
 double os_GetSeconds() { return 0.0; }
 
 // Per normal interrupt bit: the raises and the line of the last one, for misc/timebase_check.

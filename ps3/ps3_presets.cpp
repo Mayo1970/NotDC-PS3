@@ -286,6 +286,8 @@ int g_mmu_bcache_preset    = 1;   // 1 = the MMU JIT finds the next block in a c
 int g_mmu_sq_preset        = 1;   // 1 = an MMU block writes the store queues itself, not through C (HW)
 int g_mmu_pref_preset      = 1;   // 1 = an MMU block's pref calls the store queue flush, not the MMU interpreter
 int g_mmu_asidjtc_preset   = 0;   // 1 = with MMU Model FAST, the JTC of each recent ASID is kept for its next switch
+// GOALS.md G11 (online play): 0 is the old path. Default DCNET since 2026-10-18 (Matt), after the HW success.
+int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; a flash with no dial-up account gets Flycast's
 
 struct CfgItem { const char* key; int* val; };
 
@@ -464,6 +466,7 @@ static const CfgItem s_items[] = {
 	{ "MmuSqStores",   &g_mmu_sq_preset },
 	{ "MmuPref",       &g_mmu_pref_preset },
 	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
+	{ "Modem",         &g_modem_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },

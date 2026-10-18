@@ -354,6 +354,7 @@ static void apply_disc_meta()
 		return;
 	}
 	dc_flash_set_region((const char*)&ip[0x30]);
+	dc_flash_disc_broadcast((const char*)&ip[0x40]);
 	// P37: the product number, for row "VMU Per Game".
 	maple_vmu_game((const char*)&ip[0x40]);
 	// P38 SH4 MMU AUTO (Flycast isWindowsCE()): byte 0x3E is '1', or the boot file is 0WINCEOS.BIN.
