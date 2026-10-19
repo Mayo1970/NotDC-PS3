@@ -219,7 +219,7 @@ int g_vmu_page_preset      = 1;   // G15: the VMU page, 1-4; page 2 and up is on
 int g_pad_map[PADBTN_COUNT] = PADMAP_DEFAULTS;
 // OPTIMIZATION_PLAN section 7, bundle 11 (render to texture and present): 0 is the old path in every one.
 // Keep Last Frame is ON since 2026-10-12 (Matt); it acts only with Region Scissor.
-int g_rtt_readback_preset  = 0;   // 1 = the RTT read-back is 3 straight-line transfer calls and waits on a new reference; 0 never returns (P75)
+int g_rtt_readback_preset  = 1;   // 1 = the RTT read-back is 3 straight-line transfer calls and waits on a new reference; 0 never returns (P75)
 int g_rtt_scaler_preset    = 0;   // 1 = SCALER_CTL scales a render to texture (P66, Flycast 8d4188159)
 int g_rtt_size_preset      = 0;   // RTT area: 0 = the FB clip, 1 = the region array's tiles inside TA_GLOB_TILE_CLIP (P76)
 int g_rtt_pack_preset      = 0;   // 1 = Flycast's RTT write: alpha threshold, rounding, clip origin, stride limit, no mode 4-7, alpha-0 clear (P54)
