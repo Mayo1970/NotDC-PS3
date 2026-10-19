@@ -253,6 +253,7 @@ int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table
 int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
 int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames; new names skip ps3gl's pool scans (Garou)
+int g_rsx_direct_preset    = 5;   // G17 RSX Direct: the run draws as raw RSX words, 1 PPU, 2 CHECK, 3-6 on the SPU (ps3_rsxd.h, HW at 5)
 // OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
 // (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
 int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)
@@ -535,6 +536,7 @@ static const CfgItem s_items[] = {
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
 	{ "TexBindTable",  &g_tex_bind_table_preset },
+	{ "RsxDirect",     &g_rsx_direct_preset },
 	{ "TexRecycle",    &g_tex_recycle_preset },
 	{ "GlCompare",     &g_gl_compare_preset },
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
@@ -777,6 +779,8 @@ static const CfgItem s_cost_items[] = {
 	{ "StripMerge",    &g_strip_merge_preset },
 	{ "VertexArrays",  &g_vertex_array_preset },
 	{ "SpeBuild",      &g_spe_build_preset },
+	{ "RsxDirect",     &g_rsx_direct_preset },
+	{ "SpeTexHash",    &g_spe_tex_preset },
 };
 #define COST_ITEMS (sizeof(s_cost_items) / sizeof(s_cost_items[0]))
 

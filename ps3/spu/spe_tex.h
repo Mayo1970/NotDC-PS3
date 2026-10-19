@@ -22,7 +22,10 @@ typedef struct
 	uint32_t params_ea, nparam;
 	uint32_t bg_pcw, bg_tsp, bg_tcw;
 	uint32_t text_control, pal_ram_ctrl;
-	uint32_t pad[23];
+	// G17 RSX Direct: an RsxdJob at job_ea, run as job_seq changes (also between the params of a hash).
+	volatile uint32_t job_seq;
+	uint32_t job_ea;
+	uint32_t pad[21];
 } __attribute__((aligned(128))) SpeTexBell;
 
 // SPU writes it with a fenced put after each request; counts are cumulative.
@@ -34,7 +37,8 @@ typedef struct
 	volatile uint32_t params, hashed, dups, skips, bytes, wraps;
 	volatile uint32_t wakes, timeouts;
 	volatile uint32_t stage, ls_addr;
-	uint32_t pad[17];
+	volatile uint32_t jobs, job_busy, job_preempt;  // G17: jobs run, their ticks, those run inside a hash
+	uint32_t pad[14];
 } __attribute__((aligned(128))) SpeTexEcho;
 
 // Read once by the SPU at start.

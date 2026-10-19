@@ -378,6 +378,8 @@ static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
 static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
 static const char* k_modem[]     = { "OFF", "DCNET", NULL };
+// RSXD_* order (ps3_rsxd.h).
+static const char* k_rsxd[]      = { "OFF", "PPU", "CHECK", "SPE", "SPE CHECK", "SPE + TR SORT", "TR SORT CHECK", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -840,6 +842,8 @@ static Option s_cost[] = {
 	  "+ OPAQUE DEPTH's depth pass: SKIP draws only what writes depth; GAME ORDER merges (P73). Live." },
 	{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "An evicted texture waits 2 frames, then a new one of its size reuses it (Garou). Live." },
+	{ "RSX Direct",      &g_rsx_direct_preset,    OPT_CHOICE, k_rsxd,      0, 0,0,0, NULL,
+	  "Draws as raw RSX words, no ps3gl. CHECK compares them. SPE: an SPU writes them (G17). Live." },
 };
 
 // Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's
@@ -1555,6 +1559,7 @@ static int* const k_live_opts[] = {
 	&g_ta_line_zero_preset,
 	&g_near_cap_preset,
 	&g_native_size_preset,
+	&g_rsx_direct_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

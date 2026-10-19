@@ -15,6 +15,11 @@
 
 enum { TX_STAGE_RUN, TX_STAGE_WAIT, TX_STAGE_EVENT };
 
+// After each param of a request: spe_tex.c runs a waiting RSX Direct job there.
+#ifndef TX_POLL
+#define TX_POLL() do {} while (0)
+#endif
+
 #define TX_VRAM_MASK (SPETEX_VRAM_SIZE - 1)
 // Stream bytes per VRAM chunk, 127 groups of 16 u64 words; a chunk's get takes 16 bytes more for a stream 8 bytes off.
 #define TX_CHUNK     16256u
@@ -386,6 +391,7 @@ static void run(const SpeTexBell* q)
 			rb[i] = tex_result(ld32(pb), ld32(pb + 8), ld32(pb + 12), q, tag, &fresh);
 			if (fresh || (i & 15) == 15 || i == cnt - 1)
 				mfc_putf(&rb[line], setup.res_ea + (c * TX_PRM_N + line) * sizeof(SpeTexRes), 128, tg, 0, 0);
+			TX_POLL();
 		}
 		if (c + 2 < nch)
 			pget(c + 2, a0, off, n);

@@ -20,3 +20,6 @@ void ps3spetex_request(const void* params, u32 nparam, u32 bg_pcw, u32 bg_tsp, u
 bool ps3spetex_hash(u32 idx, u32* h);
 // CHECK: the SPU's hash against the PPU's for one slot.
 void ps3spetex_check(u32 idx, u32 tsp, u32 tcw, u32 spu, u32 ppu);
+// G17 RSX Direct: an RsxdJob (spu/rsxd.h) for the SPU, before the rest of a hash; done when its RsxdDone has seq.
+// False: the SPU is down.
+bool ps3spetex_job(u32 job_ea, u32 seq);

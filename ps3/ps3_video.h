@@ -39,6 +39,8 @@ void ps3_video_forget_frame(void);
 // pass, whose old pixels a carry then keeps. 0 = no memory. ps3_video_target_frame() goes back to the display buffer.
 int  ps3_video_target(void* mem, u32 pitch, u32 w, u32 h, int scene);
 void ps3_video_target_frame(void);
+// G17 RSX Direct: host memory the RSX reads by IO offset and nothing else uses (6 MB), or NULL.
+void* ps3_video_host_spare(u32* bytes, u32* io_off);
 
 #ifdef __cplusplus
 }

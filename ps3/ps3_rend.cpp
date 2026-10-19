@@ -16,6 +16,7 @@
 #include "ps3_spevb.h"
 #include "ps3_spetex.h"
 #include "ps3_spepix.h"
+#include "ps3_rsxd.h"
 #include "ps3_menu.h"
 #include "ps3_presets.h"
 #include "ps3_tasplit.h"
@@ -2050,6 +2051,8 @@ struct DrawOpts
 	bool offs;         // 3b: a textured polygon with the Offset bit adds its offset colour
 	bool clamp;        // 3b: a polygon with ColorClamp clamps its colour to FOG_CLAMP_MIN..MAX before the fog
 	bool tril;         // P25: a trilinear pass scales its colour by its weight
+	// G17 RSX Direct: the scene's mode (RSXD_*), and the section's (RSXD_SEC_*: who draws the runs).
+	u8 rsxd_scene, rsxd;
 };
 static DrawOpts s_do;
 // The pass in draw (0 with one pass), its sort mode, and P10's TR depth pass.
@@ -2262,7 +2265,25 @@ static u32 apply_param(const DcParam& p, u32 list)
 	    s_cache_tsp == p.tsp.full && s_cache_tcw == p.tcw.full && s_cache_pcw == p.pcw.full)
 		return s_cache_or;
 	const u64 t0 = PERF_TICKS();
-	u32 rv = apply_param_body(p, list);
+	u32 rv;
+	if (s_do.rsxd == RSXD_SEC_LIVE)
+	{
+		// G17: the emitter applies it; the cache rule of apply_param_body (the depth pass keeps none).
+		rv = ps3rsxd_param(&p, list, spetex_slot(p));
+		s_cache_isp = p.isp.full;
+		s_cache_tsp = p.tsp.full;
+		s_cache_tcw = p.tcw.full;
+		s_cache_pcw = p.pcw.full;
+		s_cache_list = list;
+		s_cache_or = rv;
+		s_cache_valid = !s_depth_pass;
+	}
+	else
+	{
+		rv = apply_param_body(p, list);
+		if (s_do.rsxd)
+			ps3rsxd_param_check(&p, list, spetex_slot(p), rv);
+	}
 	s_dt[DT_PARAM] += PERF_TICKS() - t0;
 	return rv;
 }
@@ -2441,7 +2462,7 @@ static u32 s_vb_off, s_vb_used, s_vb_cap;
 
 // One run of the scene's vertex block, stride bytes per vertex. P25 FIRST VERTEX gives the colour attribute a start
 // 2 vertices on. P10: an outside clip draws the run once per side of the rect; a clip that cuts all draws nothing.
-static void draw_vb(GLenum prim, u32 stride, u32 first, u32 count)
+static void draw_vb_gl(GLenum prim, u32 stride, u32 first, u32 count)
 {
 	if (s_clip_mode == CLIP_ALL)
 		return;
@@ -2460,6 +2481,34 @@ static void draw_vb(GLenum prim, u32 stride, u32 first, u32 count)
 		glScissor(side[k][0], side[k][1], side[k][2] - side[k][0], side[k][3] - side[k][1]);
 		ps3gl_draw_vb_shift(prim, s_vb_off, stride, (int)first, (int)count, s_flat_shift);
 	}
+}
+
+// G17 RSX Direct: in a section the emitter draws, or (CHECK) writes its words before ps3gl's for the compare.
+static void draw_vb(GLenum prim, u32 stride, u32 first, u32 count)
+{
+	if (s_do.rsxd)
+		ps3rsxd_draw(prim, s_vb_off, stride, first, count);
+	if (s_do.rsxd == RSXD_SEC_LIVE)
+		return;
+	draw_vb_gl(prim, stride, first, count);
+	if (s_do.rsxd)
+		ps3rsxd_draw_check();
+}
+
+// A section of run draws (kind: RSXD_K_*): the RSX goes to the emitter and back to ps3gl after it. With no vertex
+// block (the vring is full) the strips draw through glBegin, so ps3gl keeps them.
+static inline void rsxd_open(u32 kind = RSXD_K_PPU)
+{
+	if (s_do.rsxd_scene && s_vb)
+		s_do.rsxd = (u8)ps3rsxd_begin(kind);
+}
+
+static inline void rsxd_close()
+{
+	if (!s_do.rsxd)
+		return;
+	ps3rsxd_end();
+	s_do.rsxd = RSXD_SEC_NONE;
 }
 
 struct StripRun
@@ -2702,6 +2751,8 @@ template <bool DRY = false> static void draw_strip(const DcStrip& s, u32 list)
 // Draws one list in submission order: opaque, punch-through, and presorted translucent.
 template <bool DRY = false> static void draw_list(u32 list)
 {
+	if (!DRY)
+		rsxd_open();
 	for (u32 i = s_strip_lo; i < s_strip_hi; i++)
 	{
 		const DcStrip& s = s_rl.strip[i];
@@ -2709,6 +2760,8 @@ template <bool DRY = false> static void draw_list(u32 list)
 			draw_strip<DRY>(s, list);
 	}
 	run_close<DRY>();
+	if (!DRY)
+		rsxd_close();
 }
 
 // nullDC-v1 sort entry: one per translucent polygon, keyed like PolyParam::zvZ.
@@ -2745,12 +2798,17 @@ template <bool DRY = false> static void draw_tr_sorted()
 	}
 	std::stable_sort(s_order, s_order + n, [](const SortStrip& a, const SortStrip& b) { return a.key < b.key; });
 	if (!DRY)
+	{
 		s_dt[DT_SORT] += PERF_TICKS() - t_sort;
+		rsxd_open();
+	}
 
 	// Merging after the sort keeps the draw order, as Flycast's per-strip sort mode does.
 	for (u32 j = 0; j < n; j++)
 		draw_strip<DRY>(s_rl.strip[s_order[j].idx], ListType_Translucent);
 	run_close<DRY>();
+	if (!DRY)
+		rsxd_close();
 }
 // spevb_check: end
 static_assert(RUN_MAX_VTX == SPEVB_RUN_MAX_VTX && sizeof(ps3gl_vertex_t) == SPEVB_VTX_BYTES, "SPE build layout");
@@ -2828,6 +2886,7 @@ static void tri_runs(u32 n, u32 base, bool emit, bool own)
 	const u32* offs = 0;
 	u32 run_first = 0, run_cull = 0, alpha_or = 0, run_vb = base;
 	bool draws = true;
+	rsxd_open();
 	for (u32 t = 0; t <= n; t++)
 	{
 		const DcParam* p = t < n ? &s_rl.param[s_tri[t].id >> 17] : 0;
@@ -2865,6 +2924,7 @@ static void tri_runs(u32 n, u32 base, bool emit, bool own)
 		for (u32 k = 0; k < 3; k++)
 			vb_emit(&s_rl.vtx[corner[k]], alpha_or, offs ? offs[corner[k]] : 0);
 	}
+	rsxd_close();
 }
 
 static inline u32 vb_spare();
@@ -2891,10 +2951,43 @@ static bool tri_game_room(u32 n)
 	return true;
 }
 
+// G17 SPE + TR SORT: the pass's TR strips go to the SPU with draw_tr_tris' rules. False: the PPU draws the pass.
+static bool rsxd_tris()
+{
+	RsxdTrisIn in;
+	in.vtx = s_rl.vtx;
+	in.offs = s_rl.offs;
+	in.tri_sort = s_do.tri_sort;
+	in.first_pass = s_do.first_pass;
+	in.vb_room = s_vb_cap - s_vb_used;
+	in.key_pcw = s_key_pcw;
+	in.key_isp = s_key_isp;
+	in.strips = &s_stat_strips[ListType_Translucent];
+	in.tris = &s_stat_tris;
+	in.draws = &s_stat_draws[ListType_Translucent];
+	in.fp_runs = &s_stat_fp_runs;
+	in.fp_nodepth = &s_stat_fp_nodepth;
+	in.t_sort = &s_dt[DT_SORT];
+	if (!ps3rsxd_tris_begin(&in))
+		return false;
+	for (u32 i = s_strip_lo; i < s_strip_hi; i++)
+	{
+		const DcStrip& st = s_rl.strip[i];
+		if (st.list == ListType_Translucent && st.count >= 3 &&
+		    !ps3rsxd_tri_strip(st.first, st.count, &s_rl.param[st.param], st.param))
+			break;
+	}
+	const bool done = ps3rsxd_tris_end();
+	reset_param_cache();
+	return done;
+}
+
 // 3k: the autosorted translucent list of the pass, far to near. ON draws it once with no depth write (Flycast).
 // + DEPTH WRITE keeps the game's depth write. + OPAQUE DEPTH first writes the depth of the near-opaque texels alone.
 static void draw_tr_tris()
 {
+	if (s_do.rsxd_scene >= RSXD_TRIS && rsxd_tris())
+		return;
 	const u64 t_sort = PERF_TICKS();
 	u32 n = tri_collect();
 	// The depth the first pass leaves does not depend on its draw order: GAME ORDER sends it before the sort, in
@@ -2935,6 +3028,8 @@ static void draw_tr_tris()
 	}
 	s_tri_mode = TRI_NONE;
 	reset_param_cache();
+	if (s_do.rsxd_scene == RSXD_TRIS_CHECK)
+		ps3rsxd_tris_check();
 }
 
 // 5.12 #2 ON: one list from the SPU's runs; each run is apply_param and one draw, as run_close does.
@@ -2944,6 +3039,7 @@ static u32 s_spevb_drawn;
 static bool draw_runs(u32 sec, u32 list)
 {
 	s_spevb_drawn = 0;
+	rsxd_open(RSXD_K_RUNS);
 	for (u32 k = ps3spevb_sec_start(sec);; k++)
 	{
 		const SpeRun* r = ps3spevb_run(k, sec);
@@ -2961,6 +3057,7 @@ static bool draw_runs(u32 sec, u32 list)
 		}
 		s_spevb_drawn++;
 	}
+	rsxd_close();
 	if (!ps3spevb_mode())
 		return false;
 	s_stat_strips[list] += ps3spevb_strips(sec);
@@ -3499,6 +3596,54 @@ static void print_diag()
 	}
 }
 
+// G17 RSX Direct: the scene's rules for the emitter, and the state its sections read and carry.
+static void rsxd_scene_begin()
+{
+	s_do.rsxd_scene = RSXD_OFF;
+	if (!s_vb)
+		return;
+	RsxdSceneIn in;
+	in.flags = (s_zfloat ? RSXD_S_ZFLOAT : 0) | (s_mo_sprite ? RSXD_S_SPRCULL : 0) | (s_do.pt_depth ? RSXD_S_PT_DEPTH : 0) |
+	           (s_do.tr_nodepth ? RSXD_S_TR_NODEPTH : 0) | (s_do.offs ? RSXD_S_OFFS : 0) | (s_do.tril ? RSXD_S_TRIL : 0) |
+	           (s_clamp_on ? RSXD_S_CLAMP : 0) | (s_bump_on ? RSXD_S_BUMP : 0) | (s_rl.offs ? RSXD_S_LISTS_OFFS : 0);
+	in.pt_blend = s_do.pt_blend;
+	in.flat = s_do.flat;
+	in.clip = s_do.clip;
+	in.fog = s_fog;
+	in.clamp_min = s_clamp_min;
+	in.clamp_max = s_clamp_max;
+	in.bx = s_cv.bx;
+	in.by = s_cv.by;
+	in.bw = s_cv.bw;
+	in.bh = s_cv.bh;
+	in.base_scissor = s_cv.scissor;
+	in.cv_x = s_cv.x;
+	in.cv_y = s_cv.y;
+	in.cv_w = s_cv.w;
+	in.cv_h = s_cv.h;
+	in.cx0 = s_cv.cx0;
+	in.cy0 = s_cv.cy0;
+	in.cw = s_cv.cw;
+	in.ch = s_cv.ch;
+	in.glob_clip_x = g_rr.glob_clip_x;
+	in.glob_clip_y = g_rr.glob_clip_y;
+	RsxdRend rr;
+	rr.pass = &s_pass;
+	rr.autosort = &s_pass_autosort;
+	rr.tri_mode = &s_tri_mode;
+	rr.depth_pass = &s_depth_pass;
+	rr.clip_base = &s_clip_base;
+	rr.clip_mode = &s_clip_mode;
+	rr.clip_r = s_clip_r;
+	rr.flat_shift = &s_flat_shift;
+	rr.cache_valid = &s_cache_valid;
+	rr.t_tex = &s_dt[DT_TEX];
+	rr.offc = &s_stat_offc;
+	rr.cclamp = &s_stat_cclamp;
+	rr.tril = &s_stat_tril;
+	s_do.rsxd_scene = (u8)ps3rsxd_scene(&in, &rr);
+}
+
 // Draws the render context into the viewport. The canvas rect is the DC area mapped onto it:
 // the whole screen for display, the FB clip window for a render to texture.
 static void draw_scene(float cx0, float cy0, float cw, float ch)
@@ -3628,6 +3773,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			if (s_do.flat == 2)
 				s_do.flat = 1;
 		}
+		rsxd_scene_begin();
 		// Hardware order: opaque, punch-through, translucent. P10 List Passes: once per pass (Flycast drawStrips);
 		// a pass after the first with no strip is not drawn, and its volumes go to the next pass.
 		const u32 npass = multi ? s_rl.npass + 1 : 1;
@@ -3680,6 +3826,7 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 		if (build == SPEVB_CHECK)
 			spevb_check();
 		s_vb = 0;
+		s_do.rsxd_scene = RSXD_OFF;
 	}
 	if (s_do.clip)
 		clip_base();
@@ -3894,6 +4041,7 @@ static void draw_frame()
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
 
+	ps3rsxd_frame();
 	// draw_scene binds no list param without strips.
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
@@ -4095,6 +4243,7 @@ static void rtt_render()
 		if (!ps3_video_wait_free(250) || !ps3_video_begin_frame())
 			return;
 	}
+	ps3rsxd_frame();
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
 	glDisable(GL_SCISSOR_TEST);
@@ -4657,6 +4806,7 @@ static void rth_print_stats()
 	ps3spevb_stats(now - s_stat_t0);
 	ps3spetex_stats(now - s_stat_t0);
 	ps3spepix_stats(now - s_stat_t0);
+	ps3rsxd_stats(now - s_stat_t0);
 	// A job far longer than a frame is the stall TArender.MD TR3 asks us to watch for.
 	if (s_stat_job_max > 0.25)
 		printf("[ps3rend] render job stalled for %u ms\n", (u32)(s_stat_job_max * 1000.0));
@@ -5292,6 +5442,7 @@ bool InitRenderer()
 		if (g_fps_overlay_preset)
 			ps3ui_init();
 		ps3_vmulcd_init();
+		ps3rsxd_init();
 	}
 	if (!TileAccel.Init() || !TaStore.Init())
 		return false;

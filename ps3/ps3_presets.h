@@ -222,6 +222,7 @@ extern int g_tex_bind_table_preset;
 extern int g_gl_compare_preset;
 extern int g_tr_first_pass_preset;
 extern int g_tex_recycle_preset;
+extern int g_rsx_direct_preset;
 // Bundle 15 (plan section 7), the FLASH / CLOCK page.
 extern int g_broadcast_preset;
 extern int g_bios_lang_preset;

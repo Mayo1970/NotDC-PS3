@@ -11,8 +11,7 @@
 #include "ps3_tex_yuv.h"
 #include "ps3_spetex.h"
 #include "ps3_spepix.h"
-
-
+#include "ps3_rsxd.h"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wpragmas"
@@ -926,11 +925,9 @@ static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v, bool chain)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, nearest ? 1 : k_aniso[s_aniso]);
 }
 
-bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
+// The cache entry of a bind: a hit (hashed once a frame, decoded again when its VRAM changed) or a new texture.
+static TexEntry* bind_entry(TSP tsp, TCW tcw, u32 pidx, bool mirror_u, bool mirror_v)
 {
-	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
-	bool mirror_u = !tsp.ClampU && tsp.FlipU;
-	bool mirror_v = !tsp.ClampV && tsp.FlipV;
 	bool mirror = mirror_u || mirror_v;
 
 	s_bind_total++;
@@ -986,7 +983,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 	else if (!hit)
 	{
 		if (d.w > 1024 || d.h > 1024)
-			return false;
+			return 0;
 		// P45 Mipmaps: the chain needs the swizzled layout, so the first build gives a mirrored texture none.
 		const bool chain = s_mips > 0 && d.mip && !mirror;
 		const u8 kind = (u8)(mirror | ((d.fmt == 3) << 1) | (chain << 2));
@@ -1056,10 +1053,50 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 	}
 
 	hit->last_frame = s_frame;
+	return hit;
+}
+
+bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
+{
+	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
+	bool mirror_u = !tsp.ClampU && tsp.FlipU;
+	bool mirror_v = !tsp.ClampV && tsp.FlipV;
+	TexEntry* hit = bind_entry(tsp, tcw, pidx, mirror_u, mirror_v);
+	if (!hit)
+		return false;
 	const u64 t_g = PERF_TICKS();
 	glBindTexture(GL_TEXTURE_2D, hit->name);
 	// Flycast: a punch-through polygon samples level 0 only.
 	set_tex_params(tsp, mirror_u, mirror_v, hit->chain && !punch_through);
+	s_t_gl += PERF_TICKS() - t_g;
+	return true;
+}
+
+// RSX Direct (G17): ps3tex_bind with no ps3gl bind on a hit. The words are the texture's and the sampler's that
+// set_tex_params would leave (ps3gl_textures.c's gl_to_gcm_wrap, _filter, _aniso).
+bool ps3tex_bind_rsxd(u32 tsp_w, u32 tcw_w, u32 pidx, bool punch_through, RsxdTex* out)
+{
+	TSP tsp;
+	TCW tcw;
+	tsp.full = tsp_w;
+	tcw.full = tcw_w;
+	const bool mirror_u = !tsp.ClampU && tsp.FlipU, mirror_v = !tsp.ClampV && tsp.FlipV;
+	TexEntry* hit = bind_entry(tsp, tcw, pidx, mirror_u, mirror_v);
+	if (!hit)
+		return false;
+	const u64 t_g = PERF_TICKS();
+	ps3rsxd_tex_name(hit->name, out);
+	const bool chain = hit->chain && !punch_through;
+	const bool nearest = s_filter == 1 || (s_filter == 0 && !tsp.FilterMode);
+	u32 min = nearest ? 1 : 2;
+	if (chain && !nearest)
+		min = s_aniso > 0 ? 6 : 4;
+	const u32 mag = nearest ? 1 : 2;
+	const GLint a = nearest ? 1 : k_aniso[s_aniso];
+	const u32 aniso = a >= 16 ? 7 : a >= 12 ? 6 : a >= 10 ? 5 : a >= 8 ? 4 : a >= 6 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
+	out->ctrl |= aniso << 4;
+	out->filter = (mag << 24) | (min << 16) | (1u << 13);
+	out->wrap = (tsp.ClampU ? 3u : mirror_u ? 2u : 1u) | ((tsp.ClampV ? 3u : mirror_v ? 2u : 1u) << 8) | (3u << 16);
 	s_t_gl += PERF_TICKS() - t_g;
 	return true;
 }

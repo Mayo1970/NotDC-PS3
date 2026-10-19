@@ -81,6 +81,8 @@ $(BUILD)/plugs/nullExtDev/nullExtDev.o: CXXFLAGS += -mminimal-toc
 $(BUILD)/ps3/ps3_dcnet.o: CXXFLAGS += -mminimal-toc
 # The RSX stall log runs only on a stall, so its texts take one TOC entry.
 $(BUILD)/ps3/ps3_rsxwatch.o: CFLAGS += -mminimal-toc
+# G17 RSX Direct: the emitter's state and texts take one TOC entry.
+$(BUILD)/ps3/ps3_rsxd.o: CXXFLAGS += -mminimal-toc
 
 # --no-multi-toc: a split TOC emits r2off stubs that hang the PS3 at boot.
 # --wrap: stdout has no console; ps3/ps3_main.cpp sends it to the UDP log.
@@ -150,8 +152,9 @@ $(BUILD)/spu/spe_vb.elf: ps3/spu/spe_vb.c ps3/spu/spe_vb_build.h ps3/spu/spe_vb.
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s ps3/spu/spe_vb.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@
 
-# 5.12 #3: the texture hashes of each scene's params, as ps3_tex.cpp's hash_texture().
-$(BUILD)/spu/spe_tex.elf: ps3/spu/spe_tex.c ps3/spu/spe_tex_hash.h ps3/spu/spe_tex.h ps3/spu/spe_bell.h
+# 5.12 #3: the texture hashes of each scene's params, as ps3_tex.cpp's hash_texture(); G17: the RSX Direct jobs.
+$(BUILD)/spu/spe_tex.elf: ps3/spu/spe_tex.c ps3/spu/spe_tex_hash.h ps3/spu/spe_tex.h ps3/spu/spe_bell.h ps3/spu/rsxd.h \
+                          ps3/spu/rsxd_emit.h ps3/spu/rsxd_job.h
 	@mkdir -p $(dir $@)
 	@echo "SPU $@"
 	@$(SPU_CC) $(SPU_CFLAGS) -Wl,--gc-sections -s ps3/spu/spe_tex.c -L$(PSL1GHT)/spu/lib -lsputhread -o $@

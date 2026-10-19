@@ -666,3 +666,13 @@ double ps3_video_end_frame_at(u64 target_tb)
 	vid_stats();
 	return waited;
 }
+
+// G17 RSX Direct: the host block past its first 2 MB (the command buffer is the first 1), mapped for the RSX.
+void* ps3_video_host_spare(u32* bytes, u32* io_off)
+{
+	u8* const p = (u8*)s_host_addr + (2u << 20);
+	if (!s_host_addr || gcmAddressToOffset(p, io_off) != 0)
+		return NULL;
+	*bytes = PS3_RSX_HOST_SIZE - (2u << 20);
+	return p;
+}

@@ -156,6 +156,17 @@ bool ps3spetex_hash(u32 idx, u32* h)
 	return true;
 }
 
+bool ps3spetex_job(u32 job_ea, u32 seq)
+{
+	if (!s_up)
+		return false;
+	s_bell.job_ea = job_ea;
+	// The job and its field land before job_seq, whose store kills the SPU's reservation.
+	__asm__ volatile("lwsync" ::: "memory");
+	s_bell.job_seq = seq;
+	return true;
+}
+
 void ps3spetex_check(u32 idx, u32 tsp, u32 tcw, u32 spu, u32 ppu)
 {
 	if (spu == ppu)
