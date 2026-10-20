@@ -286,6 +286,16 @@ u64 ps3_audio_spu_wait(u32 end)
 	return t;
 }
 
+// P106 Speed Limiter 256 / 512 (SPG.cpp): the frames the feeder can still take; the whole ring while no sound comes.
+u32 ps3_audio_fill()
+{
+	if (!running || !aica_ready)
+		return RING_FRAMES;
+	const u32 rd = ring_rd;
+	__sync_synchronize();   // ring_rd first: the feeder never moves it past ring_wr, so the difference is not negative
+	return ring_wr - rd;
+}
+
 // Called once per second from the monitor thread.
 void ps3_audio_stats()
 {

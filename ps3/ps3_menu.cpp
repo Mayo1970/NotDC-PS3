@@ -296,6 +296,7 @@ static void list_directory(const char* dir_path)
 
 static const char* k_accuracy[]  = { "FAST", "BALANCED", "ACCURATE", NULL };
 static const char* k_onoff[]     = { "OFF", "ON", NULL };
+static const char* k_limiter[]   = { "OFF", "ON", "256", "512", NULL };
 static const char* k_drop[]      = { "DROP", "WAIT 1 FRAME", "WAIT", NULL };
 static const char* k_exit_fix[]  = { "OFF", "SAFE", "SAFE + WATCHDOG",
                                      "SAFE + WATCHDOG + HOST POLL", NULL };
@@ -434,8 +435,8 @@ static Option s_emu[] = {
 	  "Delays DMA completion instead of finishing it instantly." },
 	{ "GD-ROM Async",    &g_gd_async_preset,      OPT_CHOICE, k_gdasync,   0, 0,0,0, NULL,
 	  "Disc reads on a worker thread; + CD-DA also reads music ahead. Set before boot." },
-	{ "Speed Limiter",   &g_speed_limiter_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Caps emulation at real hardware speed. No effect below 100%." },
+	{ "Speed Limiter",   &g_speed_limiter_preset, OPT_CHOICE, k_limiter,   0, 0,0,0, NULL,
+	  "Caps emulation at real speed. 256 / 512: no cap while fewer sound frames are queued. Live." },
 	{ "Render Delay",    &g_render_delay_preset,  OPT_CHOICE, k_rdelay,    0, 0,0,0, NULL,
 	  "End-of-render IRQ delay. ON: 4-4.5 ms. FLYCAST: 2.25-7.5 ms by list size. Set before boot." },
 	{ "Exit Fix",        &g_exit_fix_preset,      OPT_CHOICE, k_exit_fix,  0, 0,0,0, NULL,

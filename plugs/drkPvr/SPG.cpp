@@ -13,6 +13,8 @@
 // Game-preset controlled toggle (ps3/ps3_presets.cpp).
 extern "C" int get_speed_limiter_preset();
 #define SPEED_LIMITER() (get_speed_limiter_preset() != 0)
+// P106 Speed Limiter 256 / 512 (ps3/ps3_audio.cpp): the 48 kHz frames queued in the sound ring.
+u32 ps3_audio_fill();
 
 // PVR X-scaler preset (ps3/ps3_presets.cpp).
 extern "C" int get_x_scaler_preset();
@@ -192,8 +194,22 @@ void spg_SchedListEndIrq(u32 list)
 
 // Temporary bisect counters for the FMV-overspeed investigation: which branch
 // spg_PaceFrame() takes, once per second in the existing stats line.
-u32 g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept;
+u32 g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept, g_pace_cut;
 double g_pace_sleep_s;   // the pacer's sleep in this stats window (JIT IDLE RULE AUTO)
+
+// P106, Speed Limiter 256 / 512: sleep no longer than the queued sound above that level, less 48 frames (1 ms) for
+// the usleep overshoot. A lower ring gets no sleep, so the SH4 runs ahead until the ring refills.
+static double spg_PaceNap(double surplus)
+{
+    const int lim = get_speed_limiter_preset();
+    if (lim < 2)
+        return surplus;
+    const double audio_s = ((double)ps3_audio_fill() - (lim == 2 ? 256 + 48 : 512 + 48)) / 48000.0;
+    if (audio_s >= surplus)
+        return surplus;
+    g_pace_cut++;
+    return audio_s;
+}
 
 static void spg_PaceFrame()
 {
@@ -224,11 +240,12 @@ static void spg_PaceFrame()
     double err = now - s_pace_deadline;     // + = behind real time
 
     // EARLY arm: cap at 100% speed by sleeping only the surplus (the SH4 thread never waits for vsync).
-    if (err < 0.0 && SPEED_LIMITER())
+    const double nap = (err < 0.0 && SPEED_LIMITER()) ? spg_PaceNap(-err) : 0.0;
+    if (nap > 0.0)
     {
         g_pace_slept++;
         stall_push(ST_SLEEP);
-        usleep((useconds_t)(-err * 1000000.0));
+        usleep((useconds_t)(nap * 1000000.0));
         stall_pop();
         const double t0 = now;
         now = os_GetSeconds();
@@ -237,7 +254,7 @@ static void spg_PaceFrame()
     }
 
     // Anti-windup: late side bounds the catch-up burst after a stall, early side bounds the credit a fast
-    // stretch can bank with the limiter off.
+    // stretch can bank with the limiter off or its sleep cut (P106).
     const double max_late  =  PACE_MAX_LATE_FRAMES  * period;
     const double max_early = -PACE_MAX_EARLY_FRAMES * period;
 
@@ -422,9 +439,10 @@ void FASTCALL libPvr_UpdatePvr(u32 cycles)
                     arm_pct, aica_pct, vox_pct, voices, snd_pct);
                 // Temporary: which branch spg_PaceFrame() took this window (FMV-overspeed bisect).
                 const double pace_sleep = g_pace_sleep_s;
-                printf("[pace] calls=%u zero=%u reset=%u slept=%u sleep=%.0fms\n",
-                       g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept, pace_sleep * 1000.0);
-                g_pace_calls = g_pace_zero = g_pace_reset = g_pace_slept = 0;
+                printf("[pace] calls=%u zero=%u reset=%u slept=%u sleep=%.0fms cut=%u limiter=%d\n",
+                       g_pace_calls, g_pace_zero, g_pace_reset, g_pace_slept, pace_sleep * 1000.0, g_pace_cut,
+                       get_speed_limiter_preset());
+                g_pace_calls = g_pace_zero = g_pace_reset = g_pace_slept = g_pace_cut = 0;
                 g_pace_sleep_s = 0.0;
                 fflush(stdout); // once per 1s: keep the log tail intact if the console is powered off
 
