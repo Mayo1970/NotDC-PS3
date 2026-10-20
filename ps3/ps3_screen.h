@@ -54,6 +54,38 @@ static inline bool native_plan(int pw, uint32_t ph, float cw, float ch, uint32_t
 	return true;
 }
 
+// Output 1080p: a pass B over the maximum takes the largest whole factors under it instead (2 at least), and the
+// picture takes it with bilinear filtering upwards.
+static inline void native_plan_down(NativePlan* p, uint32_t max_w, uint32_t max_h)
+{
+	const uint32_t fx = max_w / p->aw, fy = max_h / p->ah;
+	if (!p->bw && !p->exact && fx >= 2 && fy >= 2)
+	{
+		p->bw = p->aw * fx;
+		p->bh = p->ah * fy;
+	}
+}
+
+// Integer Scale: w x h times the largest whole factors that fit pw x ph and keep the pixel's shape there (pw / w by
+// ph / h); out: the size on the picture. False: no factor fits.
+static inline bool integer_fit(uint32_t w, uint32_t h, uint32_t pw, uint32_t ph, uint32_t* ow, uint32_t* oh)
+{
+	if (w < 1 || h < 1 || w > pw || h > ph)
+		return false;
+	const float shape = ((float)pw / (float)w) / ((float)ph / (float)h);
+	for (uint32_t ny = ph / h; ny >= 1; ny--)
+	{
+		const long nx = lroundf((float)ny * shape);
+		if (nx >= 1 && (uint32_t)nx * w <= pw)
+		{
+			*ow = (uint32_t)nx * w;
+			*oh = ny * h;
+			return true;
+		}
+	}
+	return false;
+}
+
 // Flycast isClipped: the region tiles (tx0..tx1, end not included) and the FB clip leave a part of the TA's width
 // (glob_x) out. The FB clip counts pixels after the scaler, so it is taken times the scaler's X factor.
 static inline bool screen_x_clipped(uint32_t fx0, uint32_t fx1, uint32_t tx0, uint32_t tx1, uint32_t glob_x,

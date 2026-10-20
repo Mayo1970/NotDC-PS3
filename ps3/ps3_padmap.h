@@ -47,6 +47,24 @@ static inline void padmap_apply(const int* map, const unsigned char* ana, unsign
 	}
 }
 
+// Stick / D-pad SWAP: the DS3 d-pad gives the DC stick full travel (DC positive y is down), and its own map
+// entries no longer act.
+static inline void pad_dpad_to_stick(unsigned char* ana, int* x, int* y)
+{
+	*x = (ana[PADBTN_RIGHT] ? 127 : 0) - (ana[PADBTN_LEFT] ? 128 : 0);
+	*y = (ana[PADBTN_DOWN] ? 127 : 0) - (ana[PADBTN_UP] ? 128 : 0);
+	ana[PADBTN_UP] = ana[PADBTN_DOWN] = ana[PADBTN_LEFT] = ana[PADBTN_RIGHT] = 0;
+}
+
+#define PAD_STICK_DPAD 64
+
+// SWAP: the kcode bits of the DC d-pad that the left stick presses past half travel. x, y: the raw stick minus 128.
+static inline unsigned short pad_stick_to_dpad(int x, int y)
+{
+	return (unsigned short)((x < -PAD_STICK_DPAD ? key_CONT_DPAD_LEFT : 0) | (x > PAD_STICK_DPAD ? key_CONT_DPAD_RIGHT : 0) |
+	                        (y < -PAD_STICK_DPAD ? key_CONT_DPAD_UP : 0) | (y > PAD_STICK_DPAD ? key_CONT_DPAD_DOWN : 0));
+}
+
 #define PAD_DEADZONE 0.10f
 
 // P84, Flycast gamepad_device.cpp: a radial dead zone of 10% of the travel with a rescale, then maple_devs.h's

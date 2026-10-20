@@ -253,6 +253,10 @@ void UpdateInputState(u32 port)
 	if (d->BTN_R2 && r2 == 0) r2 = 255;
 	ana[PADBTN_L2] = l2;
 	ana[PADBTN_R2] = r2;
+	// Stick / D-pad SWAP: the d-pad leaves the map and becomes the DC stick.
+	int sx = 0, sy = 0;
+	if (g_stick_swap_preset)
+		pad_dpad_to_stick(ana, &sx, &sy);
 
 	u8 l = 0, r = 0;
 	padmap_apply(g_pad_map, ana, &kcode[port], &l, &r);
@@ -263,7 +267,14 @@ void UpdateInputState(u32 port)
 	if (r) kcode[port] &= ~key_CONT_C;
 
 	// Raw stick is 0..255 with 255 = down, and DC positive Y is down too.
-	ps3_stick(d->ANA_L_H, d->ANA_L_V, &joyx[port], &joyy[port]);
+	if (g_stick_swap_preset)
+	{
+		kcode[port] &= (u16)~pad_stick_to_dpad((int)d->ANA_L_H - 128, (int)d->ANA_L_V - 128);
+		joyx[port] = (s8)sx;
+		joyy[port] = (s8)sy;
+	}
+	else
+		ps3_stick(d->ANA_L_H, d->ANA_L_V, &joyx[port], &joyy[port]);
 	// G12: only the full controller reports the right stick.
 	if (get_controller_type() == 5)
 		ps3_stick(d->ANA_R_H, d->ANA_R_V, &joyrx[port], &joyry[port]);

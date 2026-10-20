@@ -5,6 +5,10 @@
 #include "ps3_presets.h"
 #include "ps3_padmap.h"
 
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+
 #define CFG_SECT "ps3"
 
 int g_accuracy_preset      = 0;   // 0 fast, 1 balanced, 2 accurate
@@ -15,7 +19,7 @@ int g_dma_fix_preset       = 1;
 int g_x_scaler_preset      = 1;
 int g_mute_pcm16_preset    = 0;
 int g_cdda_preset          = 1;
-int g_speed_limiter_preset = 1;
+int g_speed_limiter_preset = 3;   // 1 = sleep the surplus, 2 / 3 = only the sound queued above 256 / 512 frames (P106, HW at 3)
 int g_render_delay_preset  = 2;   // end-of-render IRQs: 0 = max(15 x vertices, 50000) cycles, 1 = 0.8-0.9M, 2 = Flycast's
 int g_arm7_speed_preset    = 0;   // clock divider stage, ~10 MHz >> stage
 int g_arm7_batch_preset    = 4;
@@ -209,6 +213,7 @@ int g_jit_schedule_preset  = 2;   // 1 = FORMS: RAM check and address side by si
 int g_jit_pair_calls_preset = 1;  // 1 = a 64-bit access to device memory passes its u64 as ELFv1 wants; 0 writes 0 (P105, Matt: FIXED)
 // OPTIMIZATION_PLAN section 7, bundle 10 (Controllers): 0 is the old path; a row is off until it is cleared on hardware.
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
+int g_stick_swap_preset    = 0;   // 1 = SWAP: the left stick drives the DC d-pad, the d-pad the DC stick
 // G15: what each controller's slot holds, A1 A2 B1 ... D2: 0 = nothing, 1 = a VMU, 2 = the Puru Puru pack (P13).
 // Matt 2026-10-18: slot 1 a VMU, slot 2 nothing by default.
 int g_slot_dev_preset[8]   = { 1, 0, 1, 0, 1, 0, 1, 0 };
@@ -239,6 +244,8 @@ int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture
 int g_screen_scaler_preset = 1;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
 int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
 int g_native_size_preset   = 1;   // 1 = the scene draws at the game's size, then whole-pixel scaling to the picture (P104)
+int g_integer_scale_preset = 0;   // 1 = the game's pixels at whole factors only, nearest, black bars around
+int g_output_1080_preset   = 1;   // 1 = 1920x1080 when the TV has it, from the next start; default ON (Matt, HW 2026-10-20)
 // OPTIMIZATION_PLAN section 7, bundle 13 (MMU and memory): 0 is the old path in every one; a row is off until it is
 // cleared on hardware. MMUCR Bits is FIXED since 2026-10-12 (Matt): Border Down, Sonic Shuffle, Ikaruga and Rez boot.
 int g_mmu_bits_preset      = 1;   // 1 = MMUCR's fields at the manual's bits, its write mask, a JIT cache clear on an AT edge (P58, P78, HW)
@@ -289,6 +296,7 @@ int g_mmu_asidjtc_preset   = 0;   // 1 = with MMU Model FAST, the JTC of each re
 int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; a flash with no dial-up account gets Flycast's
 // First release (Matt 2026-10-18): 0 shows only the main option rows, 1 every row.
 int g_advanced_preset      = 0;
+int g_game_cfg_preset      = 0;   // 1 = the options set after a game is picked go to config/<image>.cfg, not NotDC.cfg
 
 struct CfgItem { const char* key; int* val; };
 
@@ -373,6 +381,8 @@ static const CfgItem s_items[] = {
 	{ "Trilinear",     &g_trilinear_preset },
 	{ "NearCap",       &g_near_cap_preset },
 	{ "NativeSize",    &g_native_size_preset },
+	{ "IntegerScale",  &g_integer_scale_preset },
+	{ "Output1080",    &g_output_1080_preset },
 	{ "JitFschg",      &g_jit_fschg_preset },
 	{ "JitFsqrt",      &g_jit_fsqrt_preset },
 	{ "JitFpuPin",     &g_fpu_pin_preset },
@@ -467,6 +477,7 @@ static const CfgItem s_items[] = {
 	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
 	{ "Modem",         &g_modem_preset },
 	{ "AdvancedMode",  &g_advanced_preset },
+	{ "GameSettings",  &g_game_cfg_preset },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -494,6 +505,7 @@ static const CfgItem s_items[] = {
 	{ "VmuScreen",     &g_vmu_screen_preset },
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
+	{ "StickDpadSwap", &g_stick_swap_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -557,10 +569,105 @@ void ps3_presets_load(void)
 		*s_items[i].val = cfgLoadInt(CFG_SECT, s_items[i].key, *s_items[i].val);
 }
 
+#define ITEM_COUNT (sizeof(s_items) / sizeof(s_items[0]))
+// misc/gamecfg_check sets a folder of its own.
+#ifndef GAME_CFG_DIR
+#define GAME_CFG_DIR "/dev_hdd0/data/NotDC/config"
+#endif
+
+// Game Settings: while on, the g_* variables hold the picked image's values and global[] the global ones.
+static struct
+{
+	bool on;
+	char path[320];
+	int global[ITEM_COUNT];
+} s_game;
+
+// Rows that act before a game is picked, or on the menu itself, stay global.
+static bool game_key(const CfgItem& it)
+{
+	return it.val != &g_game_cfg_preset && it.val != &g_advanced_preset && it.val != &g_output_1080_preset;
+}
+
+// Only the values that differ from the global ones; with none the file goes, so the folder lists changed games only.
+static void game_cfg_write()
+{
+	int n = 0;
+	for (u32 i = 0; i < ITEM_COUNT; i++)
+		n += game_key(s_items[i]) && *s_items[i].val != s_game.global[i];
+	FILE* f = NULL;
+	if (n)
+	{
+		mkdir(GAME_CFG_DIR, 0777);
+		f = fopen(s_game.path, "w");
+	}
+	else
+		remove(s_game.path);
+	if (f)
+	{
+		for (u32 i = 0; i < ITEM_COUNT; i++)
+			if (game_key(s_items[i]) && *s_items[i].val != s_game.global[i])
+				fprintf(f, "%s=%d\n", s_items[i].key, *s_items[i].val);
+		fclose(f);
+	}
+	printf("[gamecfg] saved %s: %d value(s)%s\n", s_game.path, n, n && !f ? ", FILE NOT WRITTEN" : "");
+}
+
 void ps3_presets_save(void)
 {
-	for (u32 i = 0; i < sizeof(s_items) / sizeof(s_items[0]); i++)
-		cfgSaveInt(CFG_SECT, s_items[i].key, *s_items[i].val);
+	for (u32 i = 0; i < ITEM_COUNT; i++)
+		cfgSaveInt(CFG_SECT, s_items[i].key, s_game.on && game_key(s_items[i]) ? s_game.global[i] : *s_items[i].val);
+	if (s_game.on)
+		game_cfg_write();
+}
+
+void ps3_game_cfg_open(const char* image)
+{
+	if (!g_game_cfg_preset || !image[0])
+		return;
+	const char* name = strrchr(image, '/');
+	name = name ? name + 1 : image;
+	const char* dot = strrchr(name, '.');
+	snprintf(s_game.path, sizeof(s_game.path), GAME_CFG_DIR "/%.*s.cfg",
+	         dot ? (int)(dot - name) : (int)strlen(name), name);
+	for (u32 i = 0; i < ITEM_COUNT; i++)
+		s_game.global[i] = *s_items[i].val;
+	s_game.on = true;
+
+	int n = 0;
+	FILE* f = fopen(s_game.path, "r");
+	if (f)
+	{
+		char line[128], key[64];
+		int v;
+		while (fgets(line, sizeof(line), f))
+			if (sscanf(line, " %63[^= \t] = %d", key, &v) == 2)
+				for (u32 i = 0; i < ITEM_COUNT; i++)
+					if (game_key(s_items[i]) && strcmp(key, s_items[i].key) == 0)
+					{
+						*s_items[i].val = v;
+						n++;
+						break;
+					}
+		fclose(f);
+	}
+	printf("[gamecfg] %s: %d value(s) of the game\n", s_game.path, n);
+}
+
+void ps3_game_cfg_close(void)
+{
+	if (!s_game.on)
+		return;
+	game_cfg_write();
+	for (u32 i = 0; i < ITEM_COUNT; i++)
+		if (game_key(s_items[i]))
+			*s_items[i].val = s_game.global[i];
+	s_game.on = false;
+}
+
+bool ps3_game_cfg_on(void)
+{
+	return s_game.on;
 }
 
 // Every sound and ARM7 setting, with its nullDC.cfg key.
@@ -687,6 +794,7 @@ static const CfgItem s_pad_items[] = {
 	{ "Players",       &g_player_count },
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
+	{ "StickDpadSwap", &g_stick_swap_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -744,6 +852,8 @@ static const CfgItem s_scr_items[] = {
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
 	{ "NativeSize",    &g_native_size_preset },
+	{ "IntegerScale",  &g_integer_scale_preset },
+	{ "Output1080",    &g_output_1080_preset },
 };
 #define SCR_ITEMS (sizeof(s_scr_items) / sizeof(s_scr_items[0]))
 

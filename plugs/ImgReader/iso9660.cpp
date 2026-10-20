@@ -64,6 +64,9 @@ SessionInfo gdi_ses;
 u32 iso_tc=0;
 // P23: the FAD after track 2's last sector, from its file size; 0 = not known.
 static u32 gdi_sd_leadout;
+// A .cue of a CD: its disc type and the FAD after its last sector. 0: a GD-ROM (GDI, or a cue with the HD area).
+static u32 cue_cd;
+static u32 cue_leadout;
 
 void iso_ReadSSect(u8* p_out,u32 sector,u32 secsz)
 {
@@ -100,6 +103,21 @@ void iso_DriveReadSector(u8 * buff,u32 StartSector,u32 SectorCount,u32 secsz)
 void iso_DriveGetTocInfo(TocInfo* toc,DiskArea area)
 {
 	memcpy(toc,&gdi_toc,sizeof(TocInfo));
+	if (cue_cd)
+	{
+		// As the CHD reader: a CD has no high-density area; track 1 keeps ConvToc() inside the array.
+		if (area==DoubleDensity)
+		{
+			memset(toc,0xFF,sizeof(TocInfo));
+			toc->FistTrack=1;
+			toc->LastTrack=1;
+			toc->LeadOut.FAD=cue_leadout;
+			toc->LeadOut.Control=0x04;
+			toc->LeadOut.Addr=0;
+			toc->LeadOut.Session=0;
+		}
+		return;
+	}
 	if(area==SingleDensity)
 	{
 		// P23 (Flycast e592650af): the low-density area ends where track 2 does, not at a fixed FAD.
@@ -138,7 +156,7 @@ u32 iso_DriveGetDiscType()
 	if (iso_tc==0)
 		return NoDisk;
 	else
-		return GdRom;
+		return cue_cd ? cue_cd : GdRom;
 }
 
 // P23 (Flycast gdi.cpp): a track name in quotes may hold spaces. False at the file end or on an open quote.
@@ -269,8 +287,215 @@ bool load_gdi(char* file_)
 	fclose(t);
 	return true;
 }
+
+static u32 cue_sector_size(const char* type)
+{
+	if (!strcasecmp(type,"AUDIO") || !strcasecmp(type,"CDG"))
+		return 2352;
+	const char* s=strchr(type,'/');
+	const u32 n=s ? (u32)atoi(s+1) : 0;
+	return (n==2048 || n==2336 || n==2352) ? n : 0;
+}
+
+static bool cue_fail(FILE* t,const char* why,u32 line)
+{
+	printf("CUE : line %u: %s\n",line,why);
+	fclose(t);
+	iso_term();
+	return false;
+}
+
+// Bin/cue as Flycast's cue.cpp: a Redump GD-ROM (REM HIGH-DENSITY AREA) or a CD; REM SESSION 02 starts session 2.
+// Each track reads from its FILE at the INDEX 01 sector; the sectors before it are its pregap.
+bool load_cue(char* file)
+{
+	FILE* t=fopen(file,"rb");
+	if (!t)
+		return false;
+	memset(&gdi_toc,0xFF,sizeof(gdi_toc));
+	memset(&gdi_ses,0,sizeof(gdi_ses));
+	gdi_sd_leadout=0;
+	iso_tc=0;
+	cue_cd=CdRom;
+
+	char path[512],line[512],tok[16],type[16]="";
+	snprintf(path,sizeof(path),"%s",file);
+	char* name=strrchr(path,'/');
+	name=name ? name+1 : path;
+	u32 fad=150,file_fad=0,ses=0,secsize=0,ln=0;
+	long file_size=0;
+	bool have_file=false,ses_first=false;
+	while (fgets(line,sizeof(line),t))
+	{
+		ln++;
+		char* p=line;
+		if ((u8)p[0]==0xEF && (u8)p[1]==0xBB && (u8)p[2]==0xBF)
+			p+=3;
+		if (sscanf(p,"%15s",tok)!=1)
+			continue;
+		p=strstr(p,tok)+strlen(tok);
+		if (!strcasecmp(tok,"REM"))
+		{
+			u32 n=0;
+			if (sscanf(p,"%15s %u",tok,&n)<1)
+				continue;
+			if (!strcasecmp(tok,"SESSION"))
+			{
+				if (n==0 || n==ses)
+					continue;
+				ses=n;
+				// Session 1 lead-out 01:30:00, session 2 lead-in 01:00:00, pregap 00:02:00.
+				if (ses==2)
+				{
+					fad+=6750+4500+150;
+					ses_first=true;
+				}
+				if (gdi_ses.SessionCount<99)
+				{
+					gdi_ses.SessionStart[gdi_ses.SessionCount]=iso_tc+1;
+					gdi_ses.SessionFAD[gdi_ses.SessionCount]=fad;
+					gdi_ses.SessionCount++;
+				}
+			}
+			else if (!strcasecmp(tok,"HIGH-DENSITY"))
+			{
+				gdi_sd_leadout=fad;
+				fad=45000+150;
+				cue_cd=0;
+			}
+			else if (strcasecmp(tok,"SINGLE-DENSITY"))
+				continue;
+			have_file=false;
+			secsize=0;
+		}
+		else if (!strcasecmp(tok,"FILE"))
+		{
+			while (*p==' ' || *p=='\t')
+				p++;
+			char* fn=p;
+			char* q;
+			if (*p=='"')
+				q=strchr(fn=p+1,'"');
+			else
+				q=p+strcspn(p," \t\r\n");
+			if (!q || q==fn)
+				return cue_fail(t,"no file name",ln);
+			if (*q)
+				*q++=0;
+			if (sscanf(q,"%15s",tok)!=1 || strcasecmp(tok,"BINARY"))
+				return cue_fail(t,"FILE is not BINARY",ln);
+			snprintf(name,sizeof(path)-(name-path),"%s",fn);
+			for (char* c=name;*c;c++)
+				if (*c=='\\')
+					*c='/';
+			FILE* b=fopen(path,"rb");
+			if (!b)
+			{
+				printf("CUE : cannot open track file %s\n",path);
+				return cue_fail(t,"FILE not found",ln);
+			}
+			fseek(b,0,SEEK_END);
+			file_size=ftell(b);
+			fclose(b);
+			file_fad=fad;
+			have_file=true;
+			secsize=0;
+		}
+		else if (!strcasecmp(tok,"TRACK"))
+		{
+			u32 n=0;
+			if (!have_file || sscanf(p,"%u %15s",&n,type)!=2 || n==0 || n>99)
+				return cue_fail(t,"bad TRACK",ln);
+			const bool first=secsize==0;
+			secsize=cue_sector_size(type);
+			if (!secsize)
+				return cue_fail(t,"unknown track type",ln);
+			// Several tracks of one FILE: its size counts once.
+			if (first)
+				fad+=(u32)(file_size/secsize);
+		}
+		else if (!strcasecmp(tok,"INDEX"))
+		{
+			u32 idx=0;
+			int m=0,s=0,f=0;
+			if (sscanf(p,"%u %d:%d:%d",&idx,&m,&s,&f)!=4 || idx!=1)
+				continue;
+			if (!secsize || iso_tc>=99)
+				return cue_fail(t,"INDEX 01 without a TRACK, or more than 99 tracks",ln);
+			const u32 at=(u32)(f+75*(s+60*m));
+			// The session gap holds this track's pregap: the sectors before INDEX 01 do not count twice.
+			if (ses_first && at>0)
+			{
+				const u32 pregap=at<150 ? at : 150;
+				file_fad-=pregap;
+				fad-=pregap;
+			}
+			ses_first=false;
+			file_TrackInfo& tr=iso_tracks[iso_tc];
+			tr.f=fopen(path,"rb");
+			tr.FAD=file_fad+at-150;
+			tr.offset=(s32)(at*secsize);
+			tr.SectorSize=secsize;
+			tr.ctrl=(!strcasecmp(type,"AUDIO") || !strcasecmp(type,"CDG")) ? 0 : 4;
+			gdi_toc.tracks[iso_tc].FAD=file_fad+at;
+			gdi_toc.tracks[iso_tc].Control=tr.ctrl;
+			gdi_toc.tracks[iso_tc].Addr=1;
+			gdi_toc.tracks[iso_tc].Session=ses ? ses : 1;
+			iso_tc++;
+		}
+	}
+	fclose(t);
+
+	if (!cue_cd)
+	{
+		// Flycast's checks: tracks 1 and 3 data, track 2 audio, track 3 at the high-density area's start.
+		if (iso_tc<3 || gdi_toc.tracks[0].Control!=4 || gdi_toc.tracks[1].Control!=0 ||
+		    gdi_toc.tracks[2].Control!=4 || gdi_toc.tracks[2].FAD!=45150)
+		{
+			printf("CUE : not a GD-ROM track layout\n");
+			iso_term();
+			return false;
+		}
+		gdi_ses.SessionCount=2;
+		gdi_ses.SessionStart[0]=1;
+		gdi_ses.SessionFAD[0]=gdi_toc.tracks[0].FAD;
+		gdi_ses.SessionStart[1]=3;
+		gdi_ses.SessionFAD[1]=gdi_toc.tracks[2].FAD;
+		gdi_ses.SessionsEndFAD=549300;
+	}
+	else
+	{
+		if (!iso_tc)
+		{
+			printf("CUE : no track\n");
+			return false;
+		}
+		// Flycast: REM SESSION makes a CD-ROM XA.
+		if (!ses)
+		{
+			gdi_ses.SessionCount=1;
+			gdi_ses.SessionStart[0]=1;
+			gdi_ses.SessionFAD[0]=gdi_toc.tracks[0].FAD;
+		}
+		else
+			cue_cd=CdRom_XA;
+		cue_leadout=fad;
+		gdi_ses.SessionsEndFAD=fad;
+		gdi_toc.LeadOut.FAD=fad;
+		gdi_toc.LeadOut.Control=4;
+		gdi_toc.LeadOut.Addr=1;
+		gdi_toc.LeadOut.Session=0;
+	}
+	gdi_toc.FistTrack=1;
+	gdi_toc.LastTrack=iso_tc;
+	printf("CUE : %s, %u tracks, %u session(s), last track at FAD %u, lead-out %u\n",cue_cd ? "CD-ROM" : "GD-ROM",
+	       iso_tc,(u32)gdi_ses.SessionCount,gdi_toc.tracks[iso_tc-1].FAD,cue_cd ? fad : 549300);
+	return true;
+}
+
 bool iso_init(char* file)
 {
+	cue_cd=0;
 	size_t len=strlen(file);
 	if (len>4)
 	{
@@ -280,6 +505,8 @@ bool iso_init(char* file)
 		{
 			return load_gdi(file);
 		}
+		if (strcasecmp(&file[len-4],".cue")==0)
+			return load_cue(file);
 	}
 	return false;
 }

@@ -41,7 +41,8 @@ static const int k_font_px[PS3UI_FONT_COUNT] = { 20, 32 };
 #define FIRST_CHAR 32
 #define NUM_CHARS  95   // ' ' to '~'
 #define ATLAS_W    512
-#define ATLAS_H    512
+// Fonts at 1080p are 1.5 times as tall: twice the rows.
+#define ATLAS_H    (s_h > 720.0f ? 1024 : 512)
 #define BLUR       2    // shadow box-blur radius
 #define PAD        3    // free texels around each glyph; >= BLUR keeps neighbour blurs apart
 #define SHADOW_RGB 0x081838u

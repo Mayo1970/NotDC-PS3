@@ -58,9 +58,9 @@ static double s_stats_t0;
 
 // Render-to-texture readback staging. CPU reads of RSX local memory run at
 // ~16 MB/s, so the RSX blits the rendered rect into main memory instead.
-#define PS3_RB_MAX_W 1024
-#define PS3_RB_MAX_H 1024
-#define PS3_RB_SIZE  (PS3_RB_MAX_W * PS3_RB_MAX_H * 4)
+#define PS3_RB_MIN   (1024 * 1024 * 4)
+// A 1024 x 1024 RTT, or a whole 1080p frame for P51, in whole 1 MB pages.
+#define PS3_RB_SIZE  (s_width * s_height * 4 > PS3_RB_MIN ? (s_width * s_height * 4 + 0xFFFFFu) & ~0xFFFFFu : PS3_RB_MIN)
 static void* s_rb_addr;
 static u32 s_rb_off;
 
@@ -80,6 +80,9 @@ static u32 s_ref = 1;
 #define PS3_NS_MAX_W 1280
 #define PS3_NS_MAX_H 960
 static struct { void* depth; u32 depth_off, scene_w, scene_h; int on, same; } s_ns;
+
+// The SCREEN row Output 1080p (ps3_presets.cpp), read once at the init.
+extern int g_output_1080_preset;
 
 // G17 RSX Direct (ps3_rsxd.cpp): the boot, each frame's ring fence and its label, the memory at the end.
 int ps3rsxd_init(void* ctx, u32 w, u32 h);
@@ -211,10 +214,12 @@ int ps3_video_init(void)
 	if (ret != 0 || !s_ctx)
 		return 0;
 
-	// 720p: 1080p was fill-rate bound in xashPS3. Fall back to the TV mode if absent.
+	// 720p: 1080p was fill-rate bound in xashPS3; Output 1080p asks for it. Fall back to the TV mode if absent.
 	s32 vid_res = VIDEO_RESOLUTION_720;
 	u8 vid_aspect = VIDEO_ASPECT_16_9;
-	if (!videoGetResolutionAvailability(VIDEO_PRIMARY, VIDEO_RESOLUTION_720, VIDEO_ASPECT_16_9, 0))
+	if (g_output_1080_preset && videoGetResolutionAvailability(VIDEO_PRIMARY, VIDEO_RESOLUTION_1080, VIDEO_ASPECT_16_9, 0))
+		vid_res = VIDEO_RESOLUTION_1080;
+	else if (!videoGetResolutionAvailability(VIDEO_PRIMARY, VIDEO_RESOLUTION_720, VIDEO_ASPECT_16_9, 0))
 	{
 		videoState state;
 		if (videoGetState(0, 0, &state) != 0)

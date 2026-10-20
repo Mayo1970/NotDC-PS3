@@ -185,6 +185,7 @@ extern int g_jit_pair_calls_preset;
 extern "C" int g_jit_ccalls_preset;   // dc/sh4/rec_v2/shil.cpp
 // Bundle 10 (plan section 7), the CONTROLS page. g_pad_map: PADBTN_COUNT entries (ps3_padmap.h).
 extern int g_stick_deadzone_preset;
+extern int g_stick_swap_preset;
 extern int g_pad_map[];
 // G15, the CONTROLS page: the 8 slot rows (A1 A2 ... D2) and the VMU page.
 extern int g_slot_dev_preset[8];
@@ -210,6 +211,8 @@ extern int g_screen_format_preset;
 extern int g_screen_scaler_preset;
 extern int g_cheats_preset;
 extern int g_native_size_preset;
+extern int g_integer_scale_preset;
+extern int g_output_1080_preset;
 // Bundle 13 (plan section 7), the MEMORY page.
 extern int g_mmu_bits_preset;
 extern int g_p4_mirror_preset;
@@ -251,10 +254,17 @@ extern int g_mmu_fast_preset, g_mmu_bcache_preset, g_mmu_sq_preset, g_mmu_pref_p
 extern int g_modem_preset;
 // The menu's Advanced Mode row: 0 shows only the main option rows.
 extern int g_advanced_preset;
+// The Game Settings row: 1 = the options set after a game is picked are that game's own (config/<image>.cfg).
+extern int g_game_cfg_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);
+// With a game's settings open: NotDC.cfg gets the global values, the game's file its own.
 void ps3_presets_save(void);
+// Game Settings: open puts the image's own values over the global ones; close saves them and puts the global ones back.
+void ps3_game_cfg_open(const char* image);
+void ps3_game_cfg_close(void);
+bool ps3_game_cfg_on(void);
 // [sndcfg] line: every sound and ARM7 setting. Without always, only when one changed since the last line.
 void ps3_sndcfg_print(const char* when, bool always);
 // [gdcfg] line: every GD-ROM setting, the same way.

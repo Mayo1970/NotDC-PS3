@@ -3609,11 +3609,11 @@ static void frame_extras()
 		reset_param_cache();
 }
 
-// Native Size: textures of passes A and B (ps3_screen.h), made at their first use; the frame's plan; last = the last
-// frame drew pass A; per stats window, frames drawn at the game's size, those through pass B, passes with no memory.
+// Native Size: textures of passes A and B (ps3_screen.h), the frame's plan, Integer Scale's size (iw 0 = none); last =
+// the last frame drew pass A; per stats window: frames at the game's size, through B, no memory, at Integer Scale.
 #define NS_MAX_W 1280
 #define NS_MAX_H 960
-static struct { u8* mem[2]; u32 pitch[2]; NativePlan plan; bool last; u32 frames, sharp, fails; } s_nat;
+static struct { u8* mem[2]; u32 pitch[2]; NativePlan plan; u32 iw, ih; bool last; u32 frames, sharp, fails, whole; } s_nat;
 
 static u8* native_mem(u32 k)
 {
@@ -3627,7 +3627,15 @@ static bool native_begin(ScreenView* sv, u32* sw, u32* sh, float ch, bool wide)
 {
 	const bool fresh = !s_nat.last;
 	s_nat.last = false;
-	if (!g_native_size_preset || wide || !native_plan(sv->w, *sh, sv->cw, ch, NS_MAX_W, NS_MAX_H, &s_nat.plan))
+	if ((!g_native_size_preset && !g_integer_scale_preset) || wide ||
+	    !native_plan(sv->w, *sh, sv->cw, ch, NS_MAX_W, NS_MAX_H, &s_nat.plan))
+		return false;
+	if (*sh > 720)
+		native_plan_down(&s_nat.plan, NS_MAX_W, NS_MAX_H);
+	// Integer Scale: pass A goes on the picture at whole factors; with Native Size OFF, only the frames they fit.
+	if (!g_integer_scale_preset || !integer_fit(s_nat.plan.aw, s_nat.plan.ah, (u32)sv->w, *sh, &s_nat.iw, &s_nat.ih))
+		s_nat.iw = 0;
+	if (!s_nat.iw && !g_native_size_preset)
 		return false;
 	u8* const a = native_mem(0);
 	// The display buffer's sides first: pass A covers the picture only.
@@ -3706,12 +3714,19 @@ static void native_target_frame()
 	ps3rsxd_screen(w, h);
 }
 
-// Pass A onto the picture (pic, sh lines): through pass B at whole factors, or straight when they reach the picture.
+// Pass A onto the picture (pic, sh lines): at Integer Scale's size in the middle, through pass B at whole factors, or
+// straight when they reach the picture.
 static void native_end(const ScreenView& pic, u32 sh)
 {
 	const NativePlan& p = s_nat.plan;
-	u8* const b = p.bw ? native_mem(1) : 0;
-	if (b && ps3_video_target(b, s_nat.pitch[1], p.bw, p.bh, 0))
+	u8* const b = p.bw && !s_nat.iw ? native_mem(1) : 0;
+	if (s_nat.iw)
+	{
+		native_target_frame();
+		native_quad(0, pic.x + (pic.w - (int)s_nat.iw) / 2, (int)(sh - s_nat.ih) / 2, s_nat.iw, s_nat.ih, false);
+		s_nat.whole++;
+	}
+	else if (b && ps3_video_target(b, s_nat.pitch[1], p.bw, p.bh, 0))
 	{
 		ps3rsxd_screen(p.bw, p.bh);
 		native_quad(0, 0, 0, p.bw, p.bh, false);
@@ -4295,6 +4310,14 @@ static void present_fb_draw()
 		return;
 	}
 
+	// Integer Scale: the 2D screen at whole factors, nearest, in the middle of the picture.
+	u32 iw, ih;
+	const bool whole = g_integer_scale_preset && integer_fit(cpy_w, cpy_h, vp_w, sh, &iw, &ih);
+	if (whole)
+	{
+		rglViewport(vp_x + (vp_w - iw) / 2, (sh - ih) / 2, iw, ih);
+		s_nat.whole++;
+	}
 	rglEnable(GL_TEXTURE_2D);
 	if (s_fb_buf >= 0)
 	{
@@ -4310,8 +4333,9 @@ static void present_fb_draw()
 	}
 	rglTexParameteri(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	rglTexParameteri(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	rglTexParameteri(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	rglTexParameteri(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	const int f = whole ? GL_NEAREST : GL_LINEAR;
+	rglTexParameteri(GL_TEXTURE_MIN_FILTER, f);
+	rglTexParameteri(GL_TEXTURE_MAG_FILTER, f);
 	quad_textured();
 	frame_extras();
 	ps3_video_end_frame();
@@ -4454,15 +4478,16 @@ static void rth_print_stats()
 		       (u32)(s_stat_ta_zero / (now - s_stat_t0)));
 	s_stat_ta_zero = 0;
 	// Bundle 12: the rows; renders drawn wide and WIDE renders kept at 4:3 by their clip; the last render's canvas.
-	// Native Size: frames drawn at the game's size, through pass B, and passes with no memory; the last plan.
+	// Native Size: frames at the game's size, through B, passes with no memory, the last plan; Integer Scale's frames.
 	if (g_screen_format_preset || g_screen_scaler_preset || g_fps_overlay_preset || s_stat_shots || g_native_size_preset)
 		printf("[scr] format=%d scaler=%d fps=%d | wide=%u narrow=%u canvas=%gx%g shots=%u | native=%d frames=%u sharp=%u"
-		       " fails=%u a=%ux%u b=%ux%u\n", g_screen_format_preset, g_screen_scaler_preset, g_fps_overlay_preset,
+		       " fails=%u a=%ux%u b=%ux%u | iscale=%d whole=%u i=%ux%u\n", g_screen_format_preset,
+		       g_screen_scaler_preset, g_fps_overlay_preset,
 		       s_stat_wide, s_stat_narrow, (double)(640.0f * g_rr.fb_scale_x), (double)(480.0f * g_rr.fb_scale_y),
 		       s_stat_shots, g_native_size_preset, s_nat.frames, s_nat.sharp, s_nat.fails, s_nat.plan.aw, s_nat.plan.ah,
-		       s_nat.plan.bw, s_nat.plan.bh);
+		       s_nat.plan.bw, s_nat.plan.bh, g_integer_scale_preset, s_nat.whole, s_nat.iw, s_nat.ih);
 	s_stat_wide = s_stat_narrow = s_stat_shots = 0;
-	s_nat.frames = s_nat.sharp = s_nat.fails = 0;
+	s_nat.frames = s_nat.sharp = s_nat.fails = s_nat.whole = 0;
 	print_diag();
 	ps3spe_stats(now - s_stat_t0);
 	ps3spevb_stats(now - s_stat_t0);

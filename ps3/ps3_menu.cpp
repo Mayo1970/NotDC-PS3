@@ -225,9 +225,9 @@ static bool has_disc_extension(const char* name)
 	const char* dot = strrchr(name, '.');
 	if (!dot)
 		return false;
-	// Only what plugs/ImgReader reads: .gdi (iso9660.cpp), .cdi, .chd (chd.cpp) and .mds/.nrg (mds.cpp). A .mds
-	// pulls in its own .mdf, so that is not listed.
-	static const char* ext[] = { ".gdi", ".cdi", ".chd", ".mds", ".nrg", ".elf", NULL };
+	// Only what plugs/ImgReader reads: .gdi and .cue (iso9660.cpp), .cdi, .chd (chd.cpp) and .mds/.nrg (mds.cpp).
+	// A .mds pulls in its own .mdf and a .cue its .bin files, so those are not listed.
+	static const char* ext[] = { ".gdi", ".cue", ".cdi", ".chd", ".mds", ".nrg", ".elf", NULL };
 	for (int i = 0; ext[i]; i++)
 		if (strcasecmp(dot, ext[i]) == 0)
 			return true;
@@ -354,6 +354,7 @@ static const char* k_audio_buf[] = { "AUTO (CFG VALUE)", "0 - NEVER BLOCK",
                                      "1", "2", "3", NULL };
 static const char* k_pad_type[]  = { "STANDARD PAD", "FULL (2 STICKS)", NULL };
 static const char* k_deadzone[]  = { "AXIS", "RADIAL", NULL };
+static const char* k_stickswap[] = { "NORMAL", "SWAP", NULL };
 // G15: the values maple_cfg.cpp reads (0 nothing, 1 VMU, 2 Puru Puru pack).
 static const char* k_slotdev[]   = { "NONE", "VMU", "RUMBLE", NULL };
 // PADMAP_* order (ps3_padmap.h).
@@ -399,6 +400,8 @@ struct Option
 static Option s_emu[] = {
 	{ "Advanced Mode",   &g_advanced_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "ON shows every row of every page. OFF shows only the main options. Live.", 0, 1 },
+	{ "Game Settings",   &g_game_cfg_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON: what you change after you pick a game, or in game, is for that game only (NotDC/config).", 0, 1 },
 	{ "Start UDP Listener", &g_udp_log,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "ON sends the log to the PC over UDP (port 18194) until NotDC quits. Each boot starts OFF. Live." },
 	{ "Accuracy",        &g_accuracy_preset,      OPT_CHOICE, k_accuracy,  0, 0,0,0, NULL,
@@ -812,6 +815,10 @@ static Option s_screen[] = {
 	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot.", 0, 1 },
 	{ "Native Size",     &g_native_size_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The scene draws at the game's size, then whole-pixel scaling: even 2D pixels (P104). Live.", 0, 1 },
+	{ "Integer Scale",   &g_integer_scale_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Sharp pixels at whole factors, black bars, not WIDE. 480 lines: 1x at 720p, 2x at 1080p. Live.", 0, 1 },
+	{ "Output 1080p",    &g_output_1080_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "1080p if the TV has it, else 720p. Native Size OFF or WIDE: more RSX work. Next NotDC start.", 0, 1 },
 };
 
 // Plan section 7, bundle 13: one row per item; the first value is the old path. Bundle 1's LMMODE, VRAM Direct and
@@ -925,6 +932,8 @@ static Option s_controls[] = {
 	  "FULL adds the right stick, for the games that read it (Quake III Arena, G12)." },
 	{ "Stick Dead Zone", &g_stick_deadzone_preset, OPT_CHOICE, k_deadzone, 0, 0,0,0, NULL,
 	  "RADIAL: a round 10% dead zone, smooth from 0, corners capped at full travel (P84)." },
+	{ "Stick / D-pad",   &g_stick_swap_preset,    OPT_CHOICE, k_stickswap, 0, 0,0,0, NULL,
+	  "SWAP: the left stick is the Dreamcast d-pad, and the d-pad is the Dreamcast analog stick." },
 	{ "Port A Slot 1",   &g_slot_dev_preset[0],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port A Slot 2",   &g_slot_dev_preset[1],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port B Slot 1",   &g_slot_dev_preset[2],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 2 },
@@ -1206,7 +1215,7 @@ static float list_max_w()
 
 // -- Screens -----------------------------------------------------------------
 
-enum Screen { SCR_BROWSER, SCR_OPTIONS, SCR_CONTROLS, SCR_LAUNCH, SCR_QUIT };
+enum Screen { SCR_BROWSER, SCR_OPTIONS, SCR_CONTROLS, SCR_LAUNCH, SCR_QUIT, SCR_NOBIOS };
 
 static int s_sel;      // browser selection
 static int s_opt_page;
@@ -1275,6 +1284,7 @@ static Screen browser_input(u32 pressed, bool swap)
 		else
 		{
 			snprintf(selectedFilePath, sizeof(selectedFilePath), "%s", f->path);
+			ps3_game_cfg_open(selectedFilePath);
 			return SCR_OPTIONS;
 		}
 	}
@@ -1394,7 +1404,10 @@ static Screen options_input(u32 pressed)
 	else if (pressed & MB_CROSS)
 		return SCR_CONTROLS;
 	else if (pressed & MB_CIRCLE)
+	{
+		ps3_game_cfg_close();
 		return SCR_BROWSER;
+	}
 
 	return SCR_OPTIONS;
 }
@@ -1426,7 +1439,7 @@ static void options_rows_draw(const char* head_fmt, bool mark)
 
 static void options_draw()
 {
-	options_rows_draw("OPTIONS - %s  (%d/%d)", false);
+	options_rows_draw(ps3_game_cfg_on() ? "GAME OPTIONS - %s  (%d/%d)" : "OPTIONS - %s  (%d/%d)", false);
 	draw_footer(s_opt_pages[s_opt_page].rows[s_opt_row].help,
 	            "LEFT/RIGHT Change   L1/R1 Page   X Continue   O Back");
 }
@@ -1470,7 +1483,7 @@ static void controls_draw()
 {
 	char val[64], buf[256], cut[256];
 
-	draw_header("CONTROLS", NULL);
+	draw_header(ps3_game_cfg_on() ? "GAME CONTROLS" : "CONTROLS", NULL);
 
 	// The rows scroll above the two status lines; s_ctl_top counts the rows shown. Rows that go leave no gap.
 	int rows[CONTROLS_ROWS], pos;
@@ -1506,6 +1519,29 @@ static void controls_draw()
 
 	draw_footer(s_controls[s_ctl_row].help,
 	            "LEFT/RIGHT Change   X Start   O Back");
+}
+
+// Without dc_boot.bin, nullDC.cpp's main___ exits to the XMB: the launch shows this screen instead.
+static bool bios_present()
+{
+	struct stat st;
+	return stat(DATA_ROOT "data/dc_boot.bin", &st) == 0;
+}
+
+static Screen nobios_input(u32 pressed)
+{
+	if (!(pressed & (MB_CROSS | MB_CIRCLE)))
+		return SCR_NOBIOS;
+	ps3_game_cfg_close();
+	return SCR_BROWSER;
+}
+
+static void nobios_draw()
+{
+	draw_header("BIOS NOT FOUND", NULL);
+	draw_row(0, false, COL_TEXT, "NotDC needs the Dreamcast BIOS file dc_boot.bin to start.", NULL);
+	draw_row(1, false, COL_TEXT, "Copy it to " DATA_ROOT "data/ and start again.", NULL);
+	draw_footer(NULL, "O Back");
 }
 
 // -- In-game menu (SELECT) -----------------------------------------------------
@@ -1548,6 +1584,7 @@ static int* const k_live_opts[] = {
 	&g_ta_line_zero_preset,
 	&g_near_cap_preset,
 	&g_native_size_preset,
+	&g_integer_scale_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };
@@ -1590,7 +1627,7 @@ static void ingame_input(u32 pressed)
 
 static void ingame_draw()
 {
-	options_rows_draw("PAUSED - %s  (%d/%d)", true);
+	options_rows_draw(ps3_game_cfg_on() ? "PAUSED - GAME OPTIONS - %s  (%d/%d)" : "PAUSED - %s  (%d/%d)", true);
 	draw_footer(s_opt_pages[s_opt_page].rows[s_opt_row].help, g_disc_swap_preset
 	            ? "LEFT/RIGHT Change   L1/R1 Page   /\\ Disc   [] Screenshot   START Close game   SELECT Back   * Next boot"
 	            : "LEFT/RIGHT Change   L1/R1 Page   [] Screenshot   START Close game   SELECT Back to game   * Next boot");
@@ -1789,7 +1826,13 @@ int ps3_menu_run(void)
 		case SCR_BROWSER:  scr = browser_input(pressed, false);  break;
 		case SCR_OPTIONS:  scr = options_input(pressed);  break;
 		case SCR_CONTROLS: scr = controls_input(pressed); break;
+		case SCR_NOBIOS:   scr = nobios_input(pressed); break;
 		default: break;
+		}
+		if (scr == SCR_LAUNCH && !bios_present())
+		{
+			printf("[menu] no %sdata/dc_boot.bin, launch stopped\n", DATA_ROOT);
+			scr = SCR_NOBIOS;
 		}
 
 		if (ps3ui_begin(COL_BG))
@@ -1799,6 +1842,7 @@ int ps3_menu_run(void)
 			case SCR_BROWSER:  browser_draw(false);  break;
 			case SCR_OPTIONS:  options_draw();  break;
 			case SCR_CONTROLS: controls_draw(); break;
+			case SCR_NOBIOS:   nobios_draw(); break;
 			default: break;
 			}
 			ps3ui_end();
