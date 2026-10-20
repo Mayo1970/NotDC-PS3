@@ -49,8 +49,6 @@ extern int g_ram_sq_direct_preset;
 extern int g_mmu_sq_direct_preset;
 extern int g_drop_policy_preset;
 extern int g_frame_hold_preset;
-extern int g_strip_merge_preset;
-extern int g_vertex_array_preset;
 extern int g_tex_slot_hash_preset;
 extern int g_depth_float_preset;
 extern int g_yuv_block_preset;
@@ -218,11 +216,8 @@ extern int g_p4_mirror_preset;
 extern int g_ocr_banks_preset;
 extern int g_ch2_dma_fix_preset;
 // Bundle 14 (plan section 7), the DRAW COST page.
-extern int g_tex_bind_table_preset;
-extern int g_gl_compare_preset;
 extern int g_tr_first_pass_preset;
 extern int g_tex_recycle_preset;
-extern int g_rsx_direct_preset;
 // Bundle 15 (plan section 7), the FLASH / CLOCK page.
 extern int g_broadcast_preset;
 extern int g_bios_lang_preset;

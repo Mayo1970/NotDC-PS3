@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 
-// ---- RSX methods and values (nv40.h, gcm_sys.h; ps3_rsxd.cpp tests them against librsx at boot) ----
+// ---- RSX methods and values (nv40.h, gcm_sys.h) ----
 
 #define RXM_ALPHA_EN      0x0304u
 #define RXM_BLEND_EN      0x0310u
@@ -35,9 +35,10 @@
 #define RX_ALWAYS         0x0207u
 #define RX_TRIANGLES      5u
 #define RX_TRI_STRIP      6u
+#define RX_QUADS          8u
 
-// ps3gl's texenv ids (PS3GL_TENV_*) and fog modes (PS3GL_FOG_*), and the first key with a 4-byte texcoord1.
-enum { RXE_DISABLED, RXE_MODULATE, RXE_REPLACE, RXE_DECAL };
+// The texenv ids and fog modes (the program keys' order, rsxd_prog.h), and the first key with a 4-byte texcoord1.
+enum { RXE_DISABLED, RXE_MODULATE, RXE_REPLACE, RXE_DECAL, RXE_ADD };
 enum { RXF_NONE, RXF_TABLE, RXF_VERTEX, RXF_BASE, RXF_BASE_TA };
 #define RSXD_KEY_TC1U8    7
 #define RSXD_KEYS         63
@@ -53,7 +54,7 @@ enum { RXC_NONE, RXC_INSIDE, RXC_OUTSIDE, RXC_ALL, RXC_BASE };
 
 // ---- inputs ----
 
-// One texture as the RSX words of its unit; obj: its ps3gl slot. valid 0: no memory (the unit is off, as in ps3gl).
+// One texture as the RSX words of its unit; obj: its table object. valid 0: no memory (the unit is off).
 typedef struct RsxdTex
 {
 	uint32_t offset, format, remap, size0, size1;
@@ -77,7 +78,7 @@ typedef struct
 #define RSXD_S_CLAMP      64u   // s_clamp_on
 #define RSXD_S_BUMP       128u  // s_bump_on
 #define RSXD_S_LISTS_OFFS 256u  // s_rl.offs is set: bump_offs, fogv_offs and offc_offs can be
-#define RSXD_S_TMU1       512u  // ps3gl's unit 1 holds a texture ps3gl_shader_key counts
+#define RSXD_S_TMU1       512u  // unit 1 holds a texture the program key counts (not the fog table)
 
 // One scene's rules and constants. Floats as bits; the cv_ and glob_ fields are for rsxd_clip_of() (PPU only).
 typedef struct
@@ -104,7 +105,7 @@ typedef struct
 	uint32_t pad[2];
 } RsxdSec;
 
-// The captured programs: the key of each ps3gl state (ps3gl_shader_key), each key's FP select words and VP, and
+// The captured programs: the key of each GL state (rsxd_prog.h's rk_key), each key's FP select words and VP, and
 // each VP's load words and constant slots (RSXD_NONE = the VP has none).
 typedef struct
 {
@@ -118,7 +119,7 @@ typedef struct
 	uint16_t pad[4];
 } RsxdProg;
 
-// ps3gl_shader_key's inputs as a key_lut index.
+// rk_key's inputs as a key_lut index.
 static inline uint32_t rsxd_key_index(uint32_t tmu0, uint32_t env, uint32_t bump, uint32_t fog, uint32_t offs, uint32_t xt,
                                       uint32_t tmu1)
 {
@@ -128,7 +129,7 @@ static inline uint32_t rsxd_key_index(uint32_t tmu0, uint32_t env, uint32_t bump
 
 // ---- state ----
 
-// The GL state the draw path sets, as ps3gl holds it (ps3gl.rs, unit 0, the dc_ calls), and the rule state of
+// The GL state the draw path sets (render state, unit 0, the dc_ calls), and the rule state of
 // ps3_rend.cpp that carries from param to param (s_clip_base, s_clip_mode, s_clip_r, s_flat_shift).
 typedef struct
 {
@@ -137,7 +138,7 @@ typedef struct
 	uint32_t depth_test, depth_func, depth_mask;
 	uint32_t cull_en, cull_face, front_face;
 	uint32_t scissor_en;
-	int32_t sc_x, sc_y, sc_w, sc_h;  // ps3gl.rs.scissor_*: RSX y, with their int16/uint16 casts applied
+	int32_t sc_x, sc_y, sc_w, sc_h;  // glScissor's: RSX y, with their int16/uint16 casts applied
 	uint32_t color_mask;             // R 1, G 2, B 4, A 8
 	uint32_t shade;
 	uint32_t st_en, st_func, st_ref, st_mask, st_fail, st_zfail, st_zpass, st_wmask;
@@ -188,7 +189,7 @@ struct RsxdState
 	// The output words: room up to oend; rsxd_reserve() makes more.
 	uint32_t* op;
 	uint32_t* oend;
-	uint32_t check;  // 1 = a CHECK run: rsxd_tex_dirty() must not clear what ps3gl clears
+	uint32_t check;  // 1: rsxd_tex_dirty() keeps the dirty flags (0 on the PS3)
 	// Counts the host adds up: draws, vertices, texture sends, cache invalidates, the alpha force (offc, cclamp, tril).
 	uint32_t n_draw, n_vtx, n_tex, n_inval, n_offc, n_cclamp, n_tril;
 	uint32_t inval_due;  // the PPU's texture unit 1 has new texels: the next draw clears the texture cache

@@ -1,7 +1,7 @@
 #pragma once
 #include <ppu-types.h>
 
-// Immediate-mode text/quad UI on ps3gl, used by the front end and the in-game menu.
+// Immediate-mode text/quad UI on RSX Direct (rgl), used by the front end and the in-game menu.
 // Colors are 0xAARRGGBB. Coordinates are pixels, origin top-left; text y is the baseline.
 
 // Rodin Sans from /dev_flash; the 8x8 font if that fails.

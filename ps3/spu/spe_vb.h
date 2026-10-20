@@ -7,8 +7,8 @@
 #define SPEVB_RUN_MAX_VTX 16000  // RUN_MAX_VTX in ps3_rend.cpp
 #define SPEVB_TR_MAX      4096   // TR strips the SPU sorts; with more, the PPU draws the TR list
 #define SPEVB_MAX_RUNS    SPE_MAX_STRIPS
-#define SPEVB_VTX_BYTES   36     // ps3gl_vertex_t: x*W, y*W, W, 1, u, v, offset colour or 0, 0, RGBA
-// The SPU writes each vertex as 3 whole quadwords (ps3gl_vertex_t and 12 zero bytes); the RSX reads stride 48.
+#define SPEVB_VTX_BYTES   36     // RsxdVertex: x*W, y*W, W, 1, u, v, offset colour or 0, 0, RGBA
+// The SPU writes each vertex as 3 whole quadwords (RsxdVertex and 12 zero bytes); the RSX reads stride 48.
 #define SPEVB_VTX_STRIDE  48
 
 // Request flags.

@@ -23,7 +23,7 @@ static inline void depth_proj(bool fz, float n, float* m10, float* m14, float* r
 	*range_near = fz ? -1.0f : 0.0f;
 }
 
-// Depth at 1/W = 0. FLOAT's 0.0 is raw 0, which ps3gl's fixed-point clear encoding also writes.
+// Depth at 1/W = 0. FLOAT's 0.0 is raw 0, which rglClear's fixed-point encoding also writes.
 static inline float depth_clear(bool fz)
 {
 	return fz ? 0.0f : 1.0f;

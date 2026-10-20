@@ -1,21 +1,20 @@
 #pragma once
-// RSX Direct (G17, plan 9 stage E): the emitter's own textures, with ps3gl_textures.c's layouts, uploads and words.
-// Only ps3_rsxd.cpp includes it (its state takes that file's TOC entry), and the PC checks. Needs rsx.h, gl.h, rsxd.h.
+// RSX Direct (G17, plan 9 stage E): the emitter's texture table, its layouts, uploads and RSX words. Only ps3_rsxd.cpp
+// includes it (its state takes that file's TOC entry), and the PC checks. Needs rsx.h, rsxd_gl.h, rsxd.h.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define RT_MAX   4096       // PS3GL_MAX_TEXTURES: TEX CHECK's shadows sit at ps3gl's slots
-#define RT_DIM   4096       // PS3GL_MAX_TEX_DIM
-#define RT_REMAP 0x00AAE4u  // PS3GL_TEX_REMAP_IDENTITY
+#define RT_MAX   4096       // entries; the last one wraps memory another side writes
+#define RT_DIM   4096       // the largest side of a swizzled texture
+#define RT_REMAP 0x00AAE4u  // the identity remap
 
 typedef struct
 {
 	uint8_t* data;          // RSX memory; NULL: no texels
 	uint32_t offset;
-	uint32_t name;          // TEX CHECK: the ps3gl name the shadow follows
 	uint32_t fixed_pitch;   // rt_wrap: the memory's pitch while the size sampled changes
-	// build_gcm_texture's words as tex_obj reads them: offset, format, remap, size0, size1.
+	// The texture's RSX words: offset, format, remap, size0, size1.
 	uint32_t g_off, g_fmt, g_remap, g_size0, g_size1;
 	uint16_t w, h;
 	uint8_t used, swz, alloc, levels;   // swizzled; levels the memory holds; levels written in order
@@ -33,9 +32,11 @@ static struct
 	// The memory each vring segment's fence covers: given up while that segment was the frame's.
 	void* pend[2][RT_MAX];
 	uint32_t npend[2], seg;
-	// Per stats window: allocations, frees, failed allocations, levels written, early frees of a full list, bytes.
+	// Per stats window: allocations, frees, failed allocations, levels written, early frees of a full list, bytes; the
+	// frame's allocations.
 	uint32_t n_alloc, n_free, n_fail, n_up, n_over;
 	uint64_t n_bytes;
+	uint32_t n_frame_alloc;
 } RT;
 
 static inline uint32_t rt_dim(uint32_t base, int level)
@@ -172,7 +173,7 @@ static void rt_defer(RtTex* t)
 		uint32_t* const n = &RT.npend[RT.seg];
 		if (*n == RT_MAX)
 		{
-			// As ps3gl's full list: it goes now.
+			// A full list: it goes now.
 			for (uint32_t i = 0; i < *n; i++)
 				rsxFree(RT.pend[RT.seg][i]);
 			RT.n_free += *n;
@@ -195,12 +196,11 @@ static void rt_frame(uint32_t seg)
 	RT.npend[RT.seg] = 0;
 }
 
-// A new entry: ps3gl_texture_alloc's sampler (clamp, linear) and the words of its zeroed gcmTexture.
-static void rt_init(RtTex* t, uint32_t name)
+// A new entry: clamp, linear, and the words of a zeroed gcmTexture.
+static void rt_init(RtTex* t)
 {
 	memset(t, 0, sizeof(*t));
 	t->used = 1;
-	t->name = name;
 	t->wrap_s = t->wrap_t = GCM_TEXTURE_CLAMP_TO_EDGE;
 	t->min = t->mag = GCM_TEXTURE_LINEAR;
 	t->aniso = GCM_TEXTURE_MAX_ANISO_1;
@@ -214,7 +214,7 @@ static int rt_new(uint32_t lim)
 		if (!RT.t[i].used)
 		{
 			RT.hint = i + 1;
-			rt_init(&RT.t[i], 0);
+			rt_init(&RT.t[i]);
 			return (int)i;
 		}
 	return -1;
@@ -229,7 +229,7 @@ static void rt_delete(uint32_t i)
 		RT.hint = i;
 }
 
-// build_gcm_texture: A8R8G8B8, swizzled or linear, the levels written, 2D, RSX memory.
+// The words: A8R8G8B8, swizzled or linear, the levels written, 2D, RSX memory.
 static void rt_build(RtTex* t)
 {
 	const uint32_t fmt = GCM_TEXTURE_FORMAT_A8R8G8B8 | (t->swz ? 0 : GCM_TEXTURE_FORMAT_LIN);
@@ -241,7 +241,7 @@ static void rt_build(RtTex* t)
 	t->g_size1 = (1u << 20) | (t->fixed_pitch ? t->fixed_pitch : rt_pitch(t->w));
 }
 
-// tex_obj's words of t; fields: with its own sampler (tex_from_fields), else none (ps3tex_bind_rsxd sets them).
+// t's words; fields: with its own sampler, else none (ps3tex_bind_rsxd sets them).
 static void rt_words(const RtTex* t, uint32_t obj, int fields, RsxdTex* o)
 {
 	o->offset = t->g_off;
@@ -258,7 +258,7 @@ static void rt_words(const RtTex* t, uint32_t obj, int fields, RsxdTex* o)
 	o->pad[0] = o->pad[1] = 0;
 }
 
-// glTexParameteri (ps3gl's gl_to_gcm_wrap, _filter, _aniso).
+// glTexParameteri: GL's wrap, filter and anisotropy as the RSX's.
 static void rt_param(RtTex* t, uint32_t pname, int v)
 {
 	switch (pname)
@@ -324,6 +324,7 @@ static int rt_alloc0(RtTex* t, uint32_t w, uint32_t h)
 	}
 	rsxAddressToOffset(t->data, &t->offset);
 	RT.n_alloc++;
+	RT.n_frame_alloc++;
 	RT.n_bytes += size;
 	return 1;
 }

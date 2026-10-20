@@ -1,15 +1,13 @@
 // RSX display bring-up: init, 3 flip buffers and vsync as in xashPS3 vid_ps3.c / ioQuake3-PS3 ps3_glimp.c.
 #include <stdio.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
 #include <unistd.h>
 #include <sysutil/video.h>
 
-#include "ps3gl.h"
+#include <rsx/rsx.h>
 #include "ps3_phase.h"
-#include "ps3_log.h"
 #include "ps3_timebase.h"
 #include "ps3_framehold.h"
 #include "ps3_rsxwatch.h"
@@ -83,31 +81,15 @@ static u32 s_ref = 1;
 #define PS3_NS_MAX_H 960
 static struct { void* depth; u32 depth_off, scene_w, scene_h; int on, same; } s_ns;
 
-// ps3gl_main.c and ps3gl_vertices.c link against these engine hooks.
-void Con_Printf(const char* fmt, ...)
-{
-	va_list ap;
-	va_start(ap, fmt);
-	ps3_log_vprintf(fmt, ap);
-	va_end(ap);
-}
+// G17 RSX Direct (ps3_rsxd.cpp): the boot, each frame's ring fence and its label, the memory at the end.
+int ps3rsxd_init(void* ctx, u32 w, u32 h);
+void ps3rsxd_vring_begin(void);
+void ps3rsxd_vring_end(void);
+void ps3rsxd_mem_term(void);
 
-double Platform_DoubleTime(void)
+static double vid_seconds(void)
 {
-	return ps3gl_ticks_to_sec(ps3gl_ticks());
-}
-
-// Only for one-shot glReadPixels; CPU reads of GDDR3 run at ~16 MB/s.
-void* PS3_RSX_GetColorBuffer(u32* pitch, u32* width, u32* height)
-{
-	if (!s_ready)
-		return NULL;
-	rsxFlushBuffer(s_ctx);
-	rsxFinish(s_ctx, 1);
-	if (pitch)  *pitch = s_pitch;
-	if (width)  *width = s_width;
-	if (height) *height = s_height;
-	return s_color[s_cur_fb];
+	return (double)gettime() / (double)ps3_timebase_hz;
 }
 
 static void flip_handler(const u32 head)
@@ -320,22 +302,19 @@ int ps3_video_init(void)
 	gcmSetFlipHandler(flip_handler);
 	gcmSetVBlankHandler(vblank_handler);
 
-	if (!ps3gl_init(s_ctx, s_width, s_height))
+	if (!ps3rsxd_init(s_ctx, s_width, s_height))
 	{
-		printf("[vid] ps3gl_init failed\n");
+		printf("[vid] RSX Direct init failed\n");
 		return 0;
 	}
 
 	s_cur_fb = 0;
 	s_presented = s_skipped = 0;
-	s_stats_t0 = Platform_DoubleTime();
+	s_stats_t0 = vid_seconds();
 	s_ready = 1;
 	printf("[vid] ready\n");
 	return 1;
 }
-
-// G17 (ps3_rsxd.cpp): the emitter's texture table, ring and program copies go before ps3gl's memory.
-void ps3rsxd_mem_term(void);
 
 void ps3_video_term(void)
 {
@@ -347,7 +326,6 @@ void ps3_video_term(void)
 		gcmSetFlipHandler(NULL);
 		gcmSetVBlankHandler(NULL);
 		ps3rsxd_mem_term();
-		ps3gl_shutdown();
 		for (int i = 0; i < PS3_FB_COUNT; i++)
 		{
 			if (s_color[i])
@@ -382,15 +360,7 @@ void ps3_video_size(u32* w, u32* h)
 	*h = s_height;
 }
 
-// G17 RSX Direct + FRAME (ps3_rsxd.cpp): the frame's vring fence wait and label write, in place of ps3gl's. + RING:
-// ps3gl gets no call before the frame's UI (gl_off), and a ps3gl frame also ends with the emitter ring's label.
-void ps3rsxd_vring_begin(void);
-void ps3rsxd_vring_end(void);
-int ps3rsxd_gl_off(void);
-void ps3rsxd_ring_end(void);
-static int s_own;
-
-static int frame_begin(int own)
+int ps3_video_begin_frame(void)
 {
 	if (!s_ready)
 		return 0;
@@ -402,34 +372,8 @@ static int frame_begin(int own)
 		return 0;
 	}
 	set_render_target(s_color_off[s_cur_fb]);
-	s_own = own;
-	if (own)
-		ps3rsxd_vring_begin();
-	else
-		ps3gl_begin_frame();
+	ps3rsxd_vring_begin();
 	return 1;
-}
-
-int ps3_video_begin_frame(void)
-{
-	return frame_begin(0);
-}
-
-int ps3_video_begin_own(void)
-{
-	return frame_begin(1);
-}
-
-static void gl_end_frame(void)
-{
-	if (!s_own)
-	{
-		ps3gl_end_frame();
-		ps3rsxd_ring_end();
-		return;
-	}
-	s_own = 0;
-	ps3rsxd_vring_end();
 }
 
 // P76 Draw Retry: waits up to ms for a free back buffer. 1 = ps3_video_begin_frame() will take one.
@@ -443,17 +387,12 @@ int ps3_video_wait_free(u32 ms)
 }
 
 // P60: a frame on the RTT surface, which is never shown: no flip can be in its way and the back buffer stays.
-// own: G17 + SCREEN's frame, with ps3_rsxd.cpp's vring fences.
-int ps3_video_begin_rtt(int own)
+int ps3_video_begin_rtt(void)
 {
 	if (!s_ready || !s_rtt_color)
 		return 0;
 	set_render_target(s_rtt_off);
-	s_own = own;
-	if (own)
-		ps3rsxd_vring_begin();
-	else
-		ps3gl_begin_frame();
+	ps3rsxd_vring_begin();
 	return 1;
 }
 
@@ -473,11 +412,7 @@ int ps3_video_target(void* mem, u32 pitch, u32 w, u32 h, int scene)
 	u32 off;
 	if (rsxAddressToOffset(mem, &off) != 0)
 		return 0;
-	if (!ps3rsxd_gl_off())
-		ps3gl_flush_polygon_batch();
 	set_surface(off, pitch, s_ns.depth_off, PS3_NS_MAX_W * 4, w, h);
-	if (!ps3rsxd_gl_off())
-		ps3gl_set_screen(w, h);
 	if (scene)
 	{
 		s_ns.same = w == s_ns.scene_w && h == s_ns.scene_h;
@@ -491,22 +426,15 @@ int ps3_video_target(void* mem, u32 pitch, u32 w, u32 h, int scene)
 // Native Size: the next draws go to the display buffer of the frame in progress again.
 void ps3_video_target_frame(void)
 {
-	if (!ps3rsxd_gl_off())
-		ps3gl_flush_polygon_batch();
 	set_surface(s_color_off[s_cur_fb], s_pitch, s_depth_off, s_width * 4, s_width, s_height);
-	if (!ps3rsxd_gl_off())
-		ps3gl_set_screen(s_width, s_height);
 	s_ns.on = 0;
 }
 
-// P18: CONTROL0's depth format. FLOAT reads the Z24 surface as f32 bits >> 7 (RPCS3's d24f); a FIFO
-// write, so a deferred ps3gl GL_POLYGON batch goes out first.
+// P18: CONTROL0's depth format. FLOAT reads the Z24 surface as f32 bits >> 7 (RPCS3's d24f).
 void ps3_video_depth_float(int on)
 {
 	if (!s_ready)
 		return;
-	if (!ps3rsxd_gl_off())
-		ps3gl_flush_polygon_batch();
 	rsxSetDepthFormat(s_ctx, on ? GCM_DEPTH_FORMAT_FLOAT : GCM_DEPTH_FORMAT_FIXED);
 }
 
@@ -514,7 +442,7 @@ void ps3_video_depth_float(int on)
 // commands still have to be flushed, but no flip is queued and the buffer stays.
 void ps3_video_end_frame_noflip(void)
 {
-	gl_end_frame();
+	ps3rsxd_vring_end();
 	rsxFlushBuffer(s_ctx);
 }
 
@@ -522,7 +450,7 @@ void ps3_video_end_frame_noflip(void)
 void ps3_video_end_frame_hold(void)
 {
 	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
-	gl_end_frame();
+	ps3rsxd_vring_end();
 	rsxFlushBuffer(s_ctx);
 	s_frame_waits = 1;
 }
@@ -593,9 +521,6 @@ const u32* ps3_video_grab(u32 x, u32 y, u32 w, u32 h)
 {
 	if (!s_ready)
 		return NULL;
-	// FIFO writes, so a deferred ps3gl GL_POLYGON batch goes out first.
-	if (!ps3rsxd_gl_off())
-		ps3gl_flush_polygon_batch();
 	return ps3_video_readback(x, y, w, h, 1);
 }
 
@@ -608,9 +533,7 @@ int ps3_video_carry(void)
 		return s_ns.same;
 	if (!s_ready || s_last_fb < 0 || s_last_fb == s_cur_fb || s_target_off != s_color_off[s_cur_fb])
 		return 0;
-	// FIFO writes, so a deferred ps3gl GL_POLYGON batch goes out first. The copy starts at the last call.
-	if (!ps3rsxd_gl_off())
-		ps3gl_flush_polygon_batch();
+	// The copy starts at the last call.
 	rsxSetTransferDataMode(s_ctx, GCM_TRANSFER_LOCAL_TO_LOCAL);
 	rsxSetTransferDataFormat(s_ctx, s_pitch, s_pitch, s_width * 4, s_height, 1, 1);
 	rsxSetTransferDataOffset(s_ctx, s_color_off[s_cur_fb], s_color_off[s_last_fb]);
@@ -642,7 +565,7 @@ static void queue_flip(u64 k)
 
 static void vid_stats(void)
 {
-	double now = Platform_DoubleTime();
+	double now = vid_seconds();
 	if (now - s_stats_t0 < 5.0)
 		return;
 	u32 held[4];
@@ -671,7 +594,7 @@ static void vid_stats(void)
 void ps3_video_end_frame(void)
 {
 	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
-	gl_end_frame();
+	ps3rsxd_vring_end();
 	queue_flip(0);
 	vid_stats();
 }
@@ -689,7 +612,7 @@ int ps3_video_flip_held(void)
 double ps3_video_end_frame_at(u64 target_tb)
 {
 	ps3_rsxwatch_frame(s_ns.scene_w, s_ns.scene_h);
-	gl_end_frame();
+	ps3rsxd_vring_end();
 	// The RSX draws while this thread waits for the flip's turn.
 	rsxFlushBuffer(s_ctx);
 	const u32 per = s_refresh_tb;

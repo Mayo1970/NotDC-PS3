@@ -1,6 +1,6 @@
 #pragma once
-// P42 YUV422 block decoder: the final A8R8G8B8 words straight into the RSX rows, bit-exact with decode() + ps3gl
-// convert_pixels(). Tables replace yuv_pair()'s multiplies and clamps; misc/yuv_check tests it against the old path.
+// P42 YUV422 block decoder: the final A8R8G8B8 words straight into the RSX rows, bit-exact with decode() + rsxd_tex.h's
+// rt_convert(). Tables replace yuv_pair()'s multiplies and clamps; misc/yuv_check tests it against the old path.
 
 struct YuvTables
 {

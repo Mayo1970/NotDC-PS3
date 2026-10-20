@@ -1,15 +1,9 @@
-// Text and quad drawing for the PS3 front end, on top of ps3gl.
+// Text and quad drawing for the PS3 front end, on RSX Direct's GL calls (ps3_rsxd.h).
 #include "types.h"
 #include "ps3_ui.h"
 #include "ps3_video.h"
 #include "ps3_font.h"
-// ps3gl.h silences C-only warnings, which g++ reports as unknown pragmas.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpragmas"
-extern "C" {
-#include "ps3gl.h"
-}
-#pragma GCC diagnostic pop
+#include "ps3_rsxd.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -75,8 +69,8 @@ struct Packer
 };
 
 static Font   s_font[PS3UI_FONT_COUNT];
-static GLuint s_font_tex, s_glow_tex, s_bg_tex;
-static GLuint s_icon_tex[PS3UI_ICON_COUNT];
+static u32 s_font_tex, s_glow_tex, s_bg_tex;
+static u32 s_icon_tex[PS3UI_ICON_COUNT];
 static float  s_w = 1280, s_h = 720;
 static int    s_ready;
 
@@ -332,17 +326,33 @@ static u8* decode_png(const u8* data, size_t size, u32* out_w, u32* out_h)
 
 // -- Setup -------------------------------------------------------------------
 
-static GLuint upload(GLenum fmt, int w, int h, const void* px)
+// RGBA bytes, rows top to bottom. The table fixes the layout at the first upload, so the wrap mode goes first.
+static u32 upload(int w, int h, const void* px)
 {
-	GLuint t;
-	glGenTextures(1, &t);
-	glBindTexture(GL_TEXTURE_2D, t);
-	// ps3gl fixes the layout at the first upload, so the wrap mode goes first.
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, px);
+	u32 t;
+	rglGenTextures(&t);
+	rglBindTexture(t);
+	rglTexParameteri(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	rglTexParameteri(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	rglTexImage2D(0, w, h, px);
+	return t;
+}
+
+// An atlas of alpha bytes as GL_ALPHA's texels: white, so the colour is the vertex colour alone.
+static u32 upload_alpha(const u8* a)
+{
+	u8* const px = (u8*)malloc((size_t)ATLAS_W * ATLAS_H * 4);
+	if (!px)
+		return 0;
+	for (u32 i = 0; i < ATLAS_W * ATLAS_H; i++)
+	{
+		px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = 255;
+		px[i * 4 + 3] = a[i];
+	}
+	const u32 t = upload(ATLAS_W, ATLAS_H, px);
+	free(px);
 	return t;
 }
 
@@ -379,8 +389,8 @@ static void load_fonts()
 		FT_Done_FreeType(lib);
 
 	box_blur(atlas, glow, tmp);
-	s_font_tex = upload(GL_ALPHA, ATLAS_W, ATLAS_H, atlas);
-	s_glow_tex = upload(GL_ALPHA, ATLAS_W, ATLAS_H, glow);
+	s_font_tex = upload_alpha(atlas);
+	s_glow_tex = upload_alpha(glow);
 	free(atlas);
 }
 
@@ -393,7 +403,7 @@ static void load_background()
 		printf("[ui] background PNG did not decode (%u bytes)\n", (unsigned)(ui_bg_png_end - ui_bg_png));
 		return;
 	}
-	s_bg_tex = upload(GL_RGBA, (int)w, (int)h, px);
+	s_bg_tex = upload((int)w, (int)h, px);
 	free(px);
 	printf("[ui] background %ux%u\n", (unsigned)w, (unsigned)h);
 }
@@ -415,7 +425,7 @@ static void load_icons()
 		for (u32 j = 0; j < w * h; j++)
 			if (px[j * 4 + 3] == 0)
 				px[j * 4] = px[j * 4 + 1] = px[j * 4 + 2] = 0;
-		s_icon_tex[i] = upload(GL_RGBA, (int)w, (int)h, px);
+		s_icon_tex[i] = upload((int)w, (int)h, px);
 		free(px);
 		printf("[ui] icon %d: %ux%u\n", i, (unsigned)w, (unsigned)h);
 	}
@@ -446,17 +456,15 @@ void ps3ui_term(void)
 {
 	if (!s_ready)
 		return;
-	GLuint tex[3] = { s_font_tex, s_glow_tex, s_bg_tex };
-	for (int i = 0; i < 3; i++)
-		if (tex[i])
-			glDeleteTextures(1, &tex[i]);
+	rglDeleteTexture(s_font_tex);
+	rglDeleteTexture(s_glow_tex);
+	rglDeleteTexture(s_bg_tex);
 	s_font_tex = s_glow_tex = s_bg_tex = 0;
 	for (int i = 0; i < PS3UI_ICON_COUNT; i++)
-		if (s_icon_tex[i])
-		{
-			glDeleteTextures(1, &s_icon_tex[i]);
-			s_icon_tex[i] = 0;
-		}
+	{
+		rglDeleteTexture(s_icon_tex[i]);
+		s_icon_tex[i] = 0;
+	}
 	s_ready = 0;
 }
 
@@ -468,29 +476,36 @@ void ps3ui_screen(float* w, float* h)
 
 static inline void set_color(u32 argb)
 {
-	glColor4ub((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24);
+	rglColor4ub((argb >> 16) & 0xFF, (argb >> 8) & 0xFF, argb & 0xFF, argb >> 24);
 }
 
 // The GL state every UI draw needs: pixel coordinates over the whole display, alpha blend, no depth.
 static void ui_state()
 {
-	glViewport(0, 0, (GLsizei)s_w, (GLsizei)s_h);
-	glMatrixMode(GL_PROJECTION);
-	glLoadIdentity();
-	glOrtho(0, s_w, s_h, 0, -1, 1);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
+	rglViewport(0, 0, (int)s_w, (int)s_h);
+	// glOrtho(0, w, h, 0, -1, 1): y down from the top.
+	float m[16] = { 0 };
+	m[0] = 2.0f / s_w;
+	m[5] = -2.0f / s_h;
+	m[10] = -1.0f;
+	m[12] = -1.0f;
+	m[13] = 1.0f;
+	m[15] = 1.0f;
+	rglMatrixMode(GL_PROJECTION);
+	rglLoadMatrixf(m);
+	rglMatrixMode(GL_MODELVIEW);
+	rglLoadIdentity();
 
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_STENCIL_TEST);
-	glDisable(GL_SCISSOR_TEST);
-	glDepthMask(GL_FALSE);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+	rglDisable(GL_DEPTH_TEST);
+	rglDisable(GL_ALPHA_TEST);
+	rglDisable(GL_CULL_FACE);
+	rglDisable(GL_STENCIL_TEST);
+	rglDisable(GL_SCISSOR_TEST);
+	rglDepthMask(GL_FALSE);
+	rglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	rglEnable(GL_BLEND);
+	rglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	rglTexEnvMode(GL_MODULATE);
 }
 
 int ps3ui_begin(u32 bg_argb)
@@ -499,29 +514,29 @@ int ps3ui_begin(u32 bg_argb)
 		return 0;
 	ui_state();
 
-	glClearColor(((bg_argb >> 16) & 0xFF) / 255.0f, ((bg_argb >> 8) & 0xFF) / 255.0f,
-	             (bg_argb & 0xFF) / 255.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	rglClearColor(((bg_argb >> 16) & 0xFF) / 255.0f, ((bg_argb >> 8) & 0xFF) / 255.0f,
+	              (bg_argb & 0xFF) / 255.0f, 1.0f);
+	rglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 	if (s_bg_tex)
 	{
-		glEnable(GL_TEXTURE_2D);
-		glBindTexture(GL_TEXTURE_2D, s_bg_tex);
+		rglEnable(GL_TEXTURE_2D);
+		rglBindTexture(s_bg_tex);
 		set_color(0xFFFFFFFFu);
-		glBegin(GL_QUADS);
-		glTexCoord2f(0, 0); glVertex2f(0, 0);
-		glTexCoord2f(1, 0); glVertex2f(s_w, 0);
-		glTexCoord2f(1, 1); glVertex2f(s_w, s_h);
-		glTexCoord2f(0, 1); glVertex2f(0, s_h);
-		glEnd();
-		glDisable(GL_TEXTURE_2D);
+		rglBegin(GL_QUADS);
+		rglTexCoord2f(0, 0); rglVertex3f(0, 0, 0);
+		rglTexCoord2f(1, 0); rglVertex3f(s_w, 0, 0);
+		rglTexCoord2f(1, 1); rglVertex3f(s_w, s_h, 0);
+		rglTexCoord2f(0, 1); rglVertex3f(0, s_h, 0);
+		rglEnd();
+		rglDisable(GL_TEXTURE_2D);
 	}
 	return 1;
 }
 
 void ps3ui_end(void)
 {
-	glDepthMask(GL_TRUE);
+	rglDepthMask(GL_TRUE);
 	ps3_video_end_frame();
 	ps3_video_forget_frame();
 }
@@ -537,22 +552,22 @@ int ps3ui_overlay_begin(void)
 
 void ps3ui_overlay_end(void)
 {
-	glDisable(GL_BLEND);
-	glDepthMask(GL_TRUE);
+	rglDisable(GL_BLEND);
+	rglDepthMask(GL_TRUE);
 }
 
 void ps3ui_rect(float x, float y, float w, float h, u32 argb)
 {
 	if (!s_ready)
 		return;
-	glDisable(GL_TEXTURE_2D);
+	rglDisable(GL_TEXTURE_2D);
 	set_color(argb);
-	glBegin(GL_QUADS);
-	glVertex2f(x, y);
-	glVertex2f(x + w, y);
-	glVertex2f(x + w, y + h);
-	glVertex2f(x, y + h);
-	glEnd();
+	rglBegin(GL_QUADS);
+	rglVertex3f(x, y, 0);
+	rglVertex3f(x + w, y, 0);
+	rglVertex3f(x + w, y + h, 0);
+	rglVertex3f(x, y + h, 0);
+	rglEnd();
 }
 
 int ps3ui_icon(int icon, float x, float y, float size)
@@ -562,16 +577,16 @@ int ps3ui_icon(int icon, float x, float y, float size)
 	// Whole pixels, so every icon scales the same way.
 	x = floorf(x + 0.5f);
 	y = floorf(y + 0.5f);
-	glEnable(GL_TEXTURE_2D);
-	glBindTexture(GL_TEXTURE_2D, s_icon_tex[icon]);
+	rglEnable(GL_TEXTURE_2D);
+	rglBindTexture(s_icon_tex[icon]);
 	set_color(0xFFFFFFFFu);
-	glBegin(GL_QUADS);
-	glTexCoord2f(0, 0); glVertex2f(x, y);
-	glTexCoord2f(1, 0); glVertex2f(x + size, y);
-	glTexCoord2f(1, 1); glVertex2f(x + size, y + size);
-	glTexCoord2f(0, 1); glVertex2f(x, y + size);
-	glEnd();
-	glDisable(GL_TEXTURE_2D);
+	rglBegin(GL_QUADS);
+	rglTexCoord2f(0, 0); rglVertex3f(x, y, 0);
+	rglTexCoord2f(1, 0); rglVertex3f(x + size, y, 0);
+	rglTexCoord2f(1, 1); rglVertex3f(x + size, y + size, 0);
+	rglTexCoord2f(0, 1); rglVertex3f(x, y + size, 0);
+	rglEnd();
+	rglDisable(GL_TEXTURE_2D);
 	return 1;
 }
 
@@ -614,7 +629,7 @@ static void text_pass(const Font* f, float x, float y, int grow, const char* s)
 {
 	const float iu = 1.0f / ATLAS_W, iv = 1.0f / ATLAS_H;
 	int pen = 0, prev = -1;
-	glBegin(GL_QUADS);
+	rglBegin(GL_QUADS);
 	for (const unsigned char* p = (const unsigned char*)s; *p; p++)
 	{
 		int i = glyph_index(*p);
@@ -627,15 +642,15 @@ static void text_pass(const Font* f, float x, float y, int grow, const char* s)
 			float x1 = x0 + g->w + 2 * grow, y1 = y0 + g->h + 2 * grow;
 			float u0 = (g->u - grow) * iu, v0 = (g->v - grow) * iv;
 			float u1 = (g->u + g->w + grow) * iu, v1 = (g->v + g->h + grow) * iv;
-			glTexCoord2f(u0, v0); glVertex2f(x0, y0);
-			glTexCoord2f(u1, v0); glVertex2f(x1, y0);
-			glTexCoord2f(u1, v1); glVertex2f(x1, y1);
-			glTexCoord2f(u0, v1); glVertex2f(x0, y1);
+			rglTexCoord2f(u0, v0); rglVertex3f(x0, y0, 0);
+			rglTexCoord2f(u1, v0); rglVertex3f(x1, y0, 0);
+			rglTexCoord2f(u1, v1); rglVertex3f(x1, y1, 0);
+			rglTexCoord2f(u0, v1); rglVertex3f(x0, y1, 0);
 		}
 		pen += g->adv;
 		prev = i;
 	}
-	glEnd();
+	rglEnd();
 }
 
 void ps3ui_text(float x, float y, int font, u32 argb, const char* s)
@@ -647,14 +662,14 @@ void ps3ui_text(float x, float y, int font, u32 argb, const char* s)
 	x = floorf(x + 0.5f);
 	y = floorf(y + 0.5f);
 
-	glEnable(GL_TEXTURE_2D);
-	glBindTexture(GL_TEXTURE_2D, s_glow_tex);
+	rglEnable(GL_TEXTURE_2D);
+	rglBindTexture(s_glow_tex);
 	set_color(((argb >> 24) * 158 / 255) << 24 | SHADOW_RGB);
 	text_pass(f, x + SHADOW_DX, y + SHADOW_DY, BLUR, s);
-	glBindTexture(GL_TEXTURE_2D, s_font_tex);
+	rglBindTexture(s_font_tex);
 	set_color(argb);
 	text_pass(f, x, y, 0, s);
-	glDisable(GL_TEXTURE_2D);
+	rglDisable(GL_TEXTURE_2D);
 }
 
 void ps3ui_textf(float x, float y, int font, u32 argb, const char* fmt, ...)

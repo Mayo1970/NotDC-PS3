@@ -339,9 +339,9 @@ static const char* k_fieldbit[]  = { "LINE", "FRAME", NULL };
 static const char* k_hblank[]    = { "VBLANK", "MODES", NULL };
 static const char* k_vbireset[]  = { "OLD", "FLYCAST", NULL };
 static const char* k_rdelay[]    = { "OFF", "ON", "FLYCAST", NULL };
-static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", NULL };
+static const char* k_idlerule[]  = { "X30", "X3 BACKWARD", "OFF", "X3 + WAITS X30", "AUTO", "AUTO X30", NULL };
 static const char* k_idlehash[]  = { "OFF", "ON", "+ REICAST LIST", NULL };
-static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", NULL };
+static const char* k_x30fwd[]    = { "X30", "PLAIN", "AUTO", "AUTO X30", NULL };
 static const char* k_taskidle[]  = { "OFF", "ON", "LONG", NULL };
 static const char* k_autochk[]   = { "OLD", "FRAMES", "+ X3 TRY", NULL };
 static const char* k_rmany[]     = { "VERIFY", "ACCEPT", NULL };
@@ -378,10 +378,6 @@ static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
 static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
 static const char* k_modem[]     = { "OFF", "DCNET", NULL };
-// RSXD_* order (ps3_rsxd.h).
-static const char* k_rsxd[]      = { "OFF", "PPU", "CHECK", "SPE", "SPE CHECK", "SPE + TR SORT", "TR SORT CHECK",
-                                     "+ FRAME", "FRAME CHECK", "+ VOLUMES", "VOLUMES CHECK", "+ FOG", "FOG CHECK",
-                                     "+ SCREEN", "SCREEN CHECK", "+ TEX", "TEX CHECK", "+ RING", "RING CHECK", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -536,10 +532,6 @@ static Option s_video[] = {
 	  "What a render does when the render thread is busy. DROP loses the frame." },
 	{ "Frame Hold",      &g_frame_hold_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A frame under 60 fps flips on the PS3 vsync of its DC vblank (5.41). Live." },
-	{ "Strip Merge",     &g_strip_merge_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Same-state strips share one draw call; inf vertices are dropped. Live." },
-	{ "Vertex Arrays",   &g_vertex_array_preset,  OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Merged strips go to the RSX as vertex-array ranges, not glBegin. Live." },
 	{ "Tex Slot Hash",   &g_tex_slot_hash_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Texture cache slot from a hash of the whole key (P16). Live." },
 	{ "Depth Float",     &g_depth_float_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -641,11 +633,11 @@ static Option s_jit[] = {
 	{ "JIT RM 2/3",      &g_jit_rm_any_preset,    OPT_CHOICE, k_rmany,     0, 0,0,0, NULL,
 	  "ACCEPT: FPSCR.RM 2 or 3 runs as round to nearest, no hang (P57). Set before boot." },
 	{ "JIT IDLE RULE",   &g_jit_idle_rule_preset, OPT_CHOICE, k_idlerule,  0, 0,0,0, NULL,
-	  "X3 BACKWARD: more frames in some games. AUTO: X3 BACKWARD, X30 when SPEED falls. Set before boot." },
+	  "X3 BACKWARD: more frames in some games. AUTO: X3, X30 when SPEED falls (AUTO X30: from X30). Set before boot." },
 	{ "JIT IDLE HASH",   &g_jit_idle_hash_preset, OPT_CHOICE, k_idlehash,  0, 0,0,0, NULL,
 	  "A known wait loop ends the timeslice (Looney Tunes, Kamui vsync wait), as Reicast. Set before boot." },
 	{ "JIT X30 FORWARD", &g_jit_x30_fwd_preset,   OPT_CHOICE, k_x30fwd,    0, 0,0,0, NULL,
-	  "PLAIN: at X30 a forward branch bills its own cycles. AUTO: PLAIN or X30 by frames. Set before boot." },
+	  "PLAIN: a forward branch at X30 bills its own cycles. AUTO: by frames (AUTO X30: from X30). Set before boot." },
 	{ "JIT TASK IDLE",   &g_jit_task_idle_preset, OPT_CHOICE, k_taskidle,  0, 0,0,0, NULL,
 	  "An idle SDK task-loop turn skips 3 timeslices, LONG 16 (Shuffle, Border Down, Garou). Set before boot." },
 	{ "JIT AUTO CHECKS", &g_jit_auto_checks_preset, OPT_CHOICE, k_autochk, 0, 0,0,0, NULL,
@@ -836,16 +828,10 @@ static Option s_memory[] = {
 
 // Plan section 7, bundle 14: one row per item; the first value is the old path. No value changes the picture.
 static Option s_cost[] = {
-	{ "Tex Bind Table",  &g_tex_bind_table_preset, OPT_CHOICE, k_onoff,    0, 0,0,0, NULL,
-	  "A texture bind finds its slot in a table, not in a scan of 4096 slots (P72). Live." },
-	{ "GL State Compare", &g_gl_compare_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
-	  "Render state, sampler and vertex binds go to the RSX only when they change (P72). Live." },
 	{ "TR First Pass",   &g_tr_first_pass_preset, OPT_CHOICE, k_firstpass, 0, 0,0,0, NULL,
 	  "+ OPAQUE DEPTH's depth pass: SKIP draws only what writes depth; GAME ORDER merges (P73). Live." },
 	{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "An evicted texture waits 2 frames, then a new one of its size reuses it (Garou). Live." },
-	{ "RSX Direct",      &g_rsx_direct_preset,    OPT_CHOICE, k_rsxd,      0, 0,0,0, NULL,
-	  "RSX words, no ps3gl. CHECK compares. SPE: an SPU. FRAME to RING: each takes more of the frame. Live." },
 };
 
 // Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's
@@ -1529,8 +1515,8 @@ static volatile bool s_ingame_req;
 static int* const k_live_opts[] = {
 	&g_advanced_preset, &g_udp_log,
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
-	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset, &g_strip_merge_preset,
-	&g_vertex_array_preset, &g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
+	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset,
+	&g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
 	&g_aica_kyonb_preset, &g_ta_sq_direct_preset, &g_tex_slot_hash_preset, &g_depth_float_preset,
 	&g_yuv_block_preset, &g_frame_hold_preset, &g_yuv_conv_fast_preset, &g_vram_direct_preset, &g_lmmode_preset,
 	&g_fb_watch_preset, &g_bump_map_preset, &g_gd_position_preset, &g_gd_scd_q_preset, &g_cdda_miss_preset,
@@ -1546,7 +1532,7 @@ static int* const k_live_opts[] = {
 	&g_draw_retry_preset, &g_blank_video_preset, &g_present_rule_preset, &g_region_scissor_preset,
 	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
 	&g_ch2_dma_fix_preset,
-	&g_tex_bind_table_preset, &g_gl_compare_preset, &g_tr_first_pass_preset,
+	&g_tr_first_pass_preset,
 	&g_tex_recycle_preset,
 	&g_exit_save_preset,
 	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,
@@ -1561,7 +1547,6 @@ static int* const k_live_opts[] = {
 	&g_ta_line_zero_preset,
 	&g_near_cap_preset,
 	&g_native_size_preset,
-	&g_rsx_direct_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

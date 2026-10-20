@@ -1,5 +1,5 @@
 #pragma once
-// RSX Direct (G17): the run draws' RSX words without ps3gl. apply_param_body and draw_vb of ps3_rend.cpp as plain C,
+// RSX Direct (G17): the run draws' RSX words, ps3_rend.cpp's param rules and draw_vb as plain C,
 // for the PPU (ps3/ps3_rsxd.cpp), the SPU (spe_tex.c) and misc/rsxdirect_check. The includer defines rsxd_reserve().
 #include "rsxd.h"
 
@@ -66,7 +66,7 @@ static inline void rx_set_cull(RsxdState* s, uint32_t mode)
 	s->gl.cull_face = mode == 2 ? RX_CULL_FRONT : RX_CULL_BACK;
 }
 
-// glScissor: ps3gl stores the RSX y, through the casts of its rs fields.
+// glScissor: the RSX y, through the int16 and uint16 casts of the scissor fields.
 static inline void rx_scissor(RsxdState* s, int x, int y, int w, int h)
 {
 	const int rsx_y = (int)s->sc->screen_h - y - h;
@@ -283,7 +283,7 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 	return force ? 0xFF000000u : 0;
 }
 
-// ---- the draw: ps3gl's apply_states, apply_textures, apply_shader, bind_vertex_attribs, rsxDrawVertexArray ----
+// ---- the draw: render state, texture unit 0, programs, vertex attributes, rsxDrawVertexArray ----
 
 // No branch: the SPU has no predictor, and slot is a constant here, so this is a few selects.
 static inline void rx_want(RsxdState* s, int slot, uint32_t v)
@@ -295,7 +295,7 @@ static inline void rx_want(RsxdState* s, int slot, uint32_t v)
 	s->rch[w] |= bit & (same - 1u);
 }
 
-// ps3gl_apply_states' scissor: a scissor clamped to the screen, or the whole screen.
+// The scissor: clamped to the screen, or the whole screen.
 static inline void rx_want_scissor(RsxdState* s)
 {
 	const RsxdGl* g = &s->gl;
@@ -407,7 +407,7 @@ static inline uint32_t rsxd_draw_room(uint32_t count)
 	return 360 + (count >> 8);
 }
 
-// One draw of [first, first + count) under the GL state; ps3gl_draw_vb_shift's words, minus the ones the RSX holds.
+// One draw of [first, first + count) under the GL state, without the words the RSX holds.
 static RSXD_BIG void rx_draw1(RsxdState* s, uint32_t prim, uint32_t stride, uint32_t first, uint32_t count)
 {
 	if (s->oend - s->op < (int)rsxd_draw_room(count) && !rsxd_reserve(s, rsxd_draw_room(count)))
@@ -538,7 +538,7 @@ static inline int rsxd_draws(const RsxdScene* sc, uint32_t mode, const int32_t* 
 }
 
 // draw_vb: an outside clip draws once per side of the rect, a clip that cuts all draws nothing. count 0 sends
-// nothing, as ps3gl_draw_vb_shift.
+// nothing.
 static inline void rsxd_draw(RsxdState* s, uint32_t prim, uint32_t stride, uint32_t first, uint32_t count)
 {
 	RsxdGl* g = &s->gl;

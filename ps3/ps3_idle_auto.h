@@ -36,11 +36,14 @@ struct IdleAuto
 	int lost;              // the last switch to X30 came from a try with no more frames
 };
 
-static inline void idle_auto_init(IdleAuto& a)
+// x30: AUTO X30, the boot starts at X30 and holds before its first X3 try, as after a switch.
+static inline void idle_auto_init(IdleAuto& a, bool x30 = false)
 {
-	a.rule = IA_X3;
+	a.rule = x30 ? IA_X30 : IA_X3;
 	a.slow = a.spare = a.wait = 0;
 	a.hold = IA_HOLD_MIN;
+	if (x30)
+		a.wait = IA_HOLD_MIN;
 	a.x3_n = IA_SOON;      // the boot is no try: its first fall back keeps the shortest hold
 	a.frames = 0;
 	a.run_fpv = a.base_fpv = a.try_fpv = 0.0;
@@ -150,9 +153,10 @@ struct FwdAuto
 	u32 peak_i;
 };
 
-static inline void fwd_auto_init(FwdAuto& f)
+// x30: AUTO X30, the boot starts at X30 and tries PLAIN when X30 drops frames.
+static inline void fwd_auto_init(FwdAuto& f, bool x30 = false)
 {
-	f.plain = 1;
+	f.plain = x30 ? 0 : 1;
 	f.trying = 0;
 	f.run = f.n = 0;
 	f.run_fps = f.base = f.try_fps = f.mean = 0.0;

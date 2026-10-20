@@ -13,13 +13,6 @@
 #include "ps3_spepix.h"
 #include "ps3_rsxd.h"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpragmas"
-extern "C" {
-#include "ps3gl.h"
-}
-#pragma GCC diagnostic pop
-
 extern "C" int get_tex_slot_hash_preset();
 extern "C" int get_tex_recycle_preset();
 extern "C" int get_yuv_block_preset();
@@ -39,7 +32,7 @@ struct TexEntry
 {
 	u32 key0, key1; // TCW, TSP size bits | IgnoreTexA | palette format | mirror | 3j bump
 	u32 hash;
-	GLuint name;
+	u32 name;
 	u32 last_frame;
 	u32 checked_frame;
 	u16 w, h;
@@ -76,7 +69,7 @@ static int s_bump = -1;
 // Bundle 3, latched per frame. Mipmaps (P45) and VQ Formats (P25) change what a texture holds: a switch clears
 // the cache. Anisotropic (index of k_aniso) and Texture Filter (P52) are sampler state only.
 static int s_mips = -1, s_vqfmt = -1, s_aniso, s_filter;
-static const GLint k_aniso[5] = { 1, 2, 4, 8, 16 };
+static const int k_aniso[5] = { 1, 2, 4, 8, 16 };
 // [texfmt]: textures given a chain and levels written past level 0, this window.
 static u32 s_mip_tex, s_mip_levels;
 // [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
@@ -94,7 +87,7 @@ static u32 s_flag_palvq, s_flag_plvq;
 // fills once, so the fill counter cannot size the linear-layout cost.
 static u32 s_bind_total, s_bind_mirror;
 
-// 5.10 split of ps3tex_bind (timebase ticks): VRAM hash, decode + upload, ps3gl bind + params.
+// 5.10 split of the bind (timebase ticks): VRAM hash, decode + upload, the words.
 static u64 s_t_hash, s_t_decode, s_t_gl;
 static u32 s_hashes;
 static u64 s_hash_bytes;
@@ -710,7 +703,7 @@ static void upload(const TexDesc& d, bool ignore_alpha, u32 level = 0, bool take
 		decode(d, ignore_alpha);
 	if (take11)
 		s_out[0] = s_out[3];
-	const GLsizei w = take11 ? 1 : (GLsizei)d.w, h = take11 ? 1 : (GLsizei)d.h;
+	const int w = take11 ? 1 : (int)d.w, h = take11 ? 1 : (int)d.h;
 	rglTexImage2D((int)level, w, h, s_out);
 }
 
@@ -745,8 +738,8 @@ static void free_entry(TexEntry& e)
 	memset(&e, 0, sizeof(e));
 }
 
-// Garou (row Tex Recycle): an evicted texture waits as a spare until the RSX is past its last frame (ps3gl fences 2
-// frames back), then a new texture of its size and layout takes it: no new ps3gl texture, no RSX allocation.
+// Garou (row Tex Recycle): an evicted texture waits as a spare until the RSX is past its last frame (the ring fences 2
+// frames back), then a new texture of its size and layout takes it: no new table entry, no RSX allocation.
 #ifndef SPARE_MAX
 #define SPARE_MAX 256
 #endif
@@ -758,7 +751,7 @@ static void free_entry(TexEntry& e)
 
 struct TexSpare
 {
-	GLuint name;
+	u32 name;
 	u32 frame;  // evicted in this frame
 	u16 w, h;
 	u8 kind;
@@ -805,12 +798,12 @@ static void spare_put(TexEntry& e)
 }
 
 // The oldest spare of this size and kind that the RSX is done with, or 0. The list is in eviction order.
-static GLuint spare_take(u32 w, u32 h, u8 kind)
+static u32 spare_take(u32 w, u32 h, u8 kind)
 {
 	for (u32 i = 0; i < s_spare_n && s_spare[i].frame + SPARE_WAIT <= s_frame; i++)
 		if (s_spare[i].w == w && s_spare[i].h == h && s_spare[i].kind == kind)
 		{
-			const GLuint name = s_spare[i].name;
+			const u32 name = s_spare[i].name;
 			spare_remove(i, false);
 			s_reused++;
 			return name;
@@ -908,7 +901,7 @@ static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v, bool chain)
 	// P52 Texture Filter (Flycast TextureFiltering): 1 forces nearest, 2 linear.
 	const bool nearest = s_filter == 1 || (s_filter == 0 && !tsp.FilterMode);
 	// Flycast SetGPState: the chain filters bilinear textures only; anisotropic takes the trilinear form.
-	GLint min = nearest ? GL_NEAREST : GL_LINEAR;
+	int min = nearest ? GL_NEAREST : GL_LINEAR;
 	if (chain && !nearest)
 		min = s_aniso > 0 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
 	rglTexParameteri(GL_TEXTURE_MIN_FILTER, min);
@@ -1047,24 +1040,8 @@ static TexEntry* bind_entry(TSP tsp, TCW tcw, u32 pidx, bool mirror_u, bool mirr
 	return hit;
 }
 
-bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
-{
-	// nullDC-v1 SetTexMode order: clamp wins, then mirror, then wrap.
-	bool mirror_u = !tsp.ClampU && tsp.FlipU;
-	bool mirror_v = !tsp.ClampV && tsp.FlipV;
-	TexEntry* hit = bind_entry(tsp, tcw, pidx, mirror_u, mirror_v);
-	if (!hit)
-		return false;
-	const u64 t_g = PERF_TICKS();
-	rglBindTexture(hit->name);
-	// Flycast: a punch-through polygon samples level 0 only.
-	set_tex_params(tsp, mirror_u, mirror_v, hit->chain && !punch_through);
-	s_t_gl += PERF_TICKS() - t_g;
-	return true;
-}
-
-// RSX Direct (G17): ps3tex_bind with no ps3gl bind on a hit. The words are the texture's and the sampler's that
-// set_tex_params would leave (ps3gl_textures.c's gl_to_gcm_wrap, _filter, _aniso).
+// RSX Direct (G17): the words are the texture's and the sampler's that set_tex_params would leave (rt_param). nullDC-v1
+// SetTexMode order: clamp wins, then mirror, then wrap. Flycast: a punch-through polygon samples level 0 only.
 bool ps3tex_bind_rsxd(u32 tsp_w, u32 tcw_w, u32 pidx, bool punch_through, RsxdTex* out)
 {
 	TSP tsp;
@@ -1083,7 +1060,7 @@ bool ps3tex_bind_rsxd(u32 tsp_w, u32 tcw_w, u32 pidx, bool punch_through, RsxdTe
 	if (chain && !nearest)
 		min = s_aniso > 0 ? 6 : 4;
 	const u32 mag = nearest ? 1 : 2;
-	const GLint a = nearest ? 1 : k_aniso[s_aniso];
+	const int a = nearest ? 1 : k_aniso[s_aniso];
 	const u32 aniso = a >= 16 ? 7 : a >= 12 ? 6 : a >= 10 ? 5 : a >= 8 ? 4 : a >= 6 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
 	out->ctrl |= aniso << 4;
 	out->filter = (mag << 24) | (min << 16) | (1u << 13);

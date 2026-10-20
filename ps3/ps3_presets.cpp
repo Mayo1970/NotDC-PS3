@@ -58,8 +58,6 @@ int g_ram_sq_direct_preset = 1;   // 1 = a PREF to main RAM copies its 32 bytes 
 int g_mmu_sq_direct_preset = 1;   // 1 = with MMUCR.AT on, a PREF takes the two flat paths above too, target from sq_remap (P74, HW)
 int g_drop_policy_preset   = 1;   // 0 drop at once, 1 wait one frame then drop, 2 wait
 int g_frame_hold_preset    = 0;   // 1 = a frame under 60 fps flips on the PS3 vsync of its emulated vblank (5.41 b)
-int g_strip_merge_preset   = 1;   // 1 = same-state strips share one draw, inf vertices dropped
-int g_vertex_array_preset  = 1;   // 1 = merged strips drawn as ranges of one vring block
 int g_tex_slot_hash_preset = 1;   // 1 = texture cache slot from a hash of the whole key, not TexAddr bits 0-9 (P16, HW)
 int g_depth_float_preset   = 1;   // 1 = RSX float depth with z = n/W, not Z24 with z = 1 - n/W (P18, HW)
 int g_yuv_block_preset     = 0;   // 1 = YUV textures decode by tables straight into the RSX texture (P42)
@@ -190,12 +188,12 @@ int g_jit_bcache_preset    = 1;   // 1 = dynamic block ends look up the flat {ad
 int g_jit_pr_moves_preset  = 0;   // 1 = fmov, flds and fsts stay native in a PR=1 block (5.39)
 int g_jit_rm_any_preset    = 0;   // 1 = FPSCR.RM 2 or 3 compiles as round to nearest; 0 hangs in a verify (P57)
 int g_jit_idle_rule_preset = 4;   // small read-and-branch blocks bill: 0 = x30, 1 = Reicast's x3, 2 = their own cycles,
-                                  // 3 = as 1, but a pure wait loop x30, 4 = AUTO: 1 or 0 by host load (P71)
+                                  // 3 = as 1, but a pure wait loop x30, 4 = AUTO: 1 or 0 by host load (P71), 5 = AUTO from 0
 int g_jit_idle_rule_now    = 1;   // AUTO's level now (ps3_idle_auto.h); the decoder reads get_jit_idle_rule()
 int g_jit_idle_hash_preset = 1;   // known wait loops end the timeslice: 1 = our list, 2 = also Reicast's (bundle 8, way B)
 int g_jit_sq_copy_preset   = 1;   // 1 = SQ shape for stores whose block PREFs through a copy of their base register (5.46, HW)
 int g_jit_x30_fwd_preset   = 2;   // at X30 a block whose branch goes forward bills: 0 = x30, 1 = its own cycles,
-                                  // 2 = AUTO: 1 or 0 by the frames on screen (bundle 21; default AUTO, Matt 2026-10-15)
+                                  // 2 = AUTO: 1 or 0 by the frames on screen (bundle 21; default AUTO, Matt), 3 = AUTO from 0
 int g_jit_x30_fwd_now      = 1;   // AUTO's choice now (ps3_idle_auto.h); the decoder reads get_jit_x30_fwd()
 int g_jit_task_idle_preset = 2;   // 1 = an idle SDK task-loop turn skips IDLE_TASK_SLICES timeslices (bundle 21),
                                   // 2 = IDLE_TASK_LONG, and an interrupt drops the rest of the skip (HW; LONG, Matt)
@@ -249,11 +247,8 @@ int g_ocr_banks_preset     = 0;   // 1 = the on-chip RAM bank is address bit 13,
 int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and length masked, 0x12 is the TA, DMAOR & 0x8307 (P65)
 // OPTIMIZATION_PLAN section 7, bundle 14 (render-thread draw cost): 0 is the old path in every one; the picture is the
 // same at every value. ON since 2026-10-13 (Matt): HW SUCCESS in Crazy Taxi, Sonic Adventure 2 and Rayman 2.
-int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table, not by a scan of its 4096 slots (P72, HW)
-int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
-int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames; new names skip ps3gl's pool scans (Garou)
-int g_rsx_direct_preset    = 17;  // G17 RSX Direct: the run draws as raw RSX words, 1 PPU, 2 CHECK, 3-6 on the SPU, 7-18 the frame and more of it (ps3_rsxd.h; HW at 17, Matt)
+int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames (Garou)
 // OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
 // (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
 int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)
@@ -342,8 +337,6 @@ static const CfgItem s_items[] = {
 	{ "MmuSqDirect",   &g_mmu_sq_direct_preset },
 	{ "DropPolicy",    &g_drop_policy_preset },
 	{ "FrameHold",     &g_frame_hold_preset },
-	{ "StripMerge",    &g_strip_merge_preset },
-	{ "VertexArrays",  &g_vertex_array_preset },
 	{ "TexSlotHash",   &g_tex_slot_hash_preset },
 	{ "DepthFloat",    &g_depth_float_preset },
 	{ "YuvBlockDecode", &g_yuv_block_preset },
@@ -535,10 +528,7 @@ static const CfgItem s_items[] = {
 	{ "ScreenFormat",  &g_screen_format_preset },
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
-	{ "TexBindTable",  &g_tex_bind_table_preset },
-	{ "RsxDirect",     &g_rsx_direct_preset },
 	{ "TexRecycle",    &g_tex_recycle_preset },
-	{ "GlCompare",     &g_gl_compare_preset },
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
 	{ "MmuBits",       &g_mmu_bits_preset },
 	{ "P4Mirror",      &g_p4_mirror_preset },
@@ -771,15 +761,10 @@ static const CfgItem s_mem_items[] = {
 
 // The bundle 14 rows (plan section 7), in the DRAW COST page's order, then the rows that decide what they act on.
 static const CfgItem s_cost_items[] = {
-	{ "TexBindTable",  &g_tex_bind_table_preset },
-	{ "GlCompare",     &g_gl_compare_preset },
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
 	{ "TexRecycle",    &g_tex_recycle_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
-	{ "StripMerge",    &g_strip_merge_preset },
-	{ "VertexArrays",  &g_vertex_array_preset },
 	{ "SpeBuild",      &g_spe_build_preset },
-	{ "RsxDirect",     &g_rsx_direct_preset },
 	{ "SpeTexHash",    &g_spe_tex_preset },
 };
 #define COST_ITEMS (sizeof(s_cost_items) / sizeof(s_cost_items[0]))
@@ -1009,9 +994,6 @@ int get_ta_fast_preset()       { return g_ta_fast_preset; }
 // 0 = drop at once (the TR3 baseline), 1 = wait one frame then drop, 2 = wait.
 int get_drop_policy_preset()   { return g_drop_policy_preset; }
 
-// OPTIMIZATION_PLAN 2.4: off draws one strip per glBegin/glEnd, the old path, so one build can A/B it.
-int get_strip_merge_preset()   { return g_strip_merge_preset; }
-int get_vertex_array_preset()  { return g_vertex_array_preset; }
 int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
 int get_tex_recycle_preset()   { return g_tex_recycle_preset; }
 int get_depth_float_preset()   { return g_depth_float_preset; }
@@ -1073,10 +1055,10 @@ int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
 int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }
 int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
-int get_jit_idle_rule()        { return g_jit_idle_rule_preset==4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
+int get_jit_idle_rule()        { return g_jit_idle_rule_preset>=4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 int get_jit_x30_fwd_preset()   { return g_jit_x30_fwd_preset; }
-int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset==2 ? g_jit_x30_fwd_now : g_jit_x30_fwd_preset; }
+int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset>=2 ? g_jit_x30_fwd_now : g_jit_x30_fwd_preset; }
 int get_jit_task_idle_preset() { return g_jit_task_idle_preset; }
 int get_jit_auto_checks_preset() { return g_jit_auto_checks_preset; }
 int get_jit_ta_slot_preset()   { return g_jit_ta_slot_preset; }

@@ -30,10 +30,10 @@ SFO      := $(PS3DEV)/bin/sfo
 PKG      := $(PS3DEV)/bin/pkg
 
 # ps3/: the PS3 platform layer (renderer, pads, audio, SH4 JIT backend).
-# ps3/ps3gl: GL 1.1 on RSX from xashPS3; shaders are prebuilt in ps3gl_shader_data.h.
+# ps3/ps3gl: the prebuilt shader programs (ps3gl_shader_*.h) that RSX Direct loads (ps3/rsxd_prog.h).
 SRC_DIRS := . cl config plugins \
             dc dc/aica dc/asic dc/gdrom dc/maple dc/mem dc/pvr dc/sh4 dc/sh4/rec_v2 \
-            plugs/nullExtDev plugs/nullAICA plugs/caiqueAICA plugs/vbaARM plugs/ImgReader plugs/drkPvr ps3 ps3/ps3gl
+            plugs/nullExtDev plugs/nullAICA plugs/caiqueAICA plugs/vbaARM plugs/ImgReader plugs/drkPvr ps3
 
 SRCS := $(foreach d,$(SRC_DIRS),$(wildcard $(d)/*.cpp) $(wildcard $(d)/*.c))
 SRCS := $(patsubst ./%,%,$(SRCS))
@@ -67,7 +67,7 @@ CFLAGS := -O2 -Wall -Wno-unused-parameter -Wno-missing-field-initializers \
           -mcpu=cell -mhard-float -mno-altivec \
           -fno-strict-aliasing -fsingle-precision-constant \
           -D_PS3 -D__PS3__ -DRELEASE -DCAIQUE_RAM_HOOKS $(DEBUG_FLAG) -DPS3_LOG_IP=\"$(LOG_IP)\" \
-          -I. -Ips3 -Ips3/include -Ips3/ps3gl -Ips3/ps3gl/include -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/portlibs/ppu/include \
+          -I. -Ips3 -Ips3/include -Ips3/ps3gl -I$(PSL1GHT)/ppu/include -I$(PS3DEV)/portlibs/ppu/include \
           -I$(PS3DEV)/portlibs/ppu/include/freetype2
 
 CXXFLAGS := $(CFLAGS) -fno-exceptions -fno-rtti

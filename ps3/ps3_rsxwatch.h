@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-// Before ps3gl_end_frame(): the frame's ps3gl counts and its Native Size scene (0 x 0 = none).
+// Before the frame's end: its draw counts (ps3_rsxd.cpp) and its Native Size scene (0 x 0 = none).
 void ps3_rsxwatch_frame(u32 ns_w, u32 ns_h);
 // After the flip's flush: the frame is in the ring with the RSX put offset of its last command.
 void ps3_rsxwatch_flip(u32 flip);

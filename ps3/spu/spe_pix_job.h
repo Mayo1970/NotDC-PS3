@@ -1,5 +1,5 @@
 #pragma once
-// OPTIMIZATION_PLAN 5.12 #4/#5: decode() + ps3gl convert_pixels(), and present_fb_convert(), bit for bit. Include after
+// OPTIMIZATION_PLAN 5.12 #4/#5: decode() + rsxd_tex.h's rt_convert(), and present_fb_convert(), bit for bit. Include after
 // echo and setup; misc/spepix_check runs it on the PC with its own spe_pix_simd.h and spu_mfcio.h.
 #include <spu_mfcio.h>
 #include "spe_pix.h"
@@ -113,7 +113,7 @@ static inline uint32_t spread(uint32_t v)
 }
 
 // Morton offset of (x, y) on a 2^lx x 2^ly grid: the bits interleave while both sizes last, y first for the DC twiddle
-// (ps3_tex.cpp twop), x first for the RSX swizzle (ps3gl swz_ensure_tables); the larger size's bits follow.
+// (ps3_tex.cpp twop), x first for the RSX swizzle (rsxd_tex.h rt_tables); the larger size's bits follow.
 static uint32_t morton(uint32_t x, uint32_t y, uint32_t lx, uint32_t ly, int yfirst)
 {
 	const uint32_t k = lx < ly ? lx : ly, m = (1u << k) - 1;

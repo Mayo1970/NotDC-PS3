@@ -1917,7 +1917,7 @@ extern "C" int get_jit_idle_rule();	// the level billed now: AUTO gives 1 or 0
 static u32 hot_bill_extra(const HotBlock& h)
 {
 	u32 b=h.bill_cur;
-	if (get_jit_idle_rule_preset()==4 || get_jit_x30_fwd_preset()==2)
+	if (get_jit_idle_rule_preset()>=4 || get_jit_x30_fwd_preset()>=2)
 		b=get_jit_idle_rule()!=IA_X30 ? h.bill_x3 : get_jit_x30_fwd() ? h.bill_x30p : h.bill_x30;
 	return b>h.bill_plain ? b-h.bill_plain : 0;
 }
@@ -2325,13 +2325,13 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 	static FwdAuto s_fa;
 	static bool s_ia_ready;
 	static u32 s_ia_switches;
-	const bool rule_auto=get_jit_idle_rule_preset()==4, fwd_auto=get_jit_x30_fwd_preset()==2;
+	const bool rule_auto=get_jit_idle_rule_preset()>=4, fwd_auto=get_jit_x30_fwd_preset()>=2;
 	if ((!rule_auto && !fwd_auto) || !s_jit_in_loop)
 		return;
 	if (!s_ia_ready)
 	{
-		idle_auto_init(s_ia);
-		fwd_auto_init(s_fa);
+		idle_auto_init(s_ia,get_jit_idle_rule_preset()==5);
+		fwd_auto_init(s_fa,get_jit_x30_fwd_preset()==3);
 		s_ia_ready=true;
 	}
 	s_ia.frames=s_fa.frames=get_jit_auto_checks_preset();	// JIT AUTO CHECKS, live
@@ -5622,7 +5622,7 @@ DynarecCodeEntry* ngen_Compile(DecodedBlock* block,bool force_checks)
 	if (s_prof)
 		prof_note_block(block->start,(void*)rv,(u32)(_hb_cold_start-(u8*)rv),(u32)((u8*)emit_GetCCPtr()-(u8*)rv),
 		                block->sh4_code_size);
-	if (get_jit_idle_rule_preset()==4 || get_jit_x30_fwd_preset()==2)
+	if (get_jit_idle_rule_preset()>=4 || get_jit_x30_fwd_preset()>=2)
 		idle_bill_note(block);
 
 	return rv;
@@ -5890,6 +5890,11 @@ void ngen_mainloop()
 		s_sys_gate=get_sys_gate_preset();
 		s_ta_peak_frame=get_ta_peak_frame_preset()!=0;
 		s_ta_slot=get_jit_ta_slot_preset()!=0;
+		// AUTO X30: the first block already bills at X30 (FORWARD X30), where jit_idle_auto starts too.
+		if (get_jit_idle_rule_preset()==5)
+			g_jit_idle_rule_now=IA_X30;
+		if (get_jit_x30_fwd_preset()==3)
+			g_jit_x30_fwd_now=0;
 		verify((uintptr_t)s_ts_poison<0x7FFF0000u && (uintptr_t)&g_ta_slot<0x7FFF0000u);
 		// P99, P100: the forms need fastmem's RAM base; the scheduler knows r30 and RAM with its pad.
 		s_jo.split=get_jit_cold_split_preset();

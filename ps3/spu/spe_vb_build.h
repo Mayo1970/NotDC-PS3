@@ -1,6 +1,6 @@
 #pragma once
 // OPTIMIZATION_PLAN 5.12 #2: draw_list, draw_tr_sorted and draw_strip of ps3_rend.cpp on the SPU. The same runs and
-// ps3gl_vertex_t words, bit for bit. Include after echo, echo_ea, setup and diag; misc/spevb_check runs it on the PC.
+// RsxdVertex words, bit for bit. Include after echo, echo_ea, setup and diag; misc/spevb_check runs it on the PC.
 #include <spu_intrinsics.h>
 #include <spu_mfcio.h>
 #include <string.h>

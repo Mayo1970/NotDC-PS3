@@ -11,8 +11,6 @@ void ps3_video_term(void);
 void ps3_video_size(u32* w, u32* h);
 // Returns 0 when no back buffer is free; the caller then skips the frame.
 int  ps3_video_begin_frame(void);
-// G17 RSX Direct + FRAME: a game frame whose vring fences ps3_rsxd.cpp waits for and writes, not ps3gl.
-int  ps3_video_begin_own(void);
 void ps3_video_end_frame(void);
 // Plan 5.41 (b): flips on the PS3 vsync framehold_vsync() picks for an emulated vblank due at target_tb
 // (timebase ticks). Returns the seconds the caller waited for it.
@@ -29,8 +27,8 @@ const u32* ps3_video_grab(u32 x, u32 y, u32 w, u32 h);
 int  ps3_video_wait_free(u32 ms);
 // G17 + RING: waits until the RSX has run every command sent so far (P75's wait); 0 = it did not in 2 s.
 int  ps3_video_drain(void);
-// P60: starts a frame on the RTT surface, which is never shown; 0 = there is none. own: as ps3_video_begin_own.
-int  ps3_video_begin_rtt(int own);
+// P60: starts a frame on the RTT surface, which is never shown; 0 = there is none.
+int  ps3_video_begin_rtt(void);
 // P60 Present Rule: ends a frame that stays in the back buffer; flips it later (0 = none waits); 1 = one waits.
 void ps3_video_end_frame_hold(void);
 int  ps3_video_flip_held(void);

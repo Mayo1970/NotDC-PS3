@@ -4,14 +4,13 @@
 #include "ps3_timebase.h"
 #include "ps3_rsxwatch.h"
 
-// ps3gl_main.c: the counts of the frame in progress, cleared by ps3gl_end_frame().
-extern uint32_t ps3gl_frame_flush_count, ps3gl_frame_flush_vertex_count, ps3gl_frame_tex_binds;
-extern uint32_t ps3gl_frame_tex_alloc_count, ps3gl_frame_subimage_count;
+// ps3_rsxd.cpp: the counts of the frame in progress, cleared at its begin.
+void ps3rsxd_frame_counts(u32* draws, u32* verts, u32* binds, u32* allocs);
 
 #define RW_FRAMES 16
 #define RW_WORDS  8
 
-typedef struct { u32 flip, put, vbl, verts, flushes, binds, allocs, subs, ns_w, ns_h; } RwFrame;
+typedef struct { u32 flip, put, vbl, verts, draws, binds, allocs, ns_w, ns_h; } RwFrame;
 
 static struct
 {
@@ -25,11 +24,7 @@ static struct
 void ps3_rsxwatch_frame(u32 ns_w, u32 ns_h)
 {
 	RwFrame* f = &s_rw.next;
-	f->verts = ps3gl_frame_flush_vertex_count;
-	f->flushes = ps3gl_frame_flush_count;
-	f->binds = ps3gl_frame_tex_binds;
-	f->allocs = ps3gl_frame_tex_alloc_count;
-	f->subs = ps3gl_frame_subimage_count;
+	ps3rsxd_frame_counts(&f->draws, &f->verts, &f->binds, &f->allocs);
 	f->ns_w = ns_w;
 	f->ns_h = ns_h;
 }
@@ -89,9 +84,9 @@ static void rw_dump(gcmContextData* ctx, u32 queued, u32 done, double dt)
 	for (u32 i = s_rw.head - have; i != s_rw.head; i++)
 	{
 		const RwFrame* f = &s_rw.ring[i % RW_FRAMES];
-		printf("[rsxw] flip %u vblank %u put=%08X: %u verts, %u flushes, %u binds, %u new tex, %u sub, scene %ux%u\n",
-		       (unsigned)f->flip, (unsigned)f->vbl, (unsigned)f->put, (unsigned)f->verts, (unsigned)f->flushes,
-		       (unsigned)f->binds, (unsigned)f->allocs, (unsigned)f->subs, (unsigned)f->ns_w, (unsigned)f->ns_h);
+		printf("[rsxw] flip %u vblank %u put=%08X: %u verts, %u draws, %u binds, %u new tex, scene %ux%u\n",
+		       (unsigned)f->flip, (unsigned)f->vbl, (unsigned)f->put, (unsigned)f->verts, (unsigned)f->draws,
+		       (unsigned)f->binds, (unsigned)f->allocs, (unsigned)f->ns_w, (unsigned)f->ns_h);
 	}
 }
 

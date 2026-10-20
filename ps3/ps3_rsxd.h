@@ -1,20 +1,23 @@
 #pragma once
-// RSX Direct (G17), DRAW COST > "RSX Direct" (live): ps3_rend.cpp's run draws as raw RSX words (spu/rsxd_emit.h).
+// RSX Direct (G17): every frame's draws as raw RSX words (spu/rsxd_emit.h); the rgl calls take GL's names (rsxd_gl.h).
 #include "types.h"
 #include "spu/rsxd.h"
+#include "rsxd_gl.h"
 
-// Row values. CHECK, *_CHECK: ps3gl draws, the emitter is compared. SPE, TR SORT: an SPU writes runs. Plan 9 (A-F):
-// FRAME owns the frame, then + volumes, + fog unit 1, + 2D/RTT/quads, + own textures, + own programs and vertex ring.
-enum { RSXD_OFF, RSXD_PPU, RSXD_CHECK, RSXD_SPE, RSXD_SPE_CHECK, RSXD_TRIS, RSXD_TRIS_CHECK, RSXD_FRAME, RSXD_FRAME_CHECK,
-       RSXD_VOLS, RSXD_VOLS_CHECK, RSXD_FOG, RSXD_FOG_CHECK, RSXD_SCREEN, RSXD_SCREEN_CHECK, RSXD_TEX, RSXD_TEX_CHECK,
-       RSXD_RING, RSXD_RING_CHECK };
-// The kinds of frame ps3rsxd_frame starts (RTT 0 and GAME 1 were its old bool).
-enum { RSXD_F_RTT, RSXD_F_GAME, RSXD_F_2D };
-// s_do.rsxd in a section: none, the emitter draws, ps3gl draws and the emitter runs beside it.
-enum { RSXD_SEC_NONE, RSXD_SEC_LIVE, RSXD_SEC_CHECK };
 // The runs of a section: built by ps3_rend.cpp, or by the SPE Build SPU (draw_runs); the background quad and the
 // modifier volumes (PPU only).
 enum { RSXD_K_PPU, RSXD_K_RUNS, RSXD_K_BG, RSXD_K_VOL };
+
+// One vertex of a block: x*W, y*W, W, 1 (the UI: x, y, 0, 1), texcoord 0, texcoord 1 or its 4 bytes, RGBA.
+#pragma pack(push, 1)
+struct RsxdVertex
+{
+	float x, y, z, w;
+	float u0, v0;
+	float u1, v1;
+	u32 color;
+};
+#pragma pack(pop)
 
 // ps3_rend.cpp's state the rules read and carry; set once by draw_scene, read and written at each section.
 struct RsxdRend
@@ -32,7 +35,7 @@ struct RsxdRend
 	u32 *offc, *cclamp, *tril;
 };
 
-// The scene's rules: RSXD_S_* flags (ps3_rsxd reads TMU1 itself) and the values of rsxd_emit.h's RsxdScene.
+// The scene's rules: RSXD_S_* flags and the values of rsxd_emit.h's RsxdScene.
 struct RsxdSceneIn
 {
 	u32 flags, pt_blend, flat, clip, fog;
@@ -55,32 +58,13 @@ struct RsxdTrisIn
 	u64* t_sort;
 };
 
-void ps3rsxd_init();
 void ps3rsxd_stats(double secs);
-// The start of a frame (RSXD_F_*) after its begin. From FRAME on the emitter takes a game frame from here, at SCREEN
-// also a 2D and an RTT frame; ps3rsxd_lend gives it to ps3gl (true: it had it).
-void ps3rsxd_frame(u32 kind);
-bool ps3rsxd_lend();
-void ps3rsxd_take(bool was);
-// The emitter has the frame now (a section may open with no vertex block: the background).
-bool ps3rsxd_owns();
-// VOLS, FOG and their CHECKs: the emitter has the frame and draws the modifier volumes (a RSXD_K_VOL section).
-bool ps3rsxd_volumes();
-// FOG: the emitter has the frame and texture unit 1 is its alone (ps3gl only stores the fog table).
-bool ps3rsxd_fog_live();
-// FOG, FOG CHECK: the emitter's unit 1 holds the texture with GL name name (0: none), as fog_upload binds it.
+// FOG: the emitter's unit 1 holds the texture with name name (0: none), as fog_upload binds it.
 void ps3rsxd_fog_table(u32 name);
-// The next frame of this kind is the emitter's: ps3_video_begin_own, with this file's vring fences (C linkage).
-bool ps3rsxd_own_frame(u32 kind = RSXD_F_GAME);
-// SCREEN, SCREEN CHECK: the emitter has the frame and draws the Native Size quads, with no lend.
-bool ps3rsxd_quads();
-extern "C" void ps3rsxd_vring_begin(void);
-extern "C" void ps3rsxd_vring_end(void);
 // Native Size moved the draws to a w x h surface.
 void ps3rsxd_screen(u32 w, u32 h);
 
-// rgl: GL calls of the frames. While the emitter has the frame they set its state (the CHECKs: and ps3gl's), else go
-// to ps3gl; glBegin takes PS3GL_MAX_VERTS. Out of a section, glEnd's texture is the one bound last.
+// rgl: the GL calls of every frame; glBegin takes 16384 vertices. Out of a section glEnd's texture is the one bound last.
 void rglEnable(u32 cap);
 void rglDisable(u32 cap);
 void rglColorMask(u8 r, u8 g, u8 b, u8 a);
@@ -119,28 +103,24 @@ void rglColor4ub(u8 r, u8 g, u8 b, u8 a);
 void rglTexCoord2f(float u, float v);
 void rglVertex3f(float x, float y, float z);
 void rglEnd();
-// draw_scene with a vertex block: the scene's mode (RSXD_OFF when it cannot run).
-int ps3rsxd_scene(const RsxdSceneIn* in, const RsxdRend* rend);
-// A section of run draws (kind: RSXD_K_*): begin returns s_do.rsxd's value for it; end gives the RSX back to ps3gl.
-u32 ps3rsxd_begin(u32 kind);
+// draw_scene with a vertex block: false when the scene cannot draw.
+bool ps3rsxd_scene(const RsxdSceneIn* in, const RsxdRend* rend);
+// A section of run draws (kind: RSXD_K_*); false: no section.
+bool ps3rsxd_begin(u32 kind);
 void ps3rsxd_end();
-// apply_param in a section: SEC_LIVE returns the alpha force; SEC_CHECK compares with ps3gl's (alpha_or).
+// apply_param in a section: returns the alpha force.
 u32 ps3rsxd_param(const void* param, u32 list, u32 slot);
-void ps3rsxd_param_check(const void* param, u32 list, u32 slot, u32 alpha_or);
-// draw_vb in a section. SEC_CHECK: before ps3gl's draw; ps3rsxd_draw_check() after it.
+// draw_vb in a section.
 void ps3rsxd_draw(u32 prim, u32 vb_off, u32 stride, u32 first, u32 count);
-void ps3rsxd_draw_check();
 // draw_tr_tris: begin (false: the PPU sorts), each TR strip of 3 or more vertices (param: its DcParam, slot: its
-// SPE hash slot), then end (true: the SPU drew the pass). TR SORT CHECK: end is false, tris_check after the PPU path.
+// SPE hash slot), then end (true: the SPU drew the pass).
 bool ps3rsxd_tris_begin(const RsxdTrisIn* in);
 bool ps3rsxd_tri_strip(u32 first, u32 count, const void* param, u32 slot);
 bool ps3rsxd_tris_end();
-void ps3rsxd_tris_check();
-// ps3_tex.cpp: the object words of the texture with GL name name, without the sampler (filter, wrap, ctrl's aniso).
+// ps3_tex.cpp: the object words of the texture with name name, without the sampler (filter, wrap, ctrl's aniso).
 void ps3rsxd_tex_name(u32 name, RsxdTex* out);
 
-// Stage E: the texture calls of the game frames, on GL_TEXTURE_2D with GL_RGBA bytes. TEX: the emitter's own table;
-// TEX CHECK: ps3gl's objects and a shadow of each, compared; else ps3gl's. rglTexHint: RSXD_HINT_*.
+// The texture calls, on GL_TEXTURE_2D with GL_RGBA bytes, into the emitter's table. rglTexHint: RSXD_HINT_*.
 enum { RSXD_HINT_LINEAR, RSXD_HINT_MIPMAPS };
 void rglGenTextures(u32* name);
 void rglDeleteTexture(u32 name);
@@ -155,20 +135,19 @@ u8* rglTexDirectLevel(int level);
 void rglTexDirectLevelEnd(int level);
 int rglTexChainLevels();
 void rglTexConvertCheck(void* dst, int w, int h, const void* rgba);
-// TEX: binds an entry over linear memory a ps3gl texture owns (Native Size, the SPU's 2D buffers); false: bind that one.
-bool rglTexWrap(void* mem, u32 pitch, u32 w, u32 h);
-// ps3_rend.cpp: the texture mode changed; the fog table and the 2D texture go, to be made again.
-void rend_tex_reset();
-// ps3_video_term, the RSX idle: the memory of the texture table, the ring and the program copies goes.
-extern "C" void ps3rsxd_mem_term(void);
+// Binds an entry over linear RSX memory another side writes (Native Size, the SPU's 2D buffers).
+void rglTexWrap(void* mem, u32 pitch, u32 w, u32 h);
+// That memory: linear rows for w x h texels, made once by its owner; pitch: the bytes of a row.
+u8* ps3rsxd_fixed(u32 w, u32 h, u32* pitch);
 
-// Stage F: a vertex block of the frame (ps3gl_vring_alloc, _raw): the emitter's ring at RING and RING CHECK.
+// A vertex block of the frame, in the emitter's ring: count vertices, or bytes.
 void* rglVringAlloc(int count, u32* off);
 void* rglVringAllocRaw(u32 bytes, u32* off);
-// ps3_video.c: a RING frame has not given ps3gl the RSX yet (no ps3gl call); a ps3gl frame's end (the ring's label).
-extern "C" int ps3rsxd_gl_off(void);
-extern "C" void ps3rsxd_ring_end(void);
-// ps3_rend.cpp, before a frame: true = it is a RING frame, so ps3gl's state path waits for the handoff.
-bool ps3rsxd_ring_next();
-// The FP address of ps3gl's program for one of the emitter's copies; any other address stays.
-u32 ps3rsxd_fp_map(u32 addr);
+
+// ps3_video.c (C linkage): the boot, each frame's ring fence and its end, the memory once the RSX is idle; the
+// frame's counts for ps3_rsxwatch.c.
+extern "C" int ps3rsxd_init(void* ctx, u32 w, u32 h);
+extern "C" void ps3rsxd_vring_begin(void);
+extern "C" void ps3rsxd_vring_end(void);
+extern "C" void ps3rsxd_mem_term(void);
+extern "C" void ps3rsxd_frame_counts(u32* draws, u32* verts, u32* binds, u32* allocs);
