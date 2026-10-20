@@ -379,7 +379,9 @@ static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
 static const char* k_modem[]     = { "OFF", "DCNET", NULL };
 // RSXD_* order (ps3_rsxd.h).
-static const char* k_rsxd[]      = { "OFF", "PPU", "CHECK", "SPE", "SPE CHECK", "SPE + TR SORT", "TR SORT CHECK", NULL };
+static const char* k_rsxd[]      = { "OFF", "PPU", "CHECK", "SPE", "SPE CHECK", "SPE + TR SORT", "TR SORT CHECK",
+                                     "+ FRAME", "FRAME CHECK", "+ VOLUMES", "VOLUMES CHECK", "+ FOG", "FOG CHECK",
+                                     "+ SCREEN", "SCREEN CHECK", "+ TEX", "TEX CHECK", "+ RING", "RING CHECK", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -843,7 +845,7 @@ static Option s_cost[] = {
 	{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "An evicted texture waits 2 frames, then a new one of its size reuses it (Garou). Live." },
 	{ "RSX Direct",      &g_rsx_direct_preset,    OPT_CHOICE, k_rsxd,      0, 0,0,0, NULL,
-	  "Draws as raw RSX words, no ps3gl. CHECK compares them. SPE: an SPU writes them (G17). Live." },
+	  "RSX words, no ps3gl. CHECK compares. SPE: an SPU. FRAME to RING: each takes more of the frame. Live." },
 };
 
 // Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's

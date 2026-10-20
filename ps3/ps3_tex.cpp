@@ -24,18 +24,11 @@ extern "C" int get_tex_slot_hash_preset();
 extern "C" int get_tex_recycle_preset();
 extern "C" int get_yuv_block_preset();
 extern "C" int get_bump_map_preset();
-extern "C" uint32_t* ps3gl_tex_direct_begin(GLsizei width, GLsizei height, uint32_t* pitch);
-extern "C" void ps3gl_tex_direct_end(void);
-extern "C" uint8_t* ps3gl_tex_direct_level0(GLsizei width, GLsizei height, uint32_t* pitch, int* swizzled);
-extern "C" void ps3gl_tex_convert_check(void* dst, GLsizei width, GLsizei height, const void* rgba);
 // Plan section 7, bundle 3 (the TEXTURES page).
 extern "C" int get_mipmap_preset();
 extern "C" int get_aniso_preset();
 extern "C" int get_tex_filter_preset();
 extern "C" int get_vq_formats_preset();
-extern "C" int ps3gl_tex_chain_levels(void);
-extern "C" uint8_t* ps3gl_tex_direct_level(int level);
-extern "C" void ps3gl_tex_direct_level_end(int level);
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -51,7 +44,7 @@ struct TexEntry
 	u32 checked_frame;
 	u16 w, h;
 	bool chain; // P45: its RSX memory holds the mip levels
-	u8 kind;    // its ps3gl layout, fixed at allocation: mirror | YUV << 1 | chain asked << 2 (Tex Recycle)
+	u8 kind;    // its layout, fixed at allocation: mirror | YUV << 1 | chain asked << 2 (Tex Recycle)
 };
 
 static TexEntry s_cache[CACHE_SLOTS];
@@ -595,7 +588,7 @@ static bool upload_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 	// P45: a chain level is swizzled, so it has no pitch.
 	u32 pitch = 0;
 	int swz = 1;
-	u8* const dst = level ? ps3gl_tex_direct_level(level) : ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz);
+	u8* const dst = level ? rglTexDirectLevel(level) : rglTexDirectLevel0(d.w, d.h, &pitch, &swz);
 	if (!dst || !spu_layout(d, swz != 0))
 		return false;
 	SpePixTex j;
@@ -607,10 +600,10 @@ static bool upload_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 	// The counts below are per texture: level 0 gives them.
 	if (level)
 	{
-		ps3gl_tex_direct_level_end(level);
+		rglTexDirectLevelEnd(level);
 		return true;
 	}
-	ps3gl_tex_direct_end();
+	rglTexDirectEnd();
 	if (!(res & SPEPIX_LIT))
 		s_black_tex++;
 	if (!(res & SPEPIX_OPAQUE))
@@ -631,7 +624,7 @@ static void check_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 	SpePixTex j;
 	if (!spu_fits(d))
 		ps3spepix_tex_skip();
-	else if (spu && (level ? ps3gl_tex_direct_level(level) : ps3gl_tex_direct_level0(d.w, d.h, &pitch, &swz)) &&
+	else if (spu && (level ? rglTexDirectLevel(level) : rglTexDirectLevel0(d.w, d.h, &pitch, &swz)) &&
 	         spu_layout(d, swz != 0))
 	{
 		spu_job(d, ignore_alpha, (u32)(uintptr_t)spu, pitch, swz != 0, g_rr.pal_ram_ctrl, &j);
@@ -641,7 +634,7 @@ static void check_spu(const TexDesc& d, bool ignore_alpha, u32 level)
 	decode(d, ignore_alpha);
 	if (!ran)
 		return;
-	ps3gl_tex_convert_check(ppu, d.w, d.h, s_out);
+	rglTexConvertCheck(ppu, d.w, d.h, s_out);
 	const u32 rows = swz ? 1 : d.h, cols = swz ? d.w * d.h : d.w, stride = swz ? 0 : pitch / 4;
 	for (u32 y = 0; y < rows; y++)
 		for (u32 x = 0; x < cols; x++)
@@ -670,14 +663,14 @@ static bool upload_yuv_block(const TexDesc& d)
 	if (s_yuv_block <= 0 || !yuvd_fits(d.w, d.addr, d.src_bytes, d.pitch, d.twiddled, d.vq, d.vq_cb))
 		return false;
 	u32 pitch;
-	volatile u32* dst = ps3gl_tex_direct_begin(d.w, d.h, &pitch);
+	volatile u32* dst = rglTexDirectBegin(d.w, d.h, &pitch);
 	if (!dst)
 		return false;
 	if (d.twiddled)
 		build_twiddle(d.w, d.h);
 	const u32 lit = yuvd_decode(&s_yuvt, (const u32*)PVRPARAMS.vram, d.w, d.h, d.addr, d.pitch, d.twiddled, d.vq,
 	                            d.vq_cb, s_tx, s_ty, dst, pitch / 4);
-	ps3gl_tex_direct_end();
+	rglTexDirectEnd();
 	// YUV texels are opaque, so only the black count applies (decode()'s check).
 	if (!(lit & 0xFFFFFF))
 		s_black_tex++;
@@ -718,13 +711,13 @@ static void upload(const TexDesc& d, bool ignore_alpha, u32 level = 0, bool take
 	if (take11)
 		s_out[0] = s_out[3];
 	const GLsizei w = take11 ? 1 : (GLsizei)d.w, h = take11 ? 1 : (GLsizei)d.h;
-	glTexImage2D(GL_TEXTURE_2D, (GLint)level, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_out);
+	rglTexImage2D((int)level, w, h, s_out);
 }
 
-// P45: the levels under level 0, when the bound texture's memory holds them (ps3gl_texture_hint_mipmaps()).
+// P45: the levels under level 0, when the bound texture's memory holds them (RSXD_HINT_MIPMAPS).
 static void upload_chain(const TexDesc& d, bool ignore_alpha)
 {
-	const u32 levels = (u32)ps3gl_tex_chain_levels();
+	const u32 levels = (u32)rglTexChainLevels();
 	if (!d.mip || levels < 2)
 		return;
 	// The black and alpha-0 counts are per texture: level 0 gave them.
@@ -746,7 +739,7 @@ static void free_entry(TexEntry& e)
 {
 	if (e.name)
 	{
-		glDeleteTextures(1, &e.name);
+		rglDeleteTexture(e.name);
 		s_live--;
 	}
 	memset(&e, 0, sizeof(e));
@@ -784,7 +777,7 @@ static inline u32 spare_bytes(const TexSpare& s)
 static void spare_remove(u32 i, bool del)
 {
 	if (del)
-		glDeleteTextures(1, &s_spare[i].name);
+		rglDeleteTexture(s_spare[i].name);
 	s_spare_bytes -= spare_bytes(s_spare[i]);
 	memmove(&s_spare[i], &s_spare[i + 1], (s_spare_n - i - 1) * sizeof(TexSpare));
 	s_spare_n--;
@@ -906,23 +899,21 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 	}
 }
 
-// Set before the first glTexImage2D, where ps3gl fixes the layout: a mirrored wrap stalls the RSX on a swizzled one.
+// Set before the first glTexImage2D, which fixes the layout: a mirrored wrap stalls the RSX on a swizzled one.
 // chain: the texture has its mip levels and the list may sample them.
 static void set_tex_params(TSP tsp, bool mirror_u, bool mirror_v, bool chain)
 {
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
-	                tsp.ClampU ? GL_CLAMP_TO_EDGE : (mirror_u ? GL_MIRRORED_REPEAT : GL_REPEAT));
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T,
-	                tsp.ClampV ? GL_CLAMP_TO_EDGE : (mirror_v ? GL_MIRRORED_REPEAT : GL_REPEAT));
+	rglTexParameteri(GL_TEXTURE_WRAP_S, tsp.ClampU ? GL_CLAMP_TO_EDGE : (mirror_u ? GL_MIRRORED_REPEAT : GL_REPEAT));
+	rglTexParameteri(GL_TEXTURE_WRAP_T, tsp.ClampV ? GL_CLAMP_TO_EDGE : (mirror_v ? GL_MIRRORED_REPEAT : GL_REPEAT));
 	// P52 Texture Filter (Flycast TextureFiltering): 1 forces nearest, 2 linear.
 	const bool nearest = s_filter == 1 || (s_filter == 0 && !tsp.FilterMode);
 	// Flycast SetGPState: the chain filters bilinear textures only; anisotropic takes the trilinear form.
 	GLint min = nearest ? GL_NEAREST : GL_LINEAR;
 	if (chain && !nearest)
 		min = s_aniso > 0 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, nearest ? GL_NEAREST : GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, nearest ? 1 : k_aniso[s_aniso]);
+	rglTexParameteri(GL_TEXTURE_MIN_FILTER, min);
+	rglTexParameteri(GL_TEXTURE_MAG_FILTER, nearest ? GL_NEAREST : GL_LINEAR);
+	rglTexParameteri(GL_TEXTURE_MAX_ANISOTROPY_EXT, nearest ? 1 : k_aniso[s_aniso]);
 }
 
 // The cache entry of a bind: a hit (hashed once a frame, decoded again when its VRAM changed) or a new texture.
@@ -969,7 +960,7 @@ static TexEntry* bind_entry(TSP tsp, TCW tcw, u32 pidx, bool mirror_u, bool mirr
 		{
 			REND_PHASE(PH_TEX);
 			const u64 t_d = PERF_TICKS();
-			glBindTexture(GL_TEXTURE_2D, hit->name);
+			rglBindTexture(hit->name);
 			upload(d, tsp.IgnoreTexA);
 			if (hit->chain)
 				upload_chain(d, tsp.IgnoreTexA);
@@ -1033,19 +1024,19 @@ static TexEntry* bind_entry(TSP tsp, TCW tcw, u32 pidx, bool mirror_u, bool mirr
 		hit->name = s_recycle > 0 && !chain ? spare_take(d.w, d.h, kind) : 0;
 		const bool spare = hit->name != 0;
 		if (!spare)
-			glGenTextures(1, &hit->name);
-		glBindTexture(GL_TEXTURE_2D, hit->name);
+			rglGenTextures(&hit->name);
+		rglBindTexture(hit->name);
 		set_tex_params(tsp, mirror_u, mirror_v, false);
 		// FMV is re-uploaded whole every frame, so swizzling only adds a staging copy (and P42 needs linear).
 		// Both must be set before the first upload: the layout is fixed at allocation (a spare's is already).
 		if (!spare && chain)
-			ps3gl_texture_hint_mipmaps();
+			rglTexHint(RSXD_HINT_MIPMAPS);
 		else if (!spare && d.fmt == 3)
-			ps3gl_texture_hint_no_swizzle();
+			rglTexHint(RSXD_HINT_LINEAR);
 		upload(d, tsp.IgnoreTexA);
 		if (chain)
 			upload_chain(d, tsp.IgnoreTexA);
-		hit->chain = chain && ps3gl_tex_chain_levels() > 1;
+		hit->chain = chain && rglTexChainLevels() > 1;
 		s_t_decode += PERF_TICKS() - t_d;
 		s_live++;
 		s_decodes++;
@@ -1065,7 +1056,7 @@ bool ps3tex_bind(TSP tsp, TCW tcw, u32 pidx, bool punch_through)
 	if (!hit)
 		return false;
 	const u64 t_g = PERF_TICKS();
-	glBindTexture(GL_TEXTURE_2D, hit->name);
+	rglBindTexture(hit->name);
 	// Flycast: a punch-through polygon samples level 0 only.
 	set_tex_params(tsp, mirror_u, mirror_v, hit->chain && !punch_through);
 	s_t_gl += PERF_TICKS() - t_g;

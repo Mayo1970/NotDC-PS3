@@ -120,12 +120,12 @@ static inline int rx_offc_offs(const RsxdState* s, const uint32_t* p)
 	       rx_bits(P_PCW(p), 2, 1) && rx_bits(P_TCW(p), 27, 3) != 4;
 }
 
-static inline uint32_t rx_fog_mode(const RsxdState* s, const uint32_t* p, uint32_t textured)
+static inline uint32_t rx_fog_mode(const RsxdState* s, const uint32_t* p, uint32_t textured, uint32_t bg)
 {
 	switch (rx_bits(P_TSP(p), 22, 2))
 	{
 	case 0: return RXF_TABLE;
-	case 1: return textured && s->sc->fog >= 2 && (s->sc->flags & RSXD_S_LISTS_OFFS) && rx_fogv_param(p) ? RXF_VERTEX : RXF_NONE;
+	case 1: return textured && !bg && s->sc->fog >= 2 && (s->sc->flags & RSXD_S_LISTS_OFFS) && rx_fogv_param(p) ? RXF_VERTEX : RXF_NONE;
 	case 3: return textured && rx_bits(P_TSP(p), 6, 2) == 1 ? RXF_BASE_TA : RXF_BASE;
 	default: return RXF_NONE;
 	}
@@ -168,7 +168,8 @@ static inline uint32_t rx_tri_covers(const uint32_t* p)
 }
 
 // apply_param_body: p = pcw, isp, tsp, tcw. textured: the Texture bit and a bind that worked; tex its words. clip
-// is read only with a Tile Clip level. Returns the OR mask that forces vertex alpha to 255.
+// is read only with a Tile Clip level. Returns the OR mask that forces vertex alpha to 255. The background (RXL_BG)
+// is smooth and has no offset colours.
 static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t list, uint32_t textured, const RsxdTex* tex,
                                   const RsxdClip* clip)
 {
@@ -176,6 +177,8 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 	const RsxdScene* sc = s->sc;
 	const RsxdSec* se = s->sec;
 	const uint32_t tsp = P_TSP(p), isp = P_ISP(p);
+	const uint32_t bg = list & RXL_BG;
+	list &= ~(uint32_t)RXL_BG;
 	const uint32_t zwd = rx_bits(isp, 26, 1);
 	if (se->depth_pass)
 	{
@@ -238,7 +241,7 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 	rx_set_cull(s, rx_eff_cull(s, p));
 	if (sc->flat)
 	{
-		const uint32_t flat = !rx_bits(P_PCW(p), 1, 1);
+		const uint32_t flat = !bg && !rx_bits(P_PCW(p), 1, 1);
 		g->shade = flat ? RX_FLAT : RX_SMOOTH;
 		g->flat_shift = (flat && sc->flat == 2) ? 2 : 0;
 	}
@@ -257,12 +260,12 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 	}
 	else
 		g->tex_en = 0;
-	g->bump = textured && rx_bump_offs(s, p);
+	g->bump = textured && !bg && rx_bump_offs(s, p);
 	if (sc->fog)
-		g->fog = rx_fog_mode(s, p, textured);
+		g->fog = rx_fog_mode(s, p, textured, bg);
 	if (sc->flags & RSXD_S_OFFS)
 	{
-		const uint32_t offc = textured && rx_offc_offs(s, p);
+		const uint32_t offc = textured && !bg && rx_offc_offs(s, p);
 		g->offs = offc;
 		s->n_offc += offc;
 	}
@@ -412,12 +415,13 @@ static RSXD_BIG void rx_draw1(RsxdState* s, uint32_t prim, uint32_t stride, uint
 	const RsxdGl* g = &s->gl;
 	const RsxdProg* pg = s->prog;
 	rx_want_state(s);
-	// The texture cache clears before a draw that samples new texels (content_dirty).
+	// The texture cache clears before a draw that samples new texels (content_dirty), of unit 0 or (inval_due) unit 1.
 	const uint32_t tmu0 = g->tex_en && g->has_tex;
-	uint32_t inval = 0;
+	uint32_t inval = s->inval_due;
+	s->inval_due = 0;
 	if (tmu0)
 	{
-		inval = rsxd_tex_dirty(s, g->tex.obj, !s->check);
+		inval |= rsxd_tex_dirty(s, g->tex.obj, !s->check);
 		rx_want(s, RX_T_OFFSET, g->tex.offset);
 		rx_want(s, RX_T_FORMAT, g->tex.format);
 		rx_want(s, RX_T_SWIZZLE, g->tex.remap);

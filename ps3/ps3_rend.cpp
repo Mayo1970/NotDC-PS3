@@ -54,7 +54,6 @@ extern "C" int get_strip_merge_preset();
 extern "C" int get_vertex_array_preset();
 extern "C" int get_depth_float_preset();
 extern "C" uint8_t* ps3gl_tex_fixed(GLsizei max_w, GLsizei max_h, GLsizei w, GLsizei h, uint32_t* pitch);
-extern "C" int ps3gl_tex_chain_levels(void);
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -1902,37 +1901,48 @@ static bool fog_upload()
 {
 	if (!s_fog_tex)
 	{
-		glGenTextures(1, &s_fog_tex);
+		rglGenTextures(&s_fog_tex);
 		fog_tex_init();
 	}
-	glActiveTextureARB(GL_TEXTURE1_ARB);
-	glBindTexture(GL_TEXTURE_2D, s_fog_tex);
+	// G17 + FOG: unit 1 is the emitter's (plan 9, stage C); the table is stored through unit 0, ps3gl's or (+ TEX) the
+	// emitter's table.
+	const bool own = ps3rsxd_fog_live();
+	if (!own)
+	{
+		rglActiveTexture(GL_TEXTURE1_ARB);
+		rglBindTexture(s_fog_tex);
+	}
 	if (!s_fog_tex_ok || s_fog_ram_up != g_rr.fog_col_ram || s_fog_vert_up != g_rr.fog_col_vert ||
 	    memcmp(s_fog_tab_up, g_rr.fog_table, sizeof(s_fog_tab_up)) != 0)
 	{
+		if (own)
+			rglBindTexture(s_fog_tex);
 		fog_tex_pixels();
 		if (!s_fog_tex_ok)
 		{
 			// Linear rows: no swizzle for a 512 x 4 table. The clamp is the z clamp's other half.
-			ps3gl_texture_hint_no_swizzle();
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			rglTexHint(RSXD_HINT_LINEAR);
+			rglTexParameteri(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			rglTexParameteri(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			rglTexParameteri(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			rglTexParameteri(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 		}
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, FOG_TEX_W, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fog_pix);
-		s_fog_tex_ok = ps3gl_tex_chain_levels() != 0;
+		rglTexImage2D(0, FOG_TEX_W, 4, s_fog_pix);
+		s_fog_tex_ok = rglTexChainLevels() != 0;
 		s_fog_ram_up = g_rr.fog_col_ram;
 		s_fog_vert_up = g_rr.fog_col_vert;
 		memcpy(s_fog_tab_up, g_rr.fog_table, sizeof(s_fog_tab_up));
 		s_stat_fog_up++;
 	}
+	ps3rsxd_fog_table(s_fog_tex_ok ? s_fog_tex : 0);
+	if (own)
+		return s_fog_tex_ok;
 	if (s_fog_tex_ok)
 	{
 		glEnable(GL_TEXTURE_2D);
 		ps3gl_tex_aux(1);
 	}
-	glActiveTextureARB(GL_TEXTURE0_ARB);
+	rglActiveTexture(GL_TEXTURE0_ARB);
 	return s_fog_tex_ok;
 }
 
@@ -1946,18 +1956,22 @@ static void fog_scene_begin()
 		s_fog = 0;
 		return;
 	}
-	ps3gl_dc_fog_scale(fog_scale(g_rr.fog_density));
+	rglDcFogScale(fog_scale(g_rr.fog_density));
 }
 
+// G17 + FRAME, + VOLUMES: unit 1 is ps3gl's, rglActiveTexture tells the emitter; + FOG: the emitter's alone.
 static void fog_scene_end()
 {
 	if (!s_fog)
 		return;
-	ps3gl_dc_fog(PS3GL_FOG_NONE);
-	glActiveTextureARB(GL_TEXTURE1_ARB);
+	rglDcFog(PS3GL_FOG_NONE);
+	ps3rsxd_fog_table(0);
+	if (ps3rsxd_fog_live())
+		return;
+	rglActiveTexture(GL_TEXTURE1_ARB);
 	glDisable(GL_TEXTURE_2D);
 	ps3gl_tex_aux(0);
-	glActiveTextureARB(GL_TEXTURE0_ARB);
+	rglActiveTexture(GL_TEXTURE0_ARB);
 }
 
 // Plane through the 3 background vertices, evaluated per color channel and for UV at (x, y).
@@ -2143,9 +2157,9 @@ static void clip_base()
 		return;
 	s_clip_base = true;
 	if (s_cv.scissor)
-		glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
+		rglScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
 	else
-		glDisable(GL_SCISSOR_TEST);
+		rglDisable(GL_SCISSOR_TEST);
 }
 
 // Flycast getTileClip: mode 2 draws inside the tile rect, mode 3 outside; a rect over the whole TA area is no clip.
@@ -2266,10 +2280,12 @@ static u32 apply_param(const DcParam& p, u32 list)
 		return s_cache_or;
 	const u64 t0 = PERF_TICKS();
 	u32 rv;
+	// G17: the background's own rules go to the emitter with its list.
+	const u32 rl = list | (&p == &g_rr.bg_param ? (u32)RXL_BG : 0u);
 	if (s_do.rsxd == RSXD_SEC_LIVE)
 	{
 		// G17: the emitter applies it; the cache rule of apply_param_body (the depth pass keeps none).
-		rv = ps3rsxd_param(&p, list, spetex_slot(p));
+		rv = ps3rsxd_param(&p, rl, spetex_slot(p));
 		s_cache_isp = p.isp.full;
 		s_cache_tsp = p.tsp.full;
 		s_cache_tcw = p.tcw.full;
@@ -2282,7 +2298,7 @@ static u32 apply_param(const DcParam& p, u32 list)
 	{
 		rv = apply_param_body(p, list);
 		if (s_do.rsxd)
-			ps3rsxd_param_check(&p, list, spetex_slot(p), rv);
+			ps3rsxd_param_check(&p, rl, spetex_slot(p), rv);
 	}
 	s_dt[DT_PARAM] += PERF_TICKS() - t0;
 	return rv;
@@ -2941,7 +2957,7 @@ static bool tri_game_room(u32 n)
 		return false;
 	const u32 cap = room + 3 * n;
 	u32 off;
-	ps3gl_vertex_t* const vb = ps3gl_vring_alloc((int)(cap + vb_spare()), &off);
+	ps3gl_vertex_t* const vb = (ps3gl_vertex_t*)rglVringAlloc((int)(cap + vb_spare()), &off);
 	if (!vb)
 		return false;
 	s_vb = vb;
@@ -3005,8 +3021,8 @@ static void draw_tr_tris()
 	{
 		// A texel that hides what is behind it does so in any draw order; the rest blend in the sorted order.
 		s_tri_mode = TRI_OPAQUE;
-		glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-		glAlphaFunc(GL_GEQUAL, TRI_OPAQUE_REF / 255.0f);
+		rglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		rglAlphaFunc(GL_GEQUAL, TRI_OPAQUE_REF / 255.0f);
 		tri_runs(n, base, true, game);
 		if (game)
 		{
@@ -3015,8 +3031,8 @@ static void draw_tr_tris()
 			s_dt[DT_SORT] += PERF_TICKS() - t_late;
 			base = s_vb_used;
 		}
-		glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-		glAlphaFunc(GL_GREATER, 0.0f);
+		rglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+		rglAlphaFunc(GL_GREATER, 0.0f);
 		reset_param_cache();
 		s_tri_mode = TRI_NODEPTH;
 		tri_runs(n, base, game, false);
@@ -3075,7 +3091,7 @@ static inline u32 vb_spare()
 static bool spevb_lost(int& build)
 {
 	build = SPEVB_OFF;
-	s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
+	s_vb = (ps3gl_vertex_t*)rglVringAlloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 	s_vb_used = 0;
 	return s_spevb_drawn != 0;
 }
@@ -3104,7 +3120,7 @@ static void draw_tr(int& build)
 			if (!ps3spevb_tr_ppu())
 				return;
 			s_vb_cap -= ps3spevb_vb_used();
-			s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
+			s_vb = (ps3gl_vertex_t*)rglVringAlloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 			s_vb_used = 0;
 		}
 	}
@@ -3240,60 +3256,77 @@ static void spevb_check()
 // parity, bit 0 = inside the summed volume. Inclusion ORs bit 1 into bit 0, exclusion ANDs.
 enum { MV_XOR, MV_OR, MV_INCLUSION, MV_EXCLUSION };
 
+// set_cull through rgl: G17 + VOLUMES gives the volumes' state to the emitter.
+static void mv_cull(u32 mode)
+{
+	if (mode < 2)
+	{
+		rglDisable(GL_CULL_FACE);
+		return;
+	}
+	rglEnable(GL_CULL_FACE);
+	rglCullFace(mode == 2 ? GL_FRONT : GL_BACK);
+}
+
 static void set_mvs_mode(u32 mode, u32 cull)
 {
 	if (mode == MV_XOR || mode == MV_OR)
 	{
-		glEnable(GL_DEPTH_TEST);
-		glStencilMask(2);
+		rglEnable(GL_DEPTH_TEST);
+		rglStencilMask(2);
 		if (mode == MV_XOR)
 		{
-			glStencilFunc(GL_ALWAYS, 0, 2);
-			glStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
+			rglStencilFunc(GL_ALWAYS, 0, 2);
+			rglStencilOp(GL_KEEP, GL_KEEP, GL_INVERT);
 		}
 		else
 		{
-			glStencilFunc(GL_ALWAYS, 2, 2);
-			glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+			rglStencilFunc(GL_ALWAYS, 2, 2);
+			rglStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 		}
-		set_cull(cull);
+		mv_cull(cull);
 		return;
 	}
 	// Summing the area is not depth tested.
-	glDisable(GL_DEPTH_TEST);
-	glStencilMask(3);
+	rglDisable(GL_DEPTH_TEST);
+	rglStencilMask(3);
 	if (mode == MV_INCLUSION)
 	{
-		glStencilFunc(GL_LEQUAL, 1, 3);
-		glStencilOp(GL_ZERO, GL_ZERO, GL_REPLACE);
+		rglStencilFunc(GL_LEQUAL, 1, 3);
+		rglStencilOp(GL_ZERO, GL_ZERO, GL_REPLACE);
 	}
 	else
 	{
-		glStencilFunc(GL_EQUAL, 1, 3);
-		glStencilOp(GL_ZERO, GL_ZERO, GL_KEEP);
+		rglStencilFunc(GL_EQUAL, 1, 3);
+		rglStencilOp(GL_ZERO, GL_ZERO, GL_KEEP);
 	}
 }
 
-static inline void emit_mod_vertex(float x, float y, float inv_w)
+// emit: the emitter has the frame. Else straight to ps3gl, one call each as before G17; direct calls cost no TOC entry.
+static inline void emit_mod_vertex(bool emit, float x, float y, float inv_w)
 {
 	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
 	float w = 1.0f / safe;
-	glVertex3f(x * w, y * w, w);
+	if (emit)
+		rglVertex3f(x * w, y * w, w);
+	else
+		glVertex3f(x * w, y * w, w);
 }
 
 static void draw_mod_tris(u32 first, u32 count)
 {
 	if (first + count > s_rl.nmtri)
 		return;
-	glBegin(GL_TRIANGLES);
+	const bool emit = ps3rsxd_owns();
+	rglBegin(GL_TRIANGLES);
 	for (u32 i = 0; i < count; i++)
 	{
 		const ModTri& t = s_rl.mtri[first + i];
-		emit_mod_vertex(t.x0, t.y0, t.z0);
-		emit_mod_vertex(t.x1, t.y1, t.z1);
-		emit_mod_vertex(t.x2, t.y2, t.z2);
+		emit_mod_vertex(emit, t.x0, t.y0, t.z0);
+		emit_mod_vertex(emit, t.x1, t.y1, t.z1);
+		emit_mod_vertex(emit, t.x2, t.y2, t.z2);
 	}
-	glEnd();
+	rglEnd();
 }
 
 // P27 (Flycast f2013c652, Xtreme Sports): when a pass has one volume list for opaque and translucent, and the
@@ -3315,28 +3348,33 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w,
 {
 	if (s_rl.nmvol < 2 || s_rl.nmtri == 0 || lo >= hi)
 		return;
+	// G17 + VOLUMES: the emitter draws the volumes in a section of their own (plan 9, stage B); + FRAME: ps3gl does.
+	const bool vols = ps3rsxd_volumes();
+	const bool own = !vols && ps3rsxd_lend();
 	if (s_do.clip)
 	{
 		clip_base();
 		s_clip_mode = CLIP_NONE;
 	}
 	s_flat_shift = 0;
+	if (vols)
+		rsxd_open(RSXD_K_VOL);
 
-	glDisable(GL_TEXTURE_2D);
+	rglDisable(GL_TEXTURE_2D);
 	// 3a: the volumes and the shade quad draw with no fog.
 	if (s_fog)
-		ps3gl_dc_fog(PS3GL_FOG_NONE);
+		rglDcFog(PS3GL_FOG_NONE);
 	// Bundle 17: and with no offset colour, clamp or weight of the polygon before them.
 	if (s_do.offs)
-		ps3gl_dc_offs(0);
+		rglDcOffs(0);
 	if (s_clamp_on || s_do.tril)
-		ps3gl_dc_xt(0, 0, 0, 1.0f);
-	glDisable(GL_ALPHA_TEST);
-	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-	glDepthMask(GL_FALSE);
+		rglDcXt(0, 0, 0, 1.0f);
+	rglDisable(GL_ALPHA_TEST);
+	rglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	rglDepthMask(GL_FALSE);
 	// The DC compares 1/W with "greater".
-	glDepthFunc(dc_depth_func(DC_GREATER));
-	glEnable(GL_STENCIL_TEST);
+	rglDepthFunc(dc_depth_func(DC_GREATER));
+	rglEnable(GL_STENCIL_TEST);
 
 	s32 mod_base = -1;
 	for (u32 i = lo; i < hi && i + 1 < s_rl.nmvol; i++)
@@ -3362,30 +3400,33 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w,
 	}
 
 	// Shade Shadow polygons inside a volume; the op also clears bits 1:0.
-	glDisable(GL_DEPTH_TEST);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glDisable(GL_CULL_FACE);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glStencilFunc(GL_EQUAL, 0x81, 0x81);
-	glStencilMask(3);
-	glStencilOp(GL_ZERO, GL_ZERO, GL_ZERO);
+	rglDisable(GL_DEPTH_TEST);
+	rglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	rglDisable(GL_CULL_FACE);
+	rglEnable(GL_BLEND);
+	rglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	rglStencilFunc(GL_EQUAL, 0x81, 0x81);
+	rglStencilMask(3);
+	rglStencilOp(GL_ZERO, GL_ZERO, GL_ZERO);
 	// Flycast: black at alpha 1 - scale/256, so the lit colour keeps scale/256 of itself.
 	u32 sf = g_rr.fpu_shad_scale & 0xFF;
-	glColor4ub(0, 0, 0, (GLubyte)(255 - (sf * 255 + 128) / 256));
-	glBegin(GL_TRIANGLE_STRIP);
-	glVertex3f(cx0 * quad_w, cy0 * quad_w, quad_w);
-	glVertex3f((cx0 + cw) * quad_w, cy0 * quad_w, quad_w);
-	glVertex3f(cx0 * quad_w, (cy0 + ch) * quad_w, quad_w);
-	glVertex3f((cx0 + cw) * quad_w, (cy0 + ch) * quad_w, quad_w);
-	glEnd();
+	rglColor4ub(0, 0, 0, (GLubyte)(255 - (sf * 255 + 128) / 256));
+	rglBegin(GL_TRIANGLE_STRIP);
+	rglVertex3f(cx0 * quad_w, cy0 * quad_w, quad_w);
+	rglVertex3f((cx0 + cw) * quad_w, cy0 * quad_w, quad_w);
+	rglVertex3f(cx0 * quad_w, (cy0 + ch) * quad_w, quad_w);
+	rglVertex3f((cx0 + cw) * quad_w, (cy0 + ch) * quad_w, quad_w);
+	rglEnd();
 
-	glDisable(GL_STENCIL_TEST);
-	glStencilMask(0xFF);
-	glEnable(GL_DEPTH_TEST);
-	glDepthMask(GL_TRUE);
-	glDisable(GL_BLEND);
+	rglDisable(GL_STENCIL_TEST);
+	rglStencilMask(0xFF);
+	rglEnable(GL_DEPTH_TEST);
+	rglDepthMask(GL_TRUE);
+	rglDisable(GL_BLEND);
+	if (vols)
+		rsxd_close();
 	reset_param_cache();
+	ps3rsxd_take(own);
 }
 
 // P10 List Passes level 2 (Flycast drawSorted with TranslucentPolygonDepthMask, Cosmic Smash): the pass's sorted
@@ -3393,13 +3434,13 @@ static void draw_modvols(float cx0, float cy0, float cw, float ch, float quad_w,
 static void tr_depth_pass()
 {
 	const u32 strips = s_stat_strips[ListType_Translucent], draws = s_stat_draws[ListType_Translucent];
-	glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+	rglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
 	s_depth_pass = true;
 	reset_param_cache();
 	draw_tr_sorted();
 	s_depth_pass = false;
 	reset_param_cache();
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	rglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 	s_stat_strips[ListType_Translucent] = strips;
 	s_stat_draws[ListType_Translucent] = draws;
 }
@@ -3407,15 +3448,15 @@ static void tr_depth_pass()
 // Resets the GL state the passes below assume; must run before the clear.
 static void reset_gl_state()
 {
-	glDisable(GL_TEXTURE_2D);
-	ps3gl_tex_bump(0);
-	glDisable(GL_BLEND);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_STENCIL_TEST);
-	glStencilMask(0xFF);
-	glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-	glDepthMask(GL_TRUE);
+	rglDisable(GL_TEXTURE_2D);
+	rglTexBump(0);
+	rglDisable(GL_BLEND);
+	rglDisable(GL_ALPHA_TEST);
+	rglDisable(GL_CULL_FACE);
+	rglDisable(GL_STENCIL_TEST);
+	rglStencilMask(0xFF);
+	rglColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+	rglDepthMask(GL_TRUE);
 }
 
 // Per-list dump of the last drawn frame: what the geometry looks like and what
@@ -3596,11 +3637,12 @@ static void print_diag()
 	}
 }
 
-// G17 RSX Direct: the scene's rules for the emitter, and the state its sections read and carry.
+// G17 RSX Direct: the scene's rules for the emitter, and the state its sections read and carry. + FRAME also asks
+// before the background, with no vertex block.
 static void rsxd_scene_begin()
 {
 	s_do.rsxd_scene = RSXD_OFF;
-	if (!s_vb)
+	if (!s_vb && !ps3rsxd_owns())
 		return;
 	RsxdSceneIn in;
 	in.flags = (s_zfloat ? RSXD_S_ZFLOAT : 0) | (s_mo_sprite ? RSXD_S_SPRCULL : 0) | (s_do.pt_depth ? RSXD_S_PT_DEPTH : 0) |
@@ -3689,11 +3731,11 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	m[9] = 1.0f + 2.0f * cy0 / ch;
 	depth_proj(s_zfloat, n, &m[10], &m[14], &range_near);
 	m[11] = 1.0f;
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(m);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glDepthRange(range_near, 1.0);
+	rglMatrixMode(GL_PROJECTION);
+	rglLoadMatrixf(m);
+	rglMatrixMode(GL_MODELVIEW);
+	rglLoadIdentity();
+	rglDepthRange(range_near, 1.0);
 
 	s_cv.cx0 = cx0;
 	s_cv.cy0 = cy0;
@@ -3707,33 +3749,41 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	s_depth_pass = false;
 
 	// nullDC-v1 always shades Gouraud; its winding is judged as seen on screen.
-	glShadeModel(GL_SMOOTH);
-	glFrontFace(GL_CCW);
-	glEnable(GL_DEPTH_TEST);
+	rglShadeModel(GL_SMOOTH);
+	rglFrontFace(GL_CCW);
+	rglEnable(GL_DEPTH_TEST);
 
 	// OP/PT write stencil bit 7 from each polygon's Shadow flag (apply_param), as Flycast DrawList.
-	glEnable(GL_STENCIL_TEST);
-	glStencilMask(0xFF);
-	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+	rglEnable(GL_STENCIL_TEST);
+	rglStencilMask(0xFF);
+	rglStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 
 	fog_scene_begin();
 	xt_scene_begin();
 
-	// Background quad over the whole canvas at the background depth; colors and UV from its plane.
+	// Background quad over the whole canvas at the background depth; colors and UV from its plane. G17 + FRAME:
+	// the emitter applies and draws it.
 	reset_param_cache();
+	if (ps3rsxd_owns())
+	{
+		rsxd_scene_begin();
+		if (s_do.rsxd_scene)
+			s_do.rsxd = (u8)ps3rsxd_begin(RSXD_K_BG);
+	}
 	u32 bg_alpha_or = apply_param(g_rr.bg_param, ListType_Opaque);
 	static const float corner[4][2] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } };
-	glBegin(GL_TRIANGLE_STRIP);
+	rglBegin(GL_TRIANGLE_STRIP);
 	for (int k = 0; k < 4; k++)
 	{
 		BgVertex bv;
 		bg_eval(g_rr.bg_vtx, cx0 + corner[k][0] * cw, cy0 + corner[k][1] * ch, &bv);
 		u32 c = bv.col | bg_alpha_or;
-		glColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
-		glTexCoord2f(bv.u, bv.v);
-		glVertex3f(bv.x * bg_w, bv.y * bg_w, bg_w);
+		rglColor4ub((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, c >> 24);
+		rglTexCoord2f(bv.u, bv.v);
+		rglVertex3f(bv.x * bg_w, bv.y * bg_w, bg_w);
 	}
-	glEnd();
+	rglEnd();
+	rsxd_close();
 
 	if (s_rl.nstrip != 0)
 	{
@@ -3758,20 +3808,22 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			build = s_rl_spe >= 0 ? ps3spevb_mode() : SPEVB_OFF;
 			if (build == SPEVB_ON)
 			{
-				s_vb = (ps3gl_vertex_t*)ps3gl_vring_alloc_raw((s_vb_cap + vb_spare()) * SPEVB_VTX_STRIDE + 128, &s_vb_off);
+				s_vb = (ps3gl_vertex_t*)rglVringAllocRaw((s_vb_cap + vb_spare()) * SPEVB_VTX_STRIDE + 128, &s_vb_off);
 				if (!s_vb)
 					build = SPEVB_OFF;
 			}
 			if (build != SPEVB_ON)
-				s_vb = ps3gl_vring_alloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
+				s_vb = (ps3gl_vertex_t*)rglVringAlloc((int)(s_vb_cap + vb_spare()), &s_vb_off);
 			build = spevb_begin(build);
 		}
-		// The clip's extra draws and the colour shift need the vertex block: glBegin/glEnd draws without them.
+		// The clip's extra draws and the colour shift need the vertex block: glBegin/glEnd draws without them, with
+		// ps3gl (G17 + FRAME: for the rest of the frame).
 		if (!s_vb)
 		{
 			s_do.clip = 0;
 			if (s_do.flat == 2)
 				s_do.flat = 1;
+			ps3rsxd_lend();
 		}
 		rsxd_scene_begin();
 		// Hardware order: opaque, punch-through, translucent. P10 List Passes: once per pass (Flycast drawStrips);
@@ -3791,19 +3843,19 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 				if (s_strip_lo == s_strip_hi)
 					continue;
 				// The state the first pass starts with.
-				glDisable(GL_ALPHA_TEST);
-				glEnable(GL_STENCIL_TEST);
-				glStencilMask(0xFF);
-				glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
-				glDepthMask(GL_TRUE);
+				rglDisable(GL_ALPHA_TEST);
+				rglEnable(GL_STENCIL_TEST);
+				rglStencilMask(0xFF);
+				rglStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+				rglDepthMask(GL_TRUE);
 			}
 			s_pass = k;
 			s_pass_autosort = g_rr.pass_autosort[k < RR_MAX_PASSES ? k : RR_MAX_PASSES - 1];
 			reset_param_cache();
 			draw_list_or_runs(SPEVB_SEC_OP, ListType_Opaque, build);
 
-			glEnable(GL_ALPHA_TEST);
-			glAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
+			rglEnable(GL_ALPHA_TEST);
+			rglAlphaFunc(GL_GEQUAL, (g_rr.pt_alpha_ref & 0xFF) / 255.0f);
 			reset_param_cache();
 			draw_list_or_runs(SPEVB_SEC_PT, ListType_Punch_Through, build);
 
@@ -3811,12 +3863,12 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 			const u64 t_mv = PERF_TICKS();
 			draw_modvols(cx0, cy0, cw, ch, bg_w, mv_lo, mv_hi, vlist);
 			s_dt[DT_MODVOL] += PERF_TICKS() - t_mv;
-			glDisable(GL_STENCIL_TEST);
+			rglDisable(GL_STENCIL_TEST);
 			mv_lo = mv_hi;
 
 			// apply_param turns the "alpha > 0" test on per translucent poly.
-			glDisable(GL_ALPHA_TEST);
-			glAlphaFunc(GL_GREATER, 0.0f);
+			rglDisable(GL_ALPHA_TEST);
+			rglAlphaFunc(GL_GREATER, 0.0f);
 			reset_param_cache();
 			draw_tr(build);
 			if (s_do.passes == 2 && k + 1 < npass && s_pass_autosort)
@@ -3833,21 +3885,21 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	s_clip_mode = CLIP_NONE;
 	s_flat_shift = 0;
 	if (s_do.flat)
-		glShadeModel(GL_SMOOTH);
+		rglShadeModel(GL_SMOOTH);
 	fog_scene_end();
 	if (s_do.offs)
-		ps3gl_dc_offs(0);
+		rglDcOffs(0);
 	if (s_clamp_on || s_do.tril)
-		ps3gl_dc_xt(0, 0, 0, 1.0f);
-	ps3gl_tex_bump(0);
-	ps3gl_tex1_bits(0);
-	glDisable(GL_ALPHA_TEST);
-	glDisable(GL_BLEND);
-	glDisable(GL_CULL_FACE);
-	glDisable(GL_STENCIL_TEST);
-	glDepthMask(GL_TRUE);
+		rglDcXt(0, 0, 0, 1.0f);
+	rglTexBump(0);
+	rglTex1Bits(0);
+	rglDisable(GL_ALPHA_TEST);
+	rglDisable(GL_BLEND);
+	rglDisable(GL_CULL_FACE);
+	rglDisable(GL_STENCIL_TEST);
+	rglDepthMask(GL_TRUE);
 	// The UI and the framebuffer presents draw with ps3gl's default depth.
-	glDepthRange(0.0, 1.0);
+	rglDepthRange(0.0, 1.0);
 	ps3_video_depth_float(0);
 }
 
@@ -3862,7 +3914,7 @@ static void depth_begin()
 		printf("[rend] depth float %s\n", s_zfloat ? "ON" : "OFF");
 	}
 	ps3_video_depth_float(s_zfloat);
-	glClearDepth(depth_clear(s_zfloat));
+	rglClearDepth(depth_clear(s_zfloat));
 }
 
 // -- Bundle 12: the FPS text (P50) and the screenshot (P51) -------------------
@@ -3917,9 +3969,11 @@ static void osd_draw(u32 sw, u32 sh)
 	reset_param_cache();
 }
 
-// Before the end of a frame that is drawn for the TV: the screenshot first, so the PNG has no FPS text.
+// Before the end of a frame that is drawn for the TV: the screenshot first, so the PNG has no FPS text. ps3gl
+// draws the UI (G17 + FRAME: the emitter gives it the RSX).
 static void frame_extras()
 {
+	ps3rsxd_lend();
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
 	if (s_shot_want)
@@ -3959,17 +4013,18 @@ static bool native_begin(ScreenView* sv, u32* sw, u32* sh, float ch, bool wide)
 	u8* const a = native_mem(0);
 	// The display buffer's sides first: pass A covers the picture only.
 	if (a)
-		glClear(GL_COLOR_BUFFER_BIT);
+		rglClear(GL_COLOR_BUFFER_BIT);
 	if (!a || !ps3_video_target(a, s_nat.pitch[0], s_nat.plan.aw, s_nat.plan.ah, 1))
 	{
 		s_nat.fails++;
 		return false;
 	}
-	glViewport(0, 0, s_nat.plan.aw, s_nat.plan.ah);
-	ps3gl_apply_states();
+	ps3rsxd_screen(s_nat.plan.aw, s_nat.plan.ah);
+	rglViewport(0, 0, s_nat.plan.aw, s_nat.plan.ah);
+	rglApplyStates();
 	// A frame of the direct path came last: pass A holds no picture a carry may keep.
 	if (fresh)
-		glClear(GL_COLOR_BUFFER_BIT);
+		rglClear(GL_COLOR_BUFFER_BIT);
 	s_nat.last = true;
 	sv->x = 0;
 	sv->w = (int)s_nat.plan.aw;
@@ -3979,58 +4034,83 @@ static bool native_begin(ScreenView* sv, u32* sw, u32* sh, float ch, bool wide)
 	return true;
 }
 
+// A texture over the whole viewport (clip space), unit 0 in REPLACE: Native Size and the 2D frames. The texture is the
+// one bound last (G17 + TEX: the emitter's); the RSX state is rgl's.
+static void quad_textured()
+{
+	rglTexEnvMode(GL_REPLACE);
+	rglDisable(GL_DEPTH_TEST);
+	rglDepthMask(GL_FALSE);
+	float m[16] = { 0 };
+	m[0] = m[5] = m[10] = m[15] = 1.0f;
+	rglMatrixMode(GL_PROJECTION);
+	rglLoadMatrixf(m);
+	rglMatrixMode(GL_MODELVIEW);
+	rglLoadIdentity();
+	rglColor4ub(255, 255, 255, 255);
+	rglBegin(GL_TRIANGLE_STRIP);
+	rglTexCoord2f(0, 0); rglVertex3f(-1.0f,  1.0f, 0.0f);
+	rglTexCoord2f(1, 0); rglVertex3f( 1.0f,  1.0f, 0.0f);
+	rglTexCoord2f(0, 1); rglVertex3f(-1.0f, -1.0f, 0.0f);
+	rglTexCoord2f(1, 1); rglVertex3f( 1.0f, -1.0f, 0.0f);
+	rglEnd();
+	rglDisable(GL_TEXTURE_2D);
+	rglDepthMask(GL_TRUE);
+}
+
 // Pass k's texture over x, y, w, h of the surface in use; its new texels flush the texture cache first.
 static void native_quad(u32 k, int x, int y, u32 w, u32 h, bool linear)
 {
 	reset_gl_state();
-	glDisable(GL_SCISSOR_TEST);
-	glDisable(GL_DEPTH_TEST);
-	glDepthMask(GL_FALSE);
-	glViewport(x, y, w, h);
-	glEnable(GL_TEXTURE_2D);
-	glBindTexture(GL_TEXTURE_2D, s_nat.tex[k]);
-	u32 pitch;
-	ps3gl_tex_fixed(NS_MAX_W, NS_MAX_H, k ? s_nat.plan.bw : s_nat.plan.aw, k ? s_nat.plan.bh : s_nat.plan.ah, &pitch);
+	rglDisable(GL_SCISSOR_TEST);
+	rglViewport(x, y, w, h);
+	rglEnable(GL_TEXTURE_2D);
+	const u32 tw = k ? s_nat.plan.bw : s_nat.plan.aw, th = k ? s_nat.plan.bh : s_nat.plan.ah;
+	// G17 + TEX: the emitter's entry over the pass's memory.
+	if (!rglTexWrap(s_nat.mem[k], s_nat.pitch[k], tw, th))
+	{
+		glBindTexture(GL_TEXTURE_2D, s_nat.tex[k]);
+		u32 pitch;
+		ps3gl_tex_fixed(NS_MAX_W, NS_MAX_H, tw, th, &pitch);
+	}
 	const GLint f = linear ? GL_LINEAR : GL_NEAREST;
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, f);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, f);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-	float m[16] = { 0 };
-	m[0] = m[5] = m[10] = m[15] = 1.0f;
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(m);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glColor4ub(255, 255, 255, 255);
-	glBegin(GL_TRIANGLE_STRIP);
-	glTexCoord2f(0, 0); glVertex3f(-1.0f,  1.0f, 0.0f);
-	glTexCoord2f(1, 0); glVertex3f( 1.0f,  1.0f, 0.0f);
-	glTexCoord2f(0, 1); glVertex3f(-1.0f, -1.0f, 0.0f);
-	glTexCoord2f(1, 1); glVertex3f( 1.0f, -1.0f, 0.0f);
-	glEnd();
-	glDisable(GL_TEXTURE_2D);
-	glEnable(GL_DEPTH_TEST);
-	glDepthMask(GL_TRUE);
+	rglTexParameteri(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_MIN_FILTER, f);
+	rglTexParameteri(GL_TEXTURE_MAG_FILTER, f);
+	rglTexParameteri(GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+	quad_textured();
+	rglEnable(GL_DEPTH_TEST);
+}
+
+// The display buffer again, for ps3gl and (G17 + SCREEN) the emitter.
+static void native_target_frame()
+{
+	ps3_video_target_frame();
+	u32 w, h;
+	ps3_video_size(&w, &h);
+	ps3rsxd_screen(w, h);
 }
 
 // Pass A onto the picture (pic, sh lines): through pass B at whole factors, or straight when they reach the picture.
+// G17 + SCREEN: the emitter draws them (plan 9, stage D); else ps3gl.
 static void native_end(const ScreenView& pic, u32 sh)
 {
+	if (!ps3rsxd_quads())
+		ps3rsxd_lend();
 	const NativePlan& p = s_nat.plan;
 	u8* const b = p.bw ? native_mem(1) : 0;
 	if (b && ps3_video_target(b, s_nat.pitch[1], p.bw, p.bh, 0))
 	{
+		ps3rsxd_screen(p.bw, p.bh);
 		native_quad(0, 0, 0, p.bw, p.bh, false);
-		ps3_video_target_frame();
+		native_target_frame();
 		native_quad(1, pic.x, 0, pic.w, sh, true);
 		s_nat.sharp++;
 	}
 	else
 	{
-		ps3_video_target_frame();
+		native_target_frame();
 		native_quad(0, pic.x, 0, pic.w, sh, !p.exact);
 	}
 	reset_param_cache();
@@ -4041,17 +4121,18 @@ static void draw_frame()
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
 
-	ps3rsxd_frame();
+	// G17 + FRAME: from here to the frame's UI the emitter has the RSX.
+	ps3rsxd_frame(RSXD_F_GAME);
 	// draw_scene binds no list param without strips.
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
 
-	glDisable(GL_SCISSOR_TEST);
-	glViewport(0, 0, sw, sh);
-	ps3gl_apply_states();
-	glClearColor(0, 0, 0, 1);
+	rglDisable(GL_SCISSOR_TEST);
+	rglViewport(0, 0, sw, sh);
+	rglApplyStates();
+	rglClearColor(0, 0, 0, 1);
 	depth_begin();
-	glClearStencil(0);
+	rglClearStencil(0);
 
 	const float cw = 640.0f * g_rr.fb_scale_x, ch = 480.0f * g_rr.fb_scale_y;
 	// Bundle 12 Screen Format: 4:3 with side bars, STRETCH (P69) or WIDE (P53). A WIDE render whose own clip
@@ -4107,17 +4188,17 @@ static void draw_frame()
 	const bool carry = g_keep_frame_preset && cut && !keep && ps3_video_carry();
 	if (carry)
 		s_stat_carry++;
-	glClear(((keep || carry) ? 0 : GL_COLOR_BUFFER_BIT) | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	rglClear(((keep || carry) ? 0 : GL_COLOR_BUFFER_BIT) | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	// A narrow render owns the 4:3 area only: in a frame that kept its colour, the sides may hold a wide frame.
 	if (narrow && (keep || carry) && sv.x > 0)
 	{
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(0, 0, sv.x, sh);
-		ps3gl_apply_states();
-		glClear(GL_COLOR_BUFFER_BIT);
-		glScissor(sv.x + sv.w, 0, sw - sv.x - sv.w, sh);
-		ps3gl_apply_states();
-		glClear(GL_COLOR_BUFFER_BIT);
+		rglEnable(GL_SCISSOR_TEST);
+		rglScissor(0, 0, sv.x, sh);
+		rglApplyStates();
+		rglClear(GL_COLOR_BUFFER_BIT);
+		rglScissor(sv.x + sv.w, 0, sw - sv.x - sv.w, sh);
+		rglApplyStates();
+		rglClear(GL_COLOR_BUFFER_BIT);
 	}
 
 	clip_view(sv.x, 0, sv.w, (int)sh, true);
@@ -4131,10 +4212,10 @@ static void draw_frame()
 		return;
 	}
 
-	glEnable(GL_SCISSOR_TEST);
-	glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
-	glViewport(sv.x, 0, sv.w, sh);
-	ps3gl_apply_states();
+	rglEnable(GL_SCISSOR_TEST);
+	rglScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
+	rglViewport(sv.x, 0, sv.w, sh);
+	rglApplyStates();
 
 	draw_scene(sv.cx0, 0.0f, sv.cw, ch);
 	if (native)
@@ -4191,6 +4272,12 @@ static inline void rtt_w16(u32 addr, u16 v)
 	*w = (addr & 2) ? (*w & 0x0000FFFFu) | ((u32)v << 16) : (*w & 0xFFFF0000u) | v;
 }
 
+// A frame's begin; own: the emitter's frame (G17 + FRAME on), with its vring fences.
+static int video_begin(bool own)
+{
+	return own ? ps3_video_begin_own() : ps3_video_begin_frame();
+}
+
 static void rtt_render()
 {
 	u32 sw, sh;
@@ -4233,34 +4320,35 @@ static void rtt_render()
 		return;
 	}
 
-	// P60: with the Present Rule a frame can wait in the back buffer, so the RTT draws on its own surface.
-	// P76 Draw Retry: else it waits for a free buffer; a return here leaves the game's texture with old data.
-	if (!(g_present_rule_preset && ps3_video_begin_rtt()) && !ps3_video_begin_frame())
+	// P60: the Present Rule draws an RTT on its own surface (a frame can wait in the back buffer). P76 Draw Retry: else
+	// it waits for a free buffer, as a return keeps old texels. G17 + SCREEN: the emitter has the frame (plan 9, D).
+	const bool own = ps3rsxd_own_frame(RSXD_F_RTT);
+	if (!(g_present_rule_preset && ps3_video_begin_rtt(own)) && !video_begin(own))
 	{
 		if (!g_draw_retry_preset)
 			return;
 		s_stat_rtt_wait++;
-		if (!ps3_video_wait_free(250) || !ps3_video_begin_frame())
+		if (!ps3_video_wait_free(250) || !video_begin(own))
 			return;
 	}
-	ps3rsxd_frame();
+	ps3rsxd_frame(RSXD_F_RTT);
 	ps3tex_frame_begin(s_rl.param, s_rl.nstrip ? s_rl.nparam : 0);
 	reset_gl_state();
-	glDisable(GL_SCISSOR_TEST);
-	glViewport(0, 0, w, h);
-	ps3gl_apply_states();
+	rglDisable(GL_SCISSOR_TEST);
+	rglViewport(0, 0, w, h);
+	rglApplyStates();
 	// P76 (Flycast gles.cpp): an RTT target clears to alpha 0; it shows in the 4444 and 1555 packs.
-	glClearColor(0, 0, 0, fly ? 0 : 1);
+	rglClearColor(0, 0, 0, fly ? 0 : 1);
 	depth_begin();
-	glClearStencil(0);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	rglClearStencil(0);
+	rglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 	clip_view(0, 0, (int)w, (int)h, false);
 	// Flycast getBaseScissor: with the size from the tiles, the scene draws only inside them.
 	if (g.scissor && clip_view_cut(g.sx0, g.sy0, g.sw, g.sh, g.cx0, g.cy0, g.cx1, g.cy1))
 	{
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
-		ps3gl_apply_states();
+		rglEnable(GL_SCISSOR_TEST);
+		rglScissor(s_cv.bx, s_cv.by, s_cv.bw, s_cv.bh);
+		rglApplyStates();
 	}
 	draw_scene(g.sx0, g.sy0, g.sw, g.sh);
 	ps3_video_end_frame_noflip();
@@ -4563,13 +4651,15 @@ static void fb_spu_alloc()
 static void present_fb_draw()
 {
 	u32 cpy_w = s_fb_cpy_w, cpy_h = s_fb_cpy_h;
-	if (!ps3_video_begin_frame())
+	// G17 + SCREEN: the emitter has the 2D frame up to its UI (plan 9, stage D).
+	if (!video_begin(ps3rsxd_own_frame(RSXD_F_2D)))
 	{
 		// P76 Draw Retry: the vblank has marked this screen as shown; it must try again.
 		if (g_draw_retry_preset)
 			s_fb_retry = true;
 		return;
 	}
+	ps3rsxd_frame(RSXD_F_2D);
 
 	u32 sw, sh;
 	ps3_video_size(&sw, &sh);
@@ -4582,26 +4672,26 @@ static void present_fb_draw()
 	s_pic_w = sv.w;
 
 	reset_gl_state();
-	glDisable(GL_SCISSOR_TEST);
-	glViewport(0, 0, sw, sh);
-	ps3gl_apply_states();
-	glClearColor(0, 0, 0, 1);
-	glClearDepth(1.0);
-	glClearStencil(0);
-	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
-	glViewport(vp_x, 0, vp_w, sh);
-	ps3gl_apply_states();
+	rglDisable(GL_SCISSOR_TEST);
+	rglViewport(0, 0, sw, sh);
+	rglApplyStates();
+	rglClearColor(0, 0, 0, 1);
+	rglClearDepth(1.0);
+	rglClearStencil(0);
+	rglClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+	rglViewport(vp_x, 0, vp_w, sh);
+	rglApplyStates();
 
 	// P76 (Flycast RenderFramebuffer): with the video blanked the screen is the border colour, not the VRAM image.
 	if (g_rr.blank)
 	{
 		const u32 c = g_rr.vo_border_col;
-		glEnable(GL_SCISSOR_TEST);
-		glScissor(vp_x, 0, vp_w, sh);
-		ps3gl_apply_states();
-		glClearColor(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1);
-		glClear(GL_COLOR_BUFFER_BIT);
-		glDisable(GL_SCISSOR_TEST);
+		rglEnable(GL_SCISSOR_TEST);
+		rglScissor(vp_x, 0, vp_w, sh);
+		rglApplyStates();
+		rglClearColor(((c >> 16) & 0xFF) / 255.0f, ((c >> 8) & 0xFF) / 255.0f, (c & 0xFF) / 255.0f, 1);
+		rglClear(GL_COLOR_BUFFER_BIT);
+		rglDisable(GL_SCISSOR_TEST);
 		frame_extras();
 		ps3_video_end_frame();
 		reset_param_cache();
@@ -4610,50 +4700,43 @@ static void present_fb_draw()
 		return;
 	}
 
-	glEnable(GL_TEXTURE_2D);
+	rglEnable(GL_TEXTURE_2D);
 	if (s_fb_buf >= 0)
 	{
-		// The SPU already wrote the texels; only the size the RSX samples changes.
-		u32 pitch;
-		glBindTexture(GL_TEXTURE_2D, s_fb_rtex[s_fb_buf]);
-		ps3gl_tex_fixed(FB2D_W, FB2D_H, cpy_w, cpy_h, &pitch);
+		// The SPU already wrote the texels; only the size the RSX samples changes (G17 + TEX: the emitter's entry).
+		if (!rglTexWrap(s_fb_rmem[s_fb_buf], FB2D_W * 4, cpy_w, cpy_h))
+		{
+			u32 pitch;
+			glBindTexture(GL_TEXTURE_2D, s_fb_rtex[s_fb_buf]);
+			ps3gl_tex_fixed(FB2D_W, FB2D_H, cpy_w, cpy_h, &pitch);
+		}
 	}
 	else
 	{
 		if (!s_fb_tex)
-			glGenTextures(1, &s_fb_tex);
-		glBindTexture(GL_TEXTURE_2D, s_fb_tex);
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, cpy_w, cpy_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, s_fb_pix);
+			rglGenTextures(&s_fb_tex);
+		rglBindTexture(s_fb_tex);
+		rglTexImage2D(0, cpy_w, cpy_h, s_fb_pix);
 	}
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-	glDisable(GL_DEPTH_TEST);
-	glDepthMask(GL_FALSE);
-
-	// Straight to clip space: the quad covers the whole viewport.
-	float m[16] = { 0 };
-	m[0] = m[5] = m[10] = m[15] = 1.0f;
-	glMatrixMode(GL_PROJECTION);
-	glLoadMatrixf(m);
-	glMatrixMode(GL_MODELVIEW);
-	glLoadIdentity();
-	glColor4ub(255, 255, 255, 255);
-	glBegin(GL_TRIANGLE_STRIP);
-	glTexCoord2f(0, 0); glVertex3f(-1.0f,  1.0f, 0.0f);
-	glTexCoord2f(1, 0); glVertex3f( 1.0f,  1.0f, 0.0f);
-	glTexCoord2f(0, 1); glVertex3f(-1.0f, -1.0f, 0.0f);
-	glTexCoord2f(1, 1); glVertex3f( 1.0f, -1.0f, 0.0f);
-	glEnd();
-
-	glDisable(GL_TEXTURE_2D);
-	glDepthMask(GL_TRUE);
+	rglTexParameteri(GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	rglTexParameteri(GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	rglTexParameteri(GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	quad_textured();
 	frame_extras();
 	ps3_video_end_frame();
 	reset_param_cache();
 	s_stat_fb_presents++;
+}
+
+// G17 + TEX (ps3_rsxd.cpp): the texture mode changed; the fog table and the 2D texture are made again in the new one.
+void rend_tex_reset()
+{
+	rglDeleteTexture(s_fog_tex);
+	s_fog_tex = 0;
+	s_fog_tex_ok = false;
+	rglDeleteTexture(s_fb_tex);
+	s_fb_tex = 0;
 }
 
 // -- TR3: the render thread --------------------------------------------------
@@ -5085,8 +5168,10 @@ static void rth_job_draw(int type, u64 hold)
 	double t0 = os_GetSeconds();
 	double end_dt = 0.0, held = 0.0;
 	// Bundle 14: ps3gl's state path for this job's RSX calls (the rows are live). Tex Recycle: new names skip the scans.
-	ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0) |
-	                (g_tex_recycle_preset ? PS3GL_FAST_GEN : 0));
+	// G17 + RING: ps3gl takes them at the frame's handoff to its UI.
+	if (!ps3rsxd_ring_next())
+		ps3gl_fast_path((g_tex_bind_table_preset ? PS3GL_FAST_BIND : 0) | (g_gl_compare_preset ? PS3GL_FAST_COMPARE : 0) |
+		                (g_tex_recycle_preset ? PS3GL_FAST_GEN : 0));
 	if (type == JOB_PRESENT)
 	{
 		REND_PHASE(PH_PRESENT);
@@ -5112,7 +5197,8 @@ static void rth_job_draw(int type, u64 hold)
 			s_stat_mv[k] += s_rl.mv_tris[k];
 
 		REND_PHASE(PH_BEGINFRAME);
-		if (ps3_video_begin_frame())
+		// G17 RSX Direct + FRAME: the frame's vring fences are ps3_rsxd.cpp's.
+		if (ps3rsxd_own_frame() ? ps3_video_begin_own() : ps3_video_begin_frame())
 		{
 			REND_PHASE(PH_DRAW);
 			draw_frame();

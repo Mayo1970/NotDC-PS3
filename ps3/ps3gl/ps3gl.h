@@ -374,6 +374,9 @@ int ps3gl_init(gcmContextData *ctx, uint32_t w, uint32_t h);
 void ps3gl_shutdown(void);
 void ps3gl_begin_frame(void);
 void ps3gl_end_frame(void);
+/* NotDC G17: the two without the vring segment swap, fence wait and label write (RSX Direct + FRAME's own). */
+void ps3gl_begin_frame_state(void);
+void ps3gl_end_frame_stats(void);
 
 /* NotDC bundle 14: the PS3GL_FAST_* bits of the state path. They can change at any time. */
 void ps3gl_fast_path(int bits);

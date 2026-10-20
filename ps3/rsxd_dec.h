@@ -34,6 +34,8 @@ typedef struct
 	uint32_t n_inval, n_vinval, n_draws;
 	uint32_t prim, nbatch, batch_first, batch_count;
 	uint32_t err;
+	// Surface clears (the last one's mask) and backend label writes (the last offset and value).
+	uint32_t n_clears, clear_mask, n_sem, sem_off, sem_val;
 } RdRegs;
 
 static inline void rd_reset(RdRegs* r)
@@ -74,7 +76,7 @@ static inline void rd_clean(RdRegs* r)
 	r->overflow = 0;
 }
 
-// One method write. Returns 1 at the end of a draw (BEGIN_END 0).
+// One method write. Returns 1 at the end of a draw (BEGIN_END 0), 2 at a surface clear.
 static inline int rd_write(RdRegs* r, uint32_t m, uint32_t v)
 {
 	if (m >= 0x0b80 && m < 0x0c00)
@@ -99,6 +101,9 @@ static inline int rd_write(RdRegs* r, uint32_t m, uint32_t v)
 	case 0x1efc: r->vpc_ptr = v * 4; return 0;
 	case 0x1fd8: r->n_inval++; return 0;
 	case 0x1714: r->n_vinval++; return 0;
+	case 0x1d94: r->n_clears++; r->clear_mask = v; return 2;
+	case 0x1d6c: r->sem_off = v; return 0;
+	case 0x1d70: r->sem_val = v; r->n_sem++; return 0;
 	case 0x1814:
 		if (r->nbatch++ == 0)
 			r->batch_first = v & 0xFFFFFF;
@@ -125,8 +130,8 @@ static inline int rd_write(RdRegs* r, uint32_t m, uint32_t v)
 	return 0;
 }
 
-// The words [*pp, end) of a plain stream (no jumps). Stops after a draw end when stop_at_draw: returns 1 there.
-// A header whose data runs past end, or a jump, sets err.
+// The words [*pp, end) of a plain stream (no jumps). Stops after a draw end or a clear when stop_at_draw: returns
+// rd_write's 1 or 2 there. A header whose data runs past end, or a jump, sets err.
 static inline int rd_stream(RdRegs* r, const uint32_t** pp, const uint32_t* end, int stop_at_draw)
 {
 	const uint32_t* p = *pp;
@@ -156,7 +161,7 @@ static inline int rd_stream(RdRegs* r, const uint32_t** pp, const uint32_t* end,
 		if (ended && stop_at_draw)
 		{
 			*pp = p;
-			return 1;
+			return ended;
 		}
 	}
 	*pp = p;
@@ -167,7 +172,7 @@ static inline int rd_stream(RdRegs* r, const uint32_t** pp, const uint32_t* end,
 typedef const uint32_t* (*RdAddr)(void* ctx, uint32_t offset);
 
 // A FIFO as the RSX reads it: from *pp up to stop, through JUMP (old and new forms), CALL and RETURN (one level).
-// At most budget words; past it err 3. Stops after a draw end when stop_at_draw: returns 1 there.
+// At most budget words; past it err 3. Stops as rd_stream does.
 typedef struct
 {
 	const uint32_t* ret;
@@ -234,11 +239,30 @@ static inline int rd_fifo(RdRegs* r, const uint32_t** pp, const uint32_t* stop, 
 		if (ended && stop_at_draw)
 		{
 			*pp = p;
-			return 1;
+			return ended;
 		}
 	}
 	*pp = p;
 	return 0;
+}
+
+// The registers only the frame's own librsx calls write (the surface, the depth format): FRAME CHECK gives b a's.
+static inline int rd_foreign(uint32_t m)
+{
+	return (m >= 0x0180 && m < 0x02c0) || m == 0x03b0 || m == 0x1d88;
+}
+
+static inline void rd_take_foreign(const RdRegs* a, RdRegs* b)
+{
+	for (uint32_t i = 0; i < a->ndirty; i++)
+	{
+		const uint32_t t = a->dirty[i];
+		if (!(t & 0xC000) && rd_foreign(t * 4))
+		{
+			b->reg[t] = a->reg[t];
+			b->set[t] = a->set[t];
+		}
+	}
 }
 
 // Compares b's registers and memories with a's where either changed since its rd_clean(): report(what, index, a, b)

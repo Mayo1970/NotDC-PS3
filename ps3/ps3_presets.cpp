@@ -224,7 +224,7 @@ int g_rtt_scaler_preset    = 0;   // 1 = SCALER_CTL scales a render to texture (
 int g_rtt_size_preset      = 0;   // RTT area: 0 = the FB clip, 1 = the region array's tiles inside TA_GLOB_TILE_CLIP (P76)
 int g_rtt_pack_preset      = 0;   // 1 = Flycast's RTT write: alpha threshold, rounding, clip origin, stride limit, no mode 4-7, alpha-0 clear (P54)
 int g_draw_retry_preset    = 0;   // 1 = an RTT waits for a free buffer; a 2D present that did not draw is tried again (P76)
-int g_fb_line_double_preset = 0;  // 1 = FB_R_CTRL.fb_line_double halves the canvas height (P76)
+int g_fb_line_double_preset = 1;  // 1 = FB_R_CTRL.fb_line_double halves the canvas height (P76)
 int g_blank_video_preset   = 0;   // 1 = a 2D present with VO_CONTROL.blank_video shows VO_BORDER_COL (P76)
 int g_present_rule_preset  = 0;   // 1 = a render flips when FB_R_SOF1/2 holds its FB_W_SOF1, 2 = also no colour clear over a held frame (P60)
 int g_region_scissor_preset = 0;  // 1 = a render draws only inside its region array's tiles and the FB clip (P60)
@@ -253,7 +253,7 @@ int g_tex_bind_table_preset = 1;  // 1 = ps3gl finds a texture's slot by a table
 int g_gl_compare_preset    = 1;   // 1 = ps3gl sends RSX state, sampler words and attribute binds only when they change (P72, HW)
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
 int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames; new names skip ps3gl's pool scans (Garou)
-int g_rsx_direct_preset    = 5;   // G17 RSX Direct: the run draws as raw RSX words, 1 PPU, 2 CHECK, 3-6 on the SPU (ps3_rsxd.h, HW at 5)
+int g_rsx_direct_preset    = 17;  // G17 RSX Direct: the run draws as raw RSX words, 1 PPU, 2 CHECK, 3-6 on the SPU, 7-18 the frame and more of it (ps3_rsxd.h; HW at 17, Matt)
 // OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
 // (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
 int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)

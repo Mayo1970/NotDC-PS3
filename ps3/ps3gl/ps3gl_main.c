@@ -372,12 +372,6 @@ void ps3gl_begin_frame(void)
 {
     if (!ps3gl_ptr) return;
 
-    /* Defensive: a mid-frame longjmp could skip ps3gl_end_frame and its batch flush, and leave a batch pending
-     * across a frame it was never fenced for. */
-    ps3gl.imm.batch_active  = 0;
-    ps3gl.imm.batch_nranges = 0;
-    ps3gl.imm.count         = 0;
-
     /* Swap to the other vring segment and wait for the GPU to finish whatever it held
      * last time around -- same one-frame pipeline slack as before, just fenced per segment instead of the whole ring. */
     ps3gl.vring.cur_seg = (ps3gl.vring.cur_seg + 1) % PS3GL_VRING_SEGMENTS;
@@ -397,6 +391,20 @@ void ps3gl_begin_frame(void)
         }
         ps3gl_frame_fence_wait_time += Platform_DoubleTime() - wait_start;
     }
+
+    ps3gl_begin_frame_state();
+}
+
+/* NotDC G17: ps3gl_begin_frame after its segment swap and fence wait, which RSX Direct + FRAME does itself. */
+void ps3gl_begin_frame_state(void)
+{
+    if (!ps3gl_ptr) return;
+
+    /* Defensive: a mid-frame longjmp could skip ps3gl_end_frame and its batch flush, and leave a batch pending
+     * across a frame it was never fenced for. */
+    ps3gl.imm.batch_active  = 0;
+    ps3gl.imm.batch_nranges = 0;
+    ps3gl.imm.count         = 0;
 
     /* The fence proves the GPU drained the frames that could still sample a texture unbound last frame: the
      * deferred rsxFree() is safe now. The same holds for VBO storage that was retired. */
@@ -448,14 +456,29 @@ void ps3gl_set_screen(uint32_t w, uint32_t h)
 
 void ps3gl_end_frame(void)
 {
-    /* First, before the fence-label write below: a pending GL_POLYGON batch (ps3gl_vertices.c) submits vertex
-     * fetches of its own, which this frame's fence must cover. */
-    ps3gl_flush_polygon_batch();
+    ps3gl_end_frame_stats();
 
     /* Backend label write, after this frame's draws: RSX only writes fence_val to fence_label
      * once it has drained every preceding vertex fetch -- begin_frame seeing this value is what makes the segment safe to reuse. */
     gcmContextData *ctx = ps3gl_get_ctx();
     int seg;
+
+    if (!ctx) return;
+    seg = ps3gl.vring.cur_seg;
+    if (ctx && ps3gl.vring.fence_label[seg]) {
+        ps3gl.vring.fence_val[seg]++;
+        rsxSetWriteBackendLabel(ctx,
+            seg == 0 ? PS3GL_LABEL_VRING_SEG0 : PS3GL_LABEL_VRING_SEG1,
+            ps3gl.vring.fence_val[seg]);
+    }
+}
+
+/* NotDC G17: ps3gl_end_frame up to its fence label write, which RSX Direct + FRAME does itself. */
+void ps3gl_end_frame_stats(void)
+{
+    /* First, before the fence-label write: a pending GL_POLYGON batch (ps3gl_vertices.c) submits vertex
+     * fetches of its own, which this frame's fence must cover. */
+    ps3gl_flush_polygon_batch();
 
     /* Frame-time telemetry: min/max/avg over a fixed window, reported once; a line per frame would disturb the
      * timing it measures. Not through PS3_DIAG, which is a budgeted one-shot channel. */
@@ -902,14 +925,5 @@ void ps3gl_end_frame(void)
                       (unsigned)(ps3gl.vring.peak_head / 1024u),
                       (unsigned)(ps3gl.vring.seg_capacity / 1024u));
         }
-    }
-
-    if (!ctx) return;
-    seg = ps3gl.vring.cur_seg;
-    if (ctx && ps3gl.vring.fence_label[seg]) {
-        ps3gl.vring.fence_val[seg]++;
-        rsxSetWriteBackendLabel(ctx,
-            seg == 0 ? PS3GL_LABEL_VRING_SEG0 : PS3GL_LABEL_VRING_SEG1,
-            ps3gl.vring.fence_val[seg]);
     }
 }

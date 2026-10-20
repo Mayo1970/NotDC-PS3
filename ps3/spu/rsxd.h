@@ -46,8 +46,8 @@ enum { RXF_NONE, RXF_TABLE, RXF_VERTEX, RXF_BASE, RXF_BASE_TA };
 #define RSXD_VP_WORDS     96
 #define RSXD_NONE         0xFFFFu
 
-// ps3_rend.cpp's list types and draw-rule values.
-enum { RXL_OPAQUE = 0, RXL_TRANSLUCENT = 2, RXL_PUNCH = 4 };
+// ps3_rend.cpp's list types and draw-rule values. RXL_BG: or'ed into the list of the background param (its rules).
+enum { RXL_OPAQUE = 0, RXL_TRANSLUCENT = 2, RXL_PUNCH = 4, RXL_BG = 0x80 };
 enum { RXT_NONE, RXT_NODEPTH, RXT_GAME, RXT_OPAQUE };
 enum { RXC_NONE, RXC_INSIDE, RXC_OUTSIDE, RXC_ALL, RXC_BASE };
 
@@ -191,6 +191,7 @@ struct RsxdState
 	uint32_t check;  // 1 = a CHECK run: rsxd_tex_dirty() must not clear what ps3gl clears
 	// Counts the host adds up: draws, vertices, texture sends, cache invalidates, the alpha force (offc, cclamp, tril).
 	uint32_t n_draw, n_vtx, n_tex, n_inval, n_offc, n_cclamp, n_tril;
+	uint32_t inval_due;  // the PPU's texture unit 1 has new texels: the next draw clears the texture cache
 };
 
 // ---- SPU jobs (spe_tex.c, rsxd_job.h): no pointers, EAs as 32 bits, the same layout on the PPU and the SPU ----
