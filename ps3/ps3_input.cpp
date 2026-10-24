@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <io/pad.h>
+#include <io/kb.h>
 
 #define MAX_CONTROLLERS 4
 #define ANALOG_DEADZONE 20
@@ -47,6 +48,22 @@ struct Rumble
 	u8 sent;             // the motor level the pad has now
 };
 static Rumble s_rumble[MAX_CONTROLLERS];
+
+// Row USB Keyboard: the report maple_keyboard sends, with maple_devs.cpp's layout (USB HID boot protocol).
+struct DC_KeyboardReport
+{
+	u8 modifiers;
+	u8 leds;
+	u8 keys[6];
+};
+// One struct: each static costs a TOC entry.
+static struct
+{
+	int init;   // 1 = ioKbInit done, -1 = it failed
+	int kb;     // the PS3 keyboard read, -1 = none
+	u32 logged;
+	DC_KeyboardReport report;
+} s_kb = { 0, -1, 0, {} };
 
 static void rumble_send(u32 port, float power)
 {
@@ -117,6 +134,10 @@ void ps3_input_term()
 		ioPadEnd();
 	}
 	ps3_pad_ok = false;
+	if (s_kb.init > 0)
+		ioKbEnd();
+	s_kb.init = 0;
+	s_kb.kb = -1;
 }
 
 static s8 ClampAnalogValue(s32 value)
@@ -294,8 +315,56 @@ void UpdateFishingRodState(u32 port) {}
 
 extern "C" u16 GetLightGunX(int port) { return 0; }
 extern "C" u16 GetLightGunY(int port) { return 0; }
-// Layout must match maple_devs.cpp; only a null pointer is ever returned here.
-struct DC_KeyboardReport;
-extern "C" const DC_KeyboardReport* GetKeyboardReport(int port) { return 0; }
+// maple_keyboard's GetCondition: the first USB keyboard, raw codes in packet mode (ioQuake3-PS3 ps3_input.c).
+extern "C" const DC_KeyboardReport* GetKeyboardReport(int port)
+{
+	if (!s_kb.init)
+	{
+		const int rc = ioKbInit(MAX_KB_PORT_NUM);
+		s_kb.init = rc == 0 ? 1 : -1;
+		printf("[kb] ioKbInit(%d) -> %d\n", MAX_KB_PORT_NUM, rc);
+	}
+	KbInfo info;
+	if (s_kb.init < 0 || ioKbGetInfo(&info) != 0)
+		return &s_kb.report;
+	int kb = -1;
+	for (int i = 0; i < MAX_KB_PORT_NUM && kb < 0; i++)
+		if (info.status[i])
+			kb = i;
+	if (kb != s_kb.kb)
+	{
+		memset(&s_kb.report, 0, sizeof(s_kb.report));
+		s_kb.kb = kb;
+		if (kb >= 0)
+		{
+			ioKbSetCodeType(kb, KB_CODETYPE_RAW);
+			ioKbSetReadMode(kb, KB_RMODE_PACKET);
+			ioKbClearBuf(kb);
+		}
+		printf("[kb] dc%d keyboard: USB keyboard %d\n", port, kb);
+	}
+	KbData data;
+	// No codes: no new report, so the keys stay down. A report lists every key down; all keys up is one code 0.
+	if (kb < 0 || ioKbRead(kb, &data) != 0 || data.nb_keycode <= 0)
+		return &s_kb.report;
+	DC_KeyboardReport& r = s_kb.report;
+	memset(&r, 0, sizeof(r));
+	// The PS3's modifier bits are the Dreamcast's: bit 0 left Ctrl ... bit 7 right Win.
+	r.modifiers = (u8)data.mkey._KbMkeyU.mkeys;
+	int n = 0;
+	for (int i = 0; i < data.nb_keycode && i < MAX_KEYCODES && n < 6; i++)
+	{
+		const u32 code = data.keycode[i] & ~(u32)(KB_RAWDAT | KB_KEYPAD);
+		if (code && code < 0xE0)
+			r.keys[n++] = (u8)code;
+	}
+	if (s_kb.logged < 32)
+	{
+		s_kb.logged++;
+		printf("[kb] report: %d codes, keys %02X %02X %02X, modifiers %02X\n", (int)data.nb_keycode, r.keys[0], r.keys[1],
+		       r.keys[2], r.modifiers);
+	}
+	return &r;
+}
 
 extern "C" void ExitCombo_HostPoll() {}

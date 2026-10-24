@@ -25,6 +25,8 @@ extern "C" int get_slot_dev_preset(u32 slot);
 void UpdateVibration(u32 port, float power, float inclination, u32 duration_ms);
 // G15, ps3/ps3_input.cpp: the ports that have a PS3 pad, bit N = port N, below cap.
 u32 ps3_pad_ports(u32 cap);
+// The USB Keyboard row (ps3_presets.cpp): 0 = none, 1-3 = the Dreamcast keyboard in port B-D.
+extern "C" int get_usb_kb_port();
 // ps3/ps3_vmulcd.cpp: row "VMU Screen" (plan section 7, bundle 16).
 void ps3_vmulcd_push(u32 bus, u32 port, const u8* img);
 void ps3_vmulcd_reset(void);
@@ -150,6 +152,13 @@ extern "C" int get_player_count();
 // One player: port 5 = controller, ports 0 and 1 = slots 1 and 2 (standard pad and full controller only).
 static void mcfg_PlugBus(u32 bus)
 {
+	// The Dreamcast keyboard has no expansion slots.
+	const u32 kb = (u32)get_usb_kb_port();
+	if (kb && bus == kb)
+	{
+		mcfg_Create(MDT_Keyboard, bus, 5);
+		return;
+	}
 	MapleDeviceType ctrlType = mcfg_GetControllerDeviceType();
 	bool isStandard = (ctrlType == MDT_SegaController || ctrlType == MDT_FullController);
 	mcfg_Create(ctrlType, bus, 5);
@@ -164,6 +173,16 @@ static void mcfg_PlugBus(u32 bus)
 		if (dev == 1 || dev == 2)
 			mcfg_Create(dev == 1 ? MDT_SegaVMU : MDT_PuruPuru, bus, slot);
 	}
+}
+
+// G15: the ports with a PS3 pad, at most Players of them, and only before the keyboard's port; then the keyboard.
+static u32 mcfg_Ports()
+{
+	const u32 kb = (u32)get_usb_kb_port();
+	u32 cap = (u32)get_player_count();
+	if (kb && cap > kb)
+		cap = kb;
+	return ps3_pad_ports(cap) | (kb ? 1u << kb : 0);
 }
 
 static void mcfg_UnplugBus(u32 bus)
@@ -184,8 +203,8 @@ void mcfg_CreateDevices()
 	// One-time hardware / data-format initialisation
 	mcfg_InitSpecialDevice();
 
-	// G15: only the ports that have a PS3 pad, at most Players of them; mcfg_HotPlug() follows the pads after this.
-	const u32 ports = ps3_pad_ports((u32)get_player_count());
+	// G15: only the ports that have a device; mcfg_HotPlug() follows the pads after this.
+	const u32 ports = mcfg_Ports();
 	for (u32 bus = 0; bus < 4; bus++)
 		if ((ports >> bus) & 1)
 			mcfg_PlugBus(bus);
@@ -194,7 +213,7 @@ void mcfg_CreateDevices()
 // G15: at each maple DMA a port is plugged while its PS3 pad is there; the game sees it come and go.
 void mcfg_HotPlug()
 {
-	const u32 ports = ps3_pad_ports((u32)get_player_count());
+	const u32 ports = mcfg_Ports();
 	for (u32 bus = 0; bus < 4; bus++)
 	{
 		const bool want = (ports >> bus) & 1;

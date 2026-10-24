@@ -215,9 +215,10 @@ int g_jit_pair_calls_preset = 1;  // 1 = a 64-bit access to device memory passes
 int g_stick_deadzone_preset = 0;  // 1 = a radial stick dead zone of 10% with a rescale, magnitude capped at 128, as Flycast (P84)
 int g_stick_swap_preset    = 0;   // 1 = SWAP: the left stick drives the DC d-pad, the d-pad the DC stick
 // G15: what each controller's slot holds, A1 A2 B1 ... D2: 0 = nothing, 1 = a VMU, 2 = the Puru Puru pack (P13).
-// Matt 2026-10-18: slot 1 a VMU, slot 2 nothing by default.
-int g_slot_dev_preset[8]   = { 1, 0, 1, 0, 1, 0, 1, 0 };
+// 2026-10-24: slot 1 a VMU, slot 2 the Puru Puru pack by default.
+int g_slot_dev_preset[8]   = { 1, 2, 1, 2, 1, 2, 1, 2 };
 int g_vmu_page_preset      = 1;   // G15: the VMU page, 1-4; page 2 and up is one more card per slot (vmu_save_A1_p2.bin)
+int g_usb_kb_preset        = 0;   // 1-3 = a USB keyboard is the Dreamcast keyboard in port B-D (PSO); 0 = none
 // The DC control each DS3 button drives (PADMAP_* by PADBTN_*); the defaults are the fixed map of before (G10).
 int g_pad_map[PADBTN_COUNT] = PADMAP_DEFAULTS;
 // OPTIMIZATION_PLAN section 7, bundle 11 (render to texture and present): 0 is the old path in every one.
@@ -244,7 +245,7 @@ int g_screen_format_preset = 0;   // 0 = 4:3 with side bars, 1 = the 4:3 picture
 int g_screen_scaler_preset = 1;   // 1 = the canvas follows the scaler's vertical factor and VO_CONTROL's pixel-double bit (P10)
 int g_cheats_preset        = 0;   // 1 = the disc's cheats/<name>.cht is read at boot and applied at each vblank (P36)
 int g_native_size_preset   = 1;   // 1 = the scene draws at the game's size, then whole-pixel scaling to the picture (P104)
-int g_integer_scale_preset = 0;   // 1 = the game's pixels at whole factors only, nearest, black bars around
+int g_integer_scale_preset = 1;   // 1 = the game's pixels at whole factors only, nearest, black bars around (Matt: ON)
 int g_output_1080_preset   = 1;   // 1 = 1920x1080 when the TV has it, from the next start; default ON (Matt, HW 2026-10-20)
 // OPTIMIZATION_PLAN section 7, bundle 13 (MMU and memory): 0 is the old path in every one; a row is off until it is
 // cleared on hardware. MMUCR Bits is FIXED since 2026-10-12 (Matt): Border Down, Sonic Shuffle, Ikaruga and Rez boot.
@@ -294,7 +295,7 @@ int g_mmu_pref_preset      = 1;   // 1 = an MMU block's pref calls the store que
 int g_mmu_asidjtc_preset   = 0;   // 1 = with MMU Model FAST, the JTC of each recent ASID is kept for its next switch
 // GOALS.md G11 (online play): 0 is the old path. Default DCNET since 2026-10-18 (Matt), after the HW success.
 int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; a flash with no dial-up account gets Flycast's
-// First release (Matt 2026-10-18): 0 shows only the main option rows, 1 every row.
+// First release: 0 shows only the main option rows, 1 every row.
 int g_advanced_preset      = 0;
 int g_game_cfg_preset      = 0;   // 1 = the options set after a game is picked go to config/<image>.cfg, not NotDC.cfg
 
@@ -506,6 +507,7 @@ static const CfgItem s_items[] = {
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
 	{ "StickDpadSwap", &g_stick_swap_preset },
+	{ "UsbKeyboard",   &g_usb_kb_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -795,6 +797,7 @@ static const CfgItem s_pad_items[] = {
 	{ "Controller",    &g_controller_type },
 	{ "StickDeadZone", &g_stick_deadzone_preset },
 	{ "StickDpadSwap", &g_stick_swap_preset },
+	{ "UsbKeyboard",   &g_usb_kb_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -1066,7 +1069,8 @@ int get_player_count()         { return g_player_count; }
 // G15: maple_cfg.cpp and maple_devs.cpp read these at each device they make.
 int get_slot_dev_preset(u32 slot) { return slot < 8 ? g_slot_dev_preset[slot] : 0; }
 int get_vmu_page_preset()      { return g_vmu_page_preset; }
-int get_debug_loop()           { return g_debug_loop; }
+int get_usb_kb_port()          { return g_usb_kb_preset >= 1 && g_usb_kb_preset <= 3 ? g_usb_kb_preset : 0; }
+int get_debug_loop()          { return g_debug_loop; }
 int get_debug_gdrom()          { return g_debug_gdrom; }
 
 // 0 = SH4 interpreter, 1 = dynarec. nullDC.cfg [ps3] Dynarec.

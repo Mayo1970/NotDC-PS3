@@ -357,6 +357,8 @@ static const char* k_deadzone[]  = { "AXIS", "RADIAL", NULL };
 static const char* k_stickswap[] = { "NORMAL", "SWAP", NULL };
 // G15: the values maple_cfg.cpp reads (0 nothing, 1 VMU, 2 Puru Puru pack).
 static const char* k_slotdev[]   = { "NONE", "VMU", "RUMBLE", NULL };
+// The value is the Dreamcast port's number (maple_cfg.cpp); port A always has a pad.
+static const char* k_usbkb[]     = { "OFF", "PORT B", "PORT C", "PORT D", NULL };
 // PADMAP_* order (ps3_padmap.h).
 static const char* k_padmap[]    = { "NONE", "A", "B", "X", "Y", "START", "D-PAD UP", "D-PAD DOWN", "D-PAD LEFT",
                                      "D-PAD RIGHT", "L TRIGGER", "R TRIGGER", NULL };
@@ -394,7 +396,7 @@ struct Option
 	const char*  fmt;   // OPT_RANGE
 	const char*  help;
 	int          port1; // G15 CONTROLS: a slot row of port port1 - 1, shown while Players reaches it; 0 = always
-	int          basic; // option pages: 1 = shown while Advanced Mode is OFF (first release, Matt 2026-10-18)
+	int          basic; // option pages: 1 = shown while Advanced Mode is OFF
 };
 
 static Option s_emu[] = {
@@ -934,6 +936,8 @@ static Option s_controls[] = {
 	  "RADIAL: a round 10% dead zone, smooth from 0, corners capped at full travel (P84)." },
 	{ "Stick / D-pad",   &g_stick_swap_preset,    OPT_CHOICE, k_stickswap, 0, 0,0,0, NULL,
 	  "SWAP: the left stick is the Dreamcast d-pad, and the d-pad is the Dreamcast analog stick." },
+	{ "USB Keyboard",    &g_usb_kb_preset,        OPT_CHOICE, k_usbkb,     0, 0,0,0, NULL,
+	  "A USB keyboard is the Dreamcast keyboard in this port. Pads use the ports before it. Set before boot." },
 	{ "Port A Slot 1",   &g_slot_dev_preset[0],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port A Slot 2",   &g_slot_dev_preset[1],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port B Slot 1",   &g_slot_dev_preset[2],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 2 },

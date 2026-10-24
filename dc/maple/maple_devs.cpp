@@ -818,7 +818,7 @@ struct DC_KeyboardReport
 	u8 keys[6];
 };
 
-// Keyboard key codes; ps3/ps3_input.cpp stubs it (null).
+// The USB keyboard's keys (ps3/ps3_input.cpp, row USB Keyboard); null = no report.
 extern "C" const DC_KeyboardReport* GetKeyboardReport(int port);
 
 // Light Gun: function MFID_7_LightGun only (adding MFID_0_Input confuses the BIOS).
@@ -971,8 +971,11 @@ struct maple_keyboard : maple_base
 		case MDC_DeviceRequest:
 			w32(MFID_6_Keyboard);
 
-			// Keyboard capability word (matches real DC keyboard)
-			w32(0x00000002);  // 2-byte LED + 6-byte key array
+			// Flycast's: US layout, 104 keys, keyboard-controlled LEDs; 43 mA standby, 50.1 mA at most.
+			w8(2);
+			w8(5);
+			w8(0);
+			w8(0x80);
 			w32(0);
 			w32(0);
 
@@ -982,8 +985,8 @@ struct maple_keyboard : maple_base
 			wstr(maple_sega_keyboard_name_local, 30);
 			wstr(maple_sega_brand, 60);
 
-			w16(0x0110);
-			w16(0x0200);
+			w16(0x01AE);
+			w16(0x01F5);
 
 			return MDRS_DeviceStatus;
 
