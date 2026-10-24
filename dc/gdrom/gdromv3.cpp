@@ -47,6 +47,8 @@ int get_gd_cmd_fix_preset();    // P22: ATA and SPI command hangs
 int get_gd_set_mode_preset();   // P48
 int get_disc_swap_preset();     // P34
 int get_holly_regs_preset();    // bundle 20, P68: the ATA soft reset's register values
+int get_gd_pio_ring_preset();   // P114: 1 = PIO reads from the GD worker's data ring
+int get_swap_rules_preset();    // P77: 1 = a swap keeps the drive state, 2 = also a lid-open phase first
 }
 
 enum gd_states
@@ -205,6 +207,14 @@ static void gd_read(int who,u8* buff,u32 fad,u32 count,u32 secsz)
 	gda_count(who,count,gettime()-t0);
 }
 
+// P114 PIO Read Ahead: from the GD worker's data ring; row OFF or no worker, the read as before. Not inlined: one
+// pio_buff address in the TOC.
+static void __attribute__((noinline,noclone)) gd_read_pio(u8* buff,u32 fad,u32 count,u32 secsz)
+{
+	if (!get_gd_pio_ring_preset() || !gda_pio(buff,fad,count,secsz))
+		gd_read(GDR_PIO,buff,fad,count,secsz);
+}
+
 static void cdda_set(u32 st)
 {
 	cdda.status=st;
@@ -234,6 +244,10 @@ static u32 gd_head_fad=0xFFFFFFFF;
 static int sns_key,sns_asc,sns_ascq;
 static bool gd_swapped;
 static s64 gd_swap_cycles;
+// P77 + LID OPEN: SH4 cycles until the lid closes, and the status reads while it is open. 2 s: games poll the drive
+// once a frame, and a real swap takes longer than the busy second.
+static struct { s64 cycles; u32 reads; } gd_lid;
+#define GD_LID_OPEN_MS 2000
 
 // CD-DA Miss + SILENCE: pulls in a row that the ring did not have; past the limit the SH4 thread reads again.
 #define CDDA_HOLD_MAX 150
@@ -396,8 +410,7 @@ void gd_set_state(gd_states state)
 				}
 				else if (get_gd_status_preset()>=2)
 					cdda_transition(GD_PAUSE,67,GD_PLAY);   // P21: PLAY for 67 ms after a data read
-				gd_read(GDR_PIO,(u8*)&pio_buff.data[0],read_params.start_sector,sector_count,
-											read_params.sector_type);
+				gd_read_pio((u8*)&pio_buff.data[0],read_params.start_sector,sector_count,read_params.sector_type);
 				read_params.start_sector+=sector_count;
 				read_params.remaining_sectors-=sector_count;
 
@@ -490,6 +503,12 @@ void gd_setdisc()
 	// P34: the busy second of a disc swap is not over.
 	if (gd_swap_cycles>0)
 		SecNumber.Status = GD_BUSY;
+	// P77 + LID OPEN (Flycast gd_setdisc): GD_OPEN and no disc format while the lid is open.
+	if (gd_lid.cycles>0)
+	{
+		SecNumber.Status = GD_OPEN;
+		gd_disk_type = Open;
+	}
 
 	SecNumber.DiscFormat=gd_disk_type>>4;
 }
@@ -882,6 +901,8 @@ void gd_process_spi_cmd()
 
 			//0	0	0	0	0	STATUS
 			stat[0]=SecNumber.Status;	//low nibble
+			if (gd_lid.cycles>0)
+				gd_lid.reads++;
 			//1	Disc Format	Repeat Count
 			stat[1]=(u8)(SecNumber.DiscFormat<<4) | (cdda.repeats);
 			//2	Address	Control
@@ -1316,6 +1337,8 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 
 	case GD_SECTNUM:
 		printf_rm("GDROM: Read from SecNumber Register (v=%X)\n", SecNumber.full);
+		if (gd_lid.cycles>0)
+			gd_lid.reads++;   // P77: the game looks at the drive while the lid is open
 		return SecNumber.full;
 
 	default:
@@ -1645,6 +1668,16 @@ void gdrom_reg_Reset(bool Manual)
 		SecNumber.Status = GD_BUSY;
 }
 
+// P34 (Flycast insertDisk): the lid closed; the drive is BUSY with sense 2/04/01 for 1 s.
+static void gd_swap_busy()
+{
+	sns_key=2;
+	sns_asc=4;
+	sns_ascq=1;
+	gd_swap_cycles=(s64)SH4_CLOCK_EFF;
+	SecNumber.Status=GD_BUSY;
+}
+
 // Every SlowUpdate: the spin-up, and the emulated-time waits of P21 step 2, GD-ROM Speed REAL and Timing, and P34.
 void gdrom_spinup_tick(u32 cycles)
 {
@@ -1674,8 +1707,12 @@ void gdrom_spinup_tick(u32 cycles)
 		sns_asc=libGDR_GetDiscType()==NoDisk ? 0x29 : 0x28;
 		sns_ascq=0;
 		gd_setdisc();
-		printf("[swap] drive ready: status %u, disc format %u\n",(u32)SecNumber.Status,(u32)SecNumber.DiscFormat);
+		printf("[swap] drive ready: status %u, disc format %u; %u status reads with the lid open\n",
+		       (u32)SecNumber.Status,(u32)SecNumber.DiscFormat,gd_lid.reads);
 	}
+	// P77 + LID OPEN (Flycast insertDisk): the lid closes, then the busy second; after the block above, so it is whole.
+	if (gd_lid.cycles>0 && (gd_lid.cycles-=cycles)<=0)
+		gd_swap_busy();
 
 	if (gd_spinup_cycles <= 0)
 		return;
@@ -1684,17 +1721,25 @@ void gdrom_spinup_tick(u32 cycles)
 		SecNumber.Status = GD_NODISC;
 }
 
-// P34 (Flycast insertDisk): the next image opens, then the drive is BUSY with sense 2/04/01 for 1 s.
-bool gdrom_disc_swap(const char* path)
+// Disc Swap Rules OLD (fourth review, Reicast c050ee8f): the old disc's command and buffers do not survive the change.
+static void gd_swap_clear()
 {
-	const bool ok=libGDR_SwapDisc(path);
-	// Fourth review (Reicast c050ee8f): the old disc's command, buffers and CD-DA do not survive the change.
 	memset(&read_params,0,sizeof(read_params));
 	memset(&packet_cmd,0,sizeof(packet_cmd));
 	set_mode_offset=0;
 	read_buff.cache_index=read_buff.cache_size=0;
 	pio_buff.index=pio_buff.size=0;
 	ata_cmd.command=0;
+}
+
+// P34 (Flycast insertDisk): the next image opens, then the drive is BUSY with sense 2/04/01 for 1 s.
+bool gdrom_disc_swap(const char* path)
+{
+	const int rules=get_swap_rules_preset();
+	const bool ok=libGDR_SwapDisc(path);
+	// P77 Disc Swap Rules KEEP STATE (Flycast cbd01fba3): the command in flight and its buffers survive the swap.
+	if (!rules)
+		gd_swap_clear();
 	memset(&cdda,0,sizeof(cdda));
 	cdda_held=0;
 	gd_trans_next=-1;
@@ -1703,11 +1748,20 @@ bool gdrom_disc_swap(const char* path)
 	gd_head_fad=0xFFFFFFFF;
 
 	gd_swapped=true;
-	sns_key=2;
-	sns_asc=4;
-	sns_ascq=1;
-	gd_swap_cycles=(s64)SH4_CLOCK_EFF;
-	SecNumber.Status=GD_BUSY;
-	printf("[swap] %s: %s\n",path,ok ? "open, drive busy for 1 s" : "no reader took it, no disc");
+	// + LID OPEN (Flycast openLid): GD_OPEN first, sense as it was; gdrom_spinup_tick closes the lid.
+	gd_lid.cycles=rules>=2 ? (s64)(SH4_CLOCK_EFF/1000)*GD_LID_OPEN_MS : 0;
+	gd_lid.reads=0;
+	if (gd_lid.cycles)
+	{
+		gd_swap_cycles=0;
+		SecNumber.Status=GD_OPEN;
+		gd_disk_type=Open;
+		SecNumber.DiscFormat=0;
+		GDStatus.DRDY=1;
+	}
+	else
+		gd_swap_busy();
+	printf("[swap] %s: %s; rules %d, lid open %d ms, then busy 1 s\n",path,
+	       ok ? "image open" : "no reader took it, no disc",rules,rules>=2 ? GD_LID_OPEN_MS : 0);
 	return ok;
 }

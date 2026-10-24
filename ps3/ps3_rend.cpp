@@ -43,6 +43,9 @@ extern "C" int get_render_thread_preset();
 extern "C" int get_ta_fast_preset();
 extern "C" int get_drop_policy_preset();
 extern "C" int get_depth_float_preset();
+extern "C" int get_bg_bias_preset();
+extern "C" int get_dst_select_preset();
+extern "C" int get_list_init_keep_preset();
 extern s32 render_isp_pending_cycles;
 extern s32 render_tsp_pending_cycles;
 extern s32 render_vd_pending_cycles;
@@ -135,6 +138,8 @@ struct TaContext
 	u32 rend_nvtx;
 	// P95: a STARTRENDER took this list (a drop too), so TA Context Split may give the slot to another buffer.
 	bool posted;
+	// P123 List Init Keep: a list init left the stream as the render's; the next TA write or list cont resets it.
+	bool keep;
 };
 #define TA_CONTEXTS 4
 
@@ -326,6 +331,8 @@ static float s_stat_w_lo = 1e30f, s_stat_w_hi = 0.0f, s_stat_near_lo = 1e30f;
 // drawn beyond it cannot separate itself from the background plane.
 static u32 s_stat_wclamp, s_stat_wtotal;
 static float s_stat_bg_inv_w; static u32 s_stat_bg_zw;
+// [rend4] bgrel= keep=: renders with P116's relative background bias; renders of a stream P123 kept, its kept inits.
+static struct { u32 bg_rel, kept, inits; } s_stat_fix;
 
 static void reset_lists(TaContext* c)
 {
@@ -367,6 +374,7 @@ static void reset_raw(TaContext* c)
 	c->raw_overflow = false;
 	c->spe_pub = 0;
 	c->posted = false;
+	c->keep = false;
 	// The SPU decoder takes the same options with the RESET, so both decoders give one set of lists.
 	c->opt = ta_opts_now();
 	if (g_spe_on)
@@ -1000,7 +1008,7 @@ static bool s_ta_fast;
 // STARTRENDER of the TA's context. With the row ON the TA records of that time are dropped.
 static bool s_ta_nolist = true;
 static bool s_ta_closed;
-// TA Fast Store with the gate open: the flat SQ path's test, so a closed gate costs it nothing.
+// TA Fast Store with the gate open and no reset due (P123): the flat SQ path's test, so neither costs it anything.
 static bool s_flat_ok;
 static u32 s_stat_gate;
 
@@ -1008,7 +1016,7 @@ static void ta_gate_set(bool nolist)
 {
 	s_ta_nolist = nolist;
 	s_ta_closed = nolist && g_ta_data_gate_preset != 0;
-	s_flat_ok = s_ta_fast && !s_ta_closed;
+	s_flat_ok = s_ta_fast && !s_ta_closed && !s_ta->keep;
 }
 
 static inline u32 fsm_key(u32 para, u32 objc)
@@ -1189,6 +1197,18 @@ static bool rth_busy()
 	sysMutexUnlock(s_rmx);
 	return busy;
 }
+
+// P123: the reset a kept list init left to the first TA write or list cont, as ListInit makes it with the row OFF.
+static void ta_keep_reset()
+{
+	s_ta->keep = false;
+	if (g_ta_ctx_split_preset != 0 && rth_holds(s_ta))
+		ctx_move();
+	rth_wait_decode(s_ta);
+	reset_raw(s_ta);
+	// ta_gate_set's flat path test, now that no reset is due.
+	s_flat_ok = s_ta_fast && !s_ta_closed;
+}
 // rttq_check: end waits
 
 // Replays [from, to) of the stored stream. Joining SQ and DMA blocks is safe: a 64-byte record split
@@ -1241,6 +1261,8 @@ static inline void store_sq(u32* data)
 		s_stat_gate++;
 		return;
 	}
+	if (s_ta->keep)
+		ta_keep_reset();
 	if (probe)
 		g_ta_split.t_store = ta_stamp();
 	const u32 pcw = data[0];
@@ -1548,6 +1570,8 @@ void ps3ta_store_dma(u32* data, u32 size)
 		s_stat_gate += size;
 		return;
 	}
+	if (s_ta->keep)
+		ta_keep_reset();
 	TaContext* c = s_ta;
 	u32 bytes = size * 32;
 	Ta_Dma* p = (Ta_Dma*)data;
@@ -2003,6 +2027,8 @@ struct DrawOpts
 	bool offs;         // 3b: a textured polygon with the Offset bit adds its offset colour
 	bool clamp;        // 3b: a polygon with ColorClamp clamps its colour to FOG_CLAMP_MIN..MAX before the fog
 	bool tril;         // P25: a trilinear pass scales its colour by its weight
+	bool bg_rel;       // P116 BG Depth Bias RELATIVE: with FLOAT depth the background's bias keeps 2 depth steps
+	bool dst_hide;     // P117 DstSelect Polys HIDE: a polygon for the second accumulator draws nothing
 	// G17 RSX Direct: the scene's rules reached the emitter; a section is open.
 	bool rsxd_scene, rsxd;
 };
@@ -3292,6 +3318,8 @@ static void rsxd_scene_begin()
 	in.flags = (s_zfloat ? RSXD_S_ZFLOAT : 0) | (s_mo_sprite ? RSXD_S_SPRCULL : 0) | (s_do.pt_depth ? RSXD_S_PT_DEPTH : 0) |
 	           (s_do.tr_nodepth ? RSXD_S_TR_NODEPTH : 0) | (s_do.offs ? RSXD_S_OFFS : 0) | (s_do.tril ? RSXD_S_TRIL : 0) |
 	           (s_clamp_on ? RSXD_S_CLAMP : 0) | (s_bump_on ? RSXD_S_BUMP : 0) | (s_rl.offs ? RSXD_S_LISTS_OFFS : 0);
+	if (s_do.dst_hide)
+		in.flags |= RSXD_S_DSTSEL;
 	in.pt_blend = s_do.pt_blend;
 	in.flat = s_do.flat;
 	in.clip = s_do.clip;
@@ -3341,6 +3369,15 @@ static void draw_scene(float cx0, float cy0, float cw, float ch)
 	memcpy(&bg_inv_w, &bgd_bits, 4);
 	// Flycast 443d5a2ba: push the plane 1e-6 back so geometry at its depth wins (Xtreme Sports skybox).
 	bg_inv_w = std::max(bg_inv_w - 1e-6f, 1e-11f);
+	// P116: FLOAT depth loses a 1e-6 step above 1/W 0.07, and a 1/W = 1 FMV quad ties the background (Starlancer).
+	if (s_do.bg_rel && s_zfloat)
+	{
+		float b;
+		memcpy(&b, &bgd_bits, 4);
+		const float rel = depth_bg_rel(b);
+		s_stat_fix.bg_rel += rel != bg_inv_w;
+		bg_inv_w = rel;
+	}
 	float bg_w = 1.0f / ((bg_inv_w >= INV_W_FLOOR) ? bg_inv_w : INV_W_FLOOR);
 
 	// reicast glesrend.cpp pins the far plane at 1/W = 0, so only the nearest
@@ -4414,10 +4451,13 @@ static void rth_print_stats()
 	s_stat_bump_strips = s_stat_bump_ppu = 0;
 	// Bundle 4: TA_LIST_CONT writes, renders by passes or with the TR volume list, PPU replays, gate drops, bad records;
 	// 3k: sorted triangles per render; P105: FPU_SHAD_SCALE (bit 8: intensity volumes) and HALF_OFFSET.
-	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u shad=%03X half=%X\n",
+	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u shad=%03X half=%X"
+	       " bgrel=%u keep=%u/%u\n",
 	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
-	       s_stat_tris / r, g_rr.fpu_shad_scale & 0x1FF, (u32)HALF_OFFSET & 7);
+	       s_stat_tris / r, g_rr.fpu_shad_scale & 0x1FF, (u32)HALF_OFFSET & 7, s_stat_fix.bg_rel, s_stat_fix.kept,
+	       s_stat_fix.inits);
 	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
+	s_stat_fix.bg_rel = s_stat_fix.kept = s_stat_fix.inits = 0;
 	// Bundle 14: the rows; + OPAQUE DEPTH's first-pass runs per render and those that write no depth; the last
 	// render's state changes per list, by the merge key > by the bits the draw reads (P73's counter).
 	printf("[cost] first_pass=%d | fp_runs=%u nodepth=%u | key op=%u>%u pt=%u>%u tr=%u>%u\n",
@@ -4725,6 +4765,8 @@ static void rth_job_decode(TaContext* c, u32 raw_end, u32 cont_end, u32 fence)
 	s_do.passes = (u8)g_list_passes_preset;
 	s_do.tri_sort = (u8)g_tr_tri_sort_preset;
 	s_do.first_pass = (u8)g_tr_first_pass_preset;
+	s_do.bg_rel = get_bg_bias_preset() != 0;
+	s_do.dst_hide = get_dst_select_preset() != 0;
 	s_mo_sprite = g_sprite_cull_preset != 0;
 	// S3 skips the replay; a late or wrong fence replays from raw_decoded, which S3 never moves.
 	bool spe = fence && g_spe_draw && lists_from_spe(c, fence, raw_end, cont_end);
@@ -5282,6 +5324,7 @@ void StartRender()
 	// P66 TA Data Gate: the TA's own context goes to the core, so no list init is current from here.
 	if (rc == s_ta)
 		ta_gate_set(true);
+	s_stat_fix.kept += rc->keep && rc->raw_used != 0;
 
 	// Render-done IRQ timing; games pace off these IRQs. This is the previous
 	// job's count (TR3 replays later), close enough for a clamped delay.
@@ -5367,6 +5410,8 @@ void EndRender() {}
 void ListCont()
 {
 	set_ta_context(TA_ISP_BASE);
+	if (s_ta->keep)
+		ta_keep_reset();
 	ta_gate_set(false);
 	s_stat_cont++;
 	spe_flush(s_ta);
@@ -5391,9 +5436,23 @@ void ListCont()
 }
 
 // rttq_check: begin listinit
+// P123 List Init Keep FLYCAST (b55fbef3a, Speed Devils): a STARTRENDER before the next TA write draws the old stream.
+static void ta_keep_init()
+{
+	s_ta->keep = true;
+	s_stat_fix.inits++;
+	ta_gate_set(false);
+	if (s_ta_fast)
+		ta_store_reset();
+	else
+		TaStore.ListInit();
+}
+
 void ListInit()
 {
 	set_ta_context(TA_ISP_BASE);
+	if (get_list_init_keep_preset())
+		return ta_keep_init();
 	ta_gate_set(false);
 	// P95 TA Context Split: a job still holds this context, so the new list takes a free one.
 	if (g_ta_ctx_split_preset && rth_holds(s_ta))

@@ -44,6 +44,87 @@ static u32 phase;
 
 static volatile u32 st_in, st_blocks, st_silent, st_dropped, st_late;
 
+extern "C" int get_audio_starve_preset();
+
+// P119 (row Audio Starve): a gap fades over FADE_FRAMES at both ends; FADE + WAIT adds WAIT_BLOCKS of silence to each
+// gap; FADE + STRETCH spreads a short queue (STRETCH_MIN frames or more) over the block that would be silent.
+// starve_check: begin
+#define FADE_FRAMES 128
+#define WAIT_BLOCKS 4
+#define STRETCH_MIN 64
+static struct
+{
+	f32 l, r;          // the last frame played
+	bool quiet;        // the last block ended in silence
+	u32 wait;          // HYSTERESIS: silent blocks left in this gap
+	u32 gaps, stretched, l_gaps, l_stretched;
+} s_st;
+
+// One block by the row's rule; false = blocks are still queued, wait for the next notify.
+static bool starve_block(f32* out, int mode, u32 ahead)
+{
+	const u32 rd = ring_rd;
+	const u32 have = ring_wr - rd;
+	if (!s_st.wait && (have >= BLOCK || (mode == 3 && ahead == 0 && have >= STRETCH_MIN)))
+	{
+		const u32 n = have >= BLOCK ? BLOCK : have;
+		__sync_synchronize();
+		for (u32 i = 0; i < BLOCK; i++)
+		{
+			if (n == BLOCK)
+			{
+				const u32 s = ((rd + i) & (RING_FRAMES - 1)) * CHANNELS;
+				out[i * 2 + 0] = ring[s + 0];
+				out[i * 2 + 1] = ring[s + 1];
+				continue;
+			}
+			const f32 pos = (f32)(i * (n - 1)) / (BLOCK - 1);
+			const u32 k = (u32)pos;
+			const u32 k1 = k + 1 < n ? k + 1 : k;
+			const f32 t = pos - (f32)k;
+			const u32 s0 = ((rd + k) & (RING_FRAMES - 1)) * CHANNELS, s1 = ((rd + k1) & (RING_FRAMES - 1)) * CHANNELS;
+			out[i * 2 + 0] = ring[s0 + 0] + (ring[s1 + 0] - ring[s0 + 0]) * t;
+			out[i * 2 + 1] = ring[s0 + 1] + (ring[s1 + 1] - ring[s0 + 1]) * t;
+		}
+		__sync_synchronize();
+		ring_rd = rd + n;
+		st_blocks++;
+		if (n != BLOCK)
+			s_st.stretched++;
+		if (s_st.quiet)
+			for (u32 i = 0; i < FADE_FRAMES; i++)
+			{
+				const f32 g = (f32)(i + 1) / FADE_FRAMES;
+				out[i * 2 + 0] *= g;
+				out[i * 2 + 1] *= g;
+			}
+		s_st.quiet = false;
+		s_st.l = out[(BLOCK - 1) * 2 + 0];
+		s_st.r = out[(BLOCK - 1) * 2 + 1];
+		return true;
+	}
+	if (ahead != 0)
+		return false;
+	// Starved: the last frame ramps to zero, so the gap starts with no step.
+	for (u32 i = 0; i < BLOCK; i++)
+	{
+		const f32 g = !s_st.quiet && i < FADE_FRAMES ? (f32)(FADE_FRAMES - 1 - i) / FADE_FRAMES : 0.0f;
+		out[i * 2 + 0] = s_st.l * g;
+		out[i * 2 + 1] = s_st.r * g;
+	}
+	if (!s_st.quiet)
+	{
+		s_st.gaps++;
+		s_st.wait = mode == 2 ? WAIT_BLOCKS : 0;
+	}
+	else if (s_st.wait)
+		s_st.wait--;
+	s_st.quiet = true;
+	st_silent++;
+	return true;
+}
+// starve_check: end
+
 static void feeder_thread(void* arg)
 {
 	volatile u64* read_index = (volatile u64*)(uintptr_t)port_cfg.readIndex;
@@ -71,11 +152,17 @@ static void feeder_thread(void* arg)
 			st_late++;
 		}
 
+		const int starve = get_audio_starve_preset();
 		while (ahead < LEAD_BLOCKS)
 		{
 			// Whole blocks only: a partial block would add a gap inside every block when starved.
 			u32 rd = ring_rd;
-			if (ring_wr - rd >= BLOCK)
+			if (starve)
+			{
+				if (!starve_block(staging, starve, ahead))
+					break;
+			}
+			else if (ring_wr - rd >= BLOCK)
 			{
 				__sync_synchronize();
 				for (u32 i = 0; i < BLOCK; i++)
@@ -87,12 +174,15 @@ static void feeder_thread(void* arg)
 				__sync_synchronize();
 				ring_rd = rd + BLOCK;
 				st_blocks++;
+				s_st.quiet = false;
 			}
 			else if (ahead == 0)
 			{
 				// Starved with nothing queued: silence beats replaying a stale slot.
 				memset(staging, 0, sizeof(staging));
 				st_silent++;
+				s_st.gaps += !s_st.quiet;
+				s_st.quiet = true;
 			}
 			else
 				break;
@@ -303,10 +393,11 @@ void ps3_audio_stats()
 		return;
 	static u32 l_in, l_out, l_blocks, l_silent, l_dropped, l_late;
 	u32 in = st_in, out = ring_wr, blocks = st_blocks, silent = st_silent, dropped = st_dropped;
-	u32 late = st_late;
-	printf("[aud] in=%u/s out=%u/s blocks=%u silent=%u dropped=%u late=%u fill=%u\n",
+	u32 late = st_late, gaps = s_st.gaps, stretched = s_st.stretched;
+	// P119: gaps = silent runs; stretched = blocks Audio Starve STRETCH filled from a short queue.
+	printf("[aud] in=%u/s out=%u/s blocks=%u silent=%u dropped=%u late=%u fill=%u gaps=%u stretched=%u\n",
 	       in - l_in, out - l_out, blocks - l_blocks, silent - l_silent,
-	       dropped - l_dropped, late - l_late, ring_wr - ring_rd);
+	       dropped - l_dropped, late - l_late, ring_wr - ring_rd, gaps - s_st.l_gaps, stretched - s_st.l_stretched);
 	l_in = in; l_out = out; l_blocks = blocks; l_silent = silent; l_dropped = dropped;
-	l_late = late;
+	l_late = late; s_st.l_gaps = gaps; s_st.l_stretched = stretched;
 }

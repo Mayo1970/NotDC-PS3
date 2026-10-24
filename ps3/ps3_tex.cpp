@@ -22,6 +22,7 @@ extern "C" int get_mipmap_preset();
 extern "C" int get_aniso_preset();
 extern "C" int get_tex_filter_preset();
 extern "C" int get_vq_formats_preset();
+extern "C" int get_pt_aniso_preset();
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -70,6 +71,8 @@ static int s_bump = -1;
 // the cache. Anisotropic (index of k_aniso) and Texture Filter (P52) are sampler state only.
 static int s_mips = -1, s_vqfmt = -1, s_aniso, s_filter;
 static const int k_aniso[5] = { 1, 2, 4, 8, 16 };
+// P115 PT Anisotropic, latched per frame (FLYCAST: punch-through samples 1x), and its 1x binds ([texfmt] ptaniso=).
+static struct { int flycast; u32 cut; } s_pt;
 // [texfmt]: textures given a chain and levels written past level 0, this window.
 static u32 s_mip_tex, s_mip_levels;
 // [texfmt]: P42 block-path decodes this window, and the last YUV texture's size, kind and pitch.
@@ -869,6 +872,7 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 		s_filter = filter;
 		printf("[tex] anisotropic %dx, filter %s\n", (int)k_aniso[aniso], k_filter[filter]);
 	}
+	s_pt.flycast = get_pt_aniso_preset() != 0;
 
 	s_frame++;
 	// Spares no new texture took give back their RSX memory.
@@ -1060,7 +1064,13 @@ bool ps3tex_bind_rsxd(u32 tsp_w, u32 tcw_w, u32 pidx, bool punch_through, RsxdTe
 	if (chain && !nearest)
 		min = s_aniso > 0 ? 6 : 4;
 	const u32 mag = nearest ? 1 : 2;
-	const int a = nearest ? 1 : k_aniso[s_aniso];
+	int a = nearest ? 1 : k_aniso[s_aniso];
+	// P115 FLYCAST (38d4689b6, Re-Volt): taps spread over a cut-out texture mix its alpha-0 texels into the test.
+	if (s_pt.flycast && punch_through && a > 1)
+	{
+		a = 1;
+		s_pt.cut++;
+	}
 	const u32 aniso = a >= 16 ? 7 : a >= 12 ? 6 : a >= 10 ? 5 : a >= 8 ? 4 : a >= 6 ? 3 : a >= 4 ? 2 : a >= 2 ? 1 : 0;
 	out->ctrl |= aniso << 4;
 	out->filter = (mag << 24) | (min << 16) | (1u << 13);
@@ -1099,16 +1109,17 @@ void ps3tex_stats(u32* decodes, u32* live)
 	       " | vq=%u mip=%u planar=%u stride=%u nonsquare=%u mirror=%u clamp=%u"
 	       " | binds=%u mirrorbinds=%u blacktex=%u alpha0tex=%u | evict=%u hot=%u"
 	       " | yuvblk=%u yuvlast=%ux%u%c%u spudec=%u"
-	       " | chains=%u chainlv=%u palvq=%u plvq=%u | spares reused=%u put=%u held=%u\n",
+	       " | chains=%u chainlv=%u palvq=%u plvq=%u | spares reused=%u put=%u held=%u | ptaniso=%u\n",
 	       s_fmt_count[0], s_fmt_count[1], s_fmt_count[2], s_fmt_count[3],
 	       s_fmt_count[4], s_fmt_count[5], s_fmt_count[6],
 	       s_flag_vq, s_flag_mip, s_flag_planar, s_flag_stride,
 	       s_flag_nonsq, s_flag_mirror, s_flag_clamp,
 	       s_bind_total, s_bind_mirror, s_black_tex, s_alpha0_tex, s_evict, s_evict_hot,
 	       s_yuv_blk, s_yuv_last_w, s_yuv_last_h, s_yuv_last_kind, s_yuv_last_pitch, s_spu_dec,
-	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq, s_reused, s_spared, s_spare_n);
+	       s_mip_tex, s_mip_levels, s_flag_palvq, s_flag_plvq, s_reused, s_spared, s_spare_n, s_pt.cut);
 	printf("[texlife] aged=%u back=%u same=%u\n", s_aged, s_back, s_back_same);
 	s_reused = s_spared = 0;
+	s_pt.cut = 0;
 	s_aged = s_back = s_back_same = 0;
 	memset(s_fmt_count, 0, sizeof(s_fmt_count));
 	s_flag_vq = s_flag_mip = s_flag_planar = s_flag_stride = 0;

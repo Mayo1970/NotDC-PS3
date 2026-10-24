@@ -28,3 +28,14 @@ static inline float depth_clear(bool fz)
 {
 	return fz ? 0.0f : 1.0f;
 }
+
+// P116 BG Depth Bias RELATIVE, FLOAT only: the background's 1/W less 1e-6 (Flycast 443d5a2ba), or less 2^-15 of it when
+// that is more, so it stays 2 FLOAT steps (16 mantissa bits) behind a polygon at its 1/W. Floor 1e-11 as before.
+static inline float depth_bg_rel(float b)
+{
+	float bg = b - 1e-6f;
+	const float r = b * (1.0f - 1.0f / 32768.0f);
+	if (r < bg)
+		bg = r;
+	return bg < 1e-11f ? 1e-11f : bg;
+}

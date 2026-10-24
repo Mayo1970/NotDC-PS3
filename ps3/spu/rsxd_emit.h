@@ -159,6 +159,15 @@ static inline void rx_xt_apply(RsxdState* s, const uint32_t* p, uint32_t list, u
 	s->n_tril += tril != RX_F_ONE;
 }
 
+// P117 DstSelect Polys HIDE: a polygon for the second accumulator (TSP DstSelect, not the background) passes no depth
+// test, so it writes no colour, depth or stencil. The merge key holds the whole TSP, so its runs hold no other polygon.
+static inline void rx_hide(RsxdState* s, const uint32_t* p, uint32_t bg)
+{
+	const uint32_t hide = !bg && rx_bits(P_TSP(p), 24, 1);
+	s->gl.depth_func = hide ? 0x0200u : s->gl.depth_func;
+	s->n_hide += hide;
+}
+
 static inline uint32_t rx_tri_covers(const uint32_t* p)
 {
 	const uint32_t src = rx_bits(P_TSP(p), 29, 3), dst = rx_bits(P_TSP(p), 26, 3);
@@ -167,9 +176,8 @@ static inline uint32_t rx_tri_covers(const uint32_t* p)
 	return src == 4 && dst == 5;
 }
 
-// apply_param_body: p = pcw, isp, tsp, tcw. textured: the Texture bit and a bind that worked; tex its words. clip
-// is read only with a Tile Clip level. Returns the OR mask that forces vertex alpha to 255. The background (RXL_BG)
-// is smooth and has no offset colours.
+// apply_param_body: p = pcw, isp, tsp, tcw; textured: the Texture bit and a bind that worked, tex its words; clip only
+// with a Tile Clip level. Returns the OR mask forcing vertex alpha 255. The background (RXL_BG): smooth, no offsets.
 static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t list, uint32_t textured, const RsxdTex* tex,
                                   const RsxdClip* clip)
 {
@@ -197,6 +205,8 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 		rx_set_cull(s, rx_eff_cull(s, p));
 		if (sc->clip)
 			rx_clip_apply(s, clip);
+		if (sc->flags & RSXD_S_DSTSEL)
+			rx_hide(s, p, bg);
 		return 0;
 	}
 	const uint32_t src_i = rx_bits(tsp, 29, 3), dst_i = rx_bits(tsp, 26, 3);
@@ -279,6 +289,8 @@ static RSXD_BIG uint32_t rsxd_apply(RsxdState* s, const uint32_t* p, uint32_t li
 		g->alpha_en = covers != 2;
 		g->depth_mask = covers && !zwd;
 	}
+	if (sc->flags & RSXD_S_DSTSEL)
+		rx_hide(s, p, bg);
 	const uint32_t force = !rx_bits(tsp, 20, 1) || (textured && rx_bits(tsp, 6, 2) == 1);
 	return force ? 0xFF000000u : 0;
 }

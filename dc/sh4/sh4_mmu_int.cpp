@@ -168,7 +168,8 @@ static FEnt s_fe[FAST_N];
 static u16 s_fb[FAST_B];       // bucket heads, 0xFFFF = none
 static u32 s_fn, s_fsz[4];     // entries in use, and per page size
 static u32 s_fgen = 1;         // moves at a remap and a flush: the FCache entries of before go
-static struct { u32 finds, misses, inserts, remaps, flushes, full; } s_fs;
+// ti, array: the flushes by MMUCR.TI and by a TLB array write; ones, removed: row TLB Array Writes ONE ENTRY (P110 b).
+static struct { u32 finds, misses, inserts, remaps, flushes, full, ti, array, ones, removed; } s_fs;
 
 static inline u32 fast_bucket(u32 base, u32 sz) { return ((base >> 10) ^ (base >> 20) ^ (sz << 11)) & (FAST_B - 1); }
 
@@ -295,13 +296,83 @@ static u32 fast_xlat(u32 va, u32 acc)
 	return pa;
 }
 
+// ---- row TLB Array Writes ONE ENTRY (P110 b): a UTLB array write moves the table by the entries it changed, as
+// Flycast's UTLB_Sync appends one (fastmmu.cpp); an ITLB array write moves nothing. The TI flush stays.
+extern "C" int get_tlb_array_preset();
+static inline bool tlb_one() { return g_mmu_fast && get_tlb_array_preset(); }
+static TLB_Entry s_ta_was[64];   // the UTLB before the write
+
+// fast_insert's key of t: its page, size and ASID, or shared.
+static inline bool fast_key(const TLB_Entry& t, u32 base, u32 sz, u32 asid, u32 sh)
+{
+	const u32 tsz = t.Data.SZ1 * 2 + t.Data.SZ0;
+	return tsz == sz && ((t.Address.VPN << 10) & k_page_mask[sz]) == base && t.Data.SH == sh &&
+	       (sh || t.Address.ASID == asid);
+}
+
+// The table entry of t's page goes, unless a valid UTLB entry still maps that page; false: none went.
+static bool fast_remove(const TLB_Entry& t)
+{
+	const u32 sz = t.Data.SZ1 * 2 + t.Data.SZ0, base = (t.Address.VPN << 10) & k_page_mask[sz];
+	const u32 asid = t.Address.ASID, sh = t.Data.SH;
+	for (u32 i = 0; i < 64; i++)
+		if (UTLB[i].Data.V && fast_key(UTLB[i], base, sz, asid, sh))
+			return false;
+	for (u16* link = &s_fb[fast_bucket(base, sz)]; *link != 0xFFFF; link = &s_fe[*link].next)
+	{
+		const FEnt& e = s_fe[*link];
+		if (e.base == base && e.sz == sz && e.sh == sh && (e.sh || e.asid == asid))
+		{
+			*link = e.next;
+			s_fsz[sz]--;
+			s_fs.removed++;
+			return true;
+		}
+	}
+	return false;
+}
+
+// The P4 handler brackets each UTLB array write (sh4_internal_reg.cpp); false: row FLUSH, or no FAST table.
+bool jx_tlb_one_begin()
+{
+	if (!tlb_one())
+		return false;
+	memcpy(s_ta_was, UTLB, sizeof(s_ta_was));
+	return true;
+}
+
+// A changed entry: its old page goes, its new one joins. A page gone moves the generations, as a remap does.
+void jx_tlb_one_end()
+{
+	bool gone = false;
+	for (u32 i = 0; i < 64; i++)
+	{
+		const TLB_Entry& o = s_ta_was[i];
+		if (o.Address.reg_data == UTLB[i].Address.reg_data && o.Data.reg_data == UTLB[i].Data.reg_data)
+			continue;
+		if (o.Data.V)
+			gone |= fast_remove(o);
+		fast_insert(UTLB[i]);
+	}
+	s_fs.ones++;
+	if (gone)
+	{
+		s_fgen++;
+		jmmu_fast_changed();
+	}
+}
+
 // A TLB array write leaves the table with what the UTLB holds after it: an entry the write added or took away.
 void jx_fast_after_write(u32 pa, u32 v)
 {
 	if ((pa & 0x1FFFFFFF) == 0x1F000010 && (v & MMUCR_TI_BIT))
-		fast_flush();
-	else if (((pa >> 24) & 0xFA) == 0xF2)
 	{
+		s_fs.ti++;
+		fast_flush();
+	}
+	else if (((pa >> 24) & 0xFA) == 0xF2 && !tlb_one())
+	{
+		s_fs.array++;
 		fast_flush();
 		for (u32 i = 0; i < 64; i++)
 			fast_insert(UTLB[i]);
@@ -785,8 +856,9 @@ static void stats_line()
 	       s_st.illegal, s_st.ldtlb, s_st.scans, s_st.hits, s_st.ifills, s_st.ihits, s_st.sq);
 	if (g_mmu_fast)
 		printf("[fullmmu] FAST table: entries %u (4K %u, 64K %u, 1M %u, 1K %u) | finds %u, misses %u, inserts %u, remaps %u,"
-		       " flushes %u, full %u\n", s_fn, s_fsz[1], s_fsz[2], s_fsz[3], s_fsz[0], s_fs.finds, s_fs.misses, s_fs.inserts,
-		       s_fs.remaps, s_fs.flushes, s_fs.full);
+		       " flushes %u (TI %u, array %u), full %u | one entry %u, removed %u\n", s_fn, s_fsz[1], s_fsz[2], s_fsz[3],
+		       s_fsz[0], s_fs.finds, s_fs.misses, s_fs.inserts, s_fs.remaps, s_fs.flushes, s_fs.ti, s_fs.array, s_fs.full,
+		       s_fs.ones, s_fs.removed);
 	s_st_last = s_st;
 }
 

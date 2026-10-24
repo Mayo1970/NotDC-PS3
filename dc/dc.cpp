@@ -320,6 +320,7 @@ static char* BuildFilePath(const char* base_path, const char* filename)
 // P85: sh4_mem.cpp's forced-exit save writes the flash only while this is set.
 extern volatile bool g_flash_loaded;
 void maple_vmu_game(const char* id10);   // dc/maple/maple_devs.cpp (P37)
+extern bool g_disc_pso2;                 // dc/sh4/rec_v2/driver.cpp: guards Sylverant's 0xB2 buffer
 
 // Cable forced for this boot only; -1 = the nullDC.cfg value. Read by bsc.cpp read_BSC_PDTRA.
 int g_cable_override = -1;
@@ -330,6 +331,7 @@ static void apply_disc_meta()
 {
 	g_cable_override = -1;
 	g_disc_wince = false;
+	g_disc_pso2 = false;
 	u32 type = libGDR_GetDiscType();
 	if (type == NoDisk || type == Open || type == Busy || type == CdDA)
 		return;
@@ -359,8 +361,12 @@ static void apply_disc_meta()
 	maple_vmu_game((const char*)&ip[0x40]);
 	// P38 SH4 MMU AUTO (Flycast isWindowsCE()): byte 0x3E is '1', or the boot file is 0WINCEOS.BIN.
 	g_disc_wince = ip[0x3E] == '1' || memcmp(&ip[0x60], "0WINCEOS.BIN", 12) == 0;
-	printf("[disc] Windows CE: %s (byte 0x3E '%c', boot file %.12s)\n", g_disc_wince ? "yes" : "no",
-	       ip[0x3E] >= 0x20 && ip[0x3E] < 0x7F ? ip[0x3E] : '?', (const char*)&ip[0x60]);
+	// PSO Ver.2 (US) is "MK-51100  " version "V2.xxx"; byte compares, as a string literal costs a TOC entry.
+	const u8* id = &ip[0x40];
+	g_disc_pso2 = id[0] == 'M' && id[1] == 'K' && id[2] == '-' && id[3] == '5' && id[4] == '1' && id[5] == '1' &&
+	              id[6] == '0' && id[7] == '0' && id[8] == ' ' && id[10] == 'V' && id[11] == '2';
+	printf("[disc] Windows CE: %s (byte 0x3E '%c', boot file %.12s), PSO2 guard %d\n", g_disc_wince ? "yes" : "no",
+	       ip[0x3E] >= 0x20 && ip[0x3E] < 0x7F ? ip[0x3E] : '?', (const char*)&ip[0x60], g_disc_pso2);
 	if (settings.dreamcast.cable <= 1 && ip[0x3D] != '1')
 	{
 		g_cable_override = 3;

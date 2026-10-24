@@ -284,6 +284,10 @@ T FASTCALL ReadMem_P4(u32 addr)
 	}
 }
 
+// P110 b, row TLB Array Writes ONE ENTRY (sh4_mmu_int.cpp): a UTLB array write moves MMU Model FAST's table itself.
+bool jx_tlb_one_begin();
+void jx_tlb_one_end();
+
 template <u32 sz, class T>
 void FASTCALL WriteMem_P4(u32 addr, T data)
 {
@@ -335,6 +339,7 @@ void FASTCALL WriteMem_P4(u32 addr, T data)
 	// UTLB address array (F6)
 	case 0xF6:
 		{
+			const bool one = jx_tlb_one_begin();
 			if (addr & 0x80)
 			{
 				// Associative write: match VPN+ASID across all TLB entries
@@ -377,18 +382,23 @@ void FASTCALL WriteMem_P4(u32 addr, T data)
 				UTLB[entry].Data.V = ((u32)data >> 8) & 1;
 				UTLB_Sync(entry);
 			}
+			if (one)
+				jx_tlb_one_end();
 			return;
 		}
 
 	// UTLB data arrays (F7); bit 23 as in F3.
 	case 0xF7:
 		{
+			const bool one = jx_tlb_one_begin();
 			u32 entry = (addr >> 8) & 63;
 			if (g_mmu_bits_preset && (addr & 0x800000))
 				UTLB[entry].Assistance.reg_data = data & 0xF;
 			else
 				UTLB[entry].Data.reg_data = data;
 			UTLB_Sync(entry);
+			if (one)
+				jx_tlb_one_end();
 			return;
 		}
 

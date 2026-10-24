@@ -27,6 +27,8 @@ extern char selectedFilePath[512];
 extern "C" int ps3_exit_pending(void);
 extern "C" void ps3_close_game(void);   // ps3_main.cpp (G15)
 extern "C" int get_player_count(void);  // ps3_presets.cpp: a call, so no TOC entry for g_player_count
+extern "C" int get_pad_reconnect_preset(void);
+u32 ps3_pad_connected(const padInfo* info, int who);   // ps3_input.cpp (P118)
 void sgc_KyonbSync();   // plugs/nullAICA/sgc_if.cpp
 bool gdrom_disc_swap(const char* path);   // dc/gdrom/gdromv3.cpp
 void ps3_rumble_stop(void);   // ps3_input.cpp
@@ -59,6 +61,13 @@ static u32 pad_poll_raw()
 	// One buffer per port, never reset: ioPadGetData does not refresh it when
 	// there is no new input (same rule as ps3_input.cpp).
 	static padData pad[MAX_PORT_NUM];
+	if (get_pad_reconnect_preset())
+	{
+		const u32 fresh = ps3_pad_connected(&info, 1);
+		for (int i = 0; i < MAX_PORT_NUM; i++)
+			if ((fresh >> i) & 1)
+				memset(&pad[i], 0, sizeof(pad[i]));
+	}
 
 	u32 b = 0;
 	// Input went dead after the toolchain change: log what the API actually
@@ -70,7 +79,7 @@ static u32 pad_poll_raw()
 		dbg_once = true;
 		// This libio never refreshes the buffer without it; the old one did not need it.
 		for (int i = 0; i < MAX_PORT_NUM; i++)
-			if (info.status[i])
+			if (info.status[i] && !get_pad_reconnect_preset())
 				printf("[padraw] setPortSetting(%d) -> %d\n", i, (int)ioPadSetPortSetting(i, 0));
 		padInfo2 i2;
 		int r2 = ioPadGetInfo2(&i2);
@@ -382,6 +391,16 @@ static const char* k_mmufast[]   = { "FULL", "FAST", NULL };
 static const char* k_sqstore[]   = { "C", "INLINE", NULL };
 static const char* k_mmupref[]   = { "IFB", "JIT", NULL };
 static const char* k_modem[]     = { "OFF", "DCNET", NULL };
+// GOALS.md G18-G22: the first value is the old path.
+static const char* k_swaprules[] = { "OLD", "KEEP STATE", "+ LID OPEN", NULL };
+static const char* k_bgbias[]    = { "OLD", "RELATIVE", NULL };
+static const char* k_dstsel[]    = { "DRAW", "HIDE", NULL };
+static const char* k_smcguard[]  = { "KNOWN", "ALL RAM", NULL };
+static const char* k_starve[]    = { "OFF", "FADE", "FADE + WAIT", "FADE + STRETCH", NULL };
+static const char* k_idlex30[]   = { "AUTO", "X30", NULL };
+static const char* k_codehash[]  = { "PAGE", "EXTENT", NULL };
+static const char* k_tlbarray[]  = { "FLUSH", "ONE ENTRY", NULL };
+static const char* k_asidflush[] = { "ALL", "SLOT 0", NULL };
 
 enum OptKind { OPT_CHOICE, OPT_RANGE };
 
@@ -397,6 +416,7 @@ struct Option
 	const char*  help;
 	int          port1; // G15 CONTROLS: a slot row of port port1 - 1, shown while Players reaches it; 0 = always
 	int          basic; // option pages: 1 = shown while Advanced Mode is OFF
+	int          adv;   // CONTROLS: 1 = shown only while Advanced Mode is ON
 };
 
 static Option s_emu[] = {
@@ -448,6 +468,8 @@ static Option s_emu[] = {
 	  "How the emulator shuts down when the XMB asks it to quit." },
 	{ "JIT Exit",        &g_jit_exit_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The JIT loop returns on an XMB exit and saves the flash. Set before boot." },
+	{ "Config Repair",   &g_cfg_repair_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON: at the next NotDC start, settings that froze old installs go to today's default, once (P120)." },
 };
 
 static Option s_audio[] = {
@@ -517,6 +539,8 @@ static Option s_audio[] = {
 	  "A sound DMA of 512 cycles or less ends at once (P24, Bangai-O). Needs DMA Fix. Live." },
 	{ "G2 DMA Read",     &g_g2_dma_read_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "A sound DMA can copy wave RAM to system RAM (P9, SB_ADDIR 1). Live." },
+	{ "Audio Starve",    &g_audio_starve_preset,  OPT_CHOICE, k_starve,    0, 0,0,0, NULL,
+	  "Under full speed: FADE ramps each gap; WAIT: fewer, longer gaps; STRETCH: short queues fill (P119). Live." },
 };
 
 static Option s_video[] = {
@@ -658,6 +682,8 @@ static Option s_jit[] = {
 	  "FORMS: RAM check and address side by side. + LIST: block ops reordered for the PPE (P100). Set before boot." },
 	{ "JIT PAIR CALLS",  &g_jit_pair_calls_preset, OPT_CHOICE, k_div32,    0, 0,0,0, NULL,
 	  "FIXED: 64-bit fmov to and from device memory (palette, sound RAM) keeps its data (P105). Set before boot." },
+	{ "JIT SMC Guard",   &g_jit_smc_preset,       OPT_CHOICE, k_smcguard,  0, 0,0,0, NULL,
+	  "ALL RAM: every RAM block checks its code at entry, 2 loads more (P124, Time Stalkers). Set before boot." },
 	{ "ARM7 JIT",        &g_arm7_jit_preset,      OPT_RANGE,  NULL,        0, 0,5,1, "%d",
 	  "Sound CPU recompiler level, 0 = cached interpreter. Self-tested at boot." },
 };
@@ -696,6 +722,10 @@ static Option s_gdrom[] = {
 	  "TRIANGLE in the in-game menu changes the disc (P34). Live." },
 	{ "GD-ROM Read Ahead", &g_gd_read_ahead_preset, OPT_CHOICE, k_onoff,   0, 0,0,0, NULL,
 	  "The worker reads the data after each disc read; the next read comes from RAM (Crazy Taxi). Live." },
+	{ "PIO Read Ahead",  &g_gd_pio_ring_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "PIO disc reads come from the GD worker's ring, not a read on the SH4 thread (P114, RE3 doors). Live." },
+	{ "Disc Swap Rules", &g_swap_rules_preset,    OPT_CHOICE, k_swaprules, 0, 0,0,0, NULL,
+	  "KEEP STATE: a swap keeps the command in flight (Flycast). + LID OPEN: the lid opens first (P77). Live." },
 };
 
 // Plan section 7, bundle 3: one row per item; the first value is the old path.
@@ -704,6 +734,8 @@ static Option s_textures[] = {
 	  "Mipmapped textures get every mip level: far floors stop shimmering (P45). Live.", 0, 1 },
 	{ "Anisotropic",     &g_aniso_preset,         OPT_CHOICE, k_aniso,     0, 0,0,0, NULL,
 	  "Anisotropic filter taps on textures that are not nearest (P52). Live.", 0, 1 },
+	{ "PT Anisotropic",  &g_pt_aniso_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: punch-through textures get no anisotropic taps: no blue edge lines (P115, Re-Volt). Live." },
 	{ "Texture Filter",  &g_tex_filter_preset,    OPT_CHOICE, k_texfilter, 0, 0,0,0, NULL,
 	  "GAME keeps each polygon's filter; the others force one on all (P52). Live.", 0, 1 },
 	{ "VQ Formats",      &g_vq_formats_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -758,6 +790,12 @@ static Option s_renderer[] = {
 	  "The two passes of a trilinear polygon draw with their weights (P25, NFL 2K2)." },
 	{ "Near Plane Cap",  &g_near_cap_preset,      OPT_CHOICE, k_nearcap,   0, 0,0,0, NULL,
 	  "WIDE: with Depth Float, a 1/W up to 2^44 (not 2^20) sets the near plane (P91, Re-Volt menus)." },
+	{ "BG Depth Bias",   &g_bg_bias_preset,       OPT_CHOICE, k_bgbias,    0, 0,0,0, NULL,
+	  "RELATIVE: with Depth Float, the background stays behind full-screen quads (P116, Starlancer FMVs)." },
+	{ "DstSelect Polys", &g_dst_select_preset,    OPT_CHOICE, k_dstsel,    0, 0,0,0, NULL,
+	  "HIDE: polygons for the second colour buffer draw nothing (P117, Evil Dead white boxes)." },
+	{ "List Init Keep",  &g_list_init_keep_preset, OPT_CHOICE, k_oldfly,   0, 0,0,0, NULL,
+	  "FLYCAST: a list init with no new TA data keeps the lists for the render (P123, Speed Devils menu)." },
 };
 
 // Plan section 7, bundle 7: one row per item; the first value is the old path.
@@ -915,6 +953,16 @@ static Option s_sys[] = {
 	  "JIT: an MMU block's pref goes to the store queue flush, not the MMU interpreter. Set before boot." },
 	{ "MMU ASID JTC",    &g_mmu_asidjtc_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "With MMU Model FAST, the JIT keeps the data page cache of 8 recent processes. Set before boot." },
+	{ "MMU Idle X30",    &g_mmu_idle_x30_preset,  OPT_CHOICE, k_idlex30,   0, 0,0,0, NULL,
+	  "X30: with the MMU JIT (Windows CE), JIT IDLE RULE AUTO stays at X30, no tries (P107). Set before boot." },
+	{ "WinCE Sys Calls", &g_wince_hle_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON: GetTickCount and QueryPerformanceCounter answer in the JIT, no exception (P108). Set before boot." },
+	{ "MMU Code Hash",   &g_mmu_code_hash_preset, OPT_CHOICE, k_codehash,  0, 0,0,0, NULL,
+	  "EXTENT: a code page hashes only the bytes its blocks read, not its data (P109). Set before boot." },
+	{ "TLB Array Writes", &g_tlb_array_preset,    OPT_CHOICE, k_tlbarray,  0, 0,0,0, NULL,
+	  "ONE ENTRY: a TLB array write changes that entry, not the whole FAST table (P110). Set before boot." },
+	{ "MMU ASID Flush",  &g_mmu_asid_flush_preset, OPT_CHOICE, k_asidflush, 0, 0,0,0, NULL,
+	  "SLOT 0: a process switch clears only the process pages; P1/P2 stay cached (P110). Set before boot." },
 };
 
 // GOALS.md G11 (online play): the first value is the old path.
@@ -938,6 +986,8 @@ static Option s_controls[] = {
 	  "SWAP: the left stick is the Dreamcast d-pad, and the d-pad is the Dreamcast analog stick." },
 	{ "USB Keyboard",    &g_usb_kb_preset,        OPT_CHOICE, k_usbkb,     0, 0,0,0, NULL,
 	  "A USB keyboard is the Dreamcast keyboard in this port. Pads use the ports before it. Set before boot." },
+	{ "Pad Reconnect",   &g_pad_reconnect_preset, OPT_CHOICE, k_div32,     0, 0,0,0, NULL,
+	  "FIXED: a pad that goes off and on again works in the game and the menus; L2/R2 analog too (P118).", 0, 0, 1 },
 	{ "Port A Slot 1",   &g_slot_dev_preset[0],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port A Slot 2",   &g_slot_dev_preset[1],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 1 },
 	{ "Port B Slot 1",   &g_slot_dev_preset[2],   OPT_CHOICE, k_slotdev,   0, 0,0,0, NULL, k_slot_help, 2 },
@@ -1452,14 +1502,22 @@ static void options_draw()
 static int controls_shown(int* rows, int* pos)
 {
 	int n = 0;
-	*pos = 0;
+	*pos = -1;
 	for (int i = 0; i < CONTROLS_ROWS; i++)
 		if (!s_controls[i].port1 || s_controls[i].port1 <= get_player_count())
 		{
+			if (s_controls[i].adv && !g_advanced_preset)
+				continue;
 			if (i == s_ctl_row)
 				*pos = n;
 			rows[n++] = i;
 		}
+	// The cursor's row is hidden: it goes to the first row, so LEFT/RIGHT never change a row that is not drawn.
+	if (*pos < 0)
+	{
+		*pos = 0;
+		s_ctl_row = rows[0];
+	}
 	return n;
 }
 
@@ -1589,6 +1647,8 @@ static int* const k_live_opts[] = {
 	&g_near_cap_preset,
 	&g_native_size_preset,
 	&g_integer_scale_preset,
+	&g_pt_aniso_preset, &g_gd_pio_ring_preset, &g_swap_rules_preset, &g_bg_bias_preset, &g_dst_select_preset,
+	&g_list_init_keep_preset, &g_audio_starve_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

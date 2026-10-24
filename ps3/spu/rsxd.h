@@ -79,6 +79,7 @@ typedef struct
 #define RSXD_S_BUMP       128u  // s_bump_on
 #define RSXD_S_LISTS_OFFS 256u  // s_rl.offs is set: bump_offs, fogv_offs and offc_offs can be
 #define RSXD_S_TMU1       512u  // unit 1 holds a texture the program key counts (not the fog table)
+#define RSXD_S_DSTSEL     1024u // s_do.dst_hide (P117): a polygon with TSP DstSelect passes no depth test
 
 // One scene's rules and constants. Floats as bits; the cv_ and glob_ fields are for rsxd_clip_of() (PPU only).
 typedef struct
@@ -193,6 +194,7 @@ struct RsxdState
 	// Counts the host adds up: draws, vertices, texture sends, cache invalidates, the alpha force (offc, cclamp, tril).
 	uint32_t n_draw, n_vtx, n_tex, n_inval, n_offc, n_cclamp, n_tril;
 	uint32_t inval_due;  // the PPU's texture unit 1 has new texels: the next draw clears the texture cache
+	uint32_t n_hide;     // P117: states applied with DstSelect hidden
 };
 
 // ---- SPU jobs (spe_tex.c, rsxd_job.h): no pointers, EAs as 32 bits, the same layout on the PPU and the SPU ----
@@ -268,6 +270,6 @@ typedef struct
 	uint32_t n_tris, n_runs, n_fp_runs, n_fp_nodepth, n_vb;
 	uint32_t cleared[RSXD_TRI_TEX / 32];
 	uint32_t ticks;
-	uint32_t pad[4];
+	uint32_t n_hide, pad[3];
 	RsxdGl gl;
 } RsxdDone;

@@ -92,6 +92,7 @@ const ppc_ireg ppc_rinvalid = static_cast<ppc_ireg>(-1);  // sentinel: out-of-ra
 
 // Defined in ps3_presets.cpp
 extern "C" int get_debug_loop();
+bool pso2_b2_entry(u32 pc);	// dc/sh4/rec_v2/driver.cpp: PSO Ver.2 (US) runs Sylverant's 0xB2 code here
 extern "C" int get_bcache_preset();	// ps3_presets.cpp: 0=off (default), 1=flat dispatch cache
 extern "C" int get_dyn_ic_preset();	// ps3_presets.cpp: 0=off (default), 1=call+jump, 2=+rts
 extern "C" int get_fpu_pin_preset();	// ps3_presets.cpp: 0=off (default), 1=pin fr[0..15] to f14..f29
@@ -600,37 +601,41 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 		// the compare safe — never emit a load we cannot justify.
 		if (ptr)
 		{
-			// Only worth a second compare when the block is longer than one
-			// instruction; otherwise the tail IS the head.
-			const bool check_tail = (code_sz >= 4);
-			ppc_label* fail = 0;
-
-			// --- first instruction --------------------------------------------
+			// The first and last instruction (a one-instruction block has no tail). PSO's 0xB2 entry, a mova to the
+			// patch data, adds the first patch record: every patch shares the same stub code.
+			u16* hw[6];
+			u32 n = 0;
+			hw[n++] = (u16*)ptr;
+			if (code_sz >= 4)
+				hw[n++] = (u16*)(ptr + code_sz - 2);
+			u8* rec = 0;
+			if (pso2_b2_entry(block->start))
 			{
-				const u16 first = *(u16*)ptr;
-				u32 lo = ppc_addr_high(ppc_rarg1,(void*)ptr);
-				ppc_lhz(ppc_rarg1,ppc_rarg1,lo);
-				ppc_cmpli(ppc_cr0,ppc_rarg1,first,0);
+				const u16 op = ReadMem16(block->start);
+				if ((op & 0xFF00) == 0xC700)
+					rec = GetMemPtr((block->start & ~3u) + 4 + ((op & 0xFF) << 2) + 4, 8);
 			}
+			for (u32 i = 0; rec && i < 4; i++)
+				hw[n++] = (u16*)(rec + i * 2);
 
-			if (check_tail)
+			ppc_label* fail[6];
+			for (u32 i = 0; i + 1 < n; i++)
 			{
-				fail = ppc_CreateLabel();
+				u32 lo = ppc_addr_high(ppc_rarg1,(void*)hw[i]);
+				ppc_lhz(ppc_rarg1,ppc_rarg1,lo);
+				ppc_cmpli(ppc_cr0,ppc_rarg1,*hw[i],0);
+				fail[i] = ppc_CreateLabel();
 				ppc_bcx(BO_FALSE,BI_CR0_EQ,0,0,0);	// bne -> fail
-
-				// --- last instruction ------------------------------------------
-				u8* tail = ptr + code_sz - 2;
-				const u16 last = *(u16*)tail;
-				u32 lo = ppc_addr_high(ppc_rarg1,(void*)tail);
-				ppc_lhz(ppc_rarg1,ppc_rarg1,lo);
-				ppc_cmpli(ppc_cr0,ppc_rarg1,last,0);
 			}
+			u32 lo = ppc_addr_high(ppc_rarg1,(void*)hw[n - 1]);
+			ppc_lhz(ppc_rarg1,ppc_rarg1,lo);
+			ppc_cmpli(ppc_cr0,ppc_rarg1,*hw[n - 1],0);
 
 			ppc_label* check_ok=ppc_CreateLabel();
 			ppc_bcx(BO_TRUE,BI_CR0_EQ,0,0,0);		// beq -> check_ok
 
-			if (fail)
-				fail->MarkLabel();					// the bne above lands here
+			for (u32 i = 0; i + 1 < n; i++)
+				fail[i]->MarkLabel();				// each bne above lands here
 			ppc_li(ppc_rarg0,block->start);			// rdv_BlockCheckFail(pc)
 			ppc_jump(ngen_BlockCheckFail_stub);
 
@@ -2317,6 +2322,8 @@ static void idle_bills_patch(int rule,bool plain)
 	       ticks_to_microsecs(gettime()-t0)/1000.0,odd);
 }
 
+extern "C" int get_mmu_idle_x30_preset();	// P107 row MMU Idle X30
+
 // JIT IDLE RULE AUTO and X30 FORWARD AUTO: one step a stats window (SPG.cpp). A switch patches the bill of every
 // compiled block, so the new level reaches all code without a recompile. fps, vbs: frames and vblanks a second.
 extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double fps,double vt_k,double vbs)
@@ -2333,6 +2340,27 @@ extern "C" void jit_idle_auto(double seconds,double speed,double sleep_s,double 
 		idle_auto_init(s_ia,get_jit_idle_rule_preset()==5);
 		fwd_auto_init(s_fa,get_jit_x30_fwd_preset()==3);
 		s_ia_ready=true;
+	}
+	// P107 MMU Idle X30: the MMU JIT (Windows CE) bills X30, FORWARD X30 at that level, and tries nothing.
+	if (g_jit_mmu && get_mmu_idle_x30_preset())
+	{
+		bool move=false;
+		if (rule_auto && g_jit_idle_rule_now!=IA_X30)
+		{
+			g_jit_idle_rule_now=s_ia.rule=IA_X30;
+			move=true;
+		}
+		if (fwd_auto && get_jit_idle_rule()==IA_X30 && g_jit_x30_fwd_now!=0)
+		{
+			g_jit_x30_fwd_now=s_fa.plain=0;
+			move=true;
+		}
+		if (move)
+		{
+			printf("[idle-auto] MMU Idle X30: X30, X30 FORWARD %s, no tries\n",get_jit_x30_fwd() ? "PLAIN" : "X30");
+			idle_bills_patch(IA_X30,get_jit_x30_fwd()!=0);
+		}
+		return;
 	}
 	s_ia.frames=s_fa.frames=get_jit_auto_checks_preset();	// JIT AUTO CHECKS, live
 	static int s_frames_logged=-1;
@@ -5755,6 +5783,7 @@ extern "C" int get_sys_gate_batch_preset();
 extern "C" int get_ram_sq_direct_preset();
 extern "C" int get_ta_peak_frame_preset();
 extern "C" int get_tmu_fine_tcnt_preset();
+extern "C" int get_jit_sbp_preset();	// row JIT SMC Guard (driver.cpp)
 
 // P6 JIT EXIT, latched when the main loop is emitted: the loop can return to C on a stop request.
 static bool s_jit_exit;
@@ -5792,8 +5821,8 @@ static void ps3_jit_dump_toggles()
 	       get_jit_idle_rule_preset(), get_jit_pr_moves_preset(), get_jit_rm_any_preset(), get_jit_idle_hash_preset(),
 	       get_jit_sq_copy_preset(), get_jit_x30_fwd_preset(), get_jit_task_idle_preset(), get_jit_auto_checks_preset(),
 	       get_jit_ta_slot_preset());
-	printf("[jitcfg] coldsplit=%d shortforms=%d schedule=%d paircalls=%d\n", get_jit_cold_split_preset(),
-	       get_jit_short_forms_preset(), get_jit_schedule_preset(), get_jit_pair_calls_preset());
+	printf("[jitcfg] coldsplit=%d shortforms=%d schedule=%d paircalls=%d sbp=%d\n", get_jit_cold_split_preset(),
+	       get_jit_short_forms_preset(), get_jit_schedule_preset(), get_jit_pair_calls_preset(), get_jit_sbp_preset());
 }
 
 // Plan 5.40 probe, once at boot: what FPSCR.NI does on this PPE to a denormal result and operand, and what each

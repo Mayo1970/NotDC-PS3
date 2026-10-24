@@ -369,6 +369,15 @@ void recSh4_ClearCache()
 
 void AnalyseBlock(DecodedBlock* blk);
 
+bool g_disc_pso2;	// dc.cpp: the disc is PSO Ver.2 (US)
+#define PSO2_B2_ENTRY 0xFA5C74	// where PSO runs Sylverant's 0xB2 code: its version check, then each patch
+
+// ngen_Begin: this block's guard also compares the patch data, so each new patch clears the JIT.
+bool pso2_b2_entry(u32 pc)
+{
+	return g_disc_pso2 && (pc & 0xFFFFFF) == PSO2_B2_ENTRY;
+}
+
 // JIT_SBP entry guard against self-modifying code: 0 off, 1 known SMC addresses (default), 2 all RAM. A block
 // with no contiguous host mapping (BIOS, MMIO, region edge) has nothing to compare, so it gets no guard.
 static bool DoCheck(u32 pc, u32 len)
@@ -402,6 +411,9 @@ static bool DoCheck(u32 pc, u32 len)
 		// Shenmue
 		case 0x41860E:
 			return true;
+		// PSO Ver.2 (US): Sylverant's 0xB2 patch code reuses the buffer of its 0xB2 version check
+		case PSO2_B2_ENTRY:
+			return g_disc_pso2;
 		default:
 			return false;
 	}

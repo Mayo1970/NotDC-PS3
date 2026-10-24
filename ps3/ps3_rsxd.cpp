@@ -86,8 +86,8 @@ static struct
 	RsxdState st;
 	RsxdRend rr;
 	gcmContextData* ctx;
-	// Per stats window.
-	u32 n_scene, n_sec, n_draw, n_vtx, n_tex, n_inval, n_drop;
+	// Per stats window; n_hide: states DstSelect Polys HIDE applied (P117).
+	u32 n_scene, n_sec, n_draw, n_vtx, n_tex, n_inval, n_drop, n_hide;
 	u64 n_words;
 
 	// SPU jobs: the job, its answer, the ops and textures of a section, the TR SORT strips and params.
@@ -895,6 +895,7 @@ static void sec_open()
 	memcpy(st.gl.clip_r, S.rr.clip_r, sizeof(st.gl.clip_r));
 	st.gl.flat_shift = *S.rr.flat_shift;
 	st.n_draw = st.n_vtx = st.n_tex = st.n_inval = st.n_offc = st.n_cclamp = st.n_tril = 0;
+	st.n_hide = 0;
 	S.job_gl = st.gl;
 }
 
@@ -917,6 +918,7 @@ static void sec_release()
 	S.n_vtx += st.n_vtx;
 	S.n_tex += st.n_tex;
 	S.n_inval += st.n_inval;
+	S.n_hide += st.n_hide;
 }
 
 // ---- the SPU's jobs ----
@@ -987,6 +989,7 @@ static void job_take()
 	st.n_offc += d.n_offc;
 	st.n_cclamp += d.n_cclamp;
 	st.n_tril += d.n_tril;
+	st.n_hide += d.n_hide;
 	S.job_gl = st.gl;
 	// The SPU's words changed what the RSX holds.
 	rsxd_forget(&st);
@@ -1435,9 +1438,9 @@ void ps3rsxd_stats(double secs)
 		return;
 	const u32 d = S.n_draw ? S.n_draw : 1;
 	printf("[rsxd] ok=%u | scenes=%u sections=%u draws=%u (%.0f/s) vtx=%u words/draw=%.1f tex=%u inval=%u drop=%u | "
-	       "frames=%u clears=%u vols=%u fog=%u quads=%u\n", (u32)S.ok, S.n_scene, S.n_sec, S.n_draw,
+	       "frames=%u clears=%u vols=%u fog=%u quads=%u hide=%u\n", (u32)S.ok, S.n_scene, S.n_sec, S.n_draw,
 	       secs > 0 ? S.n_draw / secs : 0.0, S.n_vtx, (double)S.n_words / d, S.n_tex, S.n_inval, S.n_drop, S.n_frames,
-	       S.n_clears, S.n_vols, S.n_fog, S.n_quads);
+	       S.n_clears, S.n_vols, S.n_fog, S.n_quads, S.n_hide);
 	u32 live = 0;
 	for (u32 i = 0; i < RT_MAX; i++)
 		live += RT.t[i].used;
@@ -1453,6 +1456,7 @@ void ps3rsxd_stats(double secs)
 	S.rpeak = S.n_rdrop = S.n_rtimeout = 0;
 	S.t_rwait = 0;
 	S.n_scene = S.n_sec = S.n_draw = S.n_vtx = S.n_tex = S.n_inval = S.n_drop = 0;
+	S.n_hide = 0;
 	S.n_words = 0;
 	S.n_jobs = S.n_jwords = S.n_jdraw = S.n_fall = S.n_late = S.n_tjobs = S.n_tppu = S.n_tbig = 0;
 	S.t_wait = 0;

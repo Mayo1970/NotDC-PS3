@@ -4,15 +4,23 @@
 #include "types.h"
 #include "sh4_fullmmu.h"
 #include "sh4_mmu_jit.h"
+#include "dc/sh4/rec_v2/decoder.h"
 #include "sh4_registers.h"
 #include "sh4_if.h"
 #include "ccn.h"
+#include "sys_gate.h"
 #include "dc/mem/sh4_mem.h"
 #include "dc/mem/_vmem.h"
 #include "dc/mem/mmu.h"
 #include "rec_v2/blockmanager.h"
 #include "plugins/plugin_manager.h"
 #include "ps3_timebase.h"
+
+// GOALS.md G22 rows (Windows CE speed), read by jmmu_select and jmmu_after_write; set before boot.
+extern "C" int get_wince_hle_preset();
+extern "C" int get_mmu_code_hash_preset();
+extern "C" int get_mmu_asid_flush_preset();
+extern "C" int get_tlb_array_preset();
 
 bool g_jit_mmu;
 bool g_jmmu_bcache, g_jmmu_sq, g_jmmu_pref, g_jmmu_asidjtc;
@@ -28,7 +36,17 @@ static struct
 {
 	u32 lookups, fetch_exc, compiles, stale, fd_compile, fills, slow_r, slow_w, data_exc, raises, ifb_exc, ldtlb,
 	    drops, flushes, epochs, hashed, changed, at_edges, bc_fills, bc_evicts, asid, asid_restores, prefs;
+	u32 wce_ticks, wce_qpc, wce_miss, grown, asid0, s0_drops;	// G22: P108, P109, P110 a
 } s_js, s_js_last;
+
+// G22, latched by jmmu_select: rows WinCE Sys Calls (P108), MMU Code Hash (P109), MMU ASID Flush (P110 a).
+static struct
+{
+	bool hle, ext, asid0;
+	u32 last;                 // P108: update_cnt + the SYS GATE's skipped slices at the last read
+	u64 slices;               // P108: the slices since the choice
+	u32 s0[4 * JTC_N / 32];   // P110 a: a bit per JTC slot filled for process slot 0 (VA under 32 MB)
+} s_g22;
 
 // The [jmmu] ms line: one call in 16 timed (two mftb) and counted 16 times; a compile always, and not in its lookup.
 static u32 s_tick, s_jdgen_last;
@@ -49,9 +67,9 @@ struct JtScope
 };
 
 // The [jmmu] hot line: the top values of a second among the timed calls (the slow reads' physical addresses, the C
-// lookups' pcs): what a poll loop reads, which blocks the block cache misses.
+// lookups' pcs), and among all changed code pages (P109): what a poll loop reads, what the block cache misses.
 struct JHot { u32 v, n; };
-static JHot s_hot[2][64];
+static JHot s_hot[3][64];
 static void hot_add(u32 t, u32 v)
 {
 	u32 h = (v * 2654435761u) >> 26;
@@ -141,6 +159,26 @@ static void jtc_drop_owned()
 			jtc_drop(e);
 }
 
+// Row MMU ASID Flush SLOT 0 (P110 a, MMU Model FAST): a new ASID clears only the slots of Windows CE's running process
+// (VA under 32 MB), as Flycast's mmuAddressLUTFlush(false). The other process slots, P1 and P2 stay.
+static void jtc_drop_slot0()
+{
+	for (u32 w = 0; w < 4 * JTC_N / 32; w++)
+	{
+		for (u32 m = s_g22.s0[w]; m; m &= m - 1)
+		{
+			JtcEntry& e = g_jtc[w >> 5][((w & 31) << 5) | (u32)__builtin_ctz(m)];
+			if (e.tag < 0x02000000)
+			{
+				e.tag = 0xFFFFFFFF;
+				s_js.s0_drops++;
+			}
+		}
+		s_g22.s0[w] = 0;
+	}
+	s_js.asid0++;
+}
+
 // Row MMU ASID JTC (MMU Model FAST): the JTC of each recent ASID kept, so a process switch and its return keep the pages
 // of both. A copy holds while s_jtc_tgen holds: a change of FAST's table, MMUCR.SV, an AT edge, the choice.
 #define JTC_SAVES 8
@@ -196,6 +234,8 @@ static void jtc_asid_check()
 		s_js.asid++;
 		if (g_jmmu_asidjtc)
 			jtc_switch(CCN_PTEH.ASID);
+		else if (s_g22.asid0)
+			jtc_drop_slot0();
 		else
 			jtc_drop_owned();
 		s_jtc_asid = CCN_PTEH.ASID;
@@ -224,6 +264,8 @@ static void jtc_fill(u32 va, u32 pa, u32 w, int ent)
 	g_jtc[t][idx].base = host;
 	g_jtc[t][idx].tag = va & ~0x3FFu;
 	s_js.fills++;
+	if (s_g22.asid0 && va < 0x02000000)
+		s_g22.s0[(t << 5) | (idx >> 5)] |= 1u << (idx & 31);
 	if (ent < 0)
 		return;
 	const u16 slot = (u16)((t << 10) | idx);
@@ -240,7 +282,8 @@ static void jtc_fill(u32 va, u32 pa, u32 w, int ent)
 }
 
 // ---- the code pages: a block holds its page's generation, which a changed hash after an I-cache flush moves ----
-struct JPage { u64 hash; u32 epoch, gen; };
+// lo, hi: row MMU Code Hash EXTENT (P109), the page bytes its blocks were compiled from.
+struct JPage { u64 hash; u32 epoch, gen; u16 lo, hi; };
 static JPage s_jpage[RAM_SIZE >> 10];
 static u32 s_jepoch = 1;   // 0: a page never hashed
 
@@ -256,6 +299,24 @@ static u64 jpage_hash(u32 pa)
 	return a ^ (b << 1);
 }
 
+// EXTENT: the words of [lo, hi) only; an empty extent hashes as the seed.
+#define JPAGE_SEED 0xCBF29CE484222325ull
+static u64 jpage_hash_ext(u32 pa, u32 lo, u32 hi)
+{
+	const u32* p = (const u32*)&mem_b[(pa & RAM_MASK) & ~0x3FFu];
+	u64 a = JPAGE_SEED;
+	for (u32 i = lo >> 2; i < (hi + 3) >> 2; i++)
+		a = (a ^ p[i]) * 0x100000001B3ull;
+	return a;
+}
+
+// A changed code page for the [jmmu] line (P109), at its area 3 address whatever the mirror.
+static inline void jpage_changed(u32 pa)
+{
+	s_js.changed++;
+	hot_add(2, (pa & RAM_MASK & ~0x3FFu) | 0x0C000000);
+}
+
 // RAM pages only: the BIOS is ROM.
 static u32 jpage_gen(u32 pa)
 {
@@ -264,17 +325,55 @@ static u32 jpage_gen(u32 pa)
 	JPage& p = s_jpage[(pa & RAM_MASK) >> 10];
 	if (p.epoch != s_jepoch)
 	{
-		const u64 h = jpage_hash(pa);
+		const u64 h = s_g22.ext ? jpage_hash_ext(pa, p.lo, p.hi) : jpage_hash(pa);
 		if (p.epoch && h != p.hash)
 		{
 			p.gen++;
-			s_js.changed++;
+			jpage_changed(pa);
 		}
 		p.hash = h;
 		p.epoch = s_jepoch;
 		s_js.hashed++;
 	}
 	return p.gen;
+}
+
+// EXTENT: the bytes [lo, hi) of a block just compiled join its page's extent, hashed again. If the old extent changed
+// since the page's hash, its blocks go first, as the next I-cache flush would have found.
+static void jpage_grow(u32 pa, u32 lo, u32 hi)
+{
+	if (((pa >> 26) & 7) != 3 || (pa >> 29) == 7)
+		return;
+	JPage& p = s_jpage[(pa & RAM_MASK) >> 10];
+	if (p.lo < p.hi && p.lo <= lo && hi <= p.hi)
+		return;
+	if (jpage_hash_ext(pa, p.lo, p.hi) != p.hash)
+	{
+		p.gen++;
+		g_jdgen++;
+		jpage_changed(pa);
+	}
+	if (p.lo < p.hi)
+	{
+		lo = lo < p.lo ? lo : p.lo;
+		hi = hi > p.hi ? hi : p.hi;
+	}
+	p.lo = (u16)lo;
+	p.hi = (u16)hi;
+	p.hash = jpage_hash_ext(pa, lo, hi);
+	s_js.grown++;
+}
+
+// The block just compiled at pc (decoder.cpp's last block): its bytes, the delay slot past the page cut off. A size
+// that cannot be takes the whole page, as PAGE.
+extern DecodedBlock block;
+static void jpage_grow_block(u32 pc, u32 pa)
+{
+	const u32 lo = pa & 0x3FF, n = block.sh4_code_size ? block.sh4_code_size : 2;
+	if (block.start != pc || n > 0x402 - lo)
+		jpage_grow(pa, 0, 0x400);
+	else
+		jpage_grow(pa, lo, lo + n > 0x400 ? 0x400 : lo + n);
 }
 
 // An I-cache flush: the code pages are hashed again at their next lookup, so the block cache's entries go.
@@ -314,6 +413,9 @@ static void jmmu_after_write(u32 pa, u32 v)
 		new_epoch();
 	else if ((top & 0xFA) == 0xF2)
 	{
+		// Row TLB Array Writes ONE ENTRY: the P4 handler moved FAST's table by the entries (jx_tlb_one_end).
+		if (g_mmu_fast && get_tlb_array_preset())
+			return;
 		jtc_drop_owned();
 		if (g_mmu_fast)
 			jx_fast_after_write(pa, v);
@@ -464,7 +566,71 @@ void jmmu_fast_changed()
 	s_jtc_tgen++;
 }
 
-void jmmu_code_cleared() { g_jdgen++; }
+void jmmu_code_cleared()
+{
+	g_jdgen++;
+	// EXTENT: no block is left, so no page has code bytes until the next compiles.
+	if (s_g22.ext)
+		for (JPage& p : s_jpage)
+		{
+			p.lo = p.hi = 0;
+			p.epoch = 0;
+			p.hash = JPAGE_SEED;
+		}
+}
+
+// ---- row WinCE Sys Calls (P108): Windows CE's GetTickCount and QueryPerformanceCounter (Flycast USE_WINCE_HACK) ----
+// A call jumps to its odd trap address. jmmu_lookup leaves JMMU_WCE for jmmu_raise, where the GPRs are in Sh4cntx.
+#define WCE_TICKS 0xFFFFFDE7u
+#define WCE_QPC   0xFFFFFD05u
+#define JMMU_WCE  1u   // in g_jmmu_fault: no exception code is odd
+extern u32 update_cnt;   // sh4_interpreter.cpp: the slices the update ran
+extern "C" int get_tmu_clock_preset();
+extern "C" int get_sh4_clock_preset();
+
+// SH4 cycles at 200 MHz since the choice, as the TMU counts them (the SYS GATE's skipped slices too, row TMU Clock):
+// Flycast's sh4_sched_now64(). sh4_sched.cpp's clock runs only with row Scheduler ON.
+static u64 wce_cycles()
+{
+	const u32 n = update_cnt + (u32)sys_pending();
+	s_g22.slices += n - s_g22.last;
+	s_g22.last = n;
+	const u64 c = s_g22.slices * (u32)sh4_GetTimeslice();
+	const int clk = get_sh4_clock_preset();
+	const u32 mhz = get_tmu_clock_preset() && clk < 200 ? (u32)(clk < 25 ? 25 : clk) : 200u;
+	return mhz == 200 ? c : c * 200 / mhz;
+}
+
+// A RAM word the guest may write at va: a data write's translation, no exception taken.
+static bool wce_ram(u32 va, u32& pa)
+{
+	int ent;
+	return !jx_data_xlat(va, 4, 1, &pa, &ent) && ((pa >> 26) & 7) == 3 && (pa >> 29) != 7;
+}
+
+// The call at epc answered: r0, then pc = pr. False: QueryPerformanceCounter's r4 is not RAM; the kernel answers it.
+static bool wce_answer(u32 epc)
+{
+	const u64 t = wce_cycles();
+	if (epc == WCE_TICKS)
+	{
+		r[0] = (u32)(t / 200000);
+		s_js.wce_ticks++;
+	}
+	else
+	{
+		u32 lo, hi;
+		if (!wce_ram(r[4], lo) || !wce_ram(r[4] + 4, hi))
+			return false;
+		// The u64 in SH4 order, its low word at r4: each word as the guest's mov.l reads it.
+		_vmem_WriteMem32(lo, (u32)(t >> 4));
+		_vmem_WriteMem32(hi, (u32)(t >> 36));
+		r[0] = 1;
+		s_js.wce_qpc++;
+	}
+	next_pc = pr;
+	return true;
+}
 
 // ---- the main loop's lookup ----
 static u32 s_last_at;
@@ -511,6 +677,11 @@ void* jmmu_lookup(u32 pc)
 		g_jdgen++;
 		s_jtc_tgen++;
 	}
+	if (s_g22.hle && (pc == WCE_TICKS || pc == WCE_QPC) && at)
+	{
+		g_jmmu_fault = JMMU_WCE;
+		return 0;
+	}
 	u32 pa;
 	const u32 code = jx_fetch(pc, &pa);
 	if (code)
@@ -542,6 +713,8 @@ void* jmmu_lookup(u32 pc)
 	}
 	if (rv)
 	{
+		if (s_g22.ext)
+			jpage_grow_block(pc, pa);
 		jdisp_fill(pc, cfg, at, (void*)rv);
 		return (void*)rv;
 	}
@@ -555,12 +728,23 @@ void* jmmu_lookup(u32 pc)
 u32 jmmu_raise(u32 epc)
 {
 	JtScope ts(s_jt.raise);
-	const u32 code = g_jmmu_fault;
+	u32 code = g_jmmu_fault;
 	g_jmmu_fault = 0;
 	if (!code)
 	{
 		next_pc = epc;
 		return epc;
+	}
+	if (code == JMMU_WCE)
+	{
+		if (wce_answer(epc))
+			return next_pc;
+		// Not answered: the odd pc's address error of before, TEA and PTEH as its fetch sets them.
+		u32 pa;
+		code = jx_fetch(epc, &pa);
+		code = code ? code : 0x0E0;
+		s_js.fetch_exc++;
+		s_js.wce_miss++;
 	}
 	s_js.raises++;
 	jx_take(epc, code);
@@ -578,6 +762,12 @@ void jmmu_select(bool on)
 	g_jit_mmu = on;
 	if (!on)
 		g_jmmu_bcache = g_jmmu_sq = g_jmmu_pref = g_jmmu_asidjtc = false;
+	s_g22.hle = on && get_wince_hle_preset();
+	s_g22.ext = on && get_mmu_code_hash_preset();
+	s_g22.asid0 = on && g_mmu_fast && get_mmu_asid_flush_preset();	// FAST only, as Flycast's FAST_MMU
+	s_g22.last = update_cnt + (u32)sys_pending();
+	s_g22.slices = 0;
+	memset(s_g22.s0, 0, sizeof(s_g22.s0));
 	jtc_flush_all();
 	memset(s_jsave, 0, sizeof(s_jsave));
 	s_jtc_tgen = 1;
@@ -601,9 +791,10 @@ void jmmu_select(bool on)
 		sh4_cpu.ResetCache = jmmu_reset_cache;
 		printf("[fullmmu] MMU JIT: blocks by (vaddr, paddr, mode) in 1 KB pages, JTC %u x 4, JIT RM 2/3 ACCEPT; AT 1 blocks"
 		       " without fastmem, SQ shapes, constprop, DVE, DYN_IC and BCACHE\n", (u32)JTC_N);
-		printf("[fullmmu] MMU JIT rows: block cache %s (%u x 2 entries), SQ stores %s, pref %s, ASID JTC %s\n",
-		       g_jmmu_bcache ? "ON" : "OFF", (u32)JDISP_SETS, g_jmmu_sq ? "INLINE" : "C", g_jmmu_pref ? "JIT" : "IFB",
-		       g_jmmu_asidjtc ? "ON" : "OFF");
+		printf("[fullmmu] MMU JIT rows: block cache %s (%u x 2 entries), SQ stores %s, pref %s, ASID JTC %s | WinCE"
+		       " calls %s, code hash EXTENT %s, ASID flush SLOT 0 %s\n", g_jmmu_bcache ? "ON" : "OFF", (u32)JDISP_SETS,
+		       g_jmmu_sq ? "INLINE" : "C", g_jmmu_pref ? "JIT" : "IFB", g_jmmu_asidjtc ? "ON" : "OFF",
+		       s_g22.hle ? "ON" : "OFF", s_g22.ext ? "ON" : "OFF", s_g22.asid0 ? "ON" : "OFF");
 	}
 	else if (sh4_cpu.ResetCache == jmmu_reset_cache)
 		sh4_cpu.ResetCache = recSh4_ClearCache;
@@ -617,23 +808,27 @@ void jmmu_stats(double seconds)
 	if (!g_jit_mmu || seconds <= 0.0)
 		return;
 	jx_stats_print();
+	if (s_g22.hle)
+		wce_cycles();	// a read a second keeps the slice count's 32-bit steps short
 	if (!memcmp(&s_js, &s_js_last, sizeof(s_js)))
 		return;
 #define D(f) (s_js.f - s_js_last.f)
 	printf("[jmmu] lookups %u, compiles %u, stale %u, FPU off %u | fills %u, slow r %u w %u | exc fetch %u data %u"
-	       " ifb %u taken %u | ldtlb %u, drops %u, flushes %u | I-cache %u, pages hashed %u changed %u, AT edges %u\n",
-	       D(lookups), D(compiles), D(stale), D(fd_compile), D(fills), D(slow_r), D(slow_w), D(fetch_exc), D(data_exc),
-	       D(ifb_exc), D(raises), D(ldtlb), D(drops), D(flushes), D(epochs), D(hashed), D(changed), D(at_edges));
+	       " ifb %u taken %u, wince tick %u qpc %u miss %u | ldtlb %u, drops %u, flushes %u | I-cache %u, pages hashed %u"
+	       " changed %u grown %u, AT edges %u\n", D(lookups), D(compiles), D(stale), D(fd_compile), D(fills), D(slow_r),
+	       D(slow_w), D(fetch_exc), D(data_exc), D(ifb_exc), D(raises), D(wce_ticks), D(wce_qpc), D(wce_miss), D(ldtlb),
+	       D(drops), D(flushes), D(epochs), D(hashed), D(changed), D(grown), D(at_edges));
 	const double ms = 1000.0 / (double)ps3_timebase_hz / seconds;
 #define T(f) ((double)(s_jt.f - s_jt_last.f) * ms)
 	printf("[jmmu] ms/s: lookup %.1f, compile %.1f, slow r %.1f w %.1f, ifb %.1f, exc %.1f, pref %.1f | block cache %s:"
 	       " fills %u, evicts %u, gen +%u\n", T(lookup), T(compile), T(rd), T(wr), T(ifb), T(raise), T(pref),
 	       g_jmmu_bcache ? "ON" : "OFF", D(bc_fills), D(bc_evicts), g_jdgen - s_jdgen_last);
-	char hr[160], hl[160];
+	char hr[160], hl[160], hc[160];
 	hr[hot_top(0, hr, sizeof(hr))] = 0;
 	hl[hot_top(1, hl, sizeof(hl))] = 0;
-	printf("[jmmu] prefs %u, ASID switches %u (restored %u) | hot slow r:%s | hot lookups:%s\n", D(prefs), D(asid),
-	       D(asid_restores), hr, hl);
+	hc[hot_top(2, hc, sizeof(hc))] = 0;
+	printf("[jmmu] prefs %u, ASID switches %u (restored %u, slot 0 %u: %u slots) | hot slow r:%s | hot lookups:%s"
+	       " | changed pages:%s\n", D(prefs), D(asid), D(asid_restores), D(asid0), D(s0_drops), hr, hl, hc);
 #undef T
 #undef D
 	s_js_last = s_js;

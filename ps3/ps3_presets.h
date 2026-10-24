@@ -257,6 +257,11 @@ extern int g_modem_preset;
 extern int g_advanced_preset;
 // The Game Settings row: 1 = the options set after a game is picked are that game's own (config/<image>.cfg).
 extern int g_game_cfg_preset;
+// GOALS.md G18-G22 (user report fixes): one row each, on the page of the code it changes.
+extern int g_pt_aniso_preset, g_pad_reconnect_preset, g_gd_pio_ring_preset, g_swap_rules_preset;
+extern int g_bg_bias_preset, g_dst_select_preset, g_list_init_keep_preset, g_jit_smc_preset;
+extern int g_audio_starve_preset, g_cfg_repair_preset, g_cfg_rev;
+extern int g_mmu_idle_x30_preset, g_wince_hle_preset, g_mmu_code_hash_preset, g_tlb_array_preset, g_mmu_asid_flush_preset;
 
 // cfgOpen() must have run first.
 void ps3_presets_load(void);

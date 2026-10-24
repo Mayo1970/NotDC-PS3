@@ -131,6 +131,7 @@ static void rj_finish(RsxdState* s)
 	d->n_offc = s->n_offc;
 	d->n_cclamp = s->n_cclamp;
 	d->n_tril = s->n_tril;
+	d->n_hide = s->n_hide;
 	d->gl = s->gl;
 }
 

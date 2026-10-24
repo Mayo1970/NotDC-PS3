@@ -5,6 +5,7 @@
 #include "ps3_menu.h"
 #include "ps3_padmap.h"
 #include "ps3_padports.h"
+#include "ps3_padcon.h"
 #include "ps3_presets.h"
 
 #include <stdio.h>
@@ -28,6 +29,7 @@ u8  rt[MAX_CONTROLLERS];
 u8  lt[MAX_CONTROLLERS];
 
 extern "C" int get_controller_type();
+extern "C" int get_pad_reconnect_preset();
 
 static bool ps3_pad_ok;
 // ioPadGetData does not refresh the buffer when there is no new input, so keep one per port.
@@ -149,6 +151,21 @@ static s8 ClampAnalogValue(s32 value)
 	return (s8)value;
 }
 
+// P118 (row Pad Reconnect): both pollers call it; a pad that turns on gets the port setting with pressure on, as this
+// libio sends no new data without it (ps3_menu.cpp's first poll).
+static PadCon s_padcon;
+
+u32 ps3_pad_connected(const padInfo* info, int who)
+{
+	unsigned on_now;
+	const u32 fresh = padcon_track(&s_padcon, info->status, MAX_PORT_NUM, who, &on_now);
+	for (int i = 0; i < MAX_PORT_NUM; i++)
+		if ((on_now >> i) & 1)
+			printf("[pad] ps3 pad %d on: port setting -> %d, connect %u\n", i,
+			       (int)ioPadSetPortSetting(i, PAD_SETTINGS_PRESS_ON), s_padcon.connects);
+	return fresh;
+}
+
 // G15: maple_cfg.cpp asks at each maple DMA which DC ports have a pad (bit N = port N), cap = the Players row.
 // A port keeps its pad while it stays connected (ps3_padports.h); on an ioPad error the ports stay as they are.
 u32 ps3_pad_ports(u32 cap)
@@ -156,6 +173,16 @@ u32 ps3_pad_ports(u32 cap)
 	padInfo info;
 	if (ps3_pad_ok && ioPadGetInfo(&info) == 0)
 	{
+		if (get_pad_reconnect_preset())
+		{
+			const u32 fresh = ps3_pad_connected(&info, 0);
+			for (int i = 0; i < MAX_PORT_NUM; i++)
+				if ((fresh >> i) & 1)
+				{
+					memset(&ps3_pad_data[i], 0, sizeof(ps3_pad_data[i]));
+					ps3_select_down[i] = false;
+				}
+		}
 		int old[MAX_CONTROLLERS];
 		for (u32 port = 0; port < MAX_CONTROLLERS; port++)
 		{

@@ -298,6 +298,24 @@ int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; 
 // First release: 0 shows only the main option rows, 1 every row.
 int g_advanced_preset      = 0;
 int g_game_cfg_preset      = 0;   // 1 = the options set after a game is picked go to config/<image>.cfg, not NotDC.cfg
+// GOALS.md G18-G22 (GitHub user reports): 0 is the old path in every one; a row is off until it is cleared on hardware.
+// G18 rows ON since 2026-10-24 (Matt), after the HW success.
+int g_pt_aniso_preset      = 1;   // 1 = punch-through textures get no anisotropic taps, as Flycast Vulkan/DX11 (P115, HW)
+int g_pad_reconnect_preset = 1;   // 1 = a pad that connects gets the port setting (pressure on) and clean buffers (P118, HW)
+int g_gd_pio_ring_preset   = 0;   // 1 = GD-ROM PIO reads come from the worker's read-ahead ring (P114)
+int g_swap_rules_preset    = 0;   // disc swap: 1 = the drive state stays (Flycast cbd01fba3), 2 = also a lid-open phase (P77)
+int g_bg_bias_preset       = 0;   // 1 = with Depth Float, the background depth bias is relative (P116)
+int g_dst_select_preset    = 0;   // 1 = polygons with TSP DstSelect draw nothing (P117, the test form)
+int g_list_init_keep_preset = 0;  // 1 = a TA_LIST_INIT keeps the stored lists until the next TA write, as Flycast (P123)
+int g_jit_smc_preset       = 0;   // JIT self-modifying code guard: 0 = the known addresses, 1 = every RAM block (P124)
+int g_audio_starve_preset  = 0;   // a short sound queue: 1 = FADE, 2 = HYSTERESIS, 3 = STRETCH (P119)
+int g_cfg_repair_preset    = 0;   // 1 = at start, the keys proven fatal in old installs go to today's default once (P120)
+int g_cfg_rev              = 0;   // the NotDC.cfg revision those repairs reached (P120)
+int g_mmu_idle_x30_preset  = 0;   // 1 = with the MMU JIT, the idle rule AUTO stays at X30 (P107)
+int g_wince_hle_preset     = 0;   // 1 = Windows CE GetTickCount and QueryPerformanceCounter answered in the JIT (P108)
+int g_mmu_code_hash_preset = 0;   // 1 = an MMU code page hashes only the bytes its blocks read (P109)
+int g_tlb_array_preset     = 0;   // 1 = a UTLB/ITLB array write changes one entry, not the whole FAST table (P110 b)
+int g_mmu_asid_flush_preset = 0;  // 1 = an ASID change clears only the process slots; P1/P2 stay (P110 a)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -358,6 +376,7 @@ static const CfgItem s_items[] = {
 	{ "Aniso",         &g_aniso_preset },
 	{ "TexFilter",     &g_tex_filter_preset },
 	{ "VqFormats",     &g_vq_formats_preset },
+	{ "PtAniso",       &g_pt_aniso_preset },
 	{ "IntClamp",      &g_int_clamp_preset },
 	{ "FaceReset",     &g_face_reset_preset },
 	{ "TrVolumes",     &g_tr_volumes_preset },
@@ -380,6 +399,9 @@ static const CfgItem s_items[] = {
 	{ "OffsetColour",  &g_offset_colour_preset },
 	{ "ColourClamp",   &g_colour_clamp_preset },
 	{ "Trilinear",     &g_trilinear_preset },
+	{ "BgDepthBias",   &g_bg_bias_preset },
+	{ "DstSelect",     &g_dst_select_preset },
+	{ "ListInitKeep",  &g_list_init_keep_preset },
 	{ "NearCap",       &g_near_cap_preset },
 	{ "NativeSize",    &g_native_size_preset },
 	{ "IntegerScale",  &g_integer_scale_preset },
@@ -425,6 +447,8 @@ static const CfgItem s_items[] = {
 	{ "GdiPaths",      &g_gdi_paths_preset },
 	{ "DiscSwap",      &g_disc_swap_preset },
 	{ "GdReadAhead",   &g_gd_read_ahead_preset },
+	{ "GdPioRing",     &g_gd_pio_ring_preset },
+	{ "DiscSwapRules", &g_swap_rules_preset },
 	{ "Arm7Jit",       &g_arm7_jit_preset },
 	{ "IfbProbe",      &g_ifb_probe_preset },
 	{ "JitCCalls",     &g_jit_ccalls_preset },
@@ -455,6 +479,7 @@ static const CfgItem s_items[] = {
 	{ "AdpcmStream",   &g_adpcm_stream_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
+	{ "AudioStarve",   &g_audio_starve_preset },
 	{ "TmuClock",      &g_tmu_clock_preset },
 	{ "TmuFineTcnt",   &g_tmu_fine_tcnt_preset },
 	{ "SpgFieldBit",   &g_spg_field_bit_preset },
@@ -476,9 +501,16 @@ static const CfgItem s_items[] = {
 	{ "MmuSqStores",   &g_mmu_sq_preset },
 	{ "MmuPref",       &g_mmu_pref_preset },
 	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
+	{ "MmuIdleX30",    &g_mmu_idle_x30_preset },
+	{ "WinceSysCalls", &g_wince_hle_preset },
+	{ "MmuCodeHash",   &g_mmu_code_hash_preset },
+	{ "TlbArrayWrites", &g_tlb_array_preset },
+	{ "MmuAsidFlush",  &g_mmu_asid_flush_preset },
 	{ "Modem",         &g_modem_preset },
 	{ "AdvancedMode",  &g_advanced_preset },
 	{ "GameSettings",  &g_game_cfg_preset },
+	{ "CfgRepair",     &g_cfg_repair_preset },
+	{ "CfgRev",        &g_cfg_rev },
 	{ "JitBcache",     &g_jit_bcache_preset },
 	{ "JitPrMoves",    &g_jit_pr_moves_preset },
 	{ "JitRmAny",      &g_jit_rm_any_preset },
@@ -495,6 +527,7 @@ static const CfgItem s_items[] = {
 	{ "JitShortForms", &g_jit_short_forms_preset },
 	{ "JitSchedule",   &g_jit_schedule_preset },
 	{ "JitPairCalls",  &g_jit_pair_calls_preset },
+	{ "JitSmcGuard",   &g_jit_smc_preset },
 	{ "JitSqCopy",     &g_jit_sq_copy_preset },
 	{ "MapleDelay",    &g_maple_delay_preset },
 	{ "MapleSpeed",    &g_maple_speed_preset },
@@ -508,6 +541,7 @@ static const CfgItem s_items[] = {
 	{ "StickDeadZone", &g_stick_deadzone_preset },
 	{ "StickDpadSwap", &g_stick_swap_preset },
 	{ "UsbKeyboard",   &g_usb_kb_preset },
+	{ "PadReconnect",  &g_pad_reconnect_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -563,12 +597,31 @@ static const CfgItem s_items[] = {
 	{ "KeepFrame",     &g_keep_frame_preset },
 };
 
+// P120 (row Config Repair): an install keeps NotDC.cfg, so each revision puts its fatal keys back at today's default
+// once (Matt picks them). Revision 1: RTT Read-back OLD never returns (P75, Grandia II).
+#define CFG_REV 1
+static const struct { int rev; int* val; } k_cfg_fixes[] = {
+	{ 1, &g_rtt_readback_preset },
+};
+#define CFG_FIXES (sizeof(k_cfg_fixes) / sizeof(k_cfg_fixes[0]))
+static struct { bool set; int def[CFG_FIXES]; } s_cfg_def;   // the source defaults, kept at the first load
+
 void ps3_presets_load(void)
 {
+	for (u32 i = 0; i < CFG_FIXES && !s_cfg_def.set; i++)
+		s_cfg_def.def[i] = *k_cfg_fixes[i].val;
+	s_cfg_def.set = true;
 	// cfgLoadInt writes the default back when the key is absent, so a first
 	// run leaves a complete [ps3] section in the file.
 	for (u32 i = 0; i < sizeof(s_items) / sizeof(s_items[0]); i++)
 		*s_items[i].val = cfgLoadInt(CFG_SECT, s_items[i].key, *s_items[i].val);
+	if (g_cfg_repair_preset && g_cfg_rev < CFG_REV)
+	{
+		for (u32 i = 0; i < CFG_FIXES; i++)
+			if (k_cfg_fixes[i].rev > g_cfg_rev)
+				*k_cfg_fixes[i].val = s_cfg_def.def[i];
+		g_cfg_rev = CFG_REV;
+	}
 }
 
 #define ITEM_COUNT (sizeof(s_items) / sizeof(s_items[0]))
@@ -588,6 +641,8 @@ static struct
 // Rows that act before a game is picked, or on the menu itself, stay global.
 static bool game_key(const CfgItem& it)
 {
+	if (it.val == &g_cfg_repair_preset || it.val == &g_cfg_rev)
+		return false;
 	return it.val != &g_game_cfg_preset && it.val != &g_advanced_preset && it.val != &g_output_1080_preset;
 }
 
@@ -710,6 +765,7 @@ static const CfgItem s_snd_items[] = {
 	{ "AdpcmStream",   &g_adpcm_stream_preset },
 	{ "G2DmaSmall",    &g_g2_dma_small_preset },
 	{ "G2DmaRead",     &g_g2_dma_read_preset },
+	{ "AudioStarve",   &g_audio_starve_preset },
 };
 #define SND_ITEMS (sizeof(s_snd_items) / sizeof(s_snd_items[0]))
 
@@ -732,6 +788,8 @@ static const CfgItem s_gd_items[] = {
 	{ "GdiPaths",      &g_gdi_paths_preset },
 	{ "DiscSwap",      &g_disc_swap_preset },
 	{ "GdReadAhead",   &g_gd_read_ahead_preset },
+	{ "GdPioRing",     &g_gd_pio_ring_preset },
+	{ "DiscSwapRules", &g_swap_rules_preset },
 };
 #define GD_ITEMS (sizeof(s_gd_items) / sizeof(s_gd_items[0]))
 
@@ -746,6 +804,7 @@ static const CfgItem s_tex_items[] = {
 	{ "TexSlotHash",   &g_tex_slot_hash_preset },
 	{ "YuvBlockDecode", &g_yuv_block_preset },
 	{ "BumpMap",       &g_bump_map_preset },
+	{ "PtAniso",       &g_pt_aniso_preset },
 };
 #define TEX_ITEMS (sizeof(s_tex_items) / sizeof(s_tex_items[0]))
 
@@ -774,6 +833,9 @@ static const CfgItem s_rend_items[] = {
 	{ "ColourClamp",   &g_colour_clamp_preset },
 	{ "Trilinear",     &g_trilinear_preset },
 	{ "NearCap",       &g_near_cap_preset },
+	{ "BgDepthBias",   &g_bg_bias_preset },
+	{ "DstSelect",     &g_dst_select_preset },
+	{ "ListInitKeep",  &g_list_init_keep_preset },
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 
@@ -798,6 +860,7 @@ static const CfgItem s_pad_items[] = {
 	{ "StickDeadZone", &g_stick_deadzone_preset },
 	{ "StickDpadSwap", &g_stick_swap_preset },
 	{ "UsbKeyboard",   &g_usb_kb_preset },
+	{ "PadReconnect",  &g_pad_reconnect_preset },
 	{ "SlotA1",        &g_slot_dev_preset[0] },
 	{ "SlotA2",        &g_slot_dev_preset[1] },
 	{ "SlotB1",        &g_slot_dev_preset[2] },
@@ -845,6 +908,8 @@ static const CfgItem s_out_items[] = {
 	{ "FbWatch",       &g_fb_watch_preset },
 	{ "SpeFbConvert",  &g_spe_fbconv_preset },
 	{ "XScaler",       &g_x_scaler_preset },
+	{ "CfgRepair",     &g_cfg_repair_preset },
+	{ "CfgRev",        &g_cfg_rev },
 };
 #define OUT_ITEMS (sizeof(s_out_items) / sizeof(s_out_items[0]))
 
@@ -926,6 +991,11 @@ static const CfgItem s_sys_items[] = {
 	{ "MmuSqStores",   &g_mmu_sq_preset },
 	{ "MmuPref",       &g_mmu_pref_preset },
 	{ "MmuAsidJtc",    &g_mmu_asidjtc_preset },
+	{ "MmuIdleX30",    &g_mmu_idle_x30_preset },
+	{ "WinceSysCalls", &g_wince_hle_preset },
+	{ "MmuCodeHash",   &g_mmu_code_hash_preset },
+	{ "TlbArrayWrites", &g_tlb_array_preset },
+	{ "MmuAsidFlush",  &g_mmu_asid_flush_preset },
 };
 #define SYS_ITEMS (sizeof(s_sys_items) / sizeof(s_sys_items[0]))
 
@@ -1240,6 +1310,20 @@ int get_jit_fschg_preset()     { return g_jit_fschg_preset; }
 int get_jit_fsqrt_preset()     { return g_jit_fsqrt_preset; }
 int get_jit_tfwd_preset()      { return g_jit_tfwd_preset; }
 
-// Self-modifying-block protection: 0=off, 1=known SMC addresses, 2=all RAM.
-int get_jit_sbp_preset()       { return 1; }
+// Self-modifying-block protection: 1 = known SMC addresses, 2 = all RAM (row JIT SMC Guard, P124); 0 (off) has no row.
+int get_jit_sbp_preset()       { return g_jit_smc_preset ? 2 : 1; }
+// GOALS.md G18-G22: each row's help says when it acts.
+int get_pt_aniso_preset()      { return g_pt_aniso_preset; }
+int get_pad_reconnect_preset() { return g_pad_reconnect_preset; }
+int get_gd_pio_ring_preset()   { return g_gd_pio_ring_preset; }
+int get_swap_rules_preset()    { return g_swap_rules_preset; }
+int get_bg_bias_preset()       { return g_bg_bias_preset; }
+int get_dst_select_preset()    { return g_dst_select_preset; }
+int get_list_init_keep_preset() { return g_list_init_keep_preset; }
+int get_audio_starve_preset()  { return g_audio_starve_preset; }
+int get_mmu_idle_x30_preset()  { return g_mmu_idle_x30_preset; }
+int get_wince_hle_preset()     { return g_wince_hle_preset; }
+int get_mmu_code_hash_preset() { return g_mmu_code_hash_preset; }
+int get_tlb_array_preset()     { return g_tlb_array_preset; }
+int get_mmu_asid_flush_preset() { return g_mmu_asid_flush_preset; }
 }

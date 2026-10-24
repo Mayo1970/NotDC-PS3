@@ -13,6 +13,7 @@
 
 extern "C" int get_gd_async_preset();
 extern "C" int get_gd_read_ahead_preset();
+extern "C" int get_gd_pio_ring_preset();
 void libGDR_ReadSectorLocked(u8* buff, u32 StartSector, u32 SectorCount, u32 secsz);   // plugs/ImgReader
 
 #define RA_SLOTS 64            // ~0.85 s of CD-DA, slot = FAD & (RA_SLOTS - 1)
@@ -44,6 +45,10 @@ static u32 s_quit;
 // The fill: the SH4 thread writes it before s_busy goes to 1, the worker reads it after.
 static u8* s_dst;
 static u32 s_fad, s_count, s_secsz, s_busy;
+// Row PIO Read Ahead (P114): ring = the fill is a PIO read, set with it and cleared after it. The [gdr] counts; late =
+// PIO fills the worker took whole from the data ring (worker only).
+static struct { u32 ring, hit, miss, late, late_seen; } s_pio;
+static bool pio_take();
 
 // CD-DA ring, then the loop head. A slot is valid while its tag is the FAD it holds; the worker clears the tag first.
 static u64 s_ra[RA_ALL][SECT / 8];
@@ -95,6 +100,8 @@ static void w_add(Count& c, u32 sec, u64 t)
 
 static void do_fill()
 {
+	if (s_pio.ring && pio_take())
+		return;
 	const u64 t0 = gettime();
 	libGDR_ReadSectorLocked(s_dst, s_fad, s_count, s_secsz);
 	w_add(w_fill, s_count, gettime() - t0);
@@ -171,6 +178,31 @@ static bool dra_get(u8* dst, u32 slot, u32 tag, u32 secsz)
 	}
 	__atomic_thread_fence(__ATOMIC_ACQUIRE);
 	return LOAD(s_dra_tag[slot]) == tag;
+}
+
+// P114: how many sectors from at on the data ring holds in a row, copied to to.
+static u32 dra_have(u8* to, u32 at, u32 n, u32 sz)
+{
+	u32 k = 0;
+	while (k < n && dra_get(to + k * sz, (at + k) & (DRA_SLOTS - 1), dra_tag(at + k, sz), sz))
+		k++;
+	return k;
+}
+
+// P114, worker: a PIO fill takes what the ring holds first (the batch just read may have it); true when that was all.
+static bool pio_take()
+{
+	const u32 k = dra_have(s_dst, s_fad, s_count, s_secsz);
+	if (k == s_count)
+	{
+		STORE(s_pio.late, LOAD(s_pio.late) + 1);
+		REL(s_busy, 0u);
+		return true;
+	}
+	s_dst += k * s_secsz;
+	s_fad += k;
+	s_count -= k;
+	return false;
 }
 
 // One batch of the window [want, want + RA_SLOTS); false when it has nothing to read.
@@ -432,6 +464,35 @@ void gda_wait()
 	add(st_wait, 0, gettime() - t0);
 }
 
+// P114 row PIO Read Ahead: the data ring first, else a fill the SH4 waits for (the worker looks in the ring again, so a
+// batch it was reading is not read twice); then the window after it. False with no worker: the caller reads.
+bool gda_pio(uint8_t* dst, uint32_t fad, uint32_t count, uint32_t secsz)
+{
+	if (!s_up || !dra_code(secsz))
+		return false;
+	const u64 t0 = gettime();
+	const u32 k = dra_have(dst, fad, count, secsz);
+	if (k == count)
+		s_pio.hit++;
+	else
+	{
+		gda_wait();   // one fill in flight: a DMA that ran on into this read may have one
+		s_pio.miss++;
+		s_pio.ring = 1;
+		s_dst = dst + k * secsz;
+		s_fad = fad + k;
+		s_count = count - k;
+		s_secsz = secsz;
+		REL(s_busy, 1u);
+		sysSemPost(s_sem, 1);
+		gda_wait();
+		s_pio.ring = 0;
+	}
+	dra_ask(fad + count, secsz);
+	add(st_sh4[GDR_PIO], count, gettime() - t0);
+	return true;
+}
+
 bool gda_cdda(uint8_t* dst, uint32_t fad)
 {
 	if (s_level < 2)
@@ -540,26 +601,31 @@ static Count take(Count& w, Count& seen)
 void gda_stats(double secs)
 {
 	const Count f = take(w_fill, s_fill_seen), r = take(w_ra, s_ra_seen), d = take(w_dra, s_dra_seen);
-	bool any = f.n || r.n || d.n || st_wait.n || st_hit || st_miss || st_lh || st_fills;
+	const u32 late = LOAD(s_pio.late), plate = late - s_pio.late_seen;
+	s_pio.late_seen = late;
+	bool any = f.n || r.n || d.n || st_wait.n || st_hit || st_miss || st_lh || st_fills || s_pio.hit || s_pio.miss;
 	for (int k = 0; k < GDR_N; k++)
 		any = any || st_sh4[k].n;
 	if (any)
 	{
-		// Per window: reads/sectors total ms(longest ms). lh: sectors the loop head gave (+ LOOP AHEAD).
+		// Per window: reads/sectors total ms(longest ms). lh: sectors the loop head gave (+ LOOP AHEAD). pio: PIO reads
+		// the SH4 took from the ring, the worker took from it, the worker read from the disc (P114).
 		const Count* s = st_sh4;
 		printf("[gdr] %.2f s async=%d sh4: dma %u/%u %.1f(%.1f) pio %u/%u %.1f(%.1f) cdda %u/%u %.1f(%.1f)"
 		       " wait %u %.1f(%.1f) seek %u %.1f | worker: fill %u/%u %.1f(%.1f) ra %u/%u %.1f(%.1f) | ra hit %u miss %u"
-		       " lh %u | fills %u seq %u dra %d hit %u read %u/%u %.1f(%.1f)\n",
+		       " lh %u | fills %u seq %u dra %d hit %u read %u/%u %.1f(%.1f) | pio %d hit %u late %u disc %u\n",
 		       secs, s_level,
 		       s[GDR_DMA].n, s[GDR_DMA].sec, ms(s[GDR_DMA].ticks), ms(s[GDR_DMA].max),
 		       s[GDR_PIO].n, s[GDR_PIO].sec, ms(s[GDR_PIO].ticks), ms(s[GDR_PIO].max),
 		       s[GDR_CDDA].n, s[GDR_CDDA].sec, ms(s[GDR_CDDA].ticks), ms(s[GDR_CDDA].max),
 		       st_wait.n, ms(st_wait.ticks), ms(st_wait.max), s[GDR_SEEK].n, ms(s[GDR_SEEK].ticks),
 		       f.n, f.sec, ms(f.ticks), ms(f.max), r.n, r.sec, ms(r.ticks), ms(r.max), st_hit, st_miss, st_lh,
-		       st_fills, st_seq, get_gd_read_ahead_preset(), st_dra_hit, d.n, d.sec, ms(d.ticks), ms(d.max));
+		       st_fills, st_seq, get_gd_read_ahead_preset(), st_dra_hit, d.n, d.sec, ms(d.ticks), ms(d.max),
+		       get_gd_pio_ring_preset(), s_pio.hit, plate, s_pio.miss - plate);
 	}
 	memset(st_sh4, 0, sizeof(st_sh4));
 	memset(&st_wait, 0, sizeof(st_wait));
 	st_hit = st_miss = st_lh = 0;
 	st_fills = st_seq = st_dra_hit = 0;
+	s_pio.hit = s_pio.miss = 0;
 }

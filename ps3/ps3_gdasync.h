@@ -14,6 +14,7 @@ bool gda_async();   // data fills go to the worker
 void gda_fill(uint8_t* dst, uint32_t fad, uint32_t count, uint32_t secsz);   // one fill in flight at a time
 bool gda_busy();    // that fill has not landed
 void gda_wait();    // until it lands
+bool gda_pio(uint8_t* dst, uint32_t fad, uint32_t count, uint32_t secsz);   // P114; false: no worker, read it yourself
 
 bool gda_cdda(uint8_t* dst, uint32_t fad);             // a sector from the read-ahead; false: read it yourself
 void gda_cdda_next(bool playing, uint32_t fad);        // where CD-DA plays next
