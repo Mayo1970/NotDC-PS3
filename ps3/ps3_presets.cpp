@@ -256,7 +256,8 @@ int g_ch2_dma_fix_preset   = 0;   // 1 = a ch2 DMA always ends: target and lengt
 // OPTIMIZATION_PLAN section 7, bundle 14 (render-thread draw cost): 0 is the old path in every one; the picture is the
 // same at every value. ON since 2026-10-13 (Matt): HW SUCCESS in Crazy Taxi, Sonic Adventure 2 and Rayman 2.
 int g_tr_first_pass_preset = 2;   // + OPAQUE DEPTH's first pass: 1 = no run that writes no depth, 2 = also in game order, before the sort (P73, HW at 2)
-int g_tex_recycle_preset   = 0;   // 1 = an evicted texture is reused by a new one of its size after 2 frames (Garou)
+int g_tex_recycle_preset   = 1;   // 1 = an evicted texture is reused by a new one of its size after 2 frames (Garou, HW at 1)
+int g_tex_pool_preset      = 1;   // 1 = texture memory the RSX is done with is kept by size for a new texture (Garou, HW at 1)
 // OPTIMIZATION_PLAN section 7, bundle 15 (flash and clock): 0 is the old path in every one. Defaults since 2026-10-13
 // (Matt): the values of his Rayman 2 HW run. No row's value reaches dc_flash_wb.bin but the console ID.
 int g_broadcast_preset     = 3;   // the flash's TV system byte: 0 = its own, 1 = NTSC, 2 = PAL, 3 = PAL only for a disc that lists Europe alone (P59, HW at 3)
@@ -459,6 +460,7 @@ static const CfgItem s_items[] = {
 	{ "SpeBuild",      &g_spe_build_preset },
 	{ "SpeTexHash",    &g_spe_tex_preset },
 	{ "SpeTexDecode",  &g_spe_texdec_preset },
+	{ "TexPool",       &g_tex_pool_preset },
 	{ "SpeFbConvert",  &g_spe_fbconv_preset },
 	{ "SpeAicaCheck",  &g_spe_aica_preset },
 	{ "SpeDspJit",     &g_spe_dsp_jit_preset },
@@ -941,6 +943,7 @@ static const CfgItem s_mem_items[] = {
 static const CfgItem s_cost_items[] = {
 	{ "TrFirstPass",   &g_tr_first_pass_preset },
 	{ "TexRecycle",    &g_tex_recycle_preset },
+	{ "TexPool",       &g_tex_pool_preset },
 	{ "TrTriSort",     &g_tr_tri_sort_preset },
 	{ "SpeBuild",      &g_spe_build_preset },
 	{ "SpeTexHash",    &g_spe_tex_preset },
@@ -1180,6 +1183,7 @@ int get_drop_policy_preset()   { return g_drop_policy_preset; }
 
 int get_tex_slot_hash_preset() { return g_tex_slot_hash_preset; }
 int get_tex_recycle_preset()   { return g_tex_recycle_preset; }
+int get_tex_pool_preset()      { return g_tex_pool_preset; }
 int get_depth_float_preset()   { return g_depth_float_preset; }
 int get_yuv_block_preset()     { return g_yuv_block_preset; }
 int get_bump_map_preset()      { return g_bump_map_preset; }

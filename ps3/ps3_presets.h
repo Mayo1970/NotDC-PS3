@@ -222,6 +222,7 @@ extern int g_ch2_dma_fix_preset;
 // Bundle 14 (plan section 7), the DRAW COST page.
 extern int g_tr_first_pass_preset;
 extern int g_tex_recycle_preset;
+extern int g_tex_pool_preset;
 // Bundle 15 (plan section 7), the FLASH / CLOCK page.
 extern int g_broadcast_preset;
 extern int g_bios_lang_preset;

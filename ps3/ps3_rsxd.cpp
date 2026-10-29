@@ -1444,14 +1444,15 @@ void ps3rsxd_stats(double secs)
 	u32 live = 0;
 	for (u32 i = 0; i < RT_MAX; i++)
 		live += RT.t[i].used;
-	printf("[rsxd] tex entries=%u | allocs=%u frees=%u fails=%u levels=%u MB=%.1f over=%u | ring peak=%u KB drops=%u "
-	       "wait %.2f ms timeouts=%u\n", live, RT.n_alloc, RT.n_free, RT.n_fail, RT.n_up, (double)RT.n_bytes / 1048576.0,
-	       RT.n_over, S.rpeak >> 10, S.n_rdrop, (double)S.t_rwait * 1000.0 / (double)ps3_timebase_hz, S.n_rtimeout);
+	printf("[rsxd] tex entries=%u | allocs=%u frees=%u fails=%u levels=%u MB=%.1f over=%u pool=%u kept=%.1fMB | ring "
+	       "peak=%u KB drops=%u wait %.2f ms timeouts=%u\n", live, RT.n_alloc, RT.n_free, RT.n_fail, RT.n_up,
+	       (double)RT.n_bytes / 1048576.0, RT.n_over, RT.n_pool, (double)RT.pool_bytes / 1048576.0, S.rpeak >> 10,
+	       S.n_rdrop, (double)S.t_rwait * 1000.0 / (double)ps3_timebase_hz, S.n_rtimeout);
 	printf("[rsxd] spu up=%u | jobs=%u words=%u draws=%u ppu=%u late=%u wait %.2f ms | tris jobs=%u ppu=%u big=%u\n",
 	       (u32)(!S.spu_dead && ps3spetex_mode() != SPETEX_OFF), S.n_jobs, S.n_jwords, S.n_jdraw, S.n_fall, S.n_late,
 	       (double)S.t_wait * 1000.0 / (double)ps3_timebase_hz, S.n_tjobs, S.n_tppu, S.n_tbig);
 	S.n_frames = S.n_clears = S.n_vols = S.n_fog = S.n_quads = 0;
-	RT.n_alloc = RT.n_free = RT.n_fail = RT.n_up = RT.n_over = 0;
+	RT.n_alloc = RT.n_free = RT.n_fail = RT.n_up = RT.n_over = RT.n_pool = 0;
 	RT.n_bytes = 0;
 	S.rpeak = S.n_rdrop = S.n_rtimeout = 0;
 	S.t_rwait = 0;
@@ -1893,6 +1894,14 @@ int rglTexChainLevels()
 	return t ? rt_chain_levels(t) : 0;
 }
 
+// Tex Pool is live: OFF gives the kept memory back.
+void rglTexPool(int on)
+{
+	if (!on && RT.pool_on)
+		rt_pool_drain();
+	RT.pool_on = on != 0;
+}
+
 void rglTexConvertCheck(void* dst, int w, int h, const void* rgba)
 {
 	if (RtTex* const t = t_cur())
@@ -1929,6 +1938,7 @@ extern "C" void ps3rsxd_mem_term(void)
 			rt_delete(i);
 	rt_frame(0);
 	rt_frame(1);
+	rt_pool_drain();
 	free(RT.stage);
 	RT.stage = 0;
 	RT.stage_size = 0;

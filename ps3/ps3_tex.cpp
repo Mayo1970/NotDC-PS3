@@ -15,6 +15,7 @@
 
 extern "C" int get_tex_slot_hash_preset();
 extern "C" int get_tex_recycle_preset();
+extern "C" int get_tex_pool_preset();
 extern "C" int get_yuv_block_preset();
 extern "C" int get_bump_map_preset();
 // Plan section 7, bundle 3 (the TEXTURES page).
@@ -862,6 +863,7 @@ void ps3tex_frame_begin(const DcParam* params, u32 nparam)
 		s_recycle = recycle;
 		printf("[tex] recycle %s\n", recycle ? "ON" : "OFF");
 	}
+	rglTexPool(get_tex_pool_preset());
 	int aniso = get_aniso_preset(), filter = get_tex_filter_preset();
 	aniso = aniso < 0 ? 0 : (aniso > 4 ? 4 : aniso);
 	filter = filter < 0 || filter > 2 ? 0 : filter;

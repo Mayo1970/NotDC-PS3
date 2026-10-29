@@ -880,6 +880,8 @@ static Option s_cost[] = {
 	  "+ OPAQUE DEPTH's depth pass: SKIP draws only what writes depth; GAME ORDER merges (P73). Live." },
 	{ "Tex Recycle",     &g_tex_recycle_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "An evicted texture waits 2 frames, then a new one of its size reuses it (Garou). Live." },
+	{ "Tex Pool",        &g_tex_pool_preset,      OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Texture memory the RSX is done with is kept for a new texture of its size (Garou). Live." },
 };
 
 // Plan section 7, bundle 15: one row per item; the first value is the old path. dc_flash_wb.bin keeps the flash's
@@ -1632,6 +1634,7 @@ static int* const k_live_opts[] = {
 	&g_fps_overlay_preset, &g_screen_format_preset, &g_screen_scaler_preset,
 	&g_ch2_dma_fix_preset,
 	&g_tr_first_pass_preset,
+	&g_tex_pool_preset,
 	&g_tex_recycle_preset,
 	&g_exit_save_preset,
 	&g_maple_delay_preset, &g_maple_speed_preset, &g_maple_cmds_preset, &g_maple_ddt_preset, &g_maple_guard_preset,

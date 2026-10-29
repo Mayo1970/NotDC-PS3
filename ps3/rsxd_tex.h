@@ -8,12 +8,16 @@
 #define RT_MAX   4096       // entries; the last one wraps memory another side writes
 #define RT_DIM   4096       // the largest side of a swizzled texture
 #define RT_REMAP 0x00AAE4u  // the identity remap
+#define RT_POOL_N   4096         // Tex Pool: blocks kept
+#define RT_POOL_H   512          // Tex Pool: sizes kept, a power of 2
+#define RT_POOL_MAX (16u << 20)  // Tex Pool: bytes kept
 
 typedef struct
 {
 	uint8_t* data;          // RSX memory; NULL: no texels
 	uint32_t offset;
 	uint32_t fixed_pitch;   // rt_wrap: the memory's pitch while the size sampled changes
+	uint32_t bytes;         // the size of data's block
 	// The texture's RSX words: offset, format, remap, size0, size1.
 	uint32_t g_off, g_fmt, g_remap, g_size0, g_size1;
 	uint16_t w, h;
@@ -31,12 +35,18 @@ static struct
 	uint32_t stage_size;
 	// The memory each vring segment's fence covers: given up while that segment was the frame's.
 	void* pend[2][RT_MAX];
+	uint32_t pend_sz[2][RT_MAX];
 	uint32_t npend[2], seg;
 	// Per stats window: allocations, frees, failed allocations, levels written, early frees of a full list, bytes; the
 	// frame's allocations.
 	uint32_t n_alloc, n_free, n_fail, n_up, n_over;
 	uint64_t n_bytes;
 	uint32_t n_frame_alloc;
+	// Tex Pool (Garou): blocks the RSX is done with, chained per exact size (entry + 1, 0 ends a chain), so texture
+	// churn skips rsxMemalign/rsxFree (slow in Garou's fights). n_pool: allocations it served.
+	void* pool_p[RT_POOL_N];
+	uint32_t pool_next[RT_POOL_N], pool_size[RT_POOL_H], pool_head[RT_POOL_H];
+	uint32_t pool_on, pool_free, pool_top, pool_bytes, n_pool;
 } RT;
 
 static inline uint32_t rt_dim(uint32_t base, int level)
@@ -165,6 +175,75 @@ static uint8_t* rt_stage(uint32_t size)
 	return RT.stage;
 }
 
+// The size's slot in the pool's size table; -1 if it is not there (add 0) or the table is full.
+static int rt_pool_slot(uint32_t size, int add)
+{
+	uint32_t h = ((size >> 7) * 2654435761u >> 23) & (RT_POOL_H - 1);
+	for (uint32_t n = 0; n < RT_POOL_H; n++, h = (h + 1) & (RT_POOL_H - 1))
+	{
+		if (RT.pool_size[h] == size)
+			return (int)h;
+		if (!RT.pool_size[h])
+		{
+			if (!add)
+				return -1;
+			RT.pool_size[h] = size;
+			return (int)h;
+		}
+	}
+	return -1;
+}
+
+static void* rt_pool_take(uint32_t size)
+{
+	const int h = rt_pool_slot(size, 0);
+	if (h < 0 || !RT.pool_head[h])
+		return 0;
+	const uint32_t e = RT.pool_head[h] - 1;
+	RT.pool_head[h] = RT.pool_next[e];
+	RT.pool_next[e] = RT.pool_free;
+	RT.pool_free = e + 1;
+	RT.pool_bytes -= size;
+	RT.n_pool++;
+	return RT.pool_p[e];
+}
+
+// 0: the pool is full and p stays the caller's.
+static int rt_pool_put(void* p, uint32_t size)
+{
+	if (RT.pool_bytes + size > RT_POOL_MAX || (!RT.pool_free && RT.pool_top == RT_POOL_N))
+		return 0;
+	const int h = rt_pool_slot(size, 1);
+	if (h < 0)
+		return 0;
+	uint32_t e;
+	if (RT.pool_free)
+	{
+		e = RT.pool_free - 1;
+		RT.pool_free = RT.pool_next[e];
+	}
+	else
+		e = RT.pool_top++;
+	RT.pool_p[e] = p;
+	RT.pool_next[e] = RT.pool_head[h];
+	RT.pool_head[h] = e + 1;
+	RT.pool_bytes += size;
+	return 1;
+}
+
+static void rt_pool_drain()
+{
+	for (uint32_t h = 0; h < RT_POOL_H; h++)
+		for (uint32_t e = RT.pool_head[h]; e; e = RT.pool_next[e - 1])
+		{
+			rsxFree(RT.pool_p[e - 1]);
+			RT.n_free++;
+		}
+	memset(RT.pool_size, 0, sizeof(RT.pool_size));
+	memset(RT.pool_head, 0, sizeof(RT.pool_head));
+	RT.pool_free = RT.pool_top = RT.pool_bytes = 0;
+}
+
 // t's memory goes once the RSX is past the draws of this frame: at a later begin that waits for this segment.
 static void rt_defer(RtTex* t)
 {
@@ -180,19 +259,24 @@ static void rt_defer(RtTex* t)
 			*n = 0;
 			RT.n_over++;
 		}
+		RT.pend_sz[RT.seg][*n] = t->bytes;
 		RT.pend[RT.seg][(*n)++] = t->data;
 	}
 	t->data = 0;
 	t->ext = 0;
 }
 
-// A frame's begin waited for vring segment seg's fence: the memory given up while seg was last the frame's goes.
+// A frame's begin waited for vring segment seg's fence: the memory given up while seg was last the frame's goes, or
+// into Tex Pool.
 static void rt_frame(uint32_t seg)
 {
 	RT.seg = seg & 1;
 	for (uint32_t i = 0; i < RT.npend[RT.seg]; i++)
-		rsxFree(RT.pend[RT.seg][i]);
-	RT.n_free += RT.npend[RT.seg];
+		if (!RT.pool_on || !rt_pool_put(RT.pend[RT.seg][i], RT.pend_sz[RT.seg][i]))
+		{
+			rsxFree(RT.pend[RT.seg][i]);
+			RT.n_free++;
+		}
 	RT.npend[RT.seg] = 0;
 }
 
@@ -316,12 +400,21 @@ static int rt_alloc0(RtTex* t, uint32_t w, uint32_t h)
 	t->swz = (uint8_t)(!mirror && !t->nosw && rt_pow2(w) && rt_pow2(h) && w <= RT_DIM && h <= RT_DIM);
 	t->alloc = (uint8_t)(t->mip && t->swz ? rt_nlevels(w, h) : 1);
 	const uint32_t size = rt_level_off(w, h, t->alloc, t->swz);
-	t->data = (uint8_t*)rsxMemalign(128, size);
+	t->data = RT.pool_on ? (uint8_t*)rt_pool_take(size) : 0;
+	if (!t->data)
+		t->data = (uint8_t*)rsxMemalign(128, size);
+	// RSX memory is short: the pool's blocks go back first.
+	if (!t->data && RT.pool_bytes)
+	{
+		rt_pool_drain();
+		t->data = (uint8_t*)rsxMemalign(128, size);
+	}
 	if (!t->data)
 	{
 		RT.n_fail++;
 		return 0;
 	}
+	t->bytes = size;
 	rsxAddressToOffset(t->data, &t->offset);
 	RT.n_alloc++;
 	RT.n_frame_alloc++;

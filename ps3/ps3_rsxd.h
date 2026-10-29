@@ -134,6 +134,7 @@ u8* rglTexDirectLevel0(int w, int h, u32* pitch, int* swz);
 u8* rglTexDirectLevel(int level);
 void rglTexDirectLevelEnd(int level);
 int rglTexChainLevels();
+void rglTexPool(int on);
 void rglTexConvertCheck(void* dst, int w, int h, const void* rgba);
 // Binds an entry over linear RSX memory another side writes (Native Size, the SPU's 2D buffers).
 void rglTexWrap(void* mem, u32 pitch, u32 w, u32 h);
