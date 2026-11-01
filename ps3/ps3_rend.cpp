@@ -257,6 +257,7 @@ static float s_fb_scale_x = 1.0f, s_fb_scale_y = 1.0f;
 // g_rr is the draw side's copy, read only by whoever is drawing. s_snap is
 // filled on the SH4 thread, s_job_rr carries one posted job's values across.
 RenderRegs g_rr;
+const u32* g_pal_src = PALETTE_RAM;
 static RenderRegs s_snap;
 static RenderRegs s_job_rr;
 
@@ -332,7 +333,8 @@ static float s_stat_w_lo = 1e30f, s_stat_w_hi = 0.0f, s_stat_near_lo = 1e30f;
 static u32 s_stat_wclamp, s_stat_wtotal;
 static float s_stat_bg_inv_w; static u32 s_stat_bg_zw;
 // [rend4] bgrel= keep=: renders with P116's relative background bias; renders of a stream P123 kept, its kept inits.
-static struct { u32 bg_rel, kept, inits; } s_stat_fix;
+// rwait=: G25 Render Wait's waits at RENDER_DONE and their time (SH4 thread).
+static struct { u32 bg_rel, kept, inits, rwaits; double rwait_s; } s_stat_fix;
 
 static void reset_lists(TaContext* c)
 {
@@ -356,7 +358,7 @@ static u32 ta_opts_now()
 	return (g_int_clamp_preset ? TAOPT_INT_CLAMP : 0) | (g_face_reset_preset ? TAOPT_FACE_RESET : 0) |
 	       (g_tr_volumes_preset ? TAOPT_TR_VOL : 0) | (g_volume_cap_preset ? TAOPT_VOL_8K : 0) |
 	       (g_tile_clip_preset ? TAOPT_TILE_CLIP : 0) | (g_sprite_corner_preset ? TAOPT_SPR_PLANE : 0) |
-	       (g_offset_colour_preset ? TAOPT_OFFS : 0) |
+	       (g_offset_colour_preset ? TAOPT_OFFS : 0) | (g_neg_w_preset ? TAOPT_NEG_W : 0) |
 	       (g_near_cap_preset && get_depth_float_preset() ? TAOPT_INVW_WIDE : 0);
 }
 
@@ -577,13 +579,14 @@ static inline void track_w(float inv_w)
 	track_inv_w(inv_w);
 }
 
-// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor).
+// The TA sends 1/W; the floor keeps W finite (NaN also takes the floor). G25 Negative 1/W: a vertex behind the camera
+// gets W 0, so vertex_inf drops it (Flycast keeps the sign and its depth test drops those pixels).
 static inline void set_pos(DcVertex* v, float x, float y, float inv_w)
 {
 	float safe = (inv_w >= INV_W_FLOOR) ? inv_w : INV_W_FLOOR;
 	v->x = x;
 	v->y = y;
-	v->w = 1.0f / safe;
+	v->w = ((s_dopt & TAOPT_NEG_W) && inv_w < 0.0f) ? 0.0f : 1.0f / safe;
 	track_w(inv_w);
 }
 
@@ -1813,6 +1816,8 @@ static void snapshot_render_regs()
 	s_snap.fb_y_clip_min = FB_Y_CLIP.min;
 	s_snap.fb_y_clip_max = FB_Y_CLIP.max;
 	s_snap.pal_ram_ctrl = PAL_RAM_CTRL;
+	if (g_pal_src != PALETTE_RAM)
+		memcpy(s_snap.pal, PALETTE_RAM, sizeof(s_snap.pal));
 	s_snap.text_control = TEXT_CONTROL;
 	s_snap.fpu_shad_scale = FPU_SHAD_SCALE;
 	s_snap.fb_scale_x = s_fb_scale_x;
@@ -4451,13 +4456,15 @@ static void rth_print_stats()
 	s_stat_bump_strips = s_stat_bump_ppu = 0;
 	// Bundle 4: TA_LIST_CONT writes, renders by passes or with the TR volume list, PPU replays, gate drops, bad records;
 	// 3k: sorted triangles per render; P105: FPU_SHAD_SCALE (bit 8: intensity volumes) and HALF_OFFSET.
-	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%02X tris=%u shad=%03X half=%X"
+	printf("[rend4] cont=%u multi=%u pass_ppu=%u trvol=%u gate_drop=%u bad_rec=%u opt=%03X tris=%u shad=%03X half=%X"
+	       " rwait=%u/%ums"
 	       " bgrel=%u keep=%u/%u\n",
 	       s_stat_cont, s_stat_multi, s_stat_pass_ppu, s_stat_trvol, s_stat_gate, g_ta_bad_records, s_rl.opt,
-	       s_stat_tris / r, g_rr.fpu_shad_scale & 0x1FF, (u32)HALF_OFFSET & 7, s_stat_fix.bg_rel, s_stat_fix.kept,
-	       s_stat_fix.inits);
+	       s_stat_tris / r, g_rr.fpu_shad_scale & 0x1FF, (u32)HALF_OFFSET & 7, s_stat_fix.rwaits,
+	       (u32)(s_stat_fix.rwait_s * 1000.0), s_stat_fix.bg_rel, s_stat_fix.kept, s_stat_fix.inits);
 	s_stat_cont = s_stat_multi = s_stat_pass_ppu = s_stat_trvol = s_stat_gate = g_ta_bad_records = s_stat_tris = 0;
-	s_stat_fix.bg_rel = s_stat_fix.kept = s_stat_fix.inits = 0;
+	s_stat_fix.bg_rel = s_stat_fix.kept = s_stat_fix.inits = s_stat_fix.rwaits = 0;
+	s_stat_fix.rwait_s = 0.0;
 	// Bundle 14: the rows; + OPAQUE DEPTH's first-pass runs per render and those that write no depth; the last
 	// render's state changes per list, by the merge key > by the bits the draw reads (P73's counter).
 	printf("[cost] first_pass=%d | fp_runs=%u nodepth=%u | key op=%u>%u pt=%u>%u tr=%u>%u\n",
@@ -4872,6 +4879,28 @@ static void rth_job_draw(int type, u64 hold)
 }
 
 // rttq_check: begin thread
+// G25 Render Wait (under s_rmx): renders and RTTs posted, the last one drawn; job and q: the numbers of the job in the
+// slot and of the RTT that waits (0 = not counted).
+static struct { u32 posted, drawn, job, q; } s_rw;
+
+// Render Wait (reicast 411aade5e, Flycast rend_end_render): at RENDER_DONE the SH4 waits for the draw of what was
+// posted, so the game cannot change VRAM or the palette under it; one 59.94 Hz frame at most. Returns the seconds.
+static double rth_wait_drawn()
+{
+	sysMutexLock(s_rmx, 0);
+	const double t0 = os_GetSeconds();
+	while (s_rw.drawn != s_rw.posted)
+	{
+		const double left = 1.0 / 59.94 - (os_GetSeconds() - t0);
+		if (left <= 0.0)
+			break;
+		sysCondWait(s_done_cv, (u64)(left * 1000000.0) + 1);
+	}
+	const double dt = os_GetSeconds() - t0;
+	sysMutexUnlock(s_rmx);
+	return dt;
+}
+
 static void rth_thread(void* arg)
 {
 	// The SH4 thread FPSCR follows the guest rounding mode. This thread has its
@@ -4891,6 +4920,7 @@ static void rth_thread(void* arg)
 		TaContext* c = s_job_ctx;
 		u32 raw_end = s_job_raw_end, cont_end = s_job_cont_end, fence = s_job_fence;
 		u64 hold = s_job_hold;
+		const u32 seq = s_rw.job;
 		memcpy(&g_rr, &s_job_rr, sizeof(g_rr));
 		s_job_pending = false;
 		sysMutexUnlock(s_rmx);
@@ -4905,6 +4935,8 @@ static void rth_thread(void* arg)
 		__asm__ volatile("or 2,2,2" ::: "memory");
 
 		sysMutexLock(s_rmx, 0);
+		if (seq)
+			s_rw.drawn = seq;
 		// P60: the game showed the held frame's buffer while this job ran.
 		while (s_flip_want)
 		{
@@ -4923,6 +4955,7 @@ static void rth_thread(void* arg)
 			s_job_fence = s_q_fence;
 			s_job_hold = 0;
 			memcpy(&s_job_rr, &s_q_rr, sizeof(s_job_rr));
+			s_rw.job = s_rw.q;
 			s_job_decoded = false;
 			s_job_pending = true;
 			s_q_valid = false;
@@ -5038,6 +5071,7 @@ static bool rth_run(int type, TaContext* c)
 			s_q_cont_end = c ? c->n_cont : 0;
 			s_q_fence = spe_fence(c);
 			memcpy(&s_q_rr, &s_snap, sizeof(s_q_rr));
+			s_rw.q = ++s_rw.posted;
 			s_q_valid = true;
 			s_stat_rtt_q++;
 			s_stat_rtt_sh4 += os_GetSeconds() - t_in;
@@ -5082,6 +5116,7 @@ static bool rth_run(int type, TaContext* c)
 		s_job_hold = (type == JOB_RENDER) ? s_snap_hold : 0;
 		s_job_decoded = (type == JOB_PRESENT);
 		memcpy(&s_job_rr, &s_snap, sizeof(s_job_rr));
+		s_rw.job = (type == JOB_RENDER || type == JOB_RTT) ? ++s_rw.posted : 0;
 		s_job_pending = true;
 		s_job_busy = true;
 		sysCondSignal(s_job_cv);
@@ -5125,6 +5160,7 @@ static void rth_flip_held()
 		s_busy_ctx = 0;
 		s_job_raw_end = s_job_cont_end = s_job_fence = 0;
 		s_job_hold = 0;
+		s_rw.job = 0;
 		s_job_decoded = true;
 		s_job_pending = true;
 		s_job_busy = true;
@@ -5176,6 +5212,8 @@ bool InitRenderer()
 	ta_fsm_build();
 	ta_store_reset();
 	ta_gate_set(true);
+	// G25 Palette Latch: the draw and the SPE texture jobs read each render's copy, not the live palette.
+	g_pal_src = g_pal_latch_preset ? g_rr.pal : PALETTE_RAM;
 	rth_start();
 	// The SPU decoder starts with the options reset_all_contexts gave the contexts above.
 	ps3spe_boot_opt(ta_opts_now());
@@ -5403,7 +5441,14 @@ void StartRender()
 	SH4_PHASE(PH_GUEST);
 }
 
-void EndRender() {}
+// The RENDER_DONE interrupts are raised; with Render Wait the SH4 takes them after the draw (rth_wait_drawn).
+void EndRender()
+{
+	if (!g_render_wait_preset || !s_rend_running)
+		return;
+	s_stat_fix.rwait_s += rth_wait_drawn();
+	s_stat_fix.rwaits++;
+}
 
 // The store stage owns TA_ISP_BASE: it picks the context the raw bytes land in.
 // The decoder-side ListInit/ListCont run later, from decode_pending().

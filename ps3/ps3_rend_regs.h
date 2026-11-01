@@ -54,6 +54,10 @@ struct RenderRegs
 	// A 2D present: FB_R_SOF2, the interlace, field and pixel clock bits (P26); a blanked screen and its colour (P76).
 	u32 fb_r_sof2, vo_border_col;
 	bool fb_interlace, fb_field2, fb_vclk, blank;
+	// G25 Palette Latch (Flycast 29906d841): PALETTE_RAM at STARTRENDER, taken only with the row on.
+	u32 pal[1024];
 };
 
 extern RenderRegs g_rr;
+// The palette the draw side reads: g_rr.pal with Palette Latch on (set at renderer start), else PALETTE_RAM.
+extern const u32* g_pal_src;

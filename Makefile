@@ -9,8 +9,8 @@ TARGET     := notdc_ps3
 TITLE      := NotDC
 TITLE_ID   := NOTDC0000
 CONTENT_ID := UP0001-$(TITLE_ID)_00-0000000000000000
-# PARAM.SFO APP_VER (XMB version) for release 0.8.0; sfo has no flag for it, so the pkg rule edits a copy of sfo.xml.
-APP_VER    := 00.80
+# PARAM.SFO APP_VER (XMB version) for release 0.8.3; sfo has no flag for it, so the pkg rule edits a copy of sfo.xml.
+APP_VER    := 00.83
 BUILD      ?= build
 # XMB icon, 320x176 PNG. Falls back to the PSL1GHT default if icon/ is missing.
 ICON0      ?= $(wildcard icon/ICON0.png)
@@ -83,6 +83,8 @@ $(BUILD)/ps3/ps3_dcnet.o: CXXFLAGS += -mminimal-toc
 $(BUILD)/ps3/ps3_rsxwatch.o: CFLAGS += -mminimal-toc
 # G17 RSX Direct: the emitter's state and texts take one TOC entry.
 $(BUILD)/ps3/ps3_rsxd.o: CXXFLAGS += -mminimal-toc
+# G21 SB_SFRES log: a debug log, so its rings and texts take one TOC entry.
+$(BUILD)/ps3/ps3_sfres.o: CXXFLAGS += -mminimal-toc
 
 # --no-multi-toc: a split TOC emits r2off stubs that hang the PS3 at boot.
 # --wrap: stdout has no console; ps3/ps3_main.cpp sends it to the UDP log.

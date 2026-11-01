@@ -5,6 +5,7 @@
 #define printf(...) ((void)0)
 
 extern "C" int get_debug_loop();
+extern "C" int get_cd_rules_preset();   // G24
 
 #define CDI_V2   0x80000004u
 #define CDI_V3   0x80000005u
@@ -47,7 +48,8 @@ static s32 cdi_track_of(u32 sector)
 {
     for (s32 i = (s32)cdi_track_count - 1; i >= 0; i--)
         if (cdi_tracks[i].FAD <= sector)
-            return i;
+            // G24 CD Rules (Flycast Track::Read): past the track's length is no track, so the read gives zeros.
+            return (get_cd_rules_preset() && sector - cdi_tracks[i].FAD >= cdi_tracks[i].length) ? -1 : i;
     return -1;
 }
 
@@ -310,6 +312,7 @@ static bool cdi_ParseHeader(FILE* f, u32 version, long file_size, u32 hdr_offset
     // in the image (DiscJuggler stores track data sequentially from byte 0).
     long file_position = 0;
     u32  end_fad = 0;
+    const bool rules = get_cd_rules_preset() != 0;
 
     for (u32 ses = 0; ses < session_count; ses++)
     {
@@ -379,11 +382,15 @@ static bool cdi_ParseHeader(FILE* f, u32 version, long file_size, u32 hdr_offset
                 printf("[CDI] WARN: track seems truncated (total=%u < length=%u+pregap=%u)\n",
                        total, length, pregap);
 
-            // Advance to the next track's data. Mirrors devcast's
-            // track.position += total_length * sector_size.
-            file_position += (long)total * sector_size;
-
-            end_fad = lba + total;  // matches devcast rv->EndFAD
+            // The next track's data (devcast: position += total * sector size). G24 CD Rules (Flycast, cdirip): a
+            // truncated track moves total bytes and keeps the end FAD; the end FAD is the track's last sector.
+            if (rules && total < length + pregap)
+                file_position += (long)total;
+            else
+            {
+                file_position += (long)total * sector_size;
+                end_fad = lba + total - (rules ? 1 : 0);  // matches devcast rv->EndFAD
+            }
         }
 
         cdi_skip_next_session(f, version);

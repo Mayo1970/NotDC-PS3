@@ -30,6 +30,8 @@
 #define TAOPT_OFFS       64u  // 3b: every vertex's offset colour is kept (SpeOut.offs, TaContext.offs)
 // Bundle 23, P91: a 1/W below INVW_CAP_WIDE, not INVW_CAP_OLD, can set the near plane (set only with Depth Float).
 #define TAOPT_INVW_WIDE  128u
+// G25 Negative 1/W: a vertex with 1/W below 0 (behind the camera) gets W 0, so the draw drops it as infinite.
+#define TAOPT_NEG_W      256u
 // The near plane's 1/W cap, as float bits for a signed compare: reicast's 1024 x 1024, and 2^44.
 #define INVW_CAP_OLD     0x49800000
 #define INVW_CAP_WIDE    0x55800000

@@ -299,6 +299,7 @@ int g_modem_preset         = 1;   // 1 = Flycast's modem, no V.42, dials DCNet; 
 // First release: 0 shows only the main option rows, 1 every row.
 int g_advanced_preset      = 0;
 int g_game_cfg_preset      = 0;   // 1 = the options set after a game is picked go to config/<image>.cfg, not NotDC.cfg
+int g_write_log_preset     = 0;   // 1 = the log also goes to NotDC.log (ps3_main.cpp), for user bug reports
 // GOALS.md G18-G22 (GitHub user reports): 0 is the old path in every one; a row is off until it is cleared on hardware.
 // G18 rows ON since 2026-10-24 (Matt), after the HW success.
 int g_pt_aniso_preset      = 1;   // 1 = punch-through textures get no anisotropic taps, as Flycast Vulkan/DX11 (P115, HW)
@@ -307,7 +308,7 @@ int g_gd_pio_ring_preset   = 0;   // 1 = GD-ROM PIO reads come from the worker's
 int g_swap_rules_preset    = 0;   // disc swap: 1 = the drive state stays (Flycast cbd01fba3), 2 = also a lid-open phase (P77)
 int g_bg_bias_preset       = 0;   // 1 = with Depth Float, the background depth bias is relative (P116)
 int g_dst_select_preset    = 0;   // 1 = polygons with TSP DstSelect draw nothing (P117, the test form)
-int g_list_init_keep_preset = 0;  // 1 = a TA_LIST_INIT keeps the stored lists until the next TA write, as Flycast (P123)
+int g_list_init_keep_preset = 1;  // 1 = a TA_LIST_INIT keeps the stored lists until the next TA write, as Flycast (P123)
 int g_jit_smc_preset       = 0;   // JIT self-modifying code guard: 0 = the known addresses, 1 = every RAM block (P124)
 int g_audio_starve_preset  = 0;   // a short sound queue: 1 = FADE, 2 = HYSTERESIS, 3 = STRETCH (P119)
 int g_cfg_repair_preset    = 0;   // 1 = at start, the keys proven fatal in old installs go to today's default once (P120)
@@ -317,6 +318,15 @@ int g_wince_hle_preset     = 0;   // 1 = Windows CE GetTickCount and QueryPerfor
 int g_mmu_code_hash_preset = 0;   // 1 = an MMU code page hashes only the bytes its blocks read (P109)
 int g_tlb_array_preset     = 0;   // 1 = a UTLB/ITLB array write changes one entry, not the whole FAST table (P110 b)
 int g_mmu_asid_flush_preset = 0;  // 1 = an ASID change clears only the process slots; P1/P2 stay (P110 a)
+// GOALS.md G24-G26 (GitHub reports of 2026-10-31): 0 is the old path in every one; a row is off until it is cleared on
+// hardware.
+int g_game_patch_preset    = 0;   // 1 = Flycast's built-in game fixes, by product number, applied at each vblank (G24)
+int g_cd_rules_preset      = 0;   // 1 = CD images: no high-density TOC, reads stop at a track's end, CDI end FAD (G24)
+int g_pal_latch_preset     = 0;   // 1 = the palette is copied at STARTRENDER and the draw reads the copy (G25)
+int g_yuv_hash_preset      = 0;   // 1 = a YUV texture hashes its bytes, not the converter's frame counter (G25)
+int g_neg_w_preset         = 0;   // 1 = a vertex with a negative 1/W is dropped, not moved far away (G25)
+int g_render_wait_preset   = 0;   // 1 = RENDER_DONE waits for the render thread's draw, one frame at most (G25)
+int g_vmu_media_preset     = 1;   // 1 = VMU GetMediaInfo sends the card's system block, as Flycast (G26)
 
 struct CfgItem { const char* key; int* val; };
 
@@ -403,6 +413,13 @@ static const CfgItem s_items[] = {
 	{ "BgDepthBias",   &g_bg_bias_preset },
 	{ "DstSelect",     &g_dst_select_preset },
 	{ "ListInitKeep",  &g_list_init_keep_preset },
+	{ "GamePatches",   &g_game_patch_preset },
+	{ "CdRules",       &g_cd_rules_preset },
+	{ "PalLatch",      &g_pal_latch_preset },
+	{ "YuvHash",       &g_yuv_hash_preset },
+	{ "NegW",          &g_neg_w_preset },
+	{ "RenderWait",    &g_render_wait_preset },
+	{ "VmuMediaInfo",  &g_vmu_media_preset },
 	{ "NearCap",       &g_near_cap_preset },
 	{ "NativeSize",    &g_native_size_preset },
 	{ "IntegerScale",  &g_integer_scale_preset },
@@ -511,6 +528,7 @@ static const CfgItem s_items[] = {
 	{ "Modem",         &g_modem_preset },
 	{ "AdvancedMode",  &g_advanced_preset },
 	{ "GameSettings",  &g_game_cfg_preset },
+	{ "WriteLog",      &g_write_log_preset },
 	{ "CfgRepair",     &g_cfg_repair_preset },
 	{ "CfgRev",        &g_cfg_rev },
 	{ "JitBcache",     &g_jit_bcache_preset },
@@ -643,6 +661,8 @@ static struct
 // Rows that act before a game is picked, or on the menu itself, stay global.
 static bool game_key(const CfgItem& it)
 {
+	if (it.val == &g_write_log_preset)
+		return false;
 	if (it.val == &g_cfg_repair_preset || it.val == &g_cfg_rev)
 		return false;
 	return it.val != &g_game_cfg_preset && it.val != &g_advanced_preset && it.val != &g_output_1080_preset;
@@ -792,6 +812,7 @@ static const CfgItem s_gd_items[] = {
 	{ "GdReadAhead",   &g_gd_read_ahead_preset },
 	{ "GdPioRing",     &g_gd_pio_ring_preset },
 	{ "DiscSwapRules", &g_swap_rules_preset },
+	{ "CdRules",       &g_cd_rules_preset },
 };
 #define GD_ITEMS (sizeof(s_gd_items) / sizeof(s_gd_items[0]))
 
@@ -807,6 +828,8 @@ static const CfgItem s_tex_items[] = {
 	{ "YuvBlockDecode", &g_yuv_block_preset },
 	{ "BumpMap",       &g_bump_map_preset },
 	{ "PtAniso",       &g_pt_aniso_preset },
+	{ "PalLatch",      &g_pal_latch_preset },
+	{ "YuvHash",       &g_yuv_hash_preset },
 };
 #define TEX_ITEMS (sizeof(s_tex_items) / sizeof(s_tex_items[0]))
 
@@ -838,6 +861,7 @@ static const CfgItem s_rend_items[] = {
 	{ "BgDepthBias",   &g_bg_bias_preset },
 	{ "DstSelect",     &g_dst_select_preset },
 	{ "ListInitKeep",  &g_list_init_keep_preset },
+	{ "NegW",          &g_neg_w_preset },
 };
 #define REND_ITEMS (sizeof(s_rend_items) / sizeof(s_rend_items[0]))
 
@@ -852,6 +876,7 @@ static const CfgItem s_time_items[] = {
 	{ "HblankIrq",     &g_hblank_irq_preset },
 	{ "VblankIntReset", &g_vblank_int_reset_preset },
 	{ "RenderDelay",   &g_render_delay_preset },
+	{ "RenderWait",    &g_render_wait_preset },
 };
 #define TIME_ITEMS (sizeof(s_time_items) / sizeof(s_time_items[0]))
 
@@ -921,6 +946,7 @@ static const CfgItem s_scr_items[] = {
 	{ "ScreenFormat",  &g_screen_format_preset },
 	{ "ScreenScaler",  &g_screen_scaler_preset },
 	{ "Cheats",        &g_cheats_preset },
+	{ "GamePatches",   &g_game_patch_preset },
 	{ "NativeSize",    &g_native_size_preset },
 	{ "IntegerScale",  &g_integer_scale_preset },
 	{ "Output1080",    &g_output_1080_preset },
@@ -972,6 +998,7 @@ static const CfgItem s_maple_items[] = {
 	{ "MapleFrame",    &g_maple_frame_preset },
 	{ "VmuPerGame",    &g_vmu_per_game_preset },
 	{ "VmuScreen",     &g_vmu_screen_preset },
+	{ "VmuMediaInfo",  &g_vmu_media_preset },
 };
 #define MAPLE_ITEMS (sizeof(s_maple_items) / sizeof(s_maple_items[0]))
 
@@ -1242,8 +1269,11 @@ int get_hblank_irq_preset()    { return g_hblank_irq_preset; }
 // OPTIMIZATION_PLAN section 7, bundle 8: read at compile time by the decoder.
 int get_jit_pr_moves_preset()  { return g_jit_pr_moves_preset; }
 int get_jit_rm_any_preset()    { return g_jit_rm_any_preset || g_jit_mmu; }
-int get_jit_idle_rule_preset() { return g_jit_idle_rule_preset; }
-int get_jit_idle_rule()        { return g_jit_idle_rule_preset>=4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
+// dc.cpp: the disc is Time Stalkers, where IDLE RULE AUTO spaces the disc reads 600 vblanks apart (G19 step 4).
+bool g_disc_idle_off;
+int get_jit_idle_rule_preset() { return g_disc_idle_off ? 2 : g_jit_idle_rule_preset; }
+int get_jit_idle_rule()        { if (g_disc_idle_off) return 2;
+                                 return g_jit_idle_rule_preset>=4 ? g_jit_idle_rule_now : g_jit_idle_rule_preset; }
 int get_jit_idle_hash_preset() { return g_jit_idle_hash_preset; }
 int get_jit_x30_fwd_preset()   { return g_jit_x30_fwd_preset; }
 int get_jit_x30_fwd()          { return g_jit_x30_fwd_preset>=2 ? g_jit_x30_fwd_now : g_jit_x30_fwd_preset; }
@@ -1330,4 +1360,6 @@ int get_wince_hle_preset()     { return g_wince_hle_preset; }
 int get_mmu_code_hash_preset() { return g_mmu_code_hash_preset; }
 int get_tlb_array_preset()     { return g_tlb_array_preset; }
 int get_mmu_asid_flush_preset() { return g_mmu_asid_flush_preset; }
+int get_cd_rules_preset()      { return g_cd_rules_preset; }
+int get_yuv_hash_preset()      { return g_yuv_hash_preset; }
 }

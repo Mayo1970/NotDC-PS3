@@ -8,6 +8,7 @@
 #include "plugins/plugin_manager.h"
 #include "ps3/ps3_sndthr.h"
 #include "ps3/ps3_presets.h"
+#include "ps3/ps3_sfres.h"
 
 // Area 0: 0-1FFFFF boot ROM, 200000 flash, 5F6800 sysctrl, 5F6C00 Maple, 5F7000 GD-ROM, 5F7400 G1,
 // 5F7800 G2, 5F7C00 PVR i/f, 5F8000 TA/PVR, 600000 modem, 700000 AICA, 710000 RTC, 800000 wave RAM.
@@ -179,6 +180,8 @@ void FASTCALL WriteMem_area0(u32 addr, T data)
     // EMUERROR4("Write to Boot ROM (read-only), addr=%x, data=%x, sz=%d", addr, data, sz);
     // printf instead of EMUERROR because tiny freeze otherwise
 		printf("Write to Boot ROM (read-only), addr=%x, data=%x, sz=%d\n", addr, data, sz);
+		if (sfres_dump)
+			sfres_dump(1);
 		return;
 	}
 

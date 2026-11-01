@@ -11,6 +11,7 @@
 #include "intc.h"
 #include "tmu.h"
 #include "dc/gdrom/gdrom_if.h"
+#include "ps3/ps3_sfres.h"
 
 #include "sh4_cpu_prelude.h"
 
@@ -21,6 +22,8 @@ bool sh4_sleeping;
 void cpu_iNimp(u32 op, const char* info)
 {
 	printf("Unimplemented opcode: 0x%04X : %s\n", op, info);
+	if (sfres_dump)
+		sfres_dump(2);
 }
 
 void cpu_iWarn(u32 op, const char* info)

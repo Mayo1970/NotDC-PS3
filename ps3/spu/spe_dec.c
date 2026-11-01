@@ -185,6 +185,9 @@ static uint32_t track_w(uint32_t z)
 	const int32_t cap = (d->opt & TAOPT_INVW_WIDE) ? INVW_CAP_WIDE : INVW_CAP_OLD;  // P91 Near Plane Cap
 	if ((int32_t)d->max_inv_w < (int32_t)z && (int32_t)z < cap)
 		d->max_inv_w = z;
+	// G25 Negative 1/W (the PPU's set_pos): below 0 is W 0; -0 and NaN keep the floor, as the PPU's float compare.
+	if ((d->opt & TAOPT_NEG_W) && (int32_t)z < 0 && z != 0x80000000u && (z & 0x7FFFFFFFu) <= 0x7F800000u)
+		return 0;
 	return w;
 }
 

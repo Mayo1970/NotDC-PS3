@@ -426,6 +426,8 @@ static Option s_emu[] = {
 	  "ON: what you change after you pick a game, or in game, is for that game only (NotDC/config).", 0, 1 },
 	{ "Start UDP Listener", &g_udp_log,           OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "ON sends the log to the PC over UDP (port 18194) until NotDC quits. Each boot starts OFF. Live." },
+	{ "Write Log",       &g_write_log_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "ON saves the log to NotDC/NotDC.log (the run before: NotDC_prev.log). Send it with a bug report. Live.", 0, 1 },
 	{ "Accuracy",        &g_accuracy_preset,      OPT_CHOICE, k_accuracy,  0, 0,0,0, NULL,
 	  "SH4 FPU and timing exactness. FAST is the PS3 default.", 0, 1 },
 	{ "SH4 Clock",       &g_sh4_clock_preset,     OPT_RANGE,  NULL,        0, 150,250,5, "%d MHz",
@@ -726,6 +728,8 @@ static Option s_gdrom[] = {
 	  "PIO disc reads come from the GD worker's ring, not a read on the SH4 thread (P114, RE3 doors). Live." },
 	{ "Disc Swap Rules", &g_swap_rules_preset,    OPT_CHOICE, k_swaprules, 0, 0,0,0, NULL,
 	  "KEEP STATE: a swap keeps the command in flight (Flycast). + LID OPEN: the lid opens first (P77). Live." },
+	{ "CD Rules",        &g_cd_rules_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: CD images have no high-density TOC; a read past a track's end is zeros (G24). Set before boot." },
 };
 
 // Plan section 7, bundle 3: one row per item; the first value is the old path.
@@ -740,6 +744,10 @@ static Option s_textures[] = {
 	  "GAME keeps each polygon's filter; the others force one on all (P52). Live.", 0, 1 },
 	{ "VQ Formats",      &g_vq_formats_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Palette VQ and scan-order VQ textures decode as in Flycast (P25). Live." },
+	{ "Palette Latch",   &g_pal_latch_preset,     OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "The palette is copied at the render start; textures read the copy, as Flycast (G25). Set before boot." },
+	{ "YUV Hash",        &g_yuv_hash_preset,      OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: a YUV texture hashes its bytes, so a new picture in an old FMV area shows (G25). Live." },
 };
 
 // Plan section 7, bundle 4: one row per item; the first value is the old path. All act from the in-game menu.
@@ -796,6 +804,8 @@ static Option s_renderer[] = {
 	  "HIDE: polygons for the second colour buffer draw nothing (P117, Evil Dead white boxes)." },
 	{ "List Init Keep",  &g_list_init_keep_preset, OPT_CHOICE, k_oldfly,   0, 0,0,0, NULL,
 	  "FLYCAST: a list init with no new TA data keeps the lists for the render (P123, Speed Devils menu)." },
+	{ "Negative 1/W",    &g_neg_w_preset,         OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: a vertex behind the camera (1/W below 0) is dropped, not drawn far away (G25)." },
 };
 
 // Plan section 7, bundle 7: one row per item; the first value is the old path.
@@ -810,6 +820,8 @@ static Option s_timing[] = {
 	  "MODES: at the compare line or on each line, as the game sets it (P28). Live." },
 	{ "VBLANK INT Reset", &g_vblank_int_reset_preset, OPT_CHOICE, k_vbireset, 0, 0,0,0, NULL,
 	  "FLYCAST: SPG_VBLANK_INT starts at 0x00150104, not 0x01500104 (P28). Set before boot." },
+	{ "Render Wait",     &g_render_wait_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "RENDER_DONE waits for the render thread's draw, one frame at most (Flycast, G25). Can cost speed. Live." },
 };
 
 // Plan section 7, bundle 11: one row per item; the first value is the old path.
@@ -853,6 +865,8 @@ static Option s_screen[] = {
 	  "The canvas follows the scaler's vertical factor and the pixel-double bit (P10). Live.", 0, 1 },
 	{ "Cheats",          &g_cheats_preset,        OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "Reads cheats/<disc name>.cht (RetroArch form) and applies it each frame (P36). Set before boot.", 0, 1 },
+	{ "Game Patches",    &g_game_patch_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
+	  "Flycast's built-in game fixes: Fur Fighters, Dave Mirra BMX hangs (G24). Set before boot." },
 	{ "Native Size",     &g_native_size_preset,   OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The scene draws at the game's size, then whole-pixel scaling: even 2D pixels (P104). Live.", 0, 1 },
 	{ "Integer Scale",   &g_integer_scale_preset, OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
@@ -919,6 +933,8 @@ static Option s_maple[] = {
 	  "One VMU file per disc ID; SLOT A1 as Flycast. A new file is blank (P37). Set before boot.", 0, 1 },
 	{ "VMU Screen",      &g_vmu_screen_preset,    OPT_CHOICE, k_onoff,     0, 0,0,0, NULL,
 	  "The pictures that games send to the VMU screens, at the TV's right edge (P37). Live.", 0, 1 },
+	{ "VMU Media Info",  &g_vmu_media_preset,     OPT_CHOICE, k_oldfly,    0, 0,0,0, NULL,
+	  "FLYCAST: a formatted card's media info comes from its system block (G26, BIOS save delete). Live." },
 };
 
 // Plan section 7, bundle 20: one row per item; the first value is the old path. All are set before boot.
@@ -1614,7 +1630,7 @@ static volatile bool s_ingame_req;
 
 // Read on every use, so a change acts at once. Any other option is saved for the next boot only.
 static int* const k_live_opts[] = {
-	&g_advanced_preset, &g_udp_log,
+	&g_advanced_preset, &g_udp_log, &g_write_log_preset,
 	&g_aica_fast_preset, &g_mute_pcm16_preset, &g_cdda_preset, &g_arm7_speed_preset, &g_arm7_batch_preset,
 	&g_speed_limiter_preset, &g_exit_fix_preset, &g_drop_policy_preset,
 	&g_x_scaler_preset, &g_debug_gdrom, &g_jit_ccalls_preset, &g_arm7_idle_skip_preset,
@@ -1652,6 +1668,7 @@ static int* const k_live_opts[] = {
 	&g_integer_scale_preset,
 	&g_pt_aniso_preset, &g_gd_pio_ring_preset, &g_swap_rules_preset, &g_bg_bias_preset, &g_dst_select_preset,
 	&g_list_init_keep_preset, &g_audio_starve_preset,
+	&g_yuv_hash_preset, &g_neg_w_preset, &g_render_wait_preset, &g_vmu_media_preset,
 	&g_jit_auto_checks_preset,
 	&g_fb_reads_preset, &g_keep_frame_preset,
 };

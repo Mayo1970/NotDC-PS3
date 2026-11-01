@@ -22,6 +22,7 @@
 #include <sys/systime.h>
 #include <sys/thread.h>
 #include <sys/mutex.h>
+#include <sys/file.h>
 #include <sysutil/sysutil.h>
 #include <sysmodule/sysmodule.h>
 #include <net/net.h>
@@ -70,16 +71,94 @@ extern "C" void ps3_audio_init();
 extern "C" void ps3_audio_term();
 extern void ps3_audio_stats();
 void ps3_cheats_load(const char* disc);   // ps3_cheats.cpp
+void ps3_cheats_example(void);            // ps3_cheats.cpp
 void mem_SaveFlashForced();               // dc/mem/sh4_mem.cpp
 
 // No block manager without a JIT. nullDC.cpp calls this with C linkage, which
 // clashes with blockmanager.h, so it lives here and not in ps3_nojit.cpp.
 extern "C" void bm_Reset() {}
 
+#define PS3_LOG_FILE PS3_DATA_ROOT "NotDC.log"
+#define PS3_LOG_PREV PS3_DATA_ROOT "NotDC_prev.log"
+
+// Write Log row: printf fills one buffer while the monitor thread writes the other to the HDD.
+static struct
+{
+	char buf[2][64 * 1024];
+	u32 len[2];
+	u32 cur;
+	u32 lost;
+	s32 fd;
+	int state;    // 0 = not opened yet, 1 = open, 2 = open failed
+	bool ready;   // set after the cfg load; the boot lines wait in the buffer until then
+} s_flog;
+
+// Under ps3_log_mutex.
+static void flog_put(const char* s, int len)
+{
+	if (s_flog.ready && !g_write_log_preset)
+		return;
+	const u32 c = s_flog.cur;
+	if (s_flog.len[c] + len > sizeof(s_flog.buf[0]))
+	{
+		s_flog.lost += len;
+		return;
+	}
+	memcpy(s_flog.buf[c] + s_flog.len[c], s, len);
+	s_flog.len[c] += len;
+}
+
+// Monitor thread only. The HDD write runs outside the lock, so printf never waits on the disk.
+static void flog_flush()
+{
+	if (!s_flog.ready || !ps3_log_mutex_ok)
+		return;
+	sysMutexLock(ps3_log_mutex, 0);
+	const u32 c = s_flog.cur;
+	s_flog.cur = c ^ 1;
+	const u32 n = s_flog.len[c];
+	const u32 lost = s_flog.lost;
+	s_flog.lost = 0;
+	sysMutexUnlock(ps3_log_mutex);
+	s_flog.len[c] = 0;
+	if (n == 0 || !g_write_log_preset)
+		return;
+	if (s_flog.state == 0)
+	{
+		// The last run's file stays: after a freeze the user may start NotDC again before sending it.
+		sysLv2FsUnlink(PS3_LOG_PREV);
+		sysLv2FsRename(PS3_LOG_FILE, PS3_LOG_PREV);
+		s_flog.state = sysLv2FsOpen(PS3_LOG_FILE, SYS_O_WRONLY | SYS_O_CREAT | SYS_O_TRUNC, &s_flog.fd, 0666,
+		                            NULL, 0) == 0 ? 1 : 2;
+	}
+	if (s_flog.state != 1)
+		return;
+	u64 w;
+	sysLv2FsWrite(s_flog.fd, s_flog.buf[c], n, &w);
+	if (lost)
+	{
+		char note[48];
+		const int k = snprintf(note, sizeof(note), "[log] %u bytes lost\n", (unsigned)lost);
+		sysLv2FsWrite(s_flog.fd, note, k, &w);
+	}
+	// A frozen PS3 is switched off: what the fsync wrote is on the disk.
+	sysLv2FsFsync(s_flog.fd);
+}
+
+static void flog_close()
+{
+	flog_flush();
+	if (s_flog.state == 1)
+		sysLv2FsClose(s_flog.fd);
+	s_flog.state = 2;
+}
+
 static void ps3_log_send(const char* buf, int len)
 {
 	if (g_udp_log && ps3_log_socket >= 0 && len > 0)
 		sendto(ps3_log_socket, buf, len, 0, (struct sockaddr*)&ps3_log_addr, sizeof(ps3_log_addr));
+	if (len > 0)
+		flog_put(buf, len);
 }
 
 extern "C" int ps3_log_vprintf(const char* fmt, va_list ap)
@@ -130,7 +209,11 @@ extern "C" int __wrap_puts(const char* s)
 extern "C" int __wrap_putchar(int c)
 {
 	char ch = (char)c;
+	if (ps3_log_mutex_ok)
+		sysMutexLock(ps3_log_mutex, 0);
 	ps3_log_send(&ch, 1);
+	if (ps3_log_mutex_ok)
+		sysMutexUnlock(ps3_log_mutex);
 	return c;
 }
 
@@ -217,6 +300,7 @@ static void ps3_monitor_thread(void* arg)
 				if (g_exit_save_preset)
 					mem_SaveFlashForced();
 				printf("[ps3] SH4 did not stop in 3 s, forcing process exit\n");
+				flog_close();
 				sysProcessExit(0);
 			}
 			stop_ticks++;
@@ -242,9 +326,12 @@ static void ps3_monitor_thread(void* arg)
 			last_blks = blks;
 			ps3_audio_stats();
 		}
+		if (ticks % 10 == 0 || s_flog.len[s_flog.cur] > sizeof(s_flog.buf[0]) / 2)
+			flog_flush();
 
 		usleep(100 * 1000);
 	}
+	flog_close();
 	sysThreadExit(0);
 }
 
@@ -318,6 +405,7 @@ int main(int argc, char* argv[])
 	mkdir("/dev_hdd0/data", 0777);
 	mkdir(PS3_DATA_ROOT, 0777);
 	mkdir(PS3_DATA_ROOT "data", 0777);
+	ps3_cheats_example();
 	SetApplicationPath(PS3_DATA_ROOT);
 
 	s32 trc = sysThreadCreate(&ps3_monitor_tid, ps3_monitor_thread, NULL, 1500, 0x10000,
@@ -333,6 +421,7 @@ int main(int argc, char* argv[])
 	if (!cfgOpen())
 		printf("[ps3] cfgOpen failed, using built-in defaults\n");
 	ps3_presets_load();
+	s_flog.ready = true;
 	ps3_jit_selftest();
 	ps3_execmem_probe();
 

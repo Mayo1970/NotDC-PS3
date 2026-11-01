@@ -24,6 +24,10 @@ extern "C" int get_aniso_preset();
 extern "C" int get_tex_filter_preset();
 extern "C" int get_vq_formats_preset();
 extern "C" int get_pt_aniso_preset();
+extern "C" int get_yuv_hash_preset();
+// G25 Palette Latch: every palette read here goes through g_pal_src (ps3_rend_regs.h).
+#undef PALETTE_RAM
+#define PALETTE_RAM g_pal_src
 
 #define CACHE_SLOTS (1u << TEX_SLOT_BITS)
 #define CACHE_PROBE 8
@@ -359,6 +363,12 @@ static u32 hash_texture(const TexDesc& d)
 // 5.12 #3: the SPU's hash of this scene's param pidx when it has one; CHECK hashes on the PPU and compares.
 static u32 tex_hash(const TexDesc& d, TSP tsp, TCW tcw, u32 pidx)
 {
+	// G25 YUV Hash FLYCAST: a YUV texture hashes its bytes; the converter's counter misses a picture loaded by DMA.
+	if (d.fmt == 3 && get_yuv_hash_preset())
+	{
+		const u32 hy = hash_range(d.addr, d.src_bytes, 2166136261u);
+		return d.vq ? hash_range(d.vq_cb, 2048, hy) : hy;
+	}
 	u32 h;
 	const bool spu_ok = !vq_odd(d);
 	if (s_spetex == SPETEX_ON && spu_ok && ps3spetex_hash(pidx, &h))

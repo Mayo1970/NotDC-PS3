@@ -31,6 +31,7 @@
 #include "ps3/ps3_prof.h"
 #include "ps3/ps3_jit_carry.h"
 #include "ps3/ps3_jit_div32.h"
+#include "ps3/ps3_sfres.h"
 #include "ps3/ps3_jit_mac.h"
 #include "ps3/ps3_jit_bcache.h"
 #include "ps3/ps3_jit_exit.h"
@@ -641,6 +642,18 @@ void ngen_Begin(DecodedBlock* block,bool force_checks)
 
 			check_ok->MarkLabel();
 		}
+	}
+
+	// G21 SB_SFRES log: a BIOS call's target block logs the call. Volatile regs are free at block entry.
+	if (sfres_bios_entry(block->start))
+	{
+		ppc_li(ppc_rarg0,block->start);
+		ppc_clrldi32(ppc_rarg1,GetIntReg(reg_r4));
+		ppc_clrldi32(ppc_rarg2,GetIntReg(reg_r5));
+		ppc_clrldi32(ppc_rarg3,GetIntReg(reg_r6));
+		ppc_clrldi32(ppc_rarg4,GetIntReg(reg_r7));
+		ppc_clrldi32(ppc_rarg5,GetIntReg(reg_r15));
+		ppc_call_c(&sfres_bios_call);
 	}
 
 	const int cc=get_jit_cycle_check_preset();

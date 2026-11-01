@@ -27,6 +27,10 @@ typedef void (*CheatWrite)(uint32_t addr, uint32_t value, uint32_t bits);
 // ps3_cheats.cpp: reads the disc image's cheat file at boot (the Cheats row); applies it, from SPG at each vblank.
 void ps3_cheats_load(const char* disc);
 void ps3_cheats_vblank(void);
+// Writes cheats/example.cht (its cheat not enabled) when the file is absent.
+void ps3_cheats_example(void);
+// G24 row Game Patches: adds Flycast's fix for the disc with this IP.BIN product number; 1 = the disc has one.
+int ps3_cheats_disc(const uint8_t* id);
 
 // Flycast IniFile::getInt: hex with a 0x prefix, else decimal with a sign; no digit is 0, too large is the maximum.
 static inline uint32_t cheat_int(const char* s)

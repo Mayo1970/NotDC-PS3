@@ -12,6 +12,7 @@
 #include "ps3_timebase.h"
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
+#include "ps3_rend_regs.h"
 
 extern "C" const u8 spe_pix_elf[];
 extern "C" int get_spe_texdec_preset();
@@ -243,7 +244,8 @@ bool ps3spepix_init()
 	if ((s_tex_mode == SPEPIX_OFF && s_fb_mode == SPEPIX_OFF) || s_up)
 		return s_up;
 	s_yield = get_spe_wait_yield_preset() != 0;
-	const u32 vram_ea = (u32)(uintptr_t)PVRPARAMS.vram, pal_ea = (u32)(uintptr_t)PALETTE_RAM;
+	// G25: the palette is PALETTE_RAM, or each render's copy with Palette Latch.
+	const u32 vram_ea = (u32)(uintptr_t)PVRPARAMS.vram, pal_ea = (u32)(uintptr_t)g_pal_src;
 	if ((vram_ea & 15) || (pal_ea & 3))
 	{
 		printf("[spepix] VRAM %08X or PALETTE_RAM %08X misaligned; SPE Pix off\n", vram_ea, pal_ea);

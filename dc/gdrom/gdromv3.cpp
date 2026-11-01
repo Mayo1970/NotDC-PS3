@@ -12,6 +12,7 @@
 #include "dc/sh4/rec_v2/jit_dma.h"
 #include "ps3/ps3_stall.h"
 #include "ps3/ps3_gdasync.h"
+#include "ps3/ps3_sfres.h"
 #include "ps3_timebase.h"
 
 // SCHED preset: the GD-DMA end IRQ goes through the deadline scheduler,
@@ -49,6 +50,7 @@ int get_disc_swap_preset();     // P34
 int get_holly_regs_preset();    // bundle 20, P68: the ATA soft reset's register values
 int get_gd_pio_ring_preset();   // P114: 1 = PIO reads from the GD worker's data ring
 int get_swap_rules_preset();    // P77: 1 = a swap keeps the drive state, 2 = also a lid-open phase first
+int get_cd_rules_preset();      // G24: 1 = Flycast's CD image rules; REQ_SES sends the length asked for
 }
 
 enum gd_states
@@ -567,6 +569,8 @@ void gd_spi_pio_read_end(u32 len,gd_states next_state)
 }
 void gd_process_ata_cmd()
 {
+	if (sfres_gd && ata_cmd.command!=ATA_SPI_PACKET)
+		sfres_gd(0,ata_cmd.command,SecNumber.full,Error.full,GDStatus.full);
 	//Any ata cmd clears these bits , unless aborted/error :p
 	Error.ABRT=0;
 	// P34 (Flycast): a sense key other than none, aborted or unit attention keeps CHECK set.
@@ -740,6 +744,12 @@ void gd_process_spi_cmd()
 	printf_spi("params: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x \n",
 		packet_cmd.data_8[0], packet_cmd.data_8[1], packet_cmd.data_8[2], packet_cmd.data_8[3], packet_cmd.data_8[4], packet_cmd.data_8[5],
 		packet_cmd.data_8[6], packet_cmd.data_8[7], packet_cmd.data_8[8], packet_cmd.data_8[9], packet_cmd.data_8[10], packet_cmd.data_8[11] );
+	if (sfres_gd)
+	{
+		const u8* p=packet_cmd.data_8;
+		sfres_gd(1,(p[0]<<24)|(p[1]<<16)|(p[2]<<8)|p[3],(p[4]<<24)|(p[5]<<16)|(p[6]<<8)|p[7],
+		         (p[8]<<24)|(p[9]<<16)|(p[10]<<8)|p[11],(SecNumber.full<<16)|(sns_key<<8)|sns_asc);
+	}
 
 	// P34 (Flycast): CHECK stays set while a sense key waits for REQ_ERROR.
 	GDStatus.CHECK=(sns_key==0 || sns_key==0xB) ? 0 : 1;
@@ -983,7 +993,11 @@ void gd_process_spi_cmd()
 			       (unsigned int)ses_inf[0],(unsigned int)ses_inf[1],(unsigned int)ses_inf[2],
 			       (unsigned int)ses_inf[3],(unsigned int)ses_inf[4],(unsigned int)ses_inf[5]);
 		}
-		gd_spi_pio_end((u8*)&ses_inf[0], 6);  // always send full 6-byte session response
+		// G24 CD Rules (Flycast): the length the command asks for, at most the 6 bytes there are.
+		if (get_cd_rules_preset())
+			gd_spi_pio_end((u8*)&ses_inf[0], packet_cmd.data_8[4] < 6 ? packet_cmd.data_8[4] : 6);
+		else
+			gd_spi_pio_end((u8*)&ses_inf[0], 6);  // always send full 6-byte session response
 		break;
 
 	case SPI_CD_OPEN:
@@ -1266,6 +1280,13 @@ void gd_process_spi_cmd()
 	}
 }
 //Read handler
+// G21 SB_SFRES log: the drive status, error and CHECK bit as the game reads them.
+static inline void sfres_regs()
+{
+	if (sfres_gd)
+		sfres_gd(2,SecNumber.full|(Error.full<<8)|(GDStatus.CHECK<<16),0,0,0);
+}
+
 u32 ReadMem_gdrom(u32 Addr, u32 sz)
 {
 	switch (Addr)
@@ -1277,6 +1298,7 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 		// P22 (Flycast c3d954263, DreamShell): there is no slave drive.
 		if ((DriveSel&0x10) && get_gd_cmd_fix_preset())
 			return 0;
+		sfres_regs();
 		printf_rm("GDROM: STATUS [cancel int](v=%X)\n",GDStatus.full);
 		return GDStatus.full | (get_gd_status_preset()>=2 ? 0 : (1<<4));
 
@@ -1329,6 +1351,7 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 		printf_rm("GDROM: Read from ERROR Register\n");
 		if (gd_swapped)
 			Error.Sense=sns_key;   // P34 (Flycast)
+		sfres_regs();
 		return Error.full;
 
 	case GD_IREASON_Read:
@@ -1339,6 +1362,7 @@ u32 ReadMem_gdrom(u32 Addr, u32 sz)
 		printf_rm("GDROM: Read from SecNumber Register (v=%X)\n", SecNumber.full);
 		if (gd_lid.cycles>0)
 			gd_lid.reads++;   // P77: the game looks at the drive while the lid is open
+		sfres_regs();
 		return SecNumber.full;
 
 	default:

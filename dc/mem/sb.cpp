@@ -9,6 +9,7 @@
 #include "dc/maple/maple_if.h"
 #include "dc/aica/aica_if.h"
 #include "ps3/ps3_presets.h"
+#include "ps3/ps3_sfres.h"
 
 Array<RegisterStruct> sb_regs(0x540);
 
@@ -508,6 +509,8 @@ void SB_SFRES_write32(u32 data)
 	if ((u16)data == 0x7611)
 	{
 		printf("SB/HOLLY : System reset requested\n");
+		if (sfres_dump)
+			sfres_dump(0);
 		HollySoftReset();
 	}
 }

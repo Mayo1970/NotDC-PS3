@@ -8,6 +8,7 @@
 
 extern "C" int get_sector_2340_preset();   // P9
 extern "C" int get_toc_fields_preset();    // P23
+extern "C" int get_cd_rules_preset();      // G24
 
 u32 NullDriveDiscType;
 DriveIF* CurrDrive;
@@ -330,6 +331,12 @@ void GetDriveToc(u32* to,DiskArea area)
 {
 	TocInfo driveTOC;
 	CurrDrive->GetToc(&driveTOC,area);
+	// G24 CD Rules (Flycast libGDR_GetToc): a CD has no high-density area, so that TOC is all 0xFF.
+	if (get_cd_rules_preset() && area==DoubleDensity && CurrDrive->GetDiscType()!=GdRom)
+	{
+		memset(to,0xFF,102*4);
+		return;
+	}
 	ConvToc(to,&driveTOC);
 }
 

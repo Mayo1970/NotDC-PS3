@@ -23,6 +23,7 @@ const char* maple_sega_brand = "Produced By or Under License From SEGA ENTERPRIS
 
 // Plan section 7, bundle 16 (ps3_presets.cpp): 0 is the old path in each one.
 extern int g_maple_cmds_preset, g_vmu_per_game_preset;
+extern int g_vmu_media_preset;   // G26 VMU Media Info
 // G15: the VMU page, 1 = the old files. A getter: a new global would cost a TOC entry.
 extern "C" int get_vmu_page_preset();
 // P29, Flycast's AllStatusReq texts of the pad and of the VMU: 80 bytes each, so a reply stays whole words.
@@ -505,7 +506,15 @@ struct maple_sega_vmu: maple_base
 				case MFID_1_Storage:
 					{
 						w32(MFID_1_Storage);
-						
+						// G26 (Flycast 130110324): a formatted card (system block word 0x40 is 0xFF, little-endian)
+						// sends its own 24 media bytes, as the BIOS wrote them.
+						const u8* sys=flash_data+0xFF*512+0x40;
+						if (g_vmu_media_preset && (sys[0] | (sys[1]<<8))==0xFF)
+						{
+							wptr(sys,24);
+							return MDRS_DataTransfer;
+						}
+
 						//total_size;
 						w16(0xff);
 						//partition_number;

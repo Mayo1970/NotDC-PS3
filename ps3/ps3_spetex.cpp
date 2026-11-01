@@ -10,6 +10,7 @@
 #include "ps3_timebase.h"
 #include "plugs/drkPvr/drkPvr.h"
 #include "plugs/drkPvr/regs.h"
+#include "ps3_rend_regs.h"
 
 extern "C" const u8 spe_tex_elf[];
 extern "C" int get_spe_tex_preset();
@@ -188,7 +189,7 @@ bool ps3spetex_init()
 	if (s_mode == SPETEX_OFF || s_up)
 		return s_up;
 	s_yield = get_spe_wait_yield_preset() != 0;
-	const u32 pal_ea = (u32)(uintptr_t)PALETTE_RAM;
+	const u32 pal_ea = (u32)(uintptr_t)g_pal_src;   // G25: PALETTE_RAM, or each render's copy with Palette Latch
 	if (pal_ea & 3)
 	{
 		printf("[spetex] PALETTE_RAM %08X not word aligned; SPE Tex Hash off\n", pal_ea);

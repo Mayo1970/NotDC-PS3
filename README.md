@@ -37,15 +37,19 @@ NotDC is work in progress. See
 
 1. Search the reports for the game. If a report exists, add a comment to it, and do not open a new one.
 2. Use the default settings first. If you change a setting, write it in the report.
-3. Play past the intro and the menus, into the game. Try more than one level or mode if you can.
-4. Write down what goes wrong, where, and if you can make it happen again.
-5. Provide some images/videos if possible.
+3. Set **EMULATION > Write Log** to ON. NotDC then writes a log to `/dev_hdd0/data/NotDC/`.
+4. Play past the intro and the menus, into the game. Try more than one level or mode if you can.
+5. Write down what goes wrong, where, and if you can make it happen again.
+6. Provide some images/videos if possible.
 
 ### Send a report
 
 1. Open a [Game compatibility report](https://github.com/Mayo1970/NotDC-PS3/issues/new?template=game_compatibility.yml).
 2. Fill in the form. Send one report for each game.
-3. Select the status that fits best:
+3. Attach the two log files from `/dev_hdd0/data/NotDC/`: `NotDC.log` and `NotDC_prev.log`. Each start of NotDC
+   moves the old `NotDC.log` to `NotDC_prev.log`. After Close Game, or after a freeze and a restart, the game run is
+   in `NotDC_prev.log`.
+4. Select the status that fits best:
 
 | Status | Meaning |
 |---|---|

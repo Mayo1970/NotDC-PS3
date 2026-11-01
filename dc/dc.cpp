@@ -321,6 +321,8 @@ static char* BuildFilePath(const char* base_path, const char* filename)
 extern volatile bool g_flash_loaded;
 void maple_vmu_game(const char* id10);   // dc/maple/maple_devs.cpp (P37)
 extern bool g_disc_pso2;                 // dc/sh4/rec_v2/driver.cpp: guards Sylverant's 0xB2 buffer
+extern bool g_disc_idle_off;             // ps3/ps3_presets.cpp: JIT IDLE RULE runs as OFF
+int ps3_cheats_disc(const u8* id);       // ps3/ps3_cheats.cpp (G24)
 
 // Cable forced for this boot only; -1 = the nullDC.cfg value. Read by bsc.cpp read_BSC_PDTRA.
 int g_cable_override = -1;
@@ -332,6 +334,7 @@ static void apply_disc_meta()
 	g_cable_override = -1;
 	g_disc_wince = false;
 	g_disc_pso2 = false;
+	g_disc_idle_off = false;
 	u32 type = libGDR_GetDiscType();
 	if (type == NoDisk || type == Open || type == Busy || type == CdDA)
 		return;
@@ -365,8 +368,14 @@ static void apply_disc_meta()
 	const u8* id = &ip[0x40];
 	g_disc_pso2 = id[0] == 'M' && id[1] == 'K' && id[2] == '-' && id[3] == '5' && id[4] == '1' && id[5] == '1' &&
 	              id[6] == '0' && id[7] == '0' && id[8] == ' ' && id[10] == 'V' && id[11] == '2';
-	printf("[disc] Windows CE: %s (byte 0x3E '%c', boot file %.12s), PSO2 guard %d\n", g_disc_wince ? "yes" : "no",
-	       ip[0x3E] >= 0x20 && ip[0x3E] < 0x7F ? ip[0x3E] : '?', (const char*)&ip[0x60], g_disc_pso2);
+	// Time Stalkers (US) is "MK-51011"; only 8 bytes, so a PAL ID with a "50" suffix matches too.
+	g_disc_idle_off = id[0] == 'M' && id[1] == 'K' && id[2] == '-' && id[3] == '5' && id[4] == '1' &&
+	                  id[5] == '0' && id[6] == '1' && id[7] == '1';
+	// G24 row Game Patches: the cheat list (set up before this) gets Flycast's fix for this disc.
+	const int patch = g_game_patch_preset ? ps3_cheats_disc(id) : 0;
+	printf("[disc] Windows CE: %s (byte 0x3E '%c', boot file %.12s), PSO2 guard %d, idle rule off %d, patch %d\n",
+	       g_disc_wince ? "yes" : "no", ip[0x3E] >= 0x20 && ip[0x3E] < 0x7F ? ip[0x3E] : '?', (const char*)&ip[0x60],
+	       g_disc_pso2, g_disc_idle_off, patch);
 	if (settings.dreamcast.cable <= 1 && ip[0x3D] != '1')
 	{
 		g_cable_override = 3;
